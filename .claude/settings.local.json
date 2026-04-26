@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C H:/voice-agent-builder status --short)",
+      "Bash(npm run *)"
+    ]
+  },
+  "enabledPlugins": {
+    "databases-on-aws@claude-plugins-official": true
+  }
+}

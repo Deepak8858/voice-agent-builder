@@ -1,0 +1,63 @@
+# 29 — Suggested Project File Structure
+
+```txt
+voiceforge-ai/
+  apps/
+    web/
+      app/
+        (public)/
+        (auth)/
+        dashboard/
+          agents/
+          calls/
+          templates/
+          integrations/
+          clients/
+          white-label/
+          billing/
+      components/
+        builder/
+        flow/
+        calls/
+        analytics/
+        compliance/
+        ui/
+      lib/
+        api/
+        auth/
+        schemas/
+        stores/
+    api/
+      src/
+        auth/
+        users/
+        organizations/
+        workspaces/
+        agents/
+        templates/
+        knowledge/
+        integrations/
+        tools/
+        voice/
+          adapters/
+            mock.adapter.ts
+            vapi.adapter.ts
+            retell.adapter.ts
+        calls/
+        compliance/
+        analytics/
+        billing/
+        audit/
+        webhooks/
+        common/
+  packages/
+    shared/
+      schemas/
+      types/
+      constants/
+    ui/
+  docs/
+  docker-compose.yml
+  package.json
+  README.md
+```

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "paths": {
+      "@voiceforge/shared": ["../../packages/shared/dist/index.d.ts"],
+      "@voiceforge/shared/*": ["../../packages/shared/dist/*"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts", "prisma/seed.ts"]
+}

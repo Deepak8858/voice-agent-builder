@@ -1,0 +1,23 @@
+# =============================================================================
+# Development override (no rebuild, bind mounts)
+# =============================================================================
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+# ---------------------------------------------------------------------------
+
+services:
+  api:
+    volumes:
+      - ./apps/api/src:/app/apps/api/src:ro
+      - ./packages/shared/src:/app/packages/shared/src:ro
+    environment:
+      NODE_ENV: development
+    command: ["npm", "run", "dev", "-w", "@voiceforge/api"]
+
+  web:
+    volumes:
+      - ./apps/web/src:/app/apps/web/src:ro
+      - ./packages/shared/src:/app/packages/shared/src:ro
+    environment:
+      NODE_ENV: development
+    command: ["npm", "run", "dev", "-w", "@voiceforge/web"]

@@ -1,0 +1,6 @@
+{
+  "watch": ["src", "../../packages/shared/src"],
+  "ext": "ts,json",
+  "ignore": ["**/*.test.ts", "dist", "node_modules"],
+  "exec": "node --enable-source-maps -r @swc-node/register src/main.ts"
+}

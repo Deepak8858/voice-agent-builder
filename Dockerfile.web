@@ -1,0 +1,68 @@
+# =============================================================================
+# VoiceForge AI — Web Container (Next.js standalone)
+# =============================================================================
+# Build context: repository root (required for npm workspaces / monorepo).
+# ---------------------------------------------------------------------------
+
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# Build arguments for environment injection at build time
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_CLERK_SIGN_IN_URL
+ARG NEXT_PUBLIC_CLERK_SIGN_UP_URL
+ARG NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL
+ARG NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL
+
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+ENV NEXT_PUBLIC_CLERK_SIGN_IN_URL=${NEXT_PUBLIC_CLERK_SIGN_IN_URL}
+ENV NEXT_PUBLIC_CLERK_SIGN_UP_URL=${NEXT_PUBLIC_CLERK_SIGN_UP_URL}
+ENV NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=${NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL}
+ENV NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=${NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL}
+
+# Copy workspace manifests first for layer caching
+COPY package*.json ./
+COPY apps/web/package*.json ./apps/web/
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/ui/package*.json ./packages/ui/
+
+# Install monorepo dependencies
+RUN npm ci --ignore-scripts
+
+# Copy source
+COPY apps/web ./apps/web
+COPY packages/shared ./packages/shared
+COPY packages/ui ./packages/ui
+COPY tsconfig.base.json ./
+
+# Build shared packages then web
+RUN npm run build -w @voiceforge/shared
+RUN npm run build -w @voiceforge/web
+
+# =============================================================================
+# Production stage — minimal standalone runner
+# =============================================================================
+FROM node:20-alpine AS production
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Next.js standalone output is self-contained but needs sharp image opt deps
+RUN apk add --no-cache libc6-compat
+
+# Copy standalone output from builder
+COPY --from=builder /app/apps/web/.next/standalone ./
+COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/apps/web/public ./apps/web/public
+
+# Default port; overwritten by Azure App Service if $PORT is set
+ENV PORT=3000
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+
+CMD ["node", "apps/web/server.js"]

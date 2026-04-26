@@ -1,0 +1,56 @@
+# VoiceForge AI — Monorepo .dockerignore
+# Keep image small by excluding everything not needed for build/run.
+
+# Dependencies
+node_modules
+**/node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Build outputs
+.next
+**/.next
+dist
+**/dist
+out
+
+# Git
+.git
+.gitignore
+.github
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Docs (not needed at runtime)
+docs
+*.md
+!README.md
+
+# Test / local env
+.env
+.env.*
+!.env.example
+coverage
+.nyc_output
+
+# Misc
+*.log
+*.tmp
+*.temp
+temp
+tmp

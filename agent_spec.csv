@@ -1,0 +1,7 @@
+"order_id","customer_name","phone","address_confirmed","order_confirmed","payment_preference","amount"
+"HND-100847","Alicia Ramirez","+1-213-555-0147","true","true","prepaid","28999.00"
+"HND-100912","Marcus Thompson","+1-818-555-0194","true","false","cod","0.00"
+"HND-101203","Emily Chen","+1-310-555-0126","false","false","prepaid","31950.00"
+"HND-101488","Jamal Brooks","+1-424-555-0178","true","true","prepaid","27500.00"
+"HND-101755","Sofia Patel","+1-562-555-0183","true","true","cod","0.00"
+"HND-101902","Noah Garcia","+1-714-555-0139","true","true","prepaid","29975.00"

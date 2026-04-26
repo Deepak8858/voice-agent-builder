@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "kimi": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "https://deepak7238kgs-0666-resource.services.ai.azure.com/openai/v1"
+      },
+      "models": {
+        "Kimi-K2.6": {}
+      }
+    }
+  },
+  "model": "kimi/Kimi-K2.6"
+}
