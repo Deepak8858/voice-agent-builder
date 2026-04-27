@@ -8,7 +8,7 @@ import type { SessionUser } from '@voiceforge/shared';
 export abstract class AuthService {
   abstract signup(input: SignupInput, res: Response): Promise<SessionUser>;
   abstract login(input: LoginInput, res: Response): Promise<SessionUser>;
-  abstract logout(res: Response): Promise<void>;
+  abstract logout(req: Request, res: Response): Promise<void>;
   abstract getSessionUser(req: Request): Promise<SessionUser | null>;
 }
 

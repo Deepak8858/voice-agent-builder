@@ -6,6 +6,10 @@ import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
+import { CacheService } from '../cache/cache.service';
+
+const SESSION_USER_TTL = 300; // 5 minutes
+const SESSION_WORKSPACE_TTL = 300; // 5 minutes
 
 /**
  * Clerk-backed auth. The Next.js frontend includes the Clerk session token on
@@ -23,7 +27,10 @@ export class ClerkAuthService extends AuthService {
   private readonly logger = new Logger(ClerkAuthService.name);
   private readonly client: ClerkClient | null;
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {
     super();
     this.client = env.CLERK_SECRET_KEY
       ? createClerkClient({ secretKey: env.CLERK_SECRET_KEY })
@@ -48,8 +55,16 @@ export class ClerkAuthService extends AuthService {
     );
   }
 
-  async logout(_res: Response): Promise<void> {
+  async logout(req: Request, _res: Response): Promise<void> {
     // Clerk handles sign-out in the frontend; nothing to do server-side.
+    // Invalidate cached session data.
+    const userId = req.headers['x-user-id'] as string | undefined;
+    if (userId) {
+      await Promise.all([
+        this.cache.del(`session:user:${userId}`),
+        this.cache.del(`session:workspace:user:${userId}`),
+      ]);
+    }
   }
 
   async getSessionUser(req: Request): Promise<SessionUser | null> {
@@ -66,12 +81,33 @@ export class ClerkAuthService extends AuthService {
     }
 
     const clerkUserId = claims.sub;
-    const clerkOrgId = (claims.org_id as string | undefined) ?? null;
     if (!clerkUserId) return null;
 
+    // Cache the full SessionUser result keyed by userId.
+    const userKey = `session:user:${clerkUserId}`;
+    const cached = await this.cache.get<SessionUser>(userKey);
+    if (cached) {
+      req.res?.setHeader('X-Cache-Hit', 'true');
+      return cached;
+    }
+    req.res?.setHeader('X-Cache-Hit', 'false');
+
+    const sessionUser = await this.buildSessionUser(clerkUserId, claims.org_id as string | undefined);
+    if (sessionUser) {
+      await this.cache.set(userKey, sessionUser, SESSION_USER_TTL);
+    }
+    return sessionUser;
+  }
+
+  private async buildSessionUser(clerkUserId: string, clerkOrgId: string | null): Promise<SessionUser | null> {
     const externalAuthId = `clerk:${clerkUserId}`;
     const existing = await this.prisma.user.findUnique({ where: { externalAuthId } });
     const user = existing ?? (await this.provisionUser(externalAuthId, clerkUserId, clerkOrgId));
+
+    // Also cache workspace lookup by workspaceId for fast workspace-scoped requests.
+    const workspaceKey = `session:workspace:${user.id}`;
+    const cachedWorkspace = await this.cache.get<SessionUser>(workspaceKey);
+    if (cachedWorkspace) return cachedWorkspace;
 
     const membership = clerkOrgId
       ? await this.prisma.membership.findFirst({
@@ -90,7 +126,7 @@ export class ClerkAuthService extends AuthService {
 
     const activeMembership = membership ?? (await this.provisionOrgWorkspace(user.id, clerkOrgId));
 
-    return {
+    const sessionUser: SessionUser = {
       id: user.id,
       email: user.email,
       name: user.name,
@@ -98,6 +134,10 @@ export class ClerkAuthService extends AuthService {
       active_workspace_name: activeMembership.workspace.name,
       active_workspace_role: activeMembership.role as SessionUser['active_workspace_role'],
     };
+
+    // Cache workspace lookup (same object, different key) so workspace-scoped requests can also hit cache.
+    await this.cache.set(workspaceKey, sessionUser, SESSION_WORKSPACE_TTL);
+    return sessionUser;
   }
 
   // ------------------------------------------------------------------------

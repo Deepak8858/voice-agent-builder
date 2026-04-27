@@ -82,7 +82,7 @@ export class MockAuthService extends AuthService {
     };
   }
 
-  async logout(res: Response): Promise<void> {
+  async logout(_req: Request, res: Response): Promise<void> {
     res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'lax' });
   }
 
