@@ -9,6 +9,7 @@ import type {
   StartTestSessionDto,
   TestSessionResult,
 } from '@voiceforge/shared';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
 import {
   AgentNotFoundError,
@@ -31,6 +32,7 @@ export class CallsService {
     @Inject(VOICE_PROVIDER_TOKEN) private readonly voice: VoiceRuntimeProvider,
     private readonly evaluations: EvaluationsService,
     private readonly compliance: ComplianceService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   async startTestSession(
@@ -124,6 +126,12 @@ export class CallsService {
           reasons: checkResult.reasons,
         },
       });
+      await this.analytics.recordEventInternal({
+        workspaceId,
+        agentId: agent.id,
+        eventType: 'call.blocked',
+        payload: { reasons: checkResult.reasons, to_number: dto.to_number },
+      });
       throw new ComplianceBlockedError({ reasons: checkResult.reasons });
     }
 
@@ -168,6 +176,14 @@ export class CallsService {
         compliance_check_id: checkResult.id,
         contact_id: checkResult.contact_id,
       },
+    });
+
+    await this.analytics.recordEventInternal({
+      workspaceId,
+      agentId: agent.id,
+      callId: call.id,
+      eventType: 'call.started',
+      payload: { direction: 'outbound', to_number: dto.to_number },
     });
 
     return this.toSummary(call);
@@ -239,6 +255,18 @@ export class CallsService {
       action: 'call.end',
       resourceType: 'call',
       resourceId: callId,
+    });
+
+    await this.analytics.recordEventInternal({
+      workspaceId,
+      agentId: updated.agentId,
+      callId: updated.id,
+      eventType: 'call.ended',
+      payload: {
+        outcome: updated.outcome,
+        duration_seconds: durationSeconds,
+        direction: updated.direction,
+      },
     });
 
     try {
@@ -315,7 +343,7 @@ export class CallsService {
         ? Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000))
         : null;
 
-      await this.prisma.call.update({
+      const updated = await this.prisma.call.update({
         where: { id: call.id },
         data: {
           status: 'completed',
@@ -326,6 +354,42 @@ export class CallsService {
           ...(outcome ? { outcome } : {}),
         },
       });
+
+      try {
+        await this.compliance.processTranscriptOptOut({
+          workspaceId: updated.workspaceId,
+          callId: updated.id,
+          direction: updated.direction,
+          contactId: updated.contactId,
+          fromNumber: updated.fromNumber,
+          toNumber: updated.toNumber,
+          transcript: updated.transcriptText,
+        });
+      } catch {
+        // best-effort; never break the webhook on opt-out detection
+      }
+
+      await this.analytics.recordEventInternal({
+        workspaceId: updated.workspaceId,
+        agentId: updated.agentId,
+        callId: updated.id,
+        eventType: 'call.ended',
+        payload: {
+          outcome: updated.outcome,
+          duration_seconds: durationSeconds,
+          direction: updated.direction,
+        },
+      });
+
+      if (updated.outcome) {
+        await this.analytics.recordEventInternal({
+          workspaceId: updated.workspaceId,
+          agentId: updated.agentId,
+          callId: updated.id,
+          eventType: `outcome.${updated.outcome}`,
+          payload: { direction: updated.direction },
+        });
+      }
 
       try {
         await this.evaluations.evaluateCall(call.id);

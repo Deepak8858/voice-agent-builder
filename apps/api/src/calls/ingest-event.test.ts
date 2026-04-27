@@ -53,13 +53,16 @@ function makeService(opts: {
   const compliance = {
     check: vi.fn(),
     attachCheckToCall: vi.fn(),
+    processTranscriptOptOut: vi.fn(async () => ({ opted_out: false })),
   };
+  const analytics = { recordEventInternal: vi.fn(async () => undefined) };
   const service = new CallsService(
     prisma as never,
     audit as never,
     voice as never,
     evaluations as never,
     compliance as never,
+    analytics as never,
   );
   return { service, prisma, created, updates, events, evals };
 }

@@ -81,6 +81,10 @@ model Workspace {
   consentRecords   ConsentRecord[]
   dncEntries       DncEntry[]
   complianceChecks ComplianceCheck[]
+  analyticsEvents  AnalyticsEvent[]
+  whiteLabel       WhiteLabelSettings?
+  clientInvites    ClientInvite[]    @relation("InviteAgency")
+  invitesAccepted  ClientInvite[]    @relation("InviteClient")
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -129,6 +133,7 @@ model Agent {
   tools             IntegrationTool[]
   toolInvocations   ToolInvocation[]
   complianceChecks  ComplianceCheck[]
+  analyticsEvents   AnalyticsEvent[]
 
   @@index([workspaceId])
   @@index([createdBy])
@@ -258,6 +263,7 @@ model Call {
   evaluation       CallEvaluation?
   toolInvocations  ToolInvocation[]
   complianceChecks ComplianceCheck[]
+  analyticsEvents  AnalyticsEvent[]
 
   @@index([workspaceId, createdAt])
   @@index([agentId, createdAt])
@@ -463,4 +469,70 @@ model ComplianceCheck {
   @@index([agentId, checkedAt])
   @@index([callId])
   @@map("compliance_checks")
+}
+
+// --------------------------------------------------------------------------
+// Analytics (Phase 7)
+// --------------------------------------------------------------------------
+
+model AnalyticsEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  agentId      String?  @map("agent_id") @db.Uuid
+  callId       String?  @map("call_id") @db.Uuid
+  eventType    String   @map("event_type") // call.started | call.ended | call.blocked | appointment.booked | lead.qualified | tool.failed | ...
+  payload      Json?
+  occurredAt   DateTime @default(now()) @map("occurred_at")
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id])
+  agent      Agent?    @relation(fields: [agentId], references: [id])
+  call       Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, occurredAt])
+  @@index([workspaceId, eventType, occurredAt])
+  @@index([agentId, occurredAt])
+  @@index([callId])
+  @@map("analytics_events")
+}
+
+// --------------------------------------------------------------------------
+// White Label (Phase 8)
+// --------------------------------------------------------------------------
+
+model WhiteLabelSettings {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @unique @map("workspace_id") @db.Uuid
+  brandName             String?  @map("brand_name")
+  logoUrl               String?  @map("logo_url")
+  primaryColor          String?  @map("primary_color")
+  customDomain          String?  @unique @map("custom_domain")
+  supportEmail          String?  @map("support_email")
+  hidePlatformBranding  Boolean  @default(false) @map("hide_platform_branding")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("white_label_settings")
+}
+
+model ClientInvite {
+  id                String   @id @default(uuid()) @db.Uuid
+  agencyWorkspaceId String   @map("agency_workspace_id") @db.Uuid
+  clientWorkspaceId String?  @map("client_workspace_id") @db.Uuid
+  email             String
+  role              String   @default("admin") // admin | viewer
+  token             String   @unique
+  status            String   @default("pending") // pending | accepted | revoked | expired
+  expiresAt         DateTime @map("expires_at")
+  invitedBy         String?  @map("invited_by") @db.Uuid
+  acceptedAt        DateTime? @map("accepted_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  agencyWorkspace  Workspace  @relation("InviteAgency", fields: [agencyWorkspaceId], references: [id], onDelete: Cascade)
+  clientWorkspace  Workspace? @relation("InviteClient", fields: [clientWorkspaceId], references: [id], onDelete: SetNull)
+
+  @@index([agencyWorkspaceId, status])
+  @@index([email])
+  @@map("client_invites")
 }

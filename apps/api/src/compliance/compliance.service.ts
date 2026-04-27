@@ -518,6 +518,94 @@ export class ComplianceService {
       });
   }
 
+  /**
+   * Scans a finished-call transcript for opt-out phrases (stop/remove/do not
+   * call/unsubscribe). When matched, links/creates a Contact for the call's
+   * other-party number, sets opt_out=true, adds a DNC entry, and audits.
+   * Best-effort: any error is swallowed so a webhook never fails on this path.
+   */
+  async processTranscriptOptOut(args: {
+    workspaceId: string;
+    callId: string;
+    direction: string;
+    contactId: string | null;
+    fromNumber: string | null;
+    toNumber: string | null;
+    transcript: string | null;
+  }): Promise<{ opted_out: boolean; matched_phrase: string | null }> {
+    const transcript = (args.transcript ?? '').toLowerCase();
+    if (!transcript) return { opted_out: false, matched_phrase: null };
+
+    const phrase = OPT_OUT_PHRASES.find((p) => transcript.includes(p));
+    if (!phrase) return { opted_out: false, matched_phrase: null };
+
+    // Pick the caller-side number based on direction.
+    const otherNumber =
+      args.direction === 'inbound' ? args.fromNumber : args.toNumber;
+    if (!args.contactId && !otherNumber) {
+      return { opted_out: false, matched_phrase: null };
+    }
+
+    try {
+      let contactId = args.contactId ?? null;
+      if (!contactId && otherNumber) {
+        const phone = normalizePhone(otherNumber);
+        const existing = await this.prisma.contact.findUnique({
+          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+        });
+        const contact =
+          existing ??
+          (await this.prisma.contact.create({
+            data: { workspaceId: args.workspaceId, phone },
+          }));
+        contactId = contact.id;
+      }
+
+      if (contactId) {
+        await this.prisma.contact.update({
+          where: { id: contactId },
+          data: {
+            optOut: true,
+            optOutAt: new Date(),
+            optOutReason: `auto: caller said "${phrase}"`,
+          },
+        });
+      }
+
+      // Mirror the opt-out into the workspace DNC list so the same number is
+      // blocked on later inbound→outbound flows even without a contact lookup.
+      if (otherNumber) {
+        const phone = normalizePhone(otherNumber);
+        await this.prisma.dncEntry.upsert({
+          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+          create: {
+            workspaceId: args.workspaceId,
+            phone,
+            source: 'request',
+            reason: `auto: caller said "${phrase}"`,
+          },
+          update: { source: 'request' },
+        });
+      }
+
+      await this.audit.log({
+        workspaceId: args.workspaceId,
+        action: 'compliance.opt_out.auto',
+        resourceType: 'contact',
+        resourceId: contactId ?? args.callId,
+        metadata: {
+          call_id: args.callId,
+          phrase,
+          phone: otherNumber,
+        },
+      });
+
+      return { opted_out: true, matched_phrase: phrase };
+    } catch {
+      return { opted_out: false, matched_phrase: null };
+    }
+  }
+
   // -- mappers ----------------------------------------------------------
 
   private toContactSummary(
@@ -608,6 +696,23 @@ export class ComplianceService {
 }
 
 // --- helpers ---------------------------------------------------------
+
+/**
+ * Phrases that should automatically opt a caller out of further outbound
+ * contact. Order matters only for which phrase gets recorded as the trigger;
+ * keep the more specific multi-word phrases first.
+ */
+export const OPT_OUT_PHRASES = [
+  'do not call',
+  'don’t call me',
+  "don't call me",
+  'remove me',
+  'take me off',
+  'unsubscribe',
+  'opt out',
+  'stop calling',
+  'stop contacting',
+];
 
 /**
  * Strip surface formatting so `(415) 555-1212` and `+1 415 555 1212` collide.

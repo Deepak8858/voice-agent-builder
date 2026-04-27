@@ -12,6 +12,8 @@ const nav = [
   { href: '/dashboard/knowledge', label: 'Knowledge' },
   { href: '/dashboard/integrations', label: 'Integrations' },
   { href: '/dashboard/clients', label: 'Clients' },
+  { href: '/dashboard/compliance', label: 'Compliance' },
+  { href: '/dashboard/analytics', label: 'Analytics' },
   { href: '/dashboard/white-label', label: 'White label' },
   { href: '/dashboard/billing', label: 'Billing' },
   { href: '/dashboard/settings', label: 'Settings' },

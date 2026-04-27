@@ -4,6 +4,7 @@ import { apiFetch, ApiCallError } from '@/lib/api';
 import { Card, CardTitle, Badge } from '@/components/ui/primitives';
 import { Button } from '@/components/ui/button';
 import { KnowledgePanel } from '@/components/knowledge-panel';
+import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
 import type { AgentDetail, SessionUser } from '@voiceforge/shared';
 
@@ -89,6 +90,8 @@ export default async function AgentBuilderPage({ params }: PageProps) {
           </Card>
 
           <KnowledgePanel workspaceId={me.active_workspace_id} agentId={agent.id} />
+
+          <SuggestionsPanel workspaceId={me.active_workspace_id} agentId={agent.id} />
 
           <Card>
             <CardTitle>Coming soon</CardTitle>
