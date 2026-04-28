@@ -32,6 +32,12 @@ const EnvSchema = z.object({
 
   JWT_SECRET: z.string().default('change-me-in-development'),
   ENCRYPTION_KEY: z.string().optional(),
+
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_STARTER_PRICE_ID: z.string().optional(),
+  STRIPE_GROWTH_PRICE_ID: z.string().optional(),
+  STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
