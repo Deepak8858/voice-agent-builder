@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { CacheService } from '../cache/cache.service';
 import { WorkspaceNotFoundError } from '../common/errors';
 
 @Injectable()
@@ -8,9 +9,18 @@ export class WorkspacesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly cache: CacheService,
   ) {}
 
   async listForUser(userId: string) {
+    return this.cache.readThrough(
+      `workspaces:user:${userId}`,
+      300,
+      () => this.listForUserLoader(userId),
+    );
+  }
+
+  private async listForUserLoader(userId: string) {
     const memberships = await this.prisma.membership.findMany({
       where: { userId },
       include: { workspace: true },
@@ -62,6 +72,7 @@ export class WorkspacesService {
       resourceId: workspaceId,
       metadata: patch,
     });
+    await this.cache.del(`workspaces:user:${actorUserId}`);
     return ws;
   }
 }
