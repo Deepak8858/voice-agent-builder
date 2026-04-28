@@ -7,6 +7,7 @@ export * from './schemas/tools';
 export * from './schemas/compliance';
 export * from './schemas/analytics';
 export * from './schemas/white-label';
+export * from './schemas/billing';
 export * from './constants/templates';
 export * from './constants/industries';
 export * from './types';
