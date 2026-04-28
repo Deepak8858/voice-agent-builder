@@ -84,12 +84,14 @@ function makeAgentsServiceWith(opts: {
       opts.voiceCreate ?? vi.fn(async () => ({ provider_runtime_id: 'mock_rt_1' })),
     updateAgent: opts.voiceUpdate ?? vi.fn(async () => {}),
   };
+  const cache = { get: vi.fn(async () => null), set: vi.fn(async () => {}), del: vi.fn(async () => {}) };
   const service = new AgentsService(
     prisma as never,
     audit as never,
     generator as never,
     knowledge as never,
     voice as never,
+    cache as never,
   );
   // Override `get` so we don't need the secondary findFirst with versions loader.
   service.get = vi.fn(async () => ({

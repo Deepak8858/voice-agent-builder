@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Post, Put, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import {
   CreateAgentDtoSchema,
   CreateAgentVersionDtoSchema,
@@ -21,8 +22,10 @@ export class AgentsController {
   constructor(private readonly agents: AgentsService) {}
 
   @Get()
-  async list(@Param('workspaceId') workspaceId: string) {
-    return { items: await this.agents.list(workspaceId) };
+  async list(@Param('workspaceId') workspaceId: string, @Res() res: Response) {
+    const result = await this.agents.list(workspaceId);
+    res.setHeader('X-Cache-Hit', result.fromCache ? 'true' : 'false');
+    return res.json({ items: result.agents });
   }
 
   @Post()
@@ -86,5 +89,15 @@ export class AgentsController {
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.pause(workspaceId, agentId, user.id);
+  }
+
+  @Put(':agentId/flow')
+  async updateFlow(
+    @Param('workspaceId') workspaceId: string,
+    @Param('agentId') agentId: string,
+    @Body() body: { nodes: unknown[]; edges: unknown[] },
+    @CurrentUser() user: SessionUser,
+  ) {
+    return this.agents.updateFlow(workspaceId, agentId, user.id, body);
   }
 }

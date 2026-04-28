@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
   AgentSpec,
@@ -17,6 +18,12 @@ import { AgentNotFoundError, AgentSpecInvalidError } from '../common/errors';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
+import { CacheService } from '../cache/cache.service';
+
+export interface ListAgentsResult {
+  agents: AgentSummary[];
+  fromCache: boolean;
+}
 
 @Injectable()
 export class AgentsService {
@@ -26,6 +33,7 @@ export class AgentsService {
     @Inject(LLM_PROVIDER_TOKEN) private readonly generator: LlmAgentGenerator,
     private readonly knowledge: KnowledgeService,
     @Inject(VOICE_PROVIDER_TOKEN) private readonly voice: VoiceRuntimeProvider,
+    private readonly cache: CacheService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -37,12 +45,23 @@ export class AgentsService {
     return this.generator.generate({ ...dto, knowledge_source_ids: validIds });
   }
 
-  async list(workspaceId: string): Promise<AgentSummary[]> {
+  private listCacheKey(workspaceId: string): string {
+    return `agents:list:${workspaceId}`;
+  }
+
+  async list(workspaceId: string): Promise<ListAgentsResult> {
+    const key = this.listCacheKey(workspaceId);
+    const cached = await this.cache.get<AgentSummary[]>(key);
+    if (cached !== null) {
+      return { agents: cached, fromCache: true };
+    }
     const agents = await this.prisma.agent.findMany({
       where: { workspaceId },
       orderBy: { updatedAt: 'desc' },
     });
-    return agents.map((a) => this.toSummary(a));
+    const summaries = agents.map((a) => this.toSummary(a));
+    await this.cache.set(key, summaries, 60);
+    return { agents: summaries, fromCache: false };
   }
 
   async get(workspaceId: string, agentId: string): Promise<AgentDetail> {
@@ -118,6 +137,8 @@ export class AgentsService {
       metadata: { name: agent.name, has_initial_spec: Boolean(firstVersion) },
     });
 
+    await this.cache.del(this.listCacheKey(workspaceId));
+
     return this.get(workspaceId, agent.id);
   }
 
@@ -145,6 +166,9 @@ export class AgentsService {
       resourceId: agentId,
       metadata: dto as Record<string, unknown>,
     });
+
+    await this.cache.del(this.listCacheKey(workspaceId));
+
     return this.get(workspaceId, agentId);
   }
 
@@ -259,6 +283,9 @@ export class AgentsService {
     if (deploymentStatus === 'failed') {
       throw new AgentSpecInvalidError({ reason: `Voice provider deploy failed: ${deployError}` });
     }
+
+    await this.cache.del(this.listCacheKey(workspaceId));
+
     return this.get(workspaceId, agentId);
   }
 
@@ -270,6 +297,43 @@ export class AgentsService {
       workspaceId,
       actorUserId,
       action: 'agent.pause',
+      resourceType: 'agent',
+      resourceId: agentId,
+    });
+
+    await this.cache.del(this.listCacheKey(workspaceId));
+
+    return this.get(workspaceId, agentId);
+  }
+
+  async updateFlow(
+    workspaceId: string,
+    agentId: string,
+    actorUserId: string,
+    body: { nodes: unknown[]; edges: unknown[] },
+  ): Promise<AgentDetail> {
+    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, workspaceId } });
+    if (!agent) throw new AgentNotFoundError(agentId);
+
+    const spec = (agent.specJson ?? {}) as Record<string, unknown>;
+    const flowNodes = (body.nodes as Array<{ id: string; type: string; data: unknown }>).map((n) => ({
+      id: n.id,
+      type: n.type,
+      ...((n.data as Record<string, unknown>) ?? {}),
+    }));
+    spec['flow'] = {
+      nodes: flowNodes,
+      start_node_id: flowNodes.find((n) => n.type === 'start')?.id ?? flowNodes[0]?.id,
+    };
+
+    await this.prisma.agent.update({
+      where: { id: agentId },
+      data: { specJson: spec as Prisma.InputJsonValue },
+    });
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'agent.flow.updated',
       resourceType: 'agent',
       resourceId: agentId,
     });
