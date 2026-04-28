@@ -12,6 +12,7 @@ import { KnowledgeModule } from './knowledge/knowledge.module';
 import { LlmModule } from './llm/llm.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
+import { RateLimitModule } from './common/rate-limit.module';
 import { TemplatesModule } from './templates/templates.module';
 import { ToolsModule } from './tools/tools.module';
 import { VoiceModule } from './voice/voice.module';
@@ -24,6 +25,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     AuditModule,
     QueueModule,
     CacheModule,
+    RateLimitModule,
     AuthModule,
     HealthModule,
     WorkspacesModule,

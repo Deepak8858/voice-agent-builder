@@ -32,6 +32,9 @@ const EnvSchema = z.object({
 
   JWT_SECRET: z.string().default('change-me-in-development'),
   ENCRYPTION_KEY: z.string().optional(),
+
+  RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
+  RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
