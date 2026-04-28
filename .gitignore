@@ -32,6 +32,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# worktrees
+.worktrees/
+
 # env files (commit .env.example only)
 .env
 .env.*
