@@ -15,10 +15,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
 import { AgentNotFoundError, AgentSpecInvalidError } from '../common/errors';
+import { CacheInvalidator } from '../common/cache-invalidator';
+import { CacheService } from '../cache/cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
-import { CacheService } from '../cache/cache.service';
 
 export interface ListAgentsResult {
   agents: AgentSummary[];
@@ -34,6 +35,7 @@ export class AgentsService {
     private readonly knowledge: KnowledgeService,
     @Inject(VOICE_PROVIDER_TOKEN) private readonly voice: VoiceRuntimeProvider,
     private readonly cache: CacheService,
+    private readonly cacheInvalidator: CacheInvalidator,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -45,12 +47,8 @@ export class AgentsService {
     return this.generator.generate({ ...dto, knowledge_source_ids: validIds });
   }
 
-  private listCacheKey(workspaceId: string): string {
-    return `agents:list:${workspaceId}`;
-  }
-
   async list(workspaceId: string): Promise<ListAgentsResult> {
-    const key = this.listCacheKey(workspaceId);
+    const key = `agents:list:${workspaceId}`;
     const cached = await this.cache.get<AgentSummary[]>(key);
     if (cached !== null) {
       return { agents: cached, fromCache: true };
@@ -137,7 +135,7 @@ export class AgentsService {
       metadata: { name: agent.name, has_initial_spec: Boolean(firstVersion) },
     });
 
-    await this.cache.del(this.listCacheKey(workspaceId));
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
 
     return this.get(workspaceId, agent.id);
   }
@@ -167,7 +165,7 @@ export class AgentsService {
       metadata: dto as Record<string, unknown>,
     });
 
-    await this.cache.del(this.listCacheKey(workspaceId));
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
 
     return this.get(workspaceId, agentId);
   }
@@ -284,7 +282,7 @@ export class AgentsService {
       throw new AgentSpecInvalidError({ reason: `Voice provider deploy failed: ${deployError}` });
     }
 
-    await this.cache.del(this.listCacheKey(workspaceId));
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
 
     return this.get(workspaceId, agentId);
   }
@@ -301,7 +299,7 @@ export class AgentsService {
       resourceId: agentId,
     });
 
-    await this.cache.del(this.listCacheKey(workspaceId));
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
 
     return this.get(workspaceId, agentId);
   }
