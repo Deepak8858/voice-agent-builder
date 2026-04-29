@@ -78,4 +78,29 @@ export class CacheService {
     await this.set<T>(key, fresh, ttlSeconds);
     return fresh;
   }
+
+  /**
+   * Atomically increment a counter and optionally set its TTL.
+   * Returns the new counter value. Useful for rate limiting.
+   *
+   * If Redis is disabled, returns 1 (allows first request through).
+   */
+  async incr(key: string, ttlSeconds?: number): Promise<number> {
+    const conn = this.queue.getConnection();
+    if (!conn) return 1;
+    try {
+      const fullKey = this.k(key);
+      const pipeline = conn.pipeline();
+      pipeline.incr(fullKey);
+      if (ttlSeconds && ttlSeconds > 0) {
+        pipeline.expire(fullKey, ttlSeconds);
+      }
+      const results = await pipeline.exec();
+      const count = results?.[0]?.[1] as number;
+      return count ?? 1;
+    } catch (err) {
+      this.logger.debug(`[cache.incr:${key}] ${(err as Error).message}`);
+      return 1;
+    }
+  }
 }

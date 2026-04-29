@@ -8,8 +8,8 @@ import { z } from 'zod';
  */
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  API_PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  WEB_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  API_PORT: z.coerce.number().int().min(1).optional(),
+  WEB_PORT: z.coerce.number().int().min(1).optional(),
 
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
@@ -38,6 +38,15 @@ const EnvSchema = z.object({
   STRIPE_STARTER_PRICE_ID: z.string().optional(),
   STRIPE_GROWTH_PRICE_ID: z.string().optional(),
   STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
+
+  RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
+  RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  // Comma-separated list of allowed origins for CORS (no wildcards in production)
+  ALLOWED_ORIGINS: z
+    .string()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
