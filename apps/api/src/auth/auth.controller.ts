@@ -11,13 +11,22 @@ const SignupSchema = z.object({
   name: z.string().optional(),
   organization_name: z.string().optional(),
 });
-type SignupDto = z.infer<typeof SignupSchema>;
+// Explicitly typed DTO to avoid Zod inference quirks with strict:false
+interface SignupDto {
+  email: string;
+  password?: string;
+  name?: string;
+  organization_name?: string;
+}
 
 const LoginSchema = z.object({
   email: z.string().email(),
   password: z.string().optional(),
 });
-type LoginDto = z.infer<typeof LoginSchema>;
+interface LoginDto {
+  email: string;
+  password?: string;
+}
 
 @Controller('auth')
 export class AuthController {
