@@ -30,8 +30,8 @@ COPY apps/web/package*.json ./apps/web/
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
-# Install monorepo dependencies
-RUN npm install --ignore-scripts && npm rebuild
+# Install monorepo dependencies (postinstall needed for lightningcss native binaries)
+RUN npm install
 
 # Copy source
 COPY apps/web ./apps/web
