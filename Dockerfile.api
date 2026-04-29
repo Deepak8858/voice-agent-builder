@@ -37,14 +37,14 @@ RUN npm run build -w @voiceforge/api
 # =============================================================================
 FROM node:20-alpine AS production
 
-# Add tini for proper signal handling (reaps zombie processes, forwards signals)
-RUN apk add --no-cache tini && \
-    chown -R nobody:nobody /app && \
-    addgroup -g 1001 -S nodegroup && \
-    adduser -S nodeuser -u 1001 -G nodegroup
-
 WORKDIR /app
 ENV NODE_ENV=production
+
+# Add tini for proper signal handling (reaps zombie processes, forwards signals)
+RUN apk add --no-cache tini && \
+    addgroup -g 1001 -S nodegroup && \
+    adduser -S nodeuser -u 1001 -G nodegroup && \
+    chown -R nodeuser:nodegroup /app
 ENV TINI_VERSION=v1.31.2
 
 # Copy package manifests and install production deps only
