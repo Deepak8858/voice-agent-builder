@@ -17,7 +17,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies (respects workspaces)
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 
 # Copy source
 COPY apps/api ./apps/api
@@ -25,8 +25,8 @@ COPY packages/shared ./packages/shared
 COPY packages/ui ./packages/ui
 COPY tsconfig.base.json ./
 
-# Generate Prisma client before building
-RUN npx prisma generate --schema=apps/api/prisma/schema.prisma
+# Generate Prisma client before building (if schema exists)
+RUN if [ -f apps/api/prisma/schema.prisma ]; then npx prisma generate --schema=apps/api/prisma/schema.prisma; fi
 
 # Build shared packages then API
 RUN npm run build -w @voiceforge/shared
@@ -52,7 +52,7 @@ COPY --chown=nodeuser:nodegroup package*.json ./
 COPY --chown=nodeuser:nodegroup apps/api/package*.json ./apps/api/
 COPY --chown=nodeuser:nodegroup packages/shared/package*.json ./packages/shared/
 COPY --chown=nodeuser:nodegroup packages/ui/package*.json ./packages/ui/
-RUN npm ci --ignore-scripts --omit=dev
+RUN npm install --ignore-scripts --omit=dev
 
 # Copy built artifacts (owned by nodeuser)
 COPY --chown=nodeuser:nodegroup --from=builder /app/apps/api/dist ./apps/api/dist

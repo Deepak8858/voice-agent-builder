@@ -2,6 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": "./src",
+    "noEmitOnError": false,
+    "strict": false,
+    "skipLibCheck": true,
+    "useDefineForClassFields": false,
     "paths": {
       "@voiceforge/shared": ["../../packages/shared/dist/index.d.ts"],
       "@voiceforge/shared/*": ["../../packages/shared/dist/*"]

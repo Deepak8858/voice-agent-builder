@@ -15,7 +15,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const req = ctx.getRequest<Request>();
     const res = ctx.getResponse<Response>();
-    const correlationId = (req as Record<string, unknown>).correlationId as string | undefined;
+    const correlationId = ((req as unknown) as Record<string, unknown>).correlationId as string | undefined;
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let error: ApiError = {
@@ -32,7 +32,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         resp &&
         typeof resp === 'object' &&
         'code' in resp &&
-        typeof (resp as Record<string, unknown>).code === 'string'
+        typeof ((resp as unknown) as Record<string, unknown>).code === 'string'
       ) {
         const obj = resp as { code: ApiErrorCode; message?: string; details?: Record<string, unknown> };
         error = {

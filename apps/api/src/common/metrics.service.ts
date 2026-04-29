@@ -48,10 +48,13 @@ export class MetricsService implements OnModuleInit {
   });
 
   onModuleInit(): void {
-    // Collect default Node.js metrics (memory, CPU, event loop lag, etc.)
     collectDefaultMetrics({
       register: MetricsService.REGISTRY,
       prefix: 'voiceforge_api_',
     });
+  }
+
+  async getMetrics(): Promise<string> {
+    return MetricsService.REGISTRY.metrics();
   }
 }

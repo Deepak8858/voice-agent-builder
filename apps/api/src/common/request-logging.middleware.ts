@@ -19,7 +19,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
     const start = Date.now();
 
     // Attach to request for downstream access
-    (req as Record<string, unknown>).correlationId = correlationId;
+    ((req as unknown) as Record<string, unknown>).correlationId = correlationId;
 
     // Propagate correlation ID to response
     res.setHeader('X-Request-ID', correlationId);
