@@ -1,4 +1,8 @@
-import { Module } from '@nestjs/common';
+import { Module, OnApplicationShutdown } from '@nestjs/common';
+// Import tracing to initialise the OpenTelemetry SDK as a side effect.
+// It must be imported before any instrumented modules (Prisma, Express, etc.).
+import './tracing';
+import { logger } from './logging';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditModule } from './audit/audit.module';
@@ -42,4 +46,8 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     WhiteLabelModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements OnApplicationShutdown {
+  async onApplicationShutdown(signal: string): Promise<void> {
+    logger.info({ signal }, 'Application shutdown signal received');
+  }
+}
