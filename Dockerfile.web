@@ -31,7 +31,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts
 
 # Copy source
 COPY apps/web ./apps/web
@@ -48,14 +48,14 @@ RUN npm run build -w @voiceforge/web
 # =============================================================================
 FROM node:20-alpine AS production
 
-# Add tini for proper signal handling; include libc6-compat for sharp native deps
-RUN apk add --no-cache tini libc6-compat && \
-    chown -R nobody:nobody /app && \
-    addgroup -g 1001 -S nodegroup && \
-    adduser -S nodeuser -u 1001 -G nodegroup
-
 WORKDIR /app
 ENV NODE_ENV=production
+
+# Add tini for proper signal handling; include libc6-compat for sharp native deps
+RUN apk add --no-cache tini libc6-compat && \
+    addgroup -g 1001 -S nodegroup && \
+    adduser -S nodeuser -u 1001 -G nodegroup && \
+    chown -R nodeuser:nodegroup /app
 ENV PORT=3000
 
 # Copy standalone output from builder (owned by nodeuser)
