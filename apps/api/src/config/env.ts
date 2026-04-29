@@ -35,6 +35,12 @@ const EnvSchema = z.object({
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  // Comma-separated list of allowed origins for CORS (no wildcards in production)
+  ALLOWED_ORIGINS: z
+    .string()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
