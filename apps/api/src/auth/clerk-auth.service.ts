@@ -92,7 +92,7 @@ export class ClerkAuthService extends AuthService {
     }
     req.res?.setHeader('X-Cache-Hit', 'false');
 
-    const sessionUser = await this.buildSessionUser(clerkUserId, claims.org_id as string | undefined);
+    const sessionUser = await this.buildSessionUser(clerkUserId, claims.org_id ?? null);
     if (sessionUser) {
       await this.cache.set(userKey, sessionUser, SESSION_USER_TTL);
     }

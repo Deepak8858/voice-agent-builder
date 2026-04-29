@@ -56,6 +56,7 @@ function makeService(opts: {
     processTranscriptOptOut: vi.fn(async () => ({ opted_out: false })),
   };
   const analytics = { recordEventInternal: vi.fn(async () => undefined) };
+  const billing = { checkFeatureGate: vi.fn(async () => true), recordUsage: vi.fn(async () => {}), canOutboundCall: vi.fn(async () => true) };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -63,6 +64,7 @@ function makeService(opts: {
     evaluations as never,
     compliance as never,
     analytics as never,
+    billing as never,
   );
   return { service, prisma, created, updates, events, evals };
 }
