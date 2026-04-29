@@ -47,6 +47,8 @@ model Organization {
 
   owner        User         @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
   workspaces   Workspace[]
+  subscriptions Subscription[]
+  usageRecords UsageRecord[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -85,6 +87,7 @@ model Workspace {
   whiteLabel       WhiteLabelSettings?
   clientInvites    ClientInvite[]    @relation("InviteAgency")
   invitesAccepted  ClientInvite[]    @relation("InviteClient")
+  usageRecords     UsageRecord[]
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -118,6 +121,7 @@ model Agent {
   industry        String
   agentType       String    @map("agent_type")
   status          String    @default("draft") // draft | published | paused | archived
+  specJson        Json?     @map("spec_json")
   activeVersionId String?   @map("active_version_id") @db.Uuid
   createdBy       String?   @map("created_by") @db.Uuid
   createdAt       DateTime  @default(now()) @map("created_at")
@@ -535,4 +539,67 @@ model ClientInvite {
   @@index([agencyWorkspaceId, status])
   @@index([email])
   @@map("client_invites")
+}
+
+// --------------------------------------------------------------------------
+// Billing (Phase 9)
+// --------------------------------------------------------------------------
+
+model Subscription {
+  id                    String    @id @default(uuid()) @db.Uuid
+  organizationId        String    @unique @map("organization_id") @db.Uuid
+  stripeSubscriptionId  String?   @unique @map("stripe_subscription_id")
+  stripeCustomerId     String?   @map("stripe_customer_id")
+  plan                  String    @default("free") // free | starter | growth | enterprise
+  status                String    @default("active") // active | trialing | past_due | canceled
+  currentPeriodStart   DateTime? @map("current_period_start")
+  currentPeriodEnd     DateTime? @map("current_period_end")
+  cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
+  trialEnd             DateTime? @map("trial_end")
+  stripeMetadata       Json?     @map("stripe_metadata")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([stripeCustomerId])
+  @@map("subscriptions")
+}
+
+model UsageRecord {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  billableMetric  String   @map("billable_metric") // calls | minutes | tools | agents
+  quantity        Int      @map("quantity")
+  periodStart     DateTime @map("period_start")
+  periodEnd       DateTime @map("period_end")
+  recordedAt      DateTime @default(now()) @map("recorded_at")
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, billableMetric, periodStart])
+  @@index([workspaceId, billableMetric, periodStart])
+  @@map("usage_records")
+}
+
+model StripeEvent {
+  id                String    @id @default(uuid()) @db.Uuid
+  stripeEventId     String    @unique @map("stripe_event_id")
+  type              String
+  apiVersion        String?   @map("api_version")
+  created           DateTime
+  data              Json      @map("data")
+  livemode          Boolean   @default(false) @map("livemode")
+  pendingWebhooks   Int       @default(0) @map("pending_webhooks")
+  requestContext    Json?     @map("request_context")
+  processedAt       DateTime? @map("processed_at")
+  errorMessage      String?   @map("error_message")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([stripeEventId])
+  @@index([type, created])
+  @@map("stripe_events")
 }
