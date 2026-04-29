@@ -310,9 +310,7 @@ export class AgentsService {
     actorUserId: string,
     body: { nodes: unknown[]; edges: unknown[] },
   ): Promise<AgentDetail> {
-    const agent = await this.prisma.agent.findFirst({ where: { id: agentId, workspaceId } });
-    if (!agent) throw new AgentNotFoundError(agentId);
-
+    const agent = await this.prisma.agent.findFirstOrThrow({ where: { id: agentId, workspaceId } });
     const spec = (agent.specJson ?? {}) as Record<string, unknown>;
     const flowNodes = (body.nodes as Array<{ id: string; type: string; data: unknown }>).map((n) => ({
       id: n.id,

@@ -118,6 +118,7 @@ model Agent {
   industry        String
   agentType       String    @map("agent_type")
   status          String    @default("draft") // draft | published | paused | archived
+  specJson        Json?     @map("spec_json")
   activeVersionId String?   @map("active_version_id") @db.Uuid
   createdBy       String?   @map("created_by") @db.Uuid
   createdAt       DateTime  @default(now()) @map("created_at")

@@ -14,7 +14,7 @@ function mockExecutionContext(user?: Partial<SessionUser>): ExecutionContext {
       getMetadata: vi.fn().mockReturnValue(undefined),
     }),
     getClass: () => ({}),
-  } as ExecutionContext;
+  } as unknown as ExecutionContext;
 }
 
 describe('RateLimitGuard', () => {
@@ -25,7 +25,7 @@ describe('RateLimitGuard', () => {
     mockCache = {
       incr: vi.fn().mockResolvedValue(1),
     };
-    guard = new RateLimitGuard(mockCache as CacheService);
+    guard = new RateLimitGuard(mockCache as unknown as CacheService);
   });
 
   it('allows request when under rate limit', async () => {
