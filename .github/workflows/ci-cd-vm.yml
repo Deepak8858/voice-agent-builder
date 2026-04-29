@@ -1,0 +1,202 @@
+name: CI/CD — Azure VM (GHCR)
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+    branches: [main, staging]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+  GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # =========================================================================
+  # Phase 1 — Quality Gate (runs on PR + push)
+  # =========================================================================
+  lint-typecheck-test:
+    name: Lint + Typecheck + Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test shared
+        run: npm run test -w @voiceforge/shared
+
+      - name: Test API
+        run: npm run test -w @voiceforge/api
+
+  # =========================================================================
+  # Phase 2 — Build & Push Container Images (push only)
+  # =========================================================================
+  build-and-push:
+    name: Build & Push to GHCR
+    runs-on: ubuntu-latest
+    needs: lint-typecheck-test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (API)
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/voiceforge-api
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ github.event.inputs.environment }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Extract metadata (Web)
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/voiceforge-web
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ github.event.inputs.environment }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.api
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.web
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_CLERK_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_IN_URL }}
+            NEXT_PUBLIC_CLERK_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_UP_URL }}
+            NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL }}
+            NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL }}
+
+      - name: Summarize image tags
+        run: |
+          echo "### Images pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- API: ${{ steps.meta-api.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Web: ${{ steps.meta-web.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================================
+  # Phase 3 — Deploy to Azure VM (push only)
+  # =========================================================================
+  deploy-vm:
+    name: Deploy to Azure VM
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment:
+      name: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production') || 'staging' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve target environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "target=production" >> $GITHUB_OUTPUT
+          else
+            echo "target=staging" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AZURE_VM_HOST }}
+          username: ${{ secrets.AZURE_VM_USER }}
+          key: ${{ secrets.AZURE_VM_SSH_KEY }}
+          script_stop: true
+          envs: GITHUB_REPOSITORY_OWNER
+          script: |
+            set -euo pipefail
+            export GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }}
+            export IMAGE_TAG=${{ github.sha }}
+            export COMPOSE_PROJECT_NAME=voiceforge
+            export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
+
+            echo "🔐 Logging in to GHCR..."
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            echo "📥 Pulling images..."
+            docker compose -f $COMPOSE_FILE pull
+
+            echo "🚀 Restarting services..."
+            docker compose -f $COMPOSE_FILE up -d --remove-orphans
+
+            echo "🧹 Pruning old images..."
+            docker image prune -af --filter "until=168h"
+
+            echo "🩺 Health checks..."
+            sleep 10
+            curl -sf http://localhost:4000/health || exit 1
+            curl -sf -o /dev/null http://localhost:3000/api/health || exit 1
+            echo "✅ Deployment successful"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Deployment to ${{ steps.env.outputs.target }} failed. Check VM logs with: ssh ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_HOST }} 'docker compose -f /opt/voiceforge/docker-compose.prod.yml logs'"

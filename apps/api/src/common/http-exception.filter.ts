@@ -1,19 +1,21 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { logger } from '../logging';
 import type { ApiError, ApiErrorCode } from '@voiceforge/shared';
 
 /**
- * Catches ALL thrown exceptions and translates them into the shared envelope:
+ * Global exception filter — translates all thrown exceptions into the shared envelope:
  *   { success: false, data: null, error: { code, message, details? } }
+ *
+ * Uses pino structured logging with request correlation ID when available.
  */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(HttpExceptionFilter.name);
-
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const req = ctx.getRequest<Request>();
     const res = ctx.getResponse<Response>();
+    const correlationId = (req as Record<string, unknown>).correlationId as string | undefined;
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let error: ApiError = {
@@ -45,10 +47,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
         };
       }
     } else if (exception instanceof Error) {
-      this.logger.error(`Unhandled error: ${exception.message}`, exception.stack);
+      logger.error({ err: exception, correlationId, method: req.method, url: req.url }, exception.message);
       error.message = exception.message;
     } else {
-      this.logger.error(`Unhandled non-Error exception at ${req.method} ${req.url}`);
+      logger.error({ correlationId, method: req.method, url: req.url }, 'Unhandled non-Error exception');
+    }
+
+    // Warn on 5xx — these are bugs, not client errors
+    if (status >= 500) {
+      logger.error({ correlationId, method: req.method, url: req.url, status }, 'HTTP 5xx response');
     }
 
     res.status(status).json({ success: false, data: null, error });

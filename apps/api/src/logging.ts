@@ -17,6 +17,6 @@ export const logger = pino({
   formatters: {
     level: (label) => ({ level: label }),
   },
-  // In production, include timestamp as unix ms for easy parsing
-  timestamp: pino.stdTimeFunctions.isoTime,
+  // Unix epoch ms — standard for production JSON log pipelines (Loki, ELK, CloudWatch)
+  timestamp: pino.stdTimeFunctions.unixTime,
 });

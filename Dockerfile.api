@@ -36,25 +36,39 @@ RUN npm run build -w @voiceforge/api
 # Production stage
 # =============================================================================
 FROM node:20-alpine AS production
+
+# Add tini for proper signal handling (reaps zombie processes, forwards signals)
+RUN apk add --no-cache tini && \
+    chown -R nobody:nobody /app && \
+    addgroup -g 1001 -S nodegroup && \
+    adduser -S nodeuser -u 1001 -G nodegroup
+
 WORKDIR /app
 ENV NODE_ENV=production
+ENV TINI_VERSION=v1.31.2
 
 # Copy package manifests and install production deps only
-COPY package*.json ./
-COPY apps/api/package*.json ./apps/api/
-COPY packages/shared/package*.json ./packages/shared/
-COPY packages/ui/package*.json ./packages/ui/
+COPY --chown=nodeuser:nodegroup package*.json ./
+COPY --chown=nodeuser:nodegroup apps/api/package*.json ./apps/api/
+COPY --chown=nodeuser:nodegroup packages/shared/package*.json ./packages/shared/
+COPY --chown=nodeuser:nodegroup packages/ui/package*.json ./packages/ui/
 RUN npm ci --ignore-scripts --omit=dev
 
-# Copy built artifacts
-COPY --from=builder /app/apps/api/dist ./apps/api/dist
-COPY --from=builder /app/apps/api/prisma ./apps/api/prisma
-COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+# Copy built artifacts (owned by nodeuser)
+COPY --chown=nodeuser:nodegroup --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --chown=nodeuser:nodegroup --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --chown=nodeuser:nodegroup --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --chown=nodeuser:nodegroup --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+
+# Switch to non-root user
+USER nodeuser
 
 # Health-check endpoint (NestJS default)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:4000/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
 
 EXPOSE 4000
+
+# Use tini as init system to properly handle SIGTERM and forward to Node.js
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "apps/api/dist/main.js"]

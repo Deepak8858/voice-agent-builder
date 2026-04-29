@@ -1,11 +1,20 @@
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 
 const serviceName = process.env.OTEL_SERVICE_NAME ?? 'voiceforge-api';
 const serviceVersion = process.env.OTEL_SERVICE_VERSION ?? '0.1.0';
+
+function buildResource() {
+  return resourceFromAttributes({
+    [ATTR_SERVICE_NAME]: serviceName,
+    [ATTR_SERVICE_VERSION]: serviceVersion,
+  });
+}
 
 /**
  * OpenTelemetry SDK — auto-instruments HTTP, Express, and Prisma.
@@ -15,29 +24,35 @@ const serviceVersion = process.env.OTEL_SERVICE_VERSION ?? '0.1.0';
  *   OTEL_SERVICE_NAME            — overrides the default "voiceforge-api" name
  *   OTEL_SERVICE_VERSION         — defaults to "0.1.0"
  *
- * When OTEL_EXPORTER_OTLP_ENDPOINT is not set, traces are written to stdout
- * in JSON format and can be piped to pino-pretty locally.
+ * Both traces and metrics are exported when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+ * When not set, the SDK runs with no-op exporters (still useful for local debugging).
  */
 function buildSDK(): NodeSDK {
-  const resource = resourceFromAttributes({
-    [ATTR_SERVICE_NAME]: serviceName,
-    [ATTR_SERVICE_VERSION]: serviceVersion,
-  });
+  const resource = buildResource();
+  const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
-  const traceExporter = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-    ? new OTLPTraceExporter({ url: `${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces` })
-    : undefined; // SDK uses default ConsoleSpanExporter when no OTLP endpoint is set
+  const traceExporter = otlpEndpoint
+    ? new OTLPTraceExporter({ url: `${otlpEndpoint}/v1/traces` })
+    : undefined;
+
+  const metricExporter = otlpEndpoint
+    ? new OTLPMetricExporter({ url: `${otlpEndpoint}/v1/metrics` })
+    : undefined;
+
+  const metricReader = metricExporter
+    ? new PeriodicExportingMetricReader({ exporter: metricExporter, exportIntervalMillis: 15_000 })
+    : undefined;
 
   return new NodeSDK({
     resource,
     traceExporter,
+    metricReader,
     instrumentations: [
       getNodeAutoInstrumentations({
-        // Disable noisy filesystem instrumentation
         '@opentelemetry/instrumentation-fs': { enabled: false },
       }),
     ],
   });
 }
 
-export const tracing = buildSDK();
+export const otel = buildSDK();

@@ -22,6 +22,7 @@ import {
 import { ComplianceService } from '../compliance/compliance.service';
 import { EvaluationsService } from '../evaluations/evaluations.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { QueueService } from '../queue/queue.service';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
 
@@ -35,6 +36,7 @@ export class CallsService {
     private readonly compliance: ComplianceService,
     private readonly analytics: AnalyticsService,
     private readonly billing: BillingService,
+    private readonly queue: QueueService,
   ) {}
 
   async startTestSession(
@@ -280,11 +282,10 @@ export class CallsService {
       },
     });
 
+    // Queue async evaluation (best-effort — worker handles retries)
     try {
-      await this.evaluations.evaluateCall(callId);
-    } catch {
-      // best-effort
-    }
+      await this.queue.enqueue('evaluation', 'evaluate', { callId, workspaceId });
+    } catch {}
 
     // Phase 9: record usage
     await this.recordUsage(workspaceId, updated.id, updated.direction, durationSeconds);
@@ -405,11 +406,10 @@ export class CallsService {
         });
       }
 
+      // Queue async evaluation (best-effort — worker handles retries)
       try {
-        await this.evaluations.evaluateCall(call.id);
-      } catch {
-        // evaluation is best-effort; failure must not break webhook
-      }
+        await this.queue.enqueue('evaluation', 'evaluate', { callId: call.id, workspaceId: call.workspaceId });
+      } catch {}
     }
   }
 

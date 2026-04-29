@@ -1,0 +1,31 @@
+# =============================================================================
+# VoiceForge AI — Terraform Variables Example (Staging)
+# =============================================================================
+# Copy this file to staging.tfvars, fill in your values, and NEVER commit it.
+# =============================================================================
+
+environment = "staging"
+location    = "eastus"
+
+# Networking
+allowed_ssh_cidr = "YOUR_OFFICE_IP/32"  # Restrict SSH to your IP!
+
+# VM
+vm_size           = "Standard_B2s"
+vm_admin_username = "azureuser"
+vm_ssh_public_key = "ssh-rsa AAAAB3... YOUR_KEY"
+
+# Database (staging cost-optimized)
+postgres_sku_name                     = "B_Standard_B1ms"
+postgres_storage_mb                   = 32768
+postgres_backup_retention_days        = 7
+postgres_geo_redundant_backup_enabled = false
+# postgres_admin_password = "change-me-in-prod-use-random"
+
+# Redis (staging cost-optimized)
+redis_sku_name = "Basic"
+redis_family   = "C"
+redis_capacity = 0
+
+# Observability
+alert_email = "alerts@yourcompany.com"

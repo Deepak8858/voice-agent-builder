@@ -47,22 +47,31 @@ RUN npm run build -w @voiceforge/web
 # Production stage — minimal standalone runner
 # =============================================================================
 FROM node:20-alpine AS production
+
+# Add tini for proper signal handling; include libc6-compat for sharp native deps
+RUN apk add --no-cache tini libc6-compat && \
+    chown -R nobody:nobody /app && \
+    addgroup -g 1001 -S nodegroup && \
+    adduser -S nodeuser -u 1001 -G nodegroup
+
 WORKDIR /app
 ENV NODE_ENV=production
-
-# Next.js standalone output is self-contained but needs sharp image opt deps
-RUN apk add --no-cache libc6-compat
-
-# Copy standalone output from builder
-COPY --from=builder /app/apps/web/.next/standalone ./
-COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder /app/apps/web/public ./apps/web/public
-
-# Default port; overwritten by Azure App Service if $PORT is set
 ENV PORT=3000
+
+# Copy standalone output from builder (owned by nodeuser)
+COPY --chown=nodeuser:nodegroup --from=builder /app/apps/web/.next/standalone ./
+COPY --chown=nodeuser:nodegroup --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --chown=nodeuser:nodegroup --from=builder /app/apps/web/public ./apps/web/public
+
+# Switch to non-root user
+USER nodeuser
+
 EXPOSE 3000
 
+# Health-check endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
 
+# Use tini as init system to properly handle SIGTERM and forward to Node.js
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "apps/web/server.js"]
