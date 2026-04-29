@@ -88,6 +88,7 @@ model Workspace {
   clientInvites    ClientInvite[]    @relation("InviteAgency")
   invitesAccepted  ClientInvite[]    @relation("InviteClient")
   usageRecords     UsageRecord[]
+  googleCalendarConfig GoogleCalendarConfig?
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -602,4 +603,19 @@ model StripeEvent {
   @@index([stripeEventId])
   @@index([type, created])
   @@map("stripe_events")
+}
+
+model GoogleCalendarConfig {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @unique @map("workspace_id") @db.Uuid
+  accessToken   String   @map("access_token")
+  refreshToken  String   @map("refresh_token")
+  tokenExpiry   DateTime @map("token_expiry")
+  calendarId    String   @default("primary") @map("calendar_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("google_calendar_configs")
 }

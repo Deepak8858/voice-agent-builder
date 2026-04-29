@@ -2,7 +2,7 @@
   "name": "voiceforge-ai",
   "version": "0.1.0",
   "private": true,
-  "description": "VoiceForge AI \u2014 Lovable-style AI voice calling agent builder (monorepo).",
+  "description": "VoiceForge AI — Lovable-style AI voice calling agent builder (monorepo).",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -25,5 +25,11 @@
   },
   "engines": {
     "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "@opentelemetry/auto-instrumentations-node": "^0.73.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.215.0",
+    "@opentelemetry/resources": "^2.7.0",
+    "@opentelemetry/sdk-node": "^0.215.0"
   }
 }

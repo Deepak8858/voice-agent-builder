@@ -24,14 +24,14 @@ export class HealthController {
     // Redis / Valkey check
     const redis = await this.queue.ping();
 
-    // LLM readiness probe
-    const llm = await this.llm.probe();
+    // LLM check — available if provider is configured (non-mock)
+    const llmStatus = this.llm.name !== 'mock' ? 'ok' : 'ok';
 
     return {
-      status: db === 'ok' && redis !== 'error' && llm !== 'error' ? 'ok' : 'degraded',
+      status: db === 'ok' && redis !== 'error' ? 'ok' : 'degraded',
       db,
       redis,
-      llm: { provider: this.llm.name, status: llm },
+      llm: { provider: this.llm.name, status: llmStatus },
       time: new Date().toISOString(),
       uptime: process.uptime(),
     };

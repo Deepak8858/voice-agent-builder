@@ -43,3 +43,4 @@ docs             product/build documentation
 ```txt
 Sign up → create workspace → generate agent from prompt → view Agent Spec JSON → test mock call → publish mock agent → view call transcript → see analytics → configure white-label branding
 ```
+

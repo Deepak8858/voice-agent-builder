@@ -46,7 +46,7 @@ export class RateLimitGuard implements CanActivate {
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     // Allow routes marked with @SkipRateLimit()
-    const skip = ctx.getHandler().getMetadata(SKIP_RATE_LIMIT_KEY);
+    const skip = Reflect.getMetadata(SKIP_RATE_LIMIT_KEY, ctx.getHandler());
     if (skip) return true;
 
     const req = ctx.switchToHttp().getRequest<Request & { user?: SessionUser }>();
