@@ -70,9 +70,13 @@ function makeAgentsServiceWith(opts: {
     agent: {
       findFirst: vi.fn(async () => opts.initialAgent),
       update: agentUpdate,
+      count: vi.fn(async () => 1),
     },
     agentVersion: {
       update: versionUpdate,
+    },
+    workspace: {
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'w1', organizationId: 'org1' })),
     },
   };
   const audit = { log: vi.fn(async () => {}) };
@@ -86,6 +90,7 @@ function makeAgentsServiceWith(opts: {
   };
   const cache = { get: vi.fn(async () => null), set: vi.fn(async () => {}), del: vi.fn(async () => {}) };
   const cacheInvalidator = { invalidateAgentList: vi.fn(async () => {}) };
+  const billing = { enforceAgentLimit: vi.fn(async () => {}) };
   const service = new AgentsService(
     prisma as never,
     audit as never,
@@ -94,6 +99,7 @@ function makeAgentsServiceWith(opts: {
     voice as never,
     cache as never,
     cacheInvalidator as never,
+    billing as never,
   );
   // Override `get` so we don't need the secondary findFirst with versions loader.
   service.get = vi.fn(async () => ({

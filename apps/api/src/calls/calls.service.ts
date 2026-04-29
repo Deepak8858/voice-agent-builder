@@ -11,6 +11,7 @@ import type {
 } from '@voiceforge/shared';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
+import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import {
   AgentNotFoundError,
   AgentNotPublishedError,
@@ -33,6 +34,7 @@ export class CallsService {
     private readonly evaluations: EvaluationsService,
     private readonly compliance: ComplianceService,
     private readonly analytics: AnalyticsService,
+    private readonly billing: BillingService,
   ) {}
 
   async startTestSession(
@@ -96,6 +98,15 @@ export class CallsService {
     actorUserId: string,
     dto: StartOutboundCallDto,
   ): Promise<CallSummary> {
+    const ws = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    const allowed = await this.billing.checkFeatureGate(ws.organizationId, 'outbound');
+    if (!allowed) {
+      throw new ForbiddenPlanError('Outbound calls require a paid plan.');
+    }
+
     const { agent, version } = await this.resolveAgentVersion(
       workspaceId,
       agentId,
@@ -275,6 +286,9 @@ export class CallsService {
       // best-effort
     }
 
+    // Phase 9: record usage
+    await this.recordUsage(workspaceId, updated.id, updated.direction, durationSeconds);
+
     return this.toSummary(updated);
   }
 
@@ -432,6 +446,23 @@ export class CallsService {
     }
 
     return { agent, version };
+  }
+
+  private async recordUsage(
+    workspaceId: string,
+    callId: string,
+    direction: string,
+    durationSeconds: number | null,
+  ): Promise<void> {
+    try {
+      await this.billing.recordUsage(workspaceId, 'calls', 1);
+      if (direction === 'outbound' && durationSeconds !== null) {
+        const minutes = Math.max(1, Math.ceil(durationSeconds / 60));
+        await this.billing.recordUsage(workspaceId, 'minutes', minutes);
+      }
+    } catch {
+      // usage recording is best-effort; never fail a call end
+    }
   }
 
   private toSummary(c: {

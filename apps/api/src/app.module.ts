@@ -3,6 +3,7 @@ import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditModule } from './audit/audit.module';
 import { AuthModule } from './auth/auth.module';
+import { BillingModule } from './billing/billing.module';
 import { CacheModule } from './cache/cache.module';
 import { CallsModule } from './calls/calls.module';
 import { ComplianceModule } from './compliance/compliance.module';
@@ -17,6 +18,7 @@ import { ToolsModule } from './tools/tools.module';
 import { VoiceModule } from './voice/voice.module';
 import { WhiteLabelModule } from './white-label/white-label.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
+import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
 
 @Module({
   imports: [
@@ -38,6 +40,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     ToolsModule,
     AnalyticsModule,
     WhiteLabelModule,
+    StripeWebhookModule,
   ],
 })
 export class AppModule {}

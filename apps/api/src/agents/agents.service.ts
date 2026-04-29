@@ -20,6 +20,7 @@ import { CacheService } from '../cache/cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
+import { BillingService } from '../billing/billing.service';
 
 export interface ListAgentsResult {
   agents: AgentSummary[];
@@ -36,6 +37,7 @@ export class AgentsService {
     @Inject(VOICE_PROVIDER_TOKEN) private readonly voice: VoiceRuntimeProvider,
     private readonly cache: CacheService,
     private readonly cacheInvalidator: CacheInvalidator,
+    private readonly billing: BillingService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -211,6 +213,12 @@ export class AgentsService {
   }
 
   async publish(workspaceId: string, agentId: string, actorUserId: string): Promise<AgentDetail> {
+    const ws = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    await this.billing.enforceAgentLimit(ws.organizationId);
+
     const agent = await this.prisma.agent.findFirst({
       where: { id: agentId, workspaceId },
       include: { versions: { orderBy: { versionNumber: 'desc' }, take: 1 } },
