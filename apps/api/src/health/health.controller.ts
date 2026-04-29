@@ -1,4 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Inject } from '@nestjs/common';
+import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 
@@ -7,17 +8,32 @@ export class HealthController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
+    @Inject(LLM_PROVIDER_TOKEN) private readonly llm: LlmAgentGenerator,
   ) {}
 
   @Get()
   async check() {
+    // DB check
     let db: 'ok' | 'error' = 'ok';
     try {
       await this.prisma.$queryRaw`SELECT 1`;
     } catch {
       db = 'error';
     }
-    const cache = await this.queue.ping();
-    return { status: 'ok', db, cache, time: new Date().toISOString() };
+
+    // Redis / Valkey check
+    const redis = await this.queue.ping();
+
+    // LLM readiness probe
+    const llm = await this.llm.probe();
+
+    return {
+      status: db === 'ok' && redis !== 'error' && llm !== 'error' ? 'ok' : 'degraded',
+      db,
+      redis,
+      llm: { provider: this.llm.name, status: llm },
+      time: new Date().toISOString(),
+      uptime: process.uptime(),
+    };
   }
 }
