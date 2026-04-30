@@ -68,11 +68,12 @@ WEB_IMAGE=voiceforge-web API_IMAGE=voiceforge-api \
 echo "Step6-COMPOSE-OK"
 
 # ---------------------------------------------------------------------------
-# 7. Configure Nginx reverse proxy
+# 7. Configure Nginx reverse proxy (HTTP first for certbot, then HTTPS)
 # ---------------------------------------------------------------------------
 NGINX_CONF="/etc/nginx/sites-available/voiceforge"
 NGINX_ENABLED="/etc/nginx/sites-enabled/voiceforge"
 
+# Phase A — minimal HTTP-only config so nginx can start and certbot works
 cat > "$NGINX_CONF" <<'EOF'
 upstream web_local {
     server 127.0.0.1:3000;
@@ -88,13 +89,6 @@ server {
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-server {
-    listen 443 ssl http2;
-    server_name vocal.devdeepak.me;
     location /api/v1/ {
         proxy_pass http://api_local/;
         proxy_http_version 1.1;
@@ -130,10 +124,71 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf "$NGINX_CONF" "$NGINX_ENABLED"
 nginx -t && systemctl reload nginx
 
-# Optional certbot
+# Phase B — obtain SSL certificates via certbot
 apt-get install -y -qq certbot python3-certbot-nginx >/dev/null 2>&1 || true
 certbot --nginx -d vocal.devdeepak.me --non-interactive --agree-tos -m "admin@vocal.devdeepak.me" --redirect 2>/dev/null || true
-systemctl reload nginx
+
+# Phase C — ensure full HTTPS config is in place (certbot modifies the file)
+# If certbot failed (e.g. rate limits), fall back to the pre-built SSL config.
+if ! grep -q "listen 443 ssl" "$NGINX_CONF"; then
+  cat > "$NGINX_CONF" <<'EOF'
+upstream web_local {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+upstream api_local {
+    server 127.0.0.1:4000;
+    keepalive 32;
+}
+server {
+    listen 80;
+    server_name vocal.devdeepak.me;
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+server {
+    listen 443 ssl http2;
+    server_name vocal.devdeepak.me;
+    ssl_certificate /etc/nginx/ssl/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+    location /api/v1/ {
+        proxy_pass http://api_local/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+    }
+    location /api/health {
+        proxy_pass http://api_local/health;
+        access_log off;
+    }
+    location / {
+        proxy_pass http://web_local;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+    }
+    location /_next/static/ {
+        proxy_pass http://web_local;
+        proxy_cache_valid 200 365d;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+}
+EOF
+  nginx -t && systemctl reload nginx
+else
+  systemctl reload nginx
+fi
 
 echo "Step7-NGINX-OK"
 
