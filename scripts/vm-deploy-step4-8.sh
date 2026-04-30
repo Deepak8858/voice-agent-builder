@@ -50,11 +50,12 @@ echo "Step4-PUSH-OK"
 # ---------------------------------------------------------------------------
 docker run --rm \
   -v "${PWD}/apps/api/prisma:/prisma" \
+  -v "${PWD}/scripts/prisma-migrate.sh:/prisma-migrate.sh" \
   -e DATABASE_URL="${DATABASE_URL}" \
   -e DIRECT_URL="${DIRECT_URL}" \
   --entrypoint sh \
   node:20-slim \
-  -c "apt-get update -qq && apt-get install -y -qq openssl >/dev/null 2>&1; npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma"
+  /prisma-migrate.sh
 
 echo "Step5-MIGRATE-OK"
 
