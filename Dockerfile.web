@@ -30,11 +30,11 @@ COPY apps/web/package*.json ./apps/web/
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
-# Install monorepo dependencies (postinstall needed for lightningcss native binaries)
+# Work around npm optional-dependency bug #4828:
+# package-lock.json generated on Windows omits Linux native binaries.
+# Removing it forces fresh resolution inside the Linux container.
+RUN rm -f package-lock.json
 RUN npm install
-# Force lightningcss to resolve its platform-specific optional dependency
-# (package-lock.json generated on Windows may skip linux-x64-gnu)
-RUN npm install lightningcss --force
 
 # Copy source
 COPY apps/web ./apps/web
