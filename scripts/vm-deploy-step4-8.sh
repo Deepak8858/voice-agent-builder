@@ -60,10 +60,10 @@ docker run --rm \
 echo "Step5-MIGRATE-OK"
 
 # ---------------------------------------------------------------------------
-# 6. Start Docker Compose stack
+# 6. Start Docker Compose stack (exclude nginx — system nginx runs on host)
 # ---------------------------------------------------------------------------
 WEB_IMAGE=voiceforge-web API_IMAGE=voiceforge-api \
-  docker compose -f docker-compose.prod.yml up -d --remove-orphans
+  docker compose -f docker-compose.prod.yml up -d --remove-orphans web api redis
 
 echo "Step6-COMPOSE-OK"
 
