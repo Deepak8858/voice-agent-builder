@@ -32,6 +32,9 @@ COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies (postinstall needed for lightningcss native binaries)
 RUN npm install
+# Force lightningcss to resolve its platform-specific optional dependency
+# (package-lock.json generated on Windows may skip linux-x64-gnu)
+RUN npm install lightningcss --force
 
 # Copy source
 COPY apps/web ./apps/web
