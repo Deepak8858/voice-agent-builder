@@ -59,7 +59,8 @@ async function bootstrap() {
 
   app.useGlobalFilters(new (require('./common/http-exception.filter').HttpExceptionFilter)());
   app.useGlobalInterceptors(new (require('./common/response-envelope.interceptor').ResponseEnvelopeInterceptor)());
-  app.use(new (require('./common/request-logging.middleware').RequestLoggingMiddleware)());
+  const requestLoggingMiddleware = new (require('./common/request-logging.middleware').RequestLoggingMiddleware)();
+  app.use((req: Record<string, unknown>, res: Record<string, unknown>, next: () => void) => requestLoggingMiddleware.use(req as never, res as never, next as never));
 
   // Graceful shutdown
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
