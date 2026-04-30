@@ -42,9 +42,9 @@ FROM --platform=linux/amd64 node:20-slim AS production
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Add tini for proper signal handling (reaps zombie processes, forwards signals)
+# Add tini for proper signal handling + openssl for Prisma runtime
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tini && \
+    apt-get install -y --no-install-recommends tini openssl && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1001 nodegroup && \
     useradd -u 1001 -g nodegroup nodeuser && \
