@@ -196,7 +196,7 @@ echo "Step7-NGINX-OK"
 # 8. Health checks
 # ---------------------------------------------------------------------------
 sleep 10
-API_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:4000/health || echo "000")
+API_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:4000/api/v1/health || echo "000")
 WEB_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health || echo "000")
 
 if [ "$API_OK" = "200" ] && [ "$WEB_OK" = "200" ]; then
