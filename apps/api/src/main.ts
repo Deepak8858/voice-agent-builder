@@ -6,9 +6,6 @@ import cors from 'cors';
 import { AppModule } from './app.module';
 import { env } from './config/env';
 import { logger } from './logging';
-import { HttpExceptionFilter } from './common/http-exception.filter';
-import { ResponseEnvelopeInterceptor } from './common/response-envelope.interceptor';
-import { RequestLoggingMiddleware } from './common/request-logging.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -60,9 +57,9 @@ async function bootstrap() {
     },
   }));
 
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
-  app.use(new RequestLoggingMiddleware());
+  app.useGlobalFilters(new (require('./common/http-exception.filter').HttpExceptionFilter)());
+  app.useGlobalInterceptors(new (require('./common/response-envelope.interceptor').ResponseEnvelopeInterceptor)());
+  app.use(new (require('./common/request-logging.middleware').RequestLoggingMiddleware)());
 
   // Graceful shutdown
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
