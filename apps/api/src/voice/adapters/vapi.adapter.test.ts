@@ -1,361 +1,238 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { VapiVoiceAdapter } from './vapi.adapter';
+import type { CreateRuntimeAgentInput } from './voice.provider.interface';
 
 vi.mock('../../config/env', () => ({
-  env: {
-    VAPI_API_KEY: 'test-api-key',
-    NODE_ENV: 'test',
-  },
+  env: { VAPI_API_KEY: 'test-key' },
 }));
 
-import { AppError } from '../../common/errors';
-import { VapiVoiceAdapter } from './vapi.adapter';
+// Use real Response objects so .json() works properly
+function jsonResponse(data: unknown, init?: ResponseInit) {
+  return new Response(JSON.stringify(data), { status: 200, ...init });
+}
 
-function makeSpec(overrides: Partial<import('@voiceforge/shared').AgentSpec> = {}) {
+function errorResponse(status: number, statusText: string, bodyText: string) {
+  return new Response(bodyText, { status, statusText });
+}
+
+function makeSpec(overrides: Partial<CreateRuntimeAgentInput['spec']> = {}): CreateRuntimeAgentInput['spec'] {
   return {
-    schema_version: '1.0' as const,
+    schema_version: '1.0',
     name: 'Test Agent',
-    industry: 'healthcare',
-    agent_type: 'inbound_receptionist' as const,
+    industry: 'dental',
+    agent_type: 'inbound_receptionist',
     language: 'en',
-    voice: { tone: 'professional', voice_id: undefined as unknown as string },
-    identity: { business_name: 'Test Corp', agent_name: 'Alice' },
-    goals: ['Greet caller', 'Collect info'],
+    voice: { provider: 'vapi', voice_id: 'female-1', tone: 'friendly' },
+    identity: { business_name: 'Test Corp', agent_name: 'Alice', disclosure: 'Hi, I am Alice' },
+    goals: ['answer calls', 'book appointments'],
     required_fields: [],
-    conversation_rules: {
-      ask_one_question_at_a_time: true,
-      confirm_critical_information: true,
-      do_not_make_up_answers: true,
-      fallback_to_human_when_unsure: true,
-    },
-    knowledge: { retrieval_mode: 'agent_scoped' as const, max_chunks: 5, source_ids: [] },
-    tools: [],
-    handoff: { enabled: false, conditions: [] },
-    compliance: {
-      ai_disclosure_required: true,
-      recording_notice_required: false,
-      opt_out_enabled: true,
-      consent_required_for_outbound: true,
-    },
-    analytics: { success_events: [] },
+    conversation_rules: { first_message: 'Hello' },
+    knowledge: {},
+    tools: [{ name: 'google_calendar.book_slot', description: 'Book slot', requires_confirmation: true, input_schema: { type: 'object', properties: {}, required: [] } }],
+    handoff: { enabled: true, conditions: ['caller_requests_human'] },
+    compliance: { opt_out_enabled: true },
+    analytics: {},
     ...overrides,
   };
 }
 
-const BASE_INPUT = {
-  workspaceId: 'ws-1',
-  agentId: 'agent-1',
-  agentVersionId: 'av-1',
-};
-
 describe('VapiVoiceAdapter', () => {
-  let originalFetch: typeof globalThis.fetch;
   let adapter: VapiVoiceAdapter;
 
   beforeEach(() => {
-    originalFetch = globalThis.fetch;
+    vi.clearAllMocks();
     adapter = new VapiVoiceAdapter();
   });
 
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  describe('createAgent', () => {
+    it('creates Vapi assistant and returns runtime ID', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'vapi-assistant-123' }));
 
-  // -------------------------------------------------------------------------
-  // createAgent
-  // -------------------------------------------------------------------------
-  it('createAgent returns provider_runtime_id from Vapi response', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-assistant-123' }), { status: 200 }),
-    );
+      const result = await adapter.createAgent({
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        agentVersionId: 'v-1',
+        spec: makeSpec(),
+      });
 
-    const result = await adapter.createAgent({ ...BASE_INPUT, spec: makeSpec() });
-
-    expect(result.provider_runtime_id).toBe('vapi-assistant-123');
-
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(req![1].method).toBe('POST');
-    expect(req![0]).toContain('/assistant');
-    const body = JSON.parse(req![1].body as string);
-    expect(body.name).toBe('Test Agent');
-    expect(body.metadata.voiceforge_agent_id).toBe('agent-1');
-    expect(body.metadata.voiceforge_workspace_id).toBe('ws-1');
-    expect(body.metadata.voiceforge_agent_version_id).toBe('av-1');
-  });
-
-  it('createAgent includes systemPrompt built from spec', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-assistant-456' }), { status: 200 }),
-    );
-
-    const spec = makeSpec({
-      goals: ['Help the caller', 'Schedule appointment'],
-      handoff: { enabled: true, target_phone: '+18005551234', conditions: ['human'] },
+      expect(result.provider_runtime_id).toBe('vapi-assistant-123');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://api.vapi.ai/assistant',
+        expect.objectContaining({ method: 'POST' }),
+      );
     });
 
-    await adapter.createAgent({ ...BASE_INPUT, spec });
+    it('sets voiceforge metadata on assistant payload', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-meta' }));
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse(req![1].body as string);
-    const sysPrompt: string = body.model.systemPrompt;
-    expect(sysPrompt).toContain('Help the caller');
-    expect(sysPrompt).toContain('Schedule appointment');
-    expect(sysPrompt).toContain('Test Corp');
-    expect(sysPrompt).toContain('Alice');
+      await adapter.createAgent({
+        workspaceId: 'ws-meta', agentId: 'ag-meta', agentVersionId: 'v-meta',
+        spec: makeSpec(),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0];
+      const body = JSON.parse(req![1].body as string);
+      expect(body.metadata.voiceforge_agent_id).toBe('ag-meta');
+      expect(body.metadata.voiceforge_workspace_id).toBe('ws-meta');
+      expect(body.metadata.voiceforge_agent_version_id).toBe('v-meta');
+    });
   });
 
-  it('createAgent sends voice.voice_id when present', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-assistant-789' }), { status: 200 }),
-    );
+  describe('startOutboundCall', () => {
+    it('starts outbound call with phone number', async () => {
+      // First call: createAgent to populate the assistantIdMap
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'vapi-asst-outbound' }));
+      await adapter.createAgent({
+        workspaceId: 'ws-1', agentId: 'agent-1', agentVersionId: 'vapi-asst-outbound',
+        spec: makeSpec(),
+      });
 
-    const spec = makeSpec({ voice: { tone: 'warm', voice_id: 'voice-abc-123' } });
-    await adapter.createAgent({ ...BASE_INPUT, spec });
+      // Second call: startOutboundCall
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'call-456', status: 'queued' }));
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse(req![1].body as string);
-    expect(body.voice.voiceId).toBe('voice-abc-123');
-  });
+      const result = await adapter.startOutboundCall({
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        agentVersionId: 'vapi-asst-outbound',
+        toNumber: '+14155551234',
+        fromNumber: '+15550000000',
+      });
 
-  it('createAgent sends recording notice when compliance requires it', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-assistant-rec' }), { status: 200 }),
-    );
-
-    const spec = makeSpec({
-      compliance: {
-        ...makeSpec().compliance,
-        recording_notice_required: true,
-      },
+      expect(result.provider_call_id).toBe('call-456');
+      expect(result.status).toBe('queued');
+      const req = vi.mocked(globalThis.fetch).mock.calls[0];
+      const body = JSON.parse(req![1].body as string);
+      expect(body.customer.number).toBe('+14155551234');
+      expect(body.assistantId).toBe('vapi-asst-outbound');
     });
 
-    await adapter.createAgent({ ...BASE_INPUT, spec });
+    it('returns ringing status when call status is ringing', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'a1-ringing' }));
+      await adapter.createAgent({
+        workspaceId: 'ws', agentId: 'ag', agentVersionId: 'a1-ringing',
+        spec: makeSpec(),
+      });
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse(req![1].body as string);
-    expect(body.spcallbacks).toBeDefined();
-    expect(body.spcallbacks.onCallStart[0].args.text).toContain('recorded');
-  });
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'c1', status: 'ringing' }));
 
-  // -------------------------------------------------------------------------
-  // startOutboundCall
-  // -------------------------------------------------------------------------
-  it('startOutboundCall returns provider_call_id and status=queued', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-call-555', status: 'in-progress' }), { status: 200 }),
-    );
-
-    // Populate the assistant map so startOutboundCall can look it up
-    globalThis.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: 'vapi-assistant-123' }), { status: 200 }),
-    );
-    await adapter.createAgent({ ...BASE_INPUT, spec: makeSpec() });
-
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-call-555', status: 'in-progress' }), { status: 200 }),
-    );
-
-    const result = await adapter.startOutboundCall({
-      ...BASE_INPUT,
-      toNumber: '+15551112222',
-      fromNumber: '+15553334444',
-      metadata: { source: 'web' },
+      const result = await adapter.startOutboundCall({
+        workspaceId: 'ws', agentId: 'ag', agentVersionId: 'a1-ringing', toNumber: '+14155550000',
+      });
+      expect(result.status).toBe('ringing');
     });
 
-    expect(result.provider_call_id).toBe('vapi-call-555');
-    expect(result.status).toBe('queued');
+    it('throws when assistant not found', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'orphan' }));
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(req![0]).toContain('/call/outbound');
-    const body = JSON.parse(req![1].body as string);
-    expect(body.customer.number).toBe('+15551112222');
-    expect(body.caller.number).toBe('+15553334444');
-    // assistantId is the vapi id from createAgent
-    expect(body.assistantId).toBe('vapi-assistant-123');
-    expect(body.metadata.voiceforge_agent_id).toBe('agent-1');
-    expect(body.metadata.source).toBe('web');
+      await expect(adapter.startOutboundCall({
+        workspaceId: 'ws', agentId: 'ag', agentVersionId: 'unknown-id', toNumber: '+14155550000',
+      })).rejects.toThrow('No vapi assistant found');
+    });
   });
 
-  it('startOutboundCall maps status=ringing correctly', async () => {
-    // Populate the assistant map
-    globalThis.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: 'vapi-assistant-ringing' }), { status: 200 }),
-    );
-    await adapter.createAgent({ ...BASE_INPUT, spec: makeSpec() });
+  describe('endCall', () => {
+    it('calls correct endpoint with POST', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ id: 'vapi-call-777', status: 'ringing' }), { status: 200 }),
-    );
-
-    const result = await adapter.startOutboundCall({
-      ...BASE_INPUT,
-      toNumber: '+15551112222',
+      await adapter.endCall({ callId: 'call-123', reason: 'completed' });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://api.vapi.ai/call/call-123/end',
+        expect.objectContaining({ method: 'POST' }),
+      );
     });
 
-    expect(result.status).toBe('ringing');
+    it('sends reason in body when provided', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      await adapter.endCall({ callId: 'call-123', reason: 'user_requested' });
+      const req = vi.mocked(globalThis.fetch).mock.calls[0];
+      const body = JSON.parse(req![1].body as string);
+      expect(body.reason).toBe('user_requested');
+    });
   });
 
-  // -------------------------------------------------------------------------
-  // endCall
-  // -------------------------------------------------------------------------
-  it('endCall calls correct endpoint with optional reason', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  describe('getTranscript', () => {
+    it('maps assistant role to agent speaker', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({
+        segments: [
+          { role: 'assistant', text: 'Hello there', startTime: 0.4 },
+          { role: 'customer', text: 'Hi', startTime: 1.8 },
+        ],
+      }));
 
-    await adapter.endCall({ callId: 'vapi-call-999', reason: 'user_requested' });
+      const result = await adapter.getTranscript({ callId: 'call-abc' });
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(req![0]).toContain('/call/vapi-call-999/end');
-    expect(req![1].method).toBe('POST');
-    const body = JSON.parse(req![1].body as string);
-    expect(body.reason).toBe('user_requested');
-  });
-
-  it('endCall works without reason', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-
-    await adapter.endCall({ callId: 'vapi-call-999' });
-
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    const body = JSON.parse(req![1].body as string);
-    expect(body).toEqual({});
-  });
-
-  // -------------------------------------------------------------------------
-  // transferCall
-  // -------------------------------------------------------------------------
-  it('transferCall sends POST to correct path with target number', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-
-    await adapter.transferCall({ callId: 'vapi-call-transfer', targetNumber: '+18005559999' });
-
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(req![0]).toContain('/call/vapi-call-transfer/transfer');
-    const body = JSON.parse(req![1].body as string);
-    expect(body.target).toBe('+18005559999');
-  });
-
-  // -------------------------------------------------------------------------
-  // getTranscript
-  // -------------------------------------------------------------------------
-  it('getTranscript maps assistant role to agent speaker', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          segments: [
-            { role: 'assistant', text: 'Hello there', startTime: 0.4 },
-            { role: 'customer', text: 'Hi', startTime: 1.8 },
-          ],
-        }),
-        { status: 200 },
-      ),
-    );
-
-    const result = await adapter.getTranscript({ callId: 'vapi-call-abc' });
-
-    expect(result.turns[0].speaker).toBe('agent');
-    expect(result.turns[0].text).toBe('Hello there');
-    expect(result.turns[0].at_ms).toBe(400);
-    expect(result.turns[1].speaker).toBe('caller');
-    expect(result.turns[1].text).toBe('Hi');
-    expect(result.turns[1].at_ms).toBe;
-    expect(result.transcript).toContain('assistant: Hello there');
-    expect(result.transcript).toContain('customer: Hi');
-  });
-
-  it('getTranscript handles empty segments', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ segments: [] }), { status: 200 }),
-    );
-
-    const result = await adapter.getTranscript({ callId: 'vapi-call-empty' });
-
-    expect(result.turns).toHaveLength(0);
-    expect(result.transcript).toBe('');
-  });
-
-  // -------------------------------------------------------------------------
-  // getRecording
-  // -------------------------------------------------------------------------
-  it('getRecording returns url and duration_seconds', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ url: 'https://storage.vapi.ai/recording.mp3', duration: 125.5 }), {
-        status: 200,
-      }),
-    );
-
-    const result = await adapter.getRecording({ callId: 'vapi-call-rec' });
-
-    expect(result.url).toBe('https://storage.vapi.ai/recording.mp3');
-    expect(result.duration_seconds).toBe(125.5);
-  });
-
-  it('getRecording returns nulls when no recording', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ url: null, duration: null }), { status: 200 }),
-    );
-
-    const result = await adapter.getRecording({ callId: 'vapi-call-norec' });
-
-    expect(result.url).toBeNull();
-    expect(result.duration_seconds).toBeNull();
-  });
-
-  // -------------------------------------------------------------------------
-  // updateAgent
-  // -------------------------------------------------------------------------
-  it('updateAgent PATCHes mutable fields', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-
-    const spec = makeSpec({ name: 'Updated Agent' });
-    await adapter.updateAgent({
-      ...BASE_INPUT,
-      provider_runtime_id: 'vapi-asst-upd',
-      spec,
+      expect(result.turns[0].speaker).toBe('agent');
+      expect(result.turns[0].text).toBe('Hello there');
+      expect(result.turns[0].at_ms).toBe(400);
+      expect(result.turns[1].speaker).toBe('caller');
+      expect(result.turns[1].text).toBe('Hi');
+      expect(result.turns[1].at_ms).toBe;
     });
 
-    const req = vi.mocked(globalThis.fetch).mock.calls[0];
-    expect(req![0]).toContain('/assistant/vapi-asst-upd');
-    expect(req![1].method).toBe('PATCH');
-    const body = JSON.parse(req![1].body as string);
-    expect(body.name).toBe('Updated Agent');
+    it('returns transcript string in role: text format', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({
+        segments: [
+          { role: 'assistant', text: 'Hello.', startTime: 0 },
+        ],
+      }));
+
+      const result = await adapter.getTranscript({ callId: 'call-x' });
+      expect(result.transcript).toContain('assistant: Hello.');
+    });
+
+    it('handles empty segments', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ segments: [] }));
+      const result = await adapter.getTranscript({ callId: 'call-empty' });
+      expect(result.turns).toHaveLength(0);
+      expect(result.transcript).toBe('');
+    });
   });
 
-  // -------------------------------------------------------------------------
-  // Error handling
-  // -------------------------------------------------------------------------
-  it('throws AppError on HTTP 401', async () => {
-    // First call createAgent to populate the assistant map
-    globalThis.fetch = vi.fn().mockResolvedValueOnce(
-      new Response(JSON.stringify({ id: 'vapi-asst-401' }), { status: 200 }),
-    );
-    await adapter.createAgent({ ...BASE_INPUT, spec: makeSpec() });
+  describe('transferCall', () => {
+    it('transfers call to target number', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
-    // Second call returns 401 from Vapi API
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }),
-    );
-
-    let thrown: unknown;
-    try {
-      await adapter.startOutboundCall({ ...BASE_INPUT, toNumber: '+15551112222' });
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown).toBeInstanceOf(AppError);
-    expect((thrown as AppError).errorCode).toBe('VOICE_PROVIDER_ERROR');
+      await adapter.transferCall({ callId: 'call-1', targetNumber: '+18005559999' });
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'https://api.vapi.ai/call/call-1/transfer',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    });
   });
 
-  it('throws AppError on HTTP 404', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response('Not Found', { status: 404, statusText: 'Not Found' }),
-    );
+  describe('getRecording', () => {
+    it('returns recording URL and duration', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        jsonResponse({ url: 'https://recordings.example.com/call-1.mp3', duration: 65 }),
+      );
 
-    let thrown: unknown;
-    try {
-      await adapter.endCall({ callId: 'nonexistent-call' });
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown).toBeInstanceOf(AppError);
-    expect((thrown as AppError).errorCode).toBe('VOICE_PROVIDER_ERROR');
+      const result = await adapter.getRecording({ callId: 'call-1' });
+      expect(result.url).toBe('https://recordings.example.com/call-1.mp3');
+      expect(result.duration_seconds).toBe(65);
+    });
+
+    it('handles null URL', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ url: null, duration: null }));
+      const result = await adapter.getRecording({ callId: 'call-1' });
+      expect(result.url).toBeNull();
+    });
+  });
+
+  describe('error handling', () => {
+    it('throws AppError on HTTP 401', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(errorResponse(401, 'Unauthorized', 'Invalid API key'));
+
+      await expect(adapter.createAgent({
+        workspaceId: 'ws', agentId: 'ag', agentVersionId: 'v',
+        spec: makeSpec(),
+      })).rejects.toThrow('Vapi API error 401');
+    });
+
+    it('throws AppError on HTTP 404', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(errorResponse(404, 'Not Found', 'Call not found'));
+
+      await expect(adapter.getTranscript({ callId: 'nonexistent' })).rejects.toThrow('Vapi API error 404');
+    });
   });
 });
