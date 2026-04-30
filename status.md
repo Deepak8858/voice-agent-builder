@@ -119,7 +119,8 @@ voice-agent-builder/
 - [x] `npm run test` (165 / 165 passing)
 - [x] `npm run db:generate` (Prisma Client generated)
 - [x] `npm run db:push` and `npm run db:seed` against the user's Supabase instance
-- [ ] Live end-to-end smoke test (sign up via Clerk → dashboard loads → generate agent → save draft → builder page)
+- [x] Azure VM production deployment complete (ACR, Docker Compose, Nginx, Let's Encrypt SSL)
+- [ ] Live end-to-end smoke test via public domain (sign up via Clerk → dashboard loads → generate agent → save draft → builder page)
 - [ ] Phase 10 Production Hardening (load testing, backup validation, security audit)
 
 ## What the user needs to provide
@@ -130,15 +131,36 @@ voice-agent-builder/
 
 ## Next steps
 
-1. Run `npm install` at the repo root (installs all workspaces).
-2. `npm run db:generate` (generate Prisma client).
-3. `npm run db:push` and `npm run db:seed` once Supabase URLs are set.
-4. `npm run typecheck` and `npm run test` to validate the build.
-5. `npm run dev` to start API + web in parallel.
+1. `npm run dev` for local development (API + web in parallel).
+2. Run live end-to-end smoke test via `https://vocal.devdeepak.me` (Clerk sign-up → dashboard → generate agent → save draft → builder page).
+3. Phase 10 Production Hardening: load testing, backup validation, security audit, CDN setup.
+
+## Production Deployment Summary
+
+| Resource | Status | Details |
+|---|---|---|
+| Azure VM | Running | `voiceforge-staging-vm` (Standard_D2s_v3) |
+| ACR | Live | `voiceforgestaging.azurecr.io` |
+| SSL | Active | Let's Encrypt for `vocal.devdeepak.me` |
+| Nginx | Active | System nginx reverse proxy (80→443, /api/v1→:4000, /→:3000) |
+| API Container | Healthy | `vf-api` → `http://127.0.0.1:4000` |
+| Web Container | Healthy | `vf-web` → `http://127.0.0.1:3000` |
+| Redis | Healthy | `vf-redis` co-located on VM |
+| Supabase DB | Connected | Migrations applied, schema baselined |
+| Supabase Seed | Done | 5 MVP templates + demo data seeded |
+
+## Live Endpoints
+
+- **Web App:** `https://vocal.devdeepak.me`
+- **API:** `https://vocal.devdeepak.me/api/v1`
+- **Health (API):** `https://vocal.devdeepak.me/api/v1/health`
+- **Health (Web):** `https://vocal.devdeepak.me/api/health`
 
 ## Changelog
 
-- **2026-04-30 11:30 UTC** — Azure DevOps continuity: fixed `prom-client` missing module by reinstalling deps, fixed `ingest-event.test.ts` constructor arg mismatch (added missing `queue` param), switched `Dockerfile.api` from `node:20-alpine` to `node:20-slim` for consistency with web (avoids musl/native binary issues), fixed `BillingController` route prefix from `:workspaceId/billing` to `workspaces/:workspaceId/billing`, built `BillingPanel` frontend component with plan badge, usage meters, upgrade/manage buttons, and wired into `/dashboard/billing`, updated `docker-compose.prod.yml` to support `WEB_IMAGE`/`API_IMAGE` env vars for full registry paths in CI/CD, updated both GitHub Actions and Azure DevOps deploy scripts to export `WEB_IMAGE`/`API_IMAGE`, updated roadmap so Phases 0–9 are DONE and Phase 10 is IN PROGRESS.
+- **2026-04-30 14:00 UTC** — COMPLETE PRODUCTION DEPLOYMENT to Azure VM using Azure CLI. Steps accomplished: generated `.env.production` and uploaded to Key Vault; bootstrapped VM via `az vm run-command invoke`; built API + Web Docker images locally on VM; pushed to `voiceforgestaging.azurecr.io`; baselined Prisma migrations against existing Supabase DB (created `0_init` migration); started Docker Compose stack (`vf-web`, `vf-api`, `vf-redis`); configured system nginx reverse proxy with HTTP-first + certbot SSL auto-deployment for `vocal.devdeepak.me`; health checks pass (API:200 at `/api/v1/health`, Web:200 at `/api/health`). Critical fixes applied during deployment: fixed `lightningcss` optional-dependency platform bug by removing `package-lock.json` before `npm install` in `Dockerfile.web`; fixed `tini` path from `/sbin/tini` to `/usr/bin/tini` for Debian slim; fixed API `RequestLoggingMiddleware` crash by wrapping in arrow function for Express `app.use()`; added `/api/health` Next.js route; added Prisma `binaryTargets` for `debian-openssl-1.1.x` and `3.0.x`; installed `openssl` in API production stage for Prisma runtime; fixed API health check path to `/api/v1/health` (global prefix).
+
+- **2026-04-30 11:30 UTC** — Azure DevOps continuity: fixed `prom-client` missing module by reinstalling deps, fixed `ingest-event.test.ts` constructor arg mismatch (added missing `queue` param), switched `Dockerfile.api` from `node:20-alpine` to `node:20-slim` for consistency with web (avoids musl/native binary issues), fixed `BillingController` route prefix from `:workspaceId/billing` to `workspaces/:workspaceId/billing`, built `BillingPanel` frontend component with plan badge, usage meters, upgrade/manage buttons, and wired into `/dashboard/billing`, updated `docker-compose.prod.yml` to support `WEB_IMAGE`/`IMAGE` env vars for full registry paths in CI/CD, updated both GitHub Actions and Azure DevOps deploy scripts to export `WEB_IMAGE`/`API_IMAGE`, updated roadmap so Phases 0–9 are DONE and Phase 10 is IN PROGRESS.
 
 - **2026-04-27 19:30 UTC** — Phase 8 White Label shipped + analytics edge tests deepened. New Prisma models: `WhiteLabelSettings` (1:1 to `Workspace`, fields `brandName`, `logoUrl`, `primaryColor`, `customDomain` (unique), `supportEmail`, `hidePlatformBranding`, cascade-delete) and `ClientInvite` (`agencyWorkspaceId`, optional `clientWorkspaceId`, `email`, `role`, `token` (unique), `status` `pending|accepted|revoked|expired`, `expiresAt`, `acceptedAt`); `Workspace` gained `whiteLabel`, `clientInvites` (relation `InviteAgency`), `invitesAccepted` (relation `InviteClient`). Shared schemas in `packages/shared/src/schemas/white-label.ts`: `WhiteLabelSettings` + `UpdateWhiteLabelSettingsDto` (hex-color + domain regex validation), `ClientWorkspace` + `CreateClientWorkspaceDto` (slug regex), `ClientUsage` (30-day rollup), `ClientInvite` + `CreateClientInviteDto` (default role `admin`, default expiry 14 d) + `AcceptClientInviteDto`. New NestJS `apps/api/src/white-label/` module: `WhiteLabelService` covers (a) settings GET/upsert with custom-domain uniqueness check, (b) `createClient` which auto-promotes a `direct` parent to `agency`, creates a `client` child workspace, and seeds the actor as `owner` membership in a single `$transaction`, (c) `listClients` filtered to `parent_workspace_id` + `type=client` newest-first, (d) `clientUsage` aggregating 30 d of `calls` / `compliance_checks` for the child, (e) invite create (random 24-byte hex token, configurable expiry), revoke (rejects non-pending), and accept (auto-flips expired tokens, upserts membership with the invite role, marks the row accepted). Controllers: `WhiteLabelController` (`GET|PATCH /workspaces/:ws/white-label`), `ClientWorkspacesController` (`GET|POST /workspaces/:ws/clients`, `GET /workspaces/:ws/clients/:id/usage`), `ClientInvitesController` (`GET|POST /workspaces/:ws/invites`, `DELETE /workspaces/:ws/invites/:id`), and a standalone `InviteAcceptController` at `POST /invites/accept` that only requires auth (the token itself is the credential). Every mutation writes an `audit_logs` row. Frontend: replaced the Phase 8 ComingSoon stubs at `/dashboard/white-label` and `/dashboard/clients` with real pages. New `apps/web/components/white-label-panel.tsx` renders a brand form (brand name, logo URL, primary color, custom domain, support email, hide-platform-branding checkbox) with a live preview card; new `apps/web/components/clients-panel.tsx` shows the client workspace list, a 30-day usage rollup card per selected client, plus add-client + invite forms with role selector and pending-invite list (with Revoke). Tests: new `apps/api/src/white-label/white-label.test.ts` (18 cases) covers settings empty defaults + persisted read, custom-domain conflict on another workspace vs. same workspace, child create + parent promotion, duplicate-slug rejection, list filter to children only, usage rollup correctness, cross-agency child guard, invite create + token + expiry, mismatched-agency invite rejection, revoke pending vs. already-accepted, accept happy path with membership upsert, expiry auto-flip, unknown-token rejection, and accept-without-bound-workspace rejection. Phase 7 analytics tests **expanded from 7 → 40** with deep edge cases: null-duration NaN guard, null-outcome bucketing under `unknown`, outcome-sort by count desc, explicit from/to range filter, agent_id filter narrowing, all-failed workspace, total_minutes 2-decimal rounding, zero-call agent metrics no NaN, single-agent filter, average-duration integer rounding, multi-reason single-check counting, empty/missing-code reason handling, block-reason sort, opt-out window exclusion, agent_id compliance filter, sub-threshold suppression for low_success_rate / tool_failure / low_evaluation, exact-threshold flip, multi-condition all-trigger path, healthy-agent silence path, recordEvent payload + occurred_at persistence, recordEventInternal swallow on prisma error, and listEvents desc order + agent_id filter + cross-workspace exclusion. Final count: **133 / 133 api tests + 6 / 6 shared = 139 passing** (was 88). `npm run typecheck` clean across all 4 workspaces. `db:push` for the new `white_label_settings` and `client_invites` tables deferred to user environment per existing pattern.
 
