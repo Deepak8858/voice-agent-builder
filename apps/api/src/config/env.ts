@@ -29,6 +29,7 @@ const EnvSchema = z.object({
   LLM_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
+  LLM_API_VERSION: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
 
   JWT_SECRET: z.string().default('change-me-in-development'),

@@ -19,7 +19,7 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
   private readonly logger = new Logger(AzureAiFoundryAdapter.name);
   private readonly endpoint: string;
   private readonly model: string;
-  private readonly apiVersion = '2024-02-01';
+  private readonly apiVersion = env.LLM_API_VERSION ?? '2024-02-01';
 
   constructor(
     private readonly mock: MockAgentGeneratorService,
@@ -88,6 +88,7 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
           { role: 'user', content: this.buildUserPrompt(input, base) },
         ],
       }),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!res.ok) {

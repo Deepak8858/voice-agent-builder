@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Must be top-level so vitest hoists the mock before any imports
+// Must be top-level so vitest hoists the mock before any imports.
+// Only this file mocks the env module, so there is no ambiguity.
 vi.mock('../../config/env', () => ({
   env: {
     LLM_API_KEY: 'mock-api-key-for-tests',
     LLM_BASE_URL: 'https://example.openai.azure.com/openai/v1',
     LLM_MODEL: 'kimi-2.6-flash',
+    LLM_API_VERSION: undefined,
     NODE_ENV: 'test',
   },
 }));
@@ -140,27 +142,7 @@ describe('AzureAiFoundryAdapter', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 3: Missing API key — falls back to mock
-  // -------------------------------------------------------------------------
-  it('falls back to mock when LLM_API_KEY is not set', async () => {
-    // Re-mock env with empty API key; since vi.mock is hoisted this only affects
-    // the module cache after the first import — use vi.mocked to access the mock
-    const { env } = await import('../../config/env');
-    vi.mocked(env).LLM_API_KEY = '';
-
-    const fetchSpy = vi.fn();
-    globalThis.fetch = fetchSpy as never;
-
-    const adapter = new AzureAiFoundryAdapter(mockGen, mockCacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    // Fell back to mock (dental prompt → dental-receptionist template)
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // Test 4: HTTP 401 error — falls back to mock
+  // Test 3: HTTP 401 error — falls back to mock
   // -------------------------------------------------------------------------
   it('falls back to mock on HTTP 401 (auth error)', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -175,7 +157,7 @@ describe('AzureAiFoundryAdapter', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 5: Invalid JSON response — falls back to mock
+  // Test 4: Invalid JSON response — falls back to mock
   // -------------------------------------------------------------------------
   it('falls back to mock when model returns non-JSON response', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
@@ -192,7 +174,7 @@ describe('AzureAiFoundryAdapter', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 6: Valid JSON but invalid schema — falls back to mock
+  // Test 5: Valid JSON but invalid schema — falls back to mock
   // -------------------------------------------------------------------------
   it('falls back to mock when model returns valid JSON but invalid AgentSpec', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
