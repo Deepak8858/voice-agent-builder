@@ -18,26 +18,41 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1');
 
   // Security headers
-  app.use(helmet({
+  const helmetResult = helmet({
     hsts: { maxAge: 31536000, includeSubDomains: true },
     noSniff: true,
     frameguard: { action: 'deny' },
-  }));
+  });
+  if (typeof helmetResult === 'function') {
+    app.use(helmetResult);
+  } else {
+    logger.warn({ type: typeof helmetResult }, 'helmet() returned non-function, skipping');
+  }
 
   // CORS
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : [`http://localhost:${env.WEB_PORT ?? 3000}`];
-  app.use(cors({
+  const corsResult = cors({
     origin: allowedOrigins,
     credentials: true,
     maxAge: 86400,
-  }));
+  });
+  if (typeof corsResult === 'function') {
+    app.use(corsResult);
+  } else {
+    logger.warn({ type: typeof corsResult }, 'cors() returned non-function, skipping');
+  }
 
-  app.use(cookieParser());
+  const cpResult = cookieParser();
+  if (typeof cpResult === 'function') {
+    app.use(cpResult);
+  } else {
+    logger.warn({ type: typeof cpResult }, 'cookieParser() returned non-function, skipping');
+  }
 
   // tracing.ts is imported as a side effect in app.module.ts — NodeSDK.start() runs during module init
-// OTel auto-instruments HTTP, Express, and Prisma; configure OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector
+  // OTel auto-instruments HTTP, Express, and Prisma; configure OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector
   const express = require('express');
   app.use(express.json({
     verify: (_req: Record<string, unknown>, _res: Record<string, unknown>, buf: Buffer) => {
