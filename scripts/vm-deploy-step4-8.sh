@@ -46,14 +46,14 @@ docker push "${ACR_LOGIN_SERVER}/voiceforge-web:latest"
 echo "Step4-PUSH-OK"
 
 # ---------------------------------------------------------------------------
-# 5. Run Prisma migrations
+# 5. Run Prisma migrations (pin to v5 to avoid schema-breaking v7)
 # ---------------------------------------------------------------------------
 docker run --rm \
   -v "${PWD}/apps/api/prisma:/prisma" \
   -e DIRECT_URL="${DIRECT_URL}" \
-  --entrypoint npx \
+  --entrypoint sh \
   node:20-slim \
-  prisma migrate deploy --schema=/prisma/schema.prisma
+  -c "npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma"
 
 echo "Step5-MIGRATE-OK"
 
