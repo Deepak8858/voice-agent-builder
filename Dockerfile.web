@@ -77,5 +77,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
 
 # Use tini as init system to properly handle SIGTERM and forward to Node.js
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/web/server.js"]
