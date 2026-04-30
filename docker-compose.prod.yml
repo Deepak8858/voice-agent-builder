@@ -1,9 +1,11 @@
 # =============================================================================
 # VoiceForge AI — Production Docker Compose (Azure VM)
 # =============================================================================
-# Usage on target VM (after pulling from GHCR):
-#   export GHCR_PAT=<github-classic-pat-or-fine-grained-token>
-#   echo $GHCR_PAT | docker login ghcr.io -u <GITHUB_USERNAME> --password-stdin
+# Usage on target VM (after pushing to Azure Container Registry):
+#   export ACR_LOGIN_SERVER=<yourregistry>.azurecr.io
+#   export ACR_USERNAME=<admin-username>
+#   export ACR_PASSWORD=<admin-password>
+#   echo $ACR_PASSWORD | docker login $ACR_LOGIN_SERVER -u $ACR_USERNAME --password-stdin
 #   docker compose -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.prod.yml up -d
 #
@@ -40,7 +42,7 @@ services:
         max-file: "3"
 
   web:
-    image: voiceforge-web:${IMAGE_TAG:-latest}
+    image: ${WEB_IMAGE:-voiceforge-web}:${IMAGE_TAG:-latest}
     container_name: vf-web
     restart: unless-stopped
     ports:
@@ -68,7 +70,7 @@ services:
           memory: 512M
 
   api:
-    image: voiceforge-api:${IMAGE_TAG:-latest}
+    image: ${API_IMAGE:-voiceforge-api}:${IMAGE_TAG:-latest}
     container_name: vf-api
     restart: unless-stopped
     ports:

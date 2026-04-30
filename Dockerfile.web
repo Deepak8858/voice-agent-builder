@@ -4,7 +4,7 @@
 # Build context: repository root (required for npm workspaces / monorepo).
 # ---------------------------------------------------------------------------
 
-FROM node:20-alpine AS builder
+FROM --platform=linux/amd64 node:20-slim AS builder
 WORKDIR /app
 
 # Build arguments for environment injection at build time
@@ -46,15 +46,16 @@ RUN npm run build -w @voiceforge/web
 # =============================================================================
 # Production stage — minimal standalone runner
 # =============================================================================
-FROM node:20-alpine AS production
+FROM --platform=linux/amd64 node:20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Add tini for proper signal handling; include libc6-compat for sharp native deps
-RUN apk add --no-cache tini libc6-compat && \
-    addgroup -g 1001 -S nodegroup && \
-    adduser -S nodeuser -u 1001 -G nodegroup && \
+# Add tini for proper signal handling
+RUN apt-get update && apt-get install -y --no-install-recommends tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1001 nodegroup && \
+    useradd -u 1001 -g nodegroup nodeuser && \
     chown -R nodeuser:nodegroup /app
 ENV PORT=3000
 

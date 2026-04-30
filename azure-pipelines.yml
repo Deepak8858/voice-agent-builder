@@ -1,10 +1,10 @@
 # =============================================================================
-# VoiceForge AI — Azure DevOps Pipeline (Azure VM + GHCR)
+# VoiceForge AI — Azure DevOps Pipeline (Azure VM + ACR)
 # =============================================================================
 # Prerequisites:
 #   - Variable Group: "voiceforge-common" (NEXT_PUBLIC_*, Azure VM details)
 #   - Variable Group per env: "voiceforge-staging-secrets", "voiceforge-prod-secrets"
-#   - Service Connection: "github-service-connection" (for GHCR) OR use PAT
+#   - ACR: Azure Container Registry created and admin credentials enabled
 #   - Agent pool: ubuntu-latest (Microsoft-hosted) or self-hosted with Docker
 # =============================================================================
 
@@ -24,10 +24,6 @@ variables:
   - group: voiceforge-common
   - name: NODE_VERSION
     value: "20"
-  - name: REGISTRY
-    value: "ghcr.io"
-  - name: IMAGE_PREFIX
-    value: "$(Build.Repository.Name)"
   - name: DOCKER_BUILDKIT
     value: "1"
 
@@ -90,11 +86,10 @@ stages:
         pool:
           vmImage: "ubuntu-latest"
         steps:
-          - task: Docker@2
-            displayName: "Login to GHCR"
-            inputs:
-              command: login
-              containerRegistry: "github-service-connection"  # Create this in Project Settings > Service Connections
+          - script: |
+              echo "🔐 Logging in to Azure Container Registry..."
+              echo "$(AZURE_ACR_PASSWORD)" | docker login $(AZURE_ACR_LOGIN_SERVER) -u $(AZURE_ACR_USERNAME) --password-stdin
+            displayName: "Login to ACR"
 
           # Cache Docker layers using Azure Pipelines cache with content-based keys
           - task: Cache@2
@@ -122,9 +117,9 @@ stages:
               echo "Building VoiceForge API image..."
               docker buildx build \
                 --platform linux/amd64 \
-                --tag $(IMAGE_PREFIX)/voiceforge-api:$(Build.SourceVersion) \
-                --tag $(IMAGE_PREFIX)/voiceforge-api:$(Build.SourceBranchName) \
-                --tag $(IMAGE_PREFIX)/voiceforge-api:latest \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-api:$(Build.SourceVersion) \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-api:$(Build.SourceBranchName) \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-api:latest \
                 --cache-from=type=local,src=$(Pipeline.Workspace)/docker-cache-api \
                 --cache-to=type=local,dest=$(Pipeline.Workspace)/docker-cache-api,mode=max \
                 --push \
@@ -146,9 +141,9 @@ stages:
                 --build-arg NEXT_PUBLIC_CLERK_SIGN_UP_URL=$(NEXT_PUBLIC_CLERK_SIGN_UP_URL) \
                 --build-arg NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=$(NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL) \
                 --build-arg NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=$(NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL) \
-                --tag $(IMAGE_PREFIX)/voiceforge-web:$(Build.SourceVersion) \
-                --tag $(IMAGE_PREFIX)/voiceforge-web:$(Build.SourceBranchName) \
-                --tag $(IMAGE_PREFIX)/voiceforge-web:latest \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-web:$(Build.SourceVersion) \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-web:$(Build.SourceBranchName) \
+                --tag $(AZURE_ACR_LOGIN_SERVER)/voiceforge-web:latest \
                 --cache-from=type=local,src=$(Pipeline.Workspace)/docker-cache-web \
                 --cache-to=type=local,dest=$(Pipeline.Workspace)/docker-cache-web,mode=max \
                 --push \
@@ -186,13 +181,14 @@ stages:
                     runOptions: "commands"
                     commands: |
                       set -euo pipefail
-                      export GITHUB_REPOSITORY_OWNER=$(echo "$(Build.Repository.Name)" | cut -d'/' -f1)
                       export IMAGE_TAG=$(Build.SourceVersion)
                       export COMPOSE_PROJECT_NAME=voiceforge
                       export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
+                      export WEB_IMAGE=$(AZURE_ACR_LOGIN_SERVER)/voiceforge-web
+                      export API_IMAGE=$(AZURE_ACR_LOGIN_SERVER)/voiceforge-api
 
-                      echo "🔐 Logging in to GHCR..."
-                      echo "$(GITHUB_TOKEN)" | docker login ghcr.io -u $(GITHUB_USER) --password-stdin
+                      echo "🔐 Logging in to Azure Container Registry..."
+                      echo "$(AZURE_ACR_PASSWORD)" | docker login $(AZURE_ACR_LOGIN_SERVER) -u $(AZURE_ACR_USERNAME) --password-stdin
 
                       echo "📥 Pulling images..."
                       docker compose -f $COMPOSE_FILE pull
@@ -237,13 +233,14 @@ stages:
                     runOptions: "commands"
                     commands: |
                       set -euo pipefail
-                      export GITHUB_REPOSITORY_OWNER=$(echo "$(Build.Repository.Name)" | cut -d'/' -f1)
                       export IMAGE_TAG=$(Build.SourceVersion)
                       export COMPOSE_PROJECT_NAME=voiceforge
                       export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
+                      export WEB_IMAGE=$(AZURE_ACR_LOGIN_SERVER)/voiceforge-web
+                      export API_IMAGE=$(AZURE_ACR_LOGIN_SERVER)/voiceforge-api
 
-                      echo "🔐 Logging in to GHCR..."
-                      echo "$(GITHUB_TOKEN)" | docker login ghcr.io -u $(GITHUB_USER) --password-stdin
+                      echo "🔐 Logging in to Azure Container Registry..."
+                      echo "$(AZURE_ACR_PASSWORD)" | docker login $(AZURE_ACR_LOGIN_SERVER) -u $(AZURE_ACR_USERNAME) --password-stdin
 
                       echo "📥 Pulling images..."
                       docker compose -f $COMPOSE_FILE pull

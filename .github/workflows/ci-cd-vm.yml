@@ -177,6 +177,8 @@ jobs:
             export IMAGE_TAG=${{ github.sha }}
             export COMPOSE_PROJECT_NAME=voiceforge
             export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
+            export WEB_IMAGE=ghcr.io/${{ github.repository }}/voiceforge-web
+            export API_IMAGE=ghcr.io/${{ github.repository }}/voiceforge-api
 
             echo "🔐 Logging in to GHCR..."
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin

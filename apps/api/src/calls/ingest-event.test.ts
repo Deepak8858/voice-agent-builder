@@ -57,6 +57,7 @@ function makeService(opts: {
   };
   const analytics = { recordEventInternal: vi.fn(async () => undefined) };
   const billing = { checkFeatureGate: vi.fn(async () => true), recordUsage: vi.fn(async () => {}), canOutboundCall: vi.fn(async () => true) };
+  const queue = { enqueue: vi.fn(async () => undefined) };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -65,8 +66,9 @@ function makeService(opts: {
     compliance as never,
     analytics as never,
     billing as never,
+    queue as never,
   );
-  return { service, prisma, created, updates, events, evals };
+  return { service, prisma, created, updates, events, evals, queue };
 }
 
 describe('CallsService.ingestEvent', () => {
@@ -140,7 +142,7 @@ describe('CallsService.ingestEvent', () => {
   });
 
   it('on call.ended persists transcript/recording/outcome and triggers evaluation', async () => {
-    const { service, updates, evals } = makeService({
+    const { service, updates, queue } = makeService({
       callByProviderCallId: {
         id: 'c1',
         workspaceId: 'w1',
@@ -167,7 +169,7 @@ describe('CallsService.ingestEvent', () => {
       recordingUrl: 'https://rec/1.mp3',
       outcome: 'completed',
     });
-    expect(evals).toHaveBeenCalledWith('c1');
+    expect(queue.enqueue).toHaveBeenCalledWith('evaluation', 'evaluate', { callId: 'c1', workspaceId: 'w1' });
   });
 
   it('evaluation failure does not break webhook', async () => {

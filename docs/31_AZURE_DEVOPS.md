@@ -2,12 +2,12 @@
 
 ## Overview
 This guide covers deploying **VoiceForge AI** to **Microsoft Azure** using:
-- **Azure Container Apps** (serverless containers for Web + API)
+- **Azure VM** (Ubuntu + Docker Compose for Web + API)
 - **Azure Container Registry** (image storage)
-- **Azure Database for PostgreSQL — Flexible Server**
-- **Azure Cache for Redis**
-- **GitHub Actions** for CI/CD
-- **Bicep** templates for Infrastructure-as-Code
+- **Azure Database for PostgreSQL — Flexible Server** (or Supabase)
+- **Azure Cache for Redis** (or co-located Redis container)
+- **Azure DevOps Pipelines** for CI/CD
+- **Bicep** templates for Infrastructure-as-Code (optional)
 
 ## Architecture
 ```
@@ -55,53 +55,59 @@ az group create --name voiceforge-staging-rg --location eastus
 az group create --name voiceforge-production-rg --location eastus
 ```
 
-## 2. GitHub Secrets & Variables
+## 2. Azure DevOps Variable Groups
 
-### Required Secrets (Repository → Settings → Secrets)
-| Secret | Description |
-|--------|-------------|
-| `AZURE_CREDENTIALS` | JSON from `az ad sp create-for-rbac` |
-| `AZURE_SUBSCRIPTION_ID` | Your Azure Subscription ID |
-| `AZURE_ACR_LOGIN_SERVER` | e.g. `vf1234abcd.azurecr.io` |
-| `AZURE_ACR_USERNAME` | ACR admin username (or SP appId) |
-| `AZURE_ACR_PASSWORD` | ACR admin password (or SP secret) |
-| `DATABASE_URL` | PostgreSQL pooled connection string |
-| `DIRECT_URL` | PostgreSQL direct connection string |
-| `REDIS_URL` | Redis connection string (`rediss://...`) |
-| `JWT_SECRET` | Random 64-char hex string |
-| `ENCRYPTION_KEY` | Random 64-char hex string |
-| `CLERK_SECRET_KEY` | From Clerk Dashboard |
-| `CLERK_PUBLISHABLE_KEY` | From Clerk Dashboard |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `VAPI_API_KEY` | Vapi API key |
+Create the following variable groups in **Azure DevOps → Pipelines → Library**.
 
-### Required Variables (Repository → Settings → Variables)
-| Variable | Example |
-|----------|---------|
-| `AZURE_RESOURCE_GROUP` | `voiceforge-staging-rg` |
-| `AZURE_LOCATION` | `eastus` |
-| `NEXT_PUBLIC_API_URL` | `https://vf-api-staging.xxx.eastus.azurecontainerapps.io/api/v1` |
-| `NEXT_PUBLIC_APP_URL` | `https://vf-web-staging.xxx.eastus.azurecontainerapps.io` |
+### `voiceforge-common` (shared across environments)
+| Variable | Description |
+|----------|-------------|
+| `NEXT_PUBLIC_API_URL` | e.g. `https://vocal.devdeepak.me/api/v1` |
+| `NEXT_PUBLIC_APP_URL` | e.g. `https://vocal.devdeepak.me` |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | From Clerk Dashboard |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | `/sign-in` |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | `/sign-up` |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | `/dashboard` |
 | `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | `/dashboard` |
+| `AZURE_ACR_LOGIN_SERVER` | e.g. `vf1234abcd.azurecr.io` |
+| `AZURE_ACR_USERNAME` | ACR admin username |
 
-> **Note:** `NEXT_PUBLIC_*` variables are **build-time only** for Next.js. They must be set before the first CI run. Since ACA FQDNs are generated on first deployment, you have two options:
-> 1. **Custom domain** (recommended): Map `api.voiceforge.ai` and `app.voiceforge.ai` via Azure Front Door or custom domains on ACA. Set these as `NEXT_PUBLIC_*` variables before CI.
-> 2. **Two-pass deploy**: Deploy Bicep once with dummy images, note the generated FQDNs, set them as variables, then re-run CI/CD.
+### `voiceforge-staging-secrets`
+| Secret | Description |
+|--------|-------------|
+| `AZURE_ACR_PASSWORD` | ACR admin password |
+| `DATABASE_URL` | PostgreSQL pooled connection string |
+| `DIRECT_URL` | PostgreSQL direct connection string |
+| `REDIS_URL` | Redis connection string (optional) |
+| `CLERK_SECRET_KEY` | From Clerk Dashboard |
+| `OPENAI_API_KEY` | OpenAI API key |
 
-## 3. Deployment Workflows
+### `voiceforge-prod-secrets`
+Same keys as staging, but pointing to production resources.
 
-### CI: Build & Push (`/.github/workflows/ci.yml`)
-Trigger: Push to `main`, `develop`, or PR.
-Steps:
-1. Lint, typecheck, test (shared + API)
-2. Build Docker images (`Dockerfile.api`, `Dockerfile.web`)
-3. Push to ACR with tags: `sha`, `branch`, `latest`
+> **Note:** `NEXT_PUBLIC_*` variables are **build-time only** for Next.js standalone output. They must be set in the pipeline before the Docker image is built.
 
-### CD: Deploy to Azure (`/.github/workflows/deploy-azure.yml`)
-Trigger: Push to `main` (production) or `staging`, or manual dispatch.
+## 3. Deployment Workflow (`azure-pipelines.yml`)
+
+Trigger: Push to `main` or `staging`, or PR.
+
+### Stage 1 — Build & Quality Gate
+1. Install Node.js 20
+2. Cache + `npm ci`
+3. Typecheck, lint, test (shared + API)
+
+### Stage 2 — Build & Push to ACR
+1. Login to ACR (`docker login`)
+2. Cache Docker layers
+3. Build & push API image → `$(AZURE_ACR_LOGIN_SERVER)/voiceforge-api:<sha|branch|latest>`
+4. Build & push Web image → `$(AZURE_ACR_LOGIN_SERVER)/voiceforge-web:<sha|branch|latest>`
+
+### Stage 3 — Deploy to Azure VM (Staging / Production)
+1. SSH into the target VM
+2. `docker login` to ACR
+3. Export `WEB_IMAGE` / `API_IMAGE` to point to ACR
+4. `docker compose -f docker-compose.prod.yml pull && up -d`
+5. Health checks on `:4000/health` and `:3000/api/health`
 Steps:
 1. Login to Azure
 2. Deploy `infra/bicep/main.bicep` with current `github.sha` image tags

@@ -4,11 +4,13 @@
 # Build context: repository root (required for npm workspaces / monorepo).
 # ---------------------------------------------------------------------------
 
-FROM node:20-alpine AS builder
+FROM --platform=linux/amd64 node:20-slim AS builder
 WORKDIR /app
 
 # Install build dependencies (native modules may need python3/make)
-RUN apk add --no-cache python3 make g++
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for layer caching
 COPY package*.json ./
@@ -17,7 +19,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies (respects workspaces)
-RUN npm install --ignore-scripts && npm rebuild
+RUN npm install
 
 # Copy source
 COPY apps/api ./apps/api
@@ -35,17 +37,18 @@ RUN npm run build -w @voiceforge/api
 # =============================================================================
 # Production stage
 # =============================================================================
-FROM node:20-alpine AS production
+FROM --platform=linux/amd64 node:20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
 
 # Add tini for proper signal handling (reaps zombie processes, forwards signals)
-RUN apk add --no-cache tini && \
-    addgroup -g 1001 -S nodegroup && \
-    adduser -S nodeuser -u 1001 -G nodegroup && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1001 nodegroup && \
+    useradd -u 1001 -g nodegroup nodeuser && \
     chown -R nodeuser:nodegroup /app
-ENV TINI_VERSION=v1.31.2
 
 # Copy package manifests and install production deps only
 COPY --chown=nodeuser:nodegroup package*.json ./
@@ -70,5 +73,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 4000
 
 # Use tini as init system to properly handle SIGTERM and forward to Node.js
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/api/dist/main.js"]

@@ -17,7 +17,7 @@ import { WorkspaceGuard } from '../common/workspace.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingService, ForbiddenPlanError } from './billing.service';
 
-@Controller(':workspaceId/billing')
+@Controller('workspaces/:workspaceId/billing')
 @UseGuards(WorkspaceGuard)
 export class BillingController {
   constructor(
