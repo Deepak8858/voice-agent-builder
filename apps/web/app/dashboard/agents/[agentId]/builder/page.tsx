@@ -2,10 +2,10 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { apiFetch, ApiCallError } from '@/lib/api';
 import { Card, CardTitle, Badge } from '@/components/ui/primitives';
-import { Button } from '@/components/ui/button';
 import { KnowledgePanel } from '@/components/knowledge-panel';
 import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
+import { PublishButton } from '@/components/publish-button';
 import type { AgentDetail, SessionUser } from '@voiceforge/shared';
 
 interface PageProps {
@@ -47,7 +47,11 @@ export default async function AgentBuilderPage({ params }: PageProps) {
         </div>
         <div className="flex items-center gap-2">
           <TestCallDrawer workspaceId={me.active_workspace_id} agentId={agent.id} />
-          <Button>Publish</Button>
+          <PublishButton
+            workspaceId={me.active_workspace_id}
+            agentId={agent.id}
+            status={agent.status}
+          />
         </div>
       </header>
 

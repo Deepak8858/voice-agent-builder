@@ -2,12 +2,14 @@ import { Global, Module } from '@nestjs/common';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { ClerkAuthService } from './clerk-auth.service';
+import { ClerkWebhookController } from './clerk-webhook.controller';
+import { MeController } from './me.controller';
 import { MockAuthService } from './mock-auth.service';
 import { env } from '../config/env';
 
 @Global()
 @Module({
-  controllers: [AuthController],
+  controllers: [AuthController, ClerkWebhookController, MeController],
   providers: [
     MockAuthService,
     ClerkAuthService,

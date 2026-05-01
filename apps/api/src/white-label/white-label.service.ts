@@ -13,6 +13,7 @@ import type {
 import { SUCCESS_OUTCOMES } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { EmailService } from '../email/email.service';
 import { AppError, ForbiddenError, ValidationError } from '../common/errors';
 
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
@@ -23,6 +24,7 @@ export class WhiteLabelService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly email: EmailService,
   ) {}
 
   // --- settings -------------------------------------------------------
@@ -88,6 +90,48 @@ export class WhiteLabelService {
   }
 
   // --- client workspaces ---------------------------------------------
+
+  /**
+   * List all agents across all client workspaces of an agency. Allows agency
+   * owners to see what every client has built without switching workspaces.
+   */
+  async listAgencyAgents(agencyWorkspaceId: string): Promise<
+    Array<{
+      agent_id: string;
+      agent_name: string;
+      agent_status: string;
+      agent_type: string;
+      industry: string;
+      client_workspace_id: string;
+      client_workspace_name: string;
+      created_at: string;
+      updated_at: string;
+    }>
+  > {
+    const agency = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: agencyWorkspaceId },
+      select: { type: true },
+    });
+    if (agency.type !== 'agency' && agency.type !== 'direct') {
+      throw new ForbiddenError('Workspace is not an agency.');
+    }
+    const rows = await this.prisma.agent.findMany({
+      where: { workspace: { parentWorkspaceId: agencyWorkspaceId, type: 'client' } },
+      include: { workspace: { select: { id: true, name: true } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return rows.map((r) => ({
+      agent_id: r.id,
+      agent_name: r.name,
+      agent_status: r.status,
+      agent_type: r.agentType,
+      industry: r.industry,
+      client_workspace_id: r.workspace.id,
+      client_workspace_name: r.workspace.name,
+      created_at: r.createdAt.toISOString(),
+      updated_at: r.updatedAt.toISOString(),
+    }));
+  }
 
   async listClients(agencyWorkspaceId: string): Promise<ClientWorkspace[]> {
     const agency = await this.prisma.workspace.findUniqueOrThrow({
@@ -284,6 +328,31 @@ export class WhiteLabelService {
       resourceId: row.id,
       metadata: { email: dto.email, role: row.role },
     });
+
+    // Best-effort email send. If RESEND_API_KEY is unset the service logs a
+    // warning and returns delivered:false; the token still appears in the
+    // response so the agency can copy/paste in dev.
+    try {
+      const branding = await this.prisma.whiteLabelSettings.findUnique({
+        where: { workspaceId: agencyWorkspaceId },
+      });
+      const inviter = await this.prisma.user.findUnique({
+        where: { id: actorUserId },
+        select: { name: true, email: true },
+      });
+      await this.email.sendInvite({
+        to: dto.email,
+        inviteToken: token,
+        role: row.role,
+        brandName: branding?.brandName ?? null,
+        brandLogoUrl: branding?.logoUrl ?? null,
+        primaryColor: branding?.primaryColor ?? null,
+        inviterName: inviter?.name ?? inviter?.email ?? null,
+        expiresAt: row.expiresAt,
+      });
+    } catch {
+      // Email delivery must never break invite creation.
+    }
 
     return this.toInviteDto(row);
   }

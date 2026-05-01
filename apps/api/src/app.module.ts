@@ -11,6 +11,7 @@ import { BillingModule } from './billing/billing.module';
 import { CacheModule } from './cache/cache.module';
 import { CallsModule } from './calls/calls.module';
 import { ComplianceModule } from './compliance/compliance.module';
+import { EmailModule } from './email/email.module';
 import { EvaluationsModule } from './evaluations/evaluations.module';
 import { HealthModule } from './health/health.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
@@ -29,6 +30,7 @@ import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
   imports: [
     PrismaModule,
     AuditModule,
+    EmailModule,
     QueueModule,
     CacheModule,
     RateLimitModule,

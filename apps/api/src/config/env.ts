@@ -29,6 +29,25 @@ const EnvSchema = z.object({
   LLM_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
+
+  // Voice provider credentials
+  VAPI_API_KEY: z.string().optional(),
+  VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
+  VAPI_PHONE_NUMBER_ID: z.string().optional(),
+  VAPI_WEBHOOK_SECRET: z.string().optional(),
+  RETELL_API_KEY: z.string().optional(),
+  RETELL_BASE_URL: z.string().default('https://api.retellai.com'),
+  RETELL_FROM_NUMBER: z.string().optional(),
+  RETELL_WEBHOOK_SECRET: z.string().optional(),
+
+  // Email
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default('VoiceForge <noreply@voiceforge.ai>'),
+  WEB_BASE_URL: z.string().default('http://localhost:3000'),
+
+  // Compliance
+  DEFAULT_COUNTRY: z.string().length(2).default('US'),
 
   JWT_SECRET: z.string().default('change-me-in-development'),
   ENCRYPTION_KEY: z.string().optional(),

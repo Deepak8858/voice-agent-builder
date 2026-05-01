@@ -4,13 +4,15 @@
 // destructive.
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [vector]
 }
 
 // --------------------------------------------------------------------------
@@ -213,15 +215,16 @@ model KnowledgeSource {
 }
 
 model KnowledgeChunk {
-  id           String   @id @default(uuid()) @db.Uuid
-  sourceId     String   @map("source_id") @db.Uuid
-  workspaceId  String   @map("workspace_id") @db.Uuid
-  agentId      String?  @map("agent_id") @db.Uuid
-  chunkIndex   Int      @map("chunk_index")
-  content      String
-  embedding    Json?    // pgvector later; Json placeholder for now
-  metadata     Json?
-  createdAt    DateTime @default(now()) @map("created_at")
+  id              String                       @id @default(uuid()) @db.Uuid
+  sourceId        String                       @map("source_id") @db.Uuid
+  workspaceId     String                       @map("workspace_id") @db.Uuid
+  agentId         String?                      @map("agent_id") @db.Uuid
+  chunkIndex      Int                          @map("chunk_index")
+  content         String
+  embedding       Json?                        // legacy column (deprecated; new code writes embeddingVector)
+  embeddingVector Unsupported("vector(1536)")? @map("embedding_vector")
+  metadata        Json?
+  createdAt       DateTime                     @default(now()) @map("created_at")
 
   source     KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   workspace  Workspace       @relation(fields: [workspaceId], references: [id])

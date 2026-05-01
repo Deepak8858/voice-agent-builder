@@ -60,6 +60,11 @@ export class ClientWorkspacesController {
     return { items: await this.service.listClients(workspaceId) };
   }
 
+  @Get('agents')
+  async listAgents(@Param('workspaceId') workspaceId: string) {
+    return { items: await this.service.listAgencyAgents(workspaceId) };
+  }
+
   @Post()
   @HttpCode(201)
   async create(

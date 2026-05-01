@@ -55,6 +55,22 @@ export class WorkspacesService {
     };
   }
 
+  async listMembers(workspaceId: string) {
+    const memberships = await this.prisma.membership.findMany({
+      where: { workspaceId },
+      include: { user: { select: { email: true, name: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    return memberships.map((m) => ({
+      id: m.id,
+      user_id: m.userId,
+      email: m.user?.email ?? null,
+      name: m.user?.name ?? null,
+      role: m.role,
+      created_at: m.createdAt.toISOString(),
+    }));
+  }
+
   async update(
     workspaceId: string,
     actorUserId: string,

@@ -101,12 +101,31 @@ export class KnowledgeService {
     if (dto.source_type === 'text' && dto.content) {
       await this.processSource(created.id, workspaceId, dto.agent_id ?? null, dto.content);
     } else if (dto.source_type === 'url' && dto.file_url) {
-      // URL-based ingest is not yet implemented; mark ready with no chunks so
-      // the source is visible. Phase 10 will add a URL fetcher worker.
-      await this.prisma.knowledgeSource.update({
-        where: { id: created.id },
-        data: { status: 'ready' },
-      });
+      // Best-effort inline fetch + parse + chunk + embed. We mark the source
+      // as `processing`, perform the work, then `ready` or `failed`.
+      try {
+        const text = await this.fetchAndExtractUrl(dto.file_url);
+        if (!text || text.trim().length === 0) {
+          await this.prisma.knowledgeSource.update({
+            where: { id: created.id },
+            data: {
+              status: 'failed',
+              metadata: { error: 'No readable text at URL' } as Prisma.InputJsonValue,
+            },
+          });
+        } else {
+          await this.processSource(created.id, workspaceId, dto.agent_id ?? null, text);
+        }
+      } catch (err) {
+        this.logger.warn(`URL ingest failed for ${dto.file_url}: ${(err as Error).message}`);
+        await this.prisma.knowledgeSource.update({
+          where: { id: created.id },
+          data: {
+            status: 'failed',
+            metadata: { error: (err as Error).message } as Prisma.InputJsonValue,
+          },
+        });
+      }
     }
 
     await this.audit.log({
@@ -271,9 +290,11 @@ export class KnowledgeService {
   }
 
   /**
-   * Cosine-similarity search over chunk embeddings. Pulls all chunks visible
-   * to the (workspace, agent) pair into memory and ranks them. Replace with
-   * pgvector + ANN index in Phase 10 hardening.
+   * Cosine-similarity search over chunk embeddings.
+   *
+   * Primary path: pgvector ANN index (HNSW) via raw SQL when embedder is
+   * 1536-dim (matches column type). Falls back to in-memory cosine ranking
+   * for low-dim mocks or if the raw query errors (e.g. extension not enabled).
    */
   async search(
     workspaceId: string,
@@ -284,6 +305,84 @@ export class KnowledgeService {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];
 
+    const [queryVec] = await this.embedder.embed([trimmed]);
+
+    if (this.embedder.dimensions === 1536) {
+      try {
+        const hits = await this.pgvectorSearch(workspaceId, queryVec, opts, k);
+        if (hits.length > 0) return hits;
+      } catch (err) {
+        this.logger.warn(
+          `pgvector search failed (${(err as Error).message}); falling back to in-memory.`,
+        );
+      }
+    }
+    return this.inMemorySearch(workspaceId, queryVec, opts, k);
+  }
+
+  private async pgvectorSearch(
+    workspaceId: string,
+    queryVec: number[],
+    opts: { agentId?: string | null },
+    k: number,
+  ): Promise<KnowledgeSearchHit[]> {
+    const literal = `[${queryVec.join(',')}]`;
+    const agentClause =
+      opts.agentId !== undefined
+        ? opts.agentId
+          ? Prisma.sql`AND (kc.agent_id = ${opts.agentId}::uuid OR kc.agent_id IS NULL)`
+          : Prisma.sql`AND kc.agent_id IS NULL`
+        : Prisma.sql``;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        chunk_id: string;
+        source_id: string;
+        source_title: string;
+        source_type: string;
+        agent_id: string | null;
+        chunk_index: number;
+        content: string;
+        score: number;
+      }>
+    >`
+      SELECT
+        kc.id            AS chunk_id,
+        kc.source_id     AS source_id,
+        ks.title         AS source_title,
+        ks.source_type   AS source_type,
+        ks.agent_id      AS agent_id,
+        kc.chunk_index   AS chunk_index,
+        kc.content       AS content,
+        1 - (kc.embedding_vector <=> ${literal}::vector) AS score
+      FROM knowledge_chunks kc
+      JOIN knowledge_sources ks ON ks.id = kc.source_id
+      WHERE kc.workspace_id = ${workspaceId}::uuid
+        AND ks.status = 'ready'
+        AND kc.embedding_vector IS NOT NULL
+        ${agentClause}
+      ORDER BY kc.embedding_vector <=> ${literal}::vector
+      LIMIT ${k}
+    `;
+
+    return rows.map((r) => ({
+      chunk_id: r.chunk_id,
+      source_id: r.source_id,
+      source_title: r.source_title,
+      source_type: r.source_type as KnowledgeSearchHit['source_type'],
+      agent_id: r.agent_id,
+      chunk_index: r.chunk_index,
+      content: r.content,
+      score: Number(Number(r.score).toFixed(6)),
+    }));
+  }
+
+  private async inMemorySearch(
+    workspaceId: string,
+    queryVec: number[],
+    opts: { agentId?: string | null },
+    k: number,
+  ): Promise<KnowledgeSearchHit[]> {
     const where: Prisma.KnowledgeChunkWhereInput = {
       workspaceId,
       source: { status: 'ready' },
@@ -304,15 +403,11 @@ export class KnowledgeService {
     });
     if (chunks.length === 0) return [];
 
-    const [queryVec] = await this.embedder.embed([trimmed]);
     const scored = chunks
       .map((c) => {
         const emb = this.coerceVec(c.embedding);
         if (!emb) return null;
-        return {
-          chunk: c,
-          score: cosineSim(queryVec, emb),
-        };
+        return { chunk: c, score: cosineSim(queryVec, emb) };
       })
       .filter((x): x is { chunk: (typeof chunks)[number]; score: number } => x !== null);
 
@@ -372,6 +467,33 @@ export class KnowledgeService {
         })),
       });
 
+      // Mirror embeddings into the pgvector column so HNSW search can use
+      // the same rows. Only write when the embedder dimensions match the
+      // column type (1536); the mock 64-dim embedder uses Json-only path.
+      if (this.embedder.dimensions === 1536) {
+        try {
+          const newRows = await this.prisma.knowledgeChunk.findMany({
+            where: { sourceId },
+            select: { id: true, chunkIndex: true },
+            orderBy: { chunkIndex: 'asc' },
+          });
+          for (const row of newRows) {
+            const vec = embeddings[row.chunkIndex];
+            if (!vec) continue;
+            const literal = `[${vec.join(',')}]`;
+            await this.prisma.$executeRaw`
+              UPDATE knowledge_chunks
+              SET embedding_vector = ${literal}::vector
+              WHERE id = ${row.id}::uuid
+            `;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `pgvector backfill failed (${(err as Error).message}); rows will use Json-only fallback.`,
+          );
+        }
+      }
+
       await this.prisma.knowledgeSource.update({
         where: { id: sourceId },
         data: { status: 'ready' },
@@ -386,6 +508,52 @@ export class KnowledgeService {
         },
       });
       throw new KnowledgeIngestFailedError((err as Error).message, { sourceId });
+    }
+  }
+
+  /**
+   * Fetch a URL and extract human-readable text. Uses cheerio to strip script
+   * / style / nav noise. Hard-caps fetched body at ~5MB; aborts after 10s.
+   */
+  private async fetchAndExtractUrl(rawUrl: string): Promise<string> {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`Unsupported URL protocol: ${url.protocol}`);
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'user-agent': 'VoiceForge-KnowledgeBot/1.0 (+https://voiceforge.ai)',
+          accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5',
+        },
+        signal: controller.signal,
+        redirect: 'follow',
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      const contentType = res.headers.get('content-type') ?? '';
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength > 5 * 1024 * 1024) {
+        throw new Error('Response exceeds 5MB cap');
+      }
+      const body = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+
+      if (contentType.includes('text/html') || /^\s*</.test(body)) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const cheerio = require('cheerio') as typeof import('cheerio');
+        const $ = cheerio.load(body);
+        $('script, style, noscript, iframe, nav, footer, header, aside').remove();
+        const main = $('main, article').first();
+        const text = (main.length ? main.text() : $('body').text()).replace(/\s+/g, ' ').trim();
+        return text;
+      }
+      return body.replace(/\s+/g, ' ').trim();
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

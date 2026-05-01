@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { MockAgentGeneratorService } from '../agents/mock-generator.service';
 import { env } from '../config/env';
+import { AnthropicLlmAdapter } from './adapters/anthropic.adapter';
 import { GithubModelsLlmAdapter } from './adapters/github-models.adapter';
 import { MockLlmAdapter } from './adapters/mock-llm.adapter';
 import { OpenAiLlmAdapter } from './adapters/openai.adapter';
@@ -13,19 +14,23 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
     MockLlmAdapter,
     GithubModelsLlmAdapter,
     OpenAiLlmAdapter,
+    AnthropicLlmAdapter,
     {
       provide: LLM_PROVIDER_TOKEN,
-      inject: [MockLlmAdapter, GithubModelsLlmAdapter, OpenAiLlmAdapter],
+      inject: [MockLlmAdapter, GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter],
       useFactory: (
         mock: MockLlmAdapter,
         github: GithubModelsLlmAdapter,
         openai: OpenAiLlmAdapter,
+        anthropic: AnthropicLlmAdapter,
       ): LlmAgentGenerator => {
         switch (env.LLM_PROVIDER) {
           case 'github':
             return github;
           case 'openai':
             return openai;
+          case 'anthropic':
+            return anthropic;
           case 'mock':
           default:
             return mock;

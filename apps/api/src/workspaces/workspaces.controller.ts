@@ -33,6 +33,12 @@ export class WorkspacesController {
   }
 
   @UseGuards(WorkspaceGuard)
+  @Get(':workspaceId/members')
+  async listMembers(@Param('workspaceId') workspaceId: string) {
+    return { items: await this.service.listMembers(workspaceId) };
+  }
+
+  @UseGuards(WorkspaceGuard)
   @Patch(':workspaceId')
   async update(
     @Param('workspaceId') workspaceId: string,

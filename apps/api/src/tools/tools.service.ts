@@ -19,6 +19,7 @@ import {
   ToolNotFoundError,
 } from '../common/errors';
 import { PrismaService } from '../prisma/prisma.service';
+import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
 import { validateToolInput } from './input-validator';
 import { WebhookExecutor } from './webhook-executor';
 
@@ -28,6 +29,7 @@ export class ToolsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly executor: WebhookExecutor,
+    private readonly calendar: GoogleCalendarExecutor,
   ) {}
 
   async list(workspaceId: string, agentId?: string | null): Promise<ToolSummary[]> {
@@ -178,7 +180,7 @@ export class ToolsService {
       },
     });
 
-    const executableTypes: ToolType[] = ['webhook', 'http_post', 'http_get'];
+    const executableTypes: ToolType[] = ['webhook', 'http_post', 'http_get', 'google_calendar'];
     if (!executableTypes.includes(tool.toolType as ToolType)) {
       const errorMessage = `Tool type ${tool.toolType} is not yet executable.`;
       const failed = await this.prisma.toolInvocation.update({
@@ -194,10 +196,16 @@ export class ToolsService {
     }
 
     try {
-      const result = await this.executor.execute(
-        tool.config as unknown as WebhookConfig,
-        dto.arguments,
-      );
+      const result =
+        tool.toolType === 'google_calendar'
+          ? await this.calendar.execute(
+              tool.config as unknown as import('./executors/google-calendar.executor').GoogleCalendarConfig,
+              dto.arguments as unknown as import('./executors/google-calendar.executor').GoogleCalendarOperationInput,
+            )
+          : await this.executor.execute(
+              tool.config as unknown as WebhookConfig,
+              dto.arguments,
+            );
       const status = result.status >= 200 && result.status < 300 ? 'success' : 'failed';
       const updated = await this.prisma.toolInvocation.update({
         where: { id: invocation.id },

@@ -715,11 +715,32 @@ export const OPT_OUT_PHRASES = [
 ];
 
 /**
- * Strip surface formatting so `(415) 555-1212` and `+1 415 555 1212` collide.
- * We do NOT do full E.164 normalization here; that's a future enhancement.
+ * Normalize a phone number to E.164 (e.g. `+14155551212`). Falls back to a
+ * digit-only representation when the input cannot be parsed (unknown country
+ * code, extension noise, etc.) so existing rows still match.
  */
-export function normalizePhone(input: string): string {
+export function normalizePhone(input: string, defaultCountry?: string): string {
+  if (!input) return '';
+  try {
+    // libphonenumber-js is small (~140KB) and ships full E.164 support.
+    // Lazy-require so unit tests that don't exercise compliance still load.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const lib = require('libphonenumber-js') as typeof import('libphonenumber-js');
+    const country = (defaultCountry ?? envDefaultCountry()) as
+      | import('libphonenumber-js').CountryCode
+      | undefined;
+    const parsed = lib.parsePhoneNumberFromString(input, country);
+    if (parsed && parsed.isValid()) return parsed.number; // E.164 string
+  } catch {
+    // fall through to digit-only fallback
+  }
   return input.replace(/[^+0-9]/g, '');
+}
+
+function envDefaultCountry(): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const e = require('../config/env').env as { DEFAULT_COUNTRY?: string };
+  return e.DEFAULT_COUNTRY ?? 'US';
 }
 
 /**
