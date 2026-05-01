@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { MockAgentGeneratorService } from '../agents/mock-generator.service';
 import { env } from '../config/env';
+import { AnthropicLlmAdapter } from './adapters/anthropic.adapter';
 import { AzureAiFoundryAdapter } from './adapters/azure-aifoundry.adapter';
 import { GithubModelsLlmAdapter } from './adapters/github-models.adapter';
 import { MockLlmAdapter } from './adapters/mock-llm.adapter';
@@ -16,14 +17,16 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
     MockLlmAdapter,
     GithubModelsLlmAdapter,
     OpenAiLlmAdapter,
+    AnthropicLlmAdapter,
     AzureAiFoundryAdapter,
     {
       provide: LLM_PROVIDER_TOKEN,
-      inject: [MockLlmAdapter, GithubModelsLlmAdapter, OpenAiLlmAdapter, AzureAiFoundryAdapter],
+      inject: [MockLlmAdapter, GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter, AzureAiFoundryAdapter],
       useFactory: (
         mock: MockLlmAdapter,
         github: GithubModelsLlmAdapter,
         openai: OpenAiLlmAdapter,
+        anthropic: AnthropicLlmAdapter,
         azure: AzureAiFoundryAdapter,
       ): LlmAgentGenerator => {
         switch (env.LLM_PROVIDER) {
@@ -31,6 +34,8 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
             return github;
           case 'openai':
             return openai;
+          case 'anthropic':
+            return anthropic;
           case 'azure-aifoundry':
             return azure;
           case 'mock':
