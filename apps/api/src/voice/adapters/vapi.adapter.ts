@@ -13,6 +13,7 @@ import type {
   RecordingResult,
   StartOutboundCallInput,
   StartOutboundCallResult,
+  TranscriptResult,
   TransferCallInput,
   UpdateRuntimeAgentInput,
   VoiceRuntimeProvider,
@@ -67,71 +68,35 @@ async function vapiRequest<T>(
 // buildSystemPrompt
 // ---------------------------------------------------------------------------
 function buildSystemPrompt(spec: AgentSpec): string {
-  const lines: string[] = [];
-
-  // Identity
-  lines.push(`You are ${spec.identity.agent_name}, representing ${spec.identity.business_name}.`);
-  if (spec.identity.disclosure) {
-    lines.push(`You must disclose: ${spec.identity.disclosure}`);
-  }
-
-  // Language
-  lines.push(`Speak in ${spec.language}.`);
-
-  // Goals
-  if (spec.goals.length > 0) {
-    lines.push('Your goals:');
-    spec.goals.forEach((g, i) => lines.push(`  ${i + 1}. ${g}`));
-  }
-
-  // Required fields
-  if (spec.required_fields.length > 0) {
-    lines.push('Collect these fields during the conversation:');
-    spec.required_fields.forEach((f) => {
-      const req = f.required ? ' (required)' : ' (optional)';
-      const desc = f.description ? ` — ${f.description}` : '';
-      lines.push(`  - ${f.key}${req}${desc}`);
-    });
-  }
-
-  // Conversation rules
-  const rules = spec.conversation_rules;
-  const ruleLines: string[] = [];
-  if (rules.ask_one_question_at_a_time) ruleLines.push('- Ask one question at a time');
-  if (rules.confirm_critical_information)
-    ruleLines.push('- Confirm critical information before proceeding');
-  if (rules.do_not_make_up_answers)
-    ruleLines.push('- Do not make up answers — say you do not know instead');
-  if (rules.fallback_to_human_when_unsure) ruleLines.push('- Fall back to a human when unsure');
-  if (ruleLines.length > 0) {
-    lines.push('Conversation rules:');
-    lines.push(...ruleLines);
-  }
-
-  // Tools
-  if (spec.tools.length > 0) {
-    lines.push('Available tools:');
-    spec.tools.forEach((t) => {
-      lines.push(`  - ${t.name}: ${t.description}`);
-    });
-  }
-
-  // Compliance
-  if (spec.compliance.ai_disclosure_required) {
-    lines.push('You must identify yourself as an AI when asked.');
-  }
-  if (spec.compliance.recording_notice_required) {
-    lines.push('Inform the caller that the call may be recorded.');
-  }
-
-  // Handoff
-  if (spec.handoff.enabled && spec.handoff.target_phone) {
-    lines.push(
-      `Transfer the call to ${spec.handoff.target_phone} if the caller requests a human agent.`,
+  const parts: string[] = [];
+  parts.push(`You are ${spec.identity.agent_name}, a voice agent for ${spec.identity.business_name}.`);
+  if (spec.identity.disclosure) parts.push(`Disclosure: ${spec.identity.disclosure}`);
+  parts.push(`Tone: ${spec.voice.tone}.`);
+  parts.push(`Goals: ${spec.goals.join('; ')}.`);
+  if (spec.required_fields.length) {
+    parts.push(
+      `Required fields to capture: ${spec.required_fields.map((f) => `${f.key} (${f.type})`).join(', ')}.`,
     );
   }
-
-  return lines.join('\n');
+  const rules = spec.conversation_rules;
+  const ruleLines: string[] = [];
+  if (rules.ask_one_question_at_a_time) ruleLines.push('Ask one question at a time.');
+  if (rules.confirm_critical_information) ruleLines.push('Confirm critical information.');
+  if (rules.do_not_make_up_answers) ruleLines.push('Do not make up answers.');
+  if (rules.fallback_to_human_when_unsure) ruleLines.push('Hand off to human when unsure.');
+  if (ruleLines.length) parts.push(`Rules: ${ruleLines.join(' ')}`);
+  if (spec.compliance.ai_disclosure_required) {
+    parts.push('You MUST disclose that you are an AI assistant at the start of the call.');
+  }
+  if (spec.compliance.recording_notice_required) {
+    parts.push('You MUST tell the caller this call is being recorded.');
+  }
+  if (spec.compliance.opt_out_enabled) {
+    parts.push(
+      'If the caller asks to stop, opt out, do not call, or remove from list, acknowledge and end the call politely.',
+    );
+  }
+  return parts.join('\n');
 }
 
 /** Map Vapi speaker role to our canonical role. */
