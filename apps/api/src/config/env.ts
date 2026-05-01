@@ -17,7 +17,7 @@ const EnvSchema = z.object({
 
   AUTH_PROVIDER: z.enum(['mock', 'clerk']).default('mock'),
   VOICE_PROVIDER: z.enum(['mock', 'vapi', 'retell']).default('mock'),
-  LLM_PROVIDER: z.enum(['mock', 'github', 'openai', 'anthropic']).default('mock'),
+  LLM_PROVIDER: z.enum(['mock', 'github', 'openai', 'anthropic', 'azure-aifoundry']).default('mock'),
   EMBEDDING_PROVIDER: z.enum(['mock', 'openai']).default('mock'),
 
   CLERK_SECRET_KEY: z.string().optional(),
@@ -28,6 +28,8 @@ const EnvSchema = z.object({
   LLM_MODEL: z.string().optional(),
   LLM_BASE_URL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
+  LLM_API_KEY: z.string().optional(),
+  LLM_API_VERSION: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
 
   JWT_SECRET: z.string().default('change-me-in-development'),
@@ -41,6 +43,8 @@ const EnvSchema = z.object({
   STRIPE_STARTER_PRICE_ID: z.string().optional(),
   STRIPE_GROWTH_PRICE_ID: z.string().optional(),
   STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
+
+  LLM_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
