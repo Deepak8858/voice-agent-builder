@@ -22,16 +22,16 @@ function makeSpec(overrides: Partial<CreateRuntimeAgentInput['spec']> = {}): Cre
     industry: 'dental',
     agent_type: 'inbound_receptionist',
     language: 'en',
-    voice: { provider: 'vapi', voice_id: 'female-1', tone: 'friendly' },
+    voice: { voice_id: 'female-1', tone: 'friendly' },
     identity: { business_name: 'Test Corp', agent_name: 'Alice', disclosure: 'Hi, I am Alice' },
     goals: ['answer calls', 'book appointments'],
     required_fields: [],
-    conversation_rules: { first_message: 'Hello' },
-    knowledge: {},
+    conversation_rules: { ask_one_question_at_a_time: true, confirm_critical_information: true, do_not_make_up_answers: true, fallback_to_human_when_unsure: true },
+    knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
     tools: [{ name: 'google_calendar.book_slot', description: 'Book slot', requires_confirmation: true, input_schema: { type: 'object', properties: {}, required: [] } }],
     handoff: { enabled: true, conditions: ['caller_requests_human'] },
-    compliance: { opt_out_enabled: true },
-    analytics: {},
+    compliance: { ai_disclosure_required: true, recording_notice_required: false, opt_out_enabled: true, consent_required_for_outbound: true },
+    analytics: { success_events: [] },
     ...overrides,
   };
 }
@@ -162,12 +162,12 @@ describe('VapiVoiceAdapter', () => {
 
       const result = await adapter.getTranscript({ callId: 'call-abc' });
 
-      expect(result.turns[0].speaker).toBe('agent');
-      expect(result.turns[0].text).toBe('Hello there');
-      expect(result.turns[0].at_ms).toBe(400);
-      expect(result.turns[1].speaker).toBe('caller');
-      expect(result.turns[1].text).toBe('Hi');
-      expect(result.turns[1].at_ms).toBe;
+      expect(result.turns[0]!.speaker).toBe('agent');
+      expect(result.turns[0]!.text).toBe('Hello there');
+      expect(result.turns[0]!.at_ms).toBe(400);
+      expect(result.turns[1]!.speaker).toBe('caller');
+      expect(result.turns[1]!.text).toBe('Hi');
+      expect(result.turns[1]!.at_ms).toBe(1800);
     });
 
     it('returns transcript string in role: text format', async () => {

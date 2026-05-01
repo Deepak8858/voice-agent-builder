@@ -25,6 +25,10 @@ function makeService(opts: {
   const evals = vi.fn(async () => null);
 
   const prisma = {
+    organizationIdFor: vi.fn(async () => 'org-1'),
+    workspace: {
+      findUniqueOrThrow: vi.fn(async () => ({ organizationId: 'org-1' })),
+    },
     call: {
       findFirst: vi.fn(async () => opts.callByProviderCallId ?? null),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {

@@ -18,7 +18,7 @@ const SESSION_WORKSPACE_TTL = 300; // 5 minutes
  * rows so Clerk is the system of record for identity and we remain the system
  * of record for tenancy + agents.
  *
- * Sign-up and sign-in are NOT handled here \u2014 Clerk's hosted UI owns those.
+ * Sign-up and sign-in are NOT handled here — Clerk's hosted UI owns those.
  * The auth controller's POST /signup / /login endpoints are disabled under
  * Clerk auth; the frontend uses Clerk UI exclusively.
  */
@@ -38,7 +38,7 @@ export class ClerkAuthService extends AuthService {
     if (!this.client) {
       this.logger.warn(
         'CLERK_SECRET_KEY is not set. ClerkAuthService will reject every request. ' +
-          'Set AUTH_PROVIDER=mock or provide Clerk keys.',
+          'Provide Clerk keys.',
       );
     }
   }
@@ -56,14 +56,21 @@ export class ClerkAuthService extends AuthService {
   }
 
   async logout(req: Request, _res: Response): Promise<void> {
-    // Clerk handles sign-out in the frontend; nothing to do server-side.
-    // Invalidate cached session data.
-    const userId = req.headers['x-user-id'] as string | undefined;
-    if (userId) {
-      await Promise.all([
-        this.cache.del(`session:user:${userId}`),
-        this.cache.del(`session:workspace:user:${userId}`),
-      ]);
+    // Re-verify the token to extract the Clerk user ID for cache invalidation.
+    const token = this.extractBearerToken(req);
+    if (token && env.CLERK_SECRET_KEY) {
+      try {
+        const claims = await verifyToken(token, { secretKey: env.CLERK_SECRET_KEY });
+        const clerkUserId = claims.sub;
+        if (clerkUserId) {
+          await Promise.all([
+            this.cache.del(`session:user:${clerkUserId}`),
+            this.cache.del(`session:workspace:user:${clerkUserId}`),
+          ]);
+        }
+      } catch {
+        // Token already expired or invalid — nothing to invalidate.
+      }
     }
   }
 
@@ -92,15 +99,21 @@ export class ClerkAuthService extends AuthService {
     }
     req.res?.setHeader('X-Cache-Hit', 'false');
 
-    const sessionUser = await this.buildSessionUser(clerkUserId, claims.org_id ?? null);
-    if (sessionUser) {
-      await this.cache.set(userKey, sessionUser, SESSION_USER_TTL);
+    try {
+      const sessionUser = await this.buildSessionUser(clerkUserId, claims.org_id ?? null);
+      if (sessionUser) {
+        await this.cache.set(userKey, sessionUser, SESSION_USER_TTL);
+      }
+      return sessionUser;
+    } catch (err) {
+      this.logger.warn(`[clerk] session build failed: ${(err as Error).message}`);
+      return null;
     }
-    return sessionUser;
   }
 
   private async buildSessionUser(clerkUserId: string, clerkOrgId: string | null): Promise<SessionUser | null> {
-    const externalAuthId = `clerk:${clerkUserId}`;
+    // Use raw Clerk ID consistently (webhooks also use raw ID)
+    const externalAuthId = clerkUserId;
     const existing = await this.prisma.user.findUnique({ where: { externalAuthId } });
     const user = existing ?? (await this.provisionUser(externalAuthId, clerkUserId, clerkOrgId));
 
@@ -113,7 +126,7 @@ export class ClerkAuthService extends AuthService {
       ? await this.prisma.membership.findFirst({
           where: {
             userId: user.id,
-            workspace: { organization: { slug: this.orgSlug(clerkOrgId) } },
+            workspace: { organization: { clerkOrgId } },
           },
           include: { workspace: true },
           orderBy: { createdAt: 'asc' },
@@ -167,7 +180,9 @@ export class ClerkAuthService extends AuthService {
   }
 
   private async provisionOrgWorkspace(userId: string, clerkOrgId: string | null) {
-    const orgSlug = clerkOrgId ? this.orgSlug(clerkOrgId) : `personal-${userId.slice(0, 8)}`;
+    const orgSlug = clerkOrgId
+      ? this.orgSlug(clerkOrgId)
+      : `personal-${userId.slice(0, 8)}`;
     const orgName = await this.resolveOrgName(clerkOrgId, orgSlug);
 
     const organization = await this.prisma.organization.upsert({

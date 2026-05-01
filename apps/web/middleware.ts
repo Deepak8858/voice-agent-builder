@@ -1,8 +1,15 @@
-import { clerkMiddleware } from '@clerk/nextjs/server';
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export default clerkMiddleware((auth, req: NextRequest) => {
+const isPublicRoute = createRouteMatcher([
+  '/',
+  '/sign-in(.*)',
+  '/sign-up(.*)',
+  '/api/webhooks/(.*)',
+]);
+
+export default clerkMiddleware(async (auth, req: NextRequest) => {
   // Allow public assets, Next.js internals, and API routes to pass through
   const pathname = req.nextUrl.pathname;
   if (
@@ -12,6 +19,11 @@ export default clerkMiddleware((auth, req: NextRequest) => {
   ) {
     return NextResponse.next();
   }
+
+  if (!isPublicRoute(req)) {
+    await auth.protect();
+  }
+
   return NextResponse.next();
 });
 

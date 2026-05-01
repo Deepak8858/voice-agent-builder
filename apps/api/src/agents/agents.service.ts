@@ -99,10 +99,13 @@ export class AgentsService {
       initialSpec = parsed.data;
     }
 
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+
     const { agent, firstVersion } = await this.prisma.$transaction(async (tx) => {
       const agent = await tx.agent.create({
         data: {
           workspaceId,
+          organizationId,
           name: dto.name,
           description: dto.description,
           industry: dto.industry,
@@ -115,6 +118,7 @@ export class AgentsService {
         firstVersion = await tx.agentVersion.create({
           data: {
             agentId: agent.id,
+            organizationId,
             versionNumber: 1,
             specJson: initialSpec as unknown as object,
             createdBy: actorUserId,
@@ -190,9 +194,12 @@ export class AgentsService {
     });
     const nextNumber = (last?.versionNumber ?? 0) + 1;
 
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+
     const created = await this.prisma.agentVersion.create({
       data: {
         agentId,
+        organizationId,
         versionNumber: nextNumber,
         specJson: parsed.data as unknown as object,
         note: dto.note,

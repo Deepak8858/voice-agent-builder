@@ -79,6 +79,7 @@ export class EvaluationsService {
       create: {
         callId: call.id,
         workspaceId: call.workspaceId,
+        organizationId: call.organizationId,
         agentId: call.agentId,
         agentVersionId: call.agentVersionId,
         overallScore: overall,

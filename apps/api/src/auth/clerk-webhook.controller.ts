@@ -11,6 +11,7 @@ import {
 import type { Request } from 'express';
 import { Webhook } from 'svix';
 import { AuditService } from '../audit/audit.service';
+import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -49,6 +50,7 @@ export class ClerkWebhookController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly cache: CacheService,
   ) {}
 
   @Post()
@@ -156,12 +158,20 @@ export class ClerkWebhookController {
       create: { externalAuthId, email, name },
       update: { email, name },
     });
+
+    // Invalidate cached user data
+    await this.cache.del(`session:user:${externalAuthId}`);
   }
 
   private async deleteUser(data: { id: string }): Promise<void> {
     const user = await this.prisma.user.findUnique({ where: { externalAuthId: data.id } });
     if (!user) return;
-    await this.prisma.user.delete({ where: { id: user.id } });
+    // Soft delete: mark inactive rather than hard delete to avoid FK cascades
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { email: `deleted-${user.id}@voiceforge.local`, name: 'Deleted User', externalAuthId: null },
+    });
+    await this.cache.del(`session:user:${data.id}`);
   }
 
   private async upsertOrg(data: ClerkOrgData): Promise<void> {
@@ -173,7 +183,7 @@ export class ClerkWebhookController {
         slug,
         name: data.name ?? slug,
         clerkOrgId: data.id,
-        ownerUserId: '', // Will be updated via membership webhook
+        ownerUserId: '00000000-0000-0000-0000-000000000000', // Placeholder; updated via membership webhook
       },
       update: { name: data.name ?? slug, clerkOrgId: data.id },
     });
@@ -185,7 +195,11 @@ export class ClerkWebhookController {
       this.logger.debug(`Clerk org delete received for ${data.id}; no matching record, skipping.`);
       return;
     }
-    await this.prisma.organization.delete({ where: { id: org.id } });
+    // Soft delete to preserve workspace/agent history
+    await this.prisma.organization.update({
+      where: { id: org.id },
+      data: { status: 'archived', name: `Deleted - ${org.name}` },
+    });
   }
 
   private async upsertMembership(data: ClerkOrgMembershipData): Promise<void> {
@@ -203,14 +217,45 @@ export class ClerkWebhookController {
     });
     if (!workspace) return;
 
+    const cleanRole = (data.role ?? 'member').replace('org:', '');
+
     await this.prisma.membership.upsert({
       where: { userId_workspaceId: { userId: user.id, workspaceId: workspace.id } },
       create: {
         userId: user.id,
         workspaceId: workspace.id,
-        role: (data.role ?? 'member').replace('org:', ''),
+        role: cleanRole,
       },
-      update: { role: (data.role ?? 'member').replace('org:', '') },
+      update: { role: cleanRole },
     });
+
+    // Sync AppOrgMembership for fast RLS joins and role caching
+    await this.prisma.appOrgMembership.upsert({
+      where: { organizationId_userId: { organizationId: org.id, userId: user.id } },
+      create: {
+        organizationId: org.id,
+        userId: user.id,
+        clerkUserId: externalAuthId,
+        clerkOrgId: data.organization.id,
+        role: cleanRole,
+      },
+      update: {
+        clerkUserId: externalAuthId,
+        clerkOrgId: data.organization.id,
+        role: cleanRole,
+      },
+    });
+
+    // If this membership belongs to the owner of the Clerk org, update organization.ownerUserId
+    if (cleanRole === 'admin' || cleanRole === 'owner') {
+      await this.prisma.organization.updateMany({
+        where: { id: org.id, ownerUserId: '00000000-0000-0000-0000-000000000000' },
+        data: { ownerUserId: user.id },
+      });
+    }
+
+    // Invalidate cached workspace data for this user
+    await this.cache.del(`session:user:${externalAuthId}`);
+    await this.cache.del(`session:workspace:user:${externalAuthId}`);
   }
 }

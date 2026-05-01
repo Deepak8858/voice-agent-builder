@@ -64,6 +64,7 @@ export class ToolsService {
     const row = await this.prisma.integrationTool.create({
       data: {
         workspaceId,
+        organizationId: await this.prisma.organizationIdFor(workspaceId),
         agentId: dto.agent_id ?? null,
         name: dto.name,
         description: dto.description,
@@ -170,6 +171,7 @@ export class ToolsService {
     const invocation = await this.prisma.toolInvocation.create({
       data: {
         workspaceId,
+        organizationId: await this.prisma.organizationIdFor(workspaceId),
         toolId: tool.id,
         agentId: dto.agent_id ?? tool.agentId,
         callId: dto.call_id ?? null,

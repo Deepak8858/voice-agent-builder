@@ -44,6 +44,7 @@ export const AgentConversationRulesSchema = z.object({
   confirm_critical_information: z.boolean().default(true),
   do_not_make_up_answers: z.boolean().default(true),
   fallback_to_human_when_unsure: z.boolean().default(true),
+  first_message: z.string().optional(),
 });
 
 export const AgentKnowledgeConfigSchema = z.object({

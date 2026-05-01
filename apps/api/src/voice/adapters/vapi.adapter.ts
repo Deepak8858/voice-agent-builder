@@ -14,6 +14,7 @@ import type {
   StartOutboundCallInput,
   StartOutboundCallResult,
   TransferCallInput,
+  TranscriptResult,
   UpdateRuntimeAgentInput,
   VoiceRuntimeProvider,
 } from './voice.provider.interface';

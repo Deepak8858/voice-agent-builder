@@ -91,6 +91,7 @@ export class ComplianceService {
       : await this.prisma.contact.create({
           data: {
             workspaceId,
+            organizationId: await this.prisma.organizationIdFor(workspaceId),
             phone,
             email: dto.email ?? null,
             fullName: dto.full_name ?? null,
@@ -194,6 +195,7 @@ export class ComplianceService {
     await this.prisma.consentRecord.create({
       data: {
         workspaceId,
+        organizationId: await this.prisma.organizationIdFor(workspaceId),
         contactId,
         consentType: dto.consent_type,
         source: dto.source ?? 'api',
@@ -271,6 +273,7 @@ export class ComplianceService {
       where: { workspaceId_phone: { workspaceId, phone } },
       create: {
         workspaceId,
+        organizationId: await this.prisma.organizationIdFor(workspaceId),
         phone,
         source: dto.source ?? 'manual',
         reason: dto.reason ?? null,
@@ -478,9 +481,12 @@ export class ComplianceService {
     const blockingReasons = reasons.filter((r) => r.severity === 'blocking');
     const status: ComplianceStatus = blockingReasons.length === 0 ? 'passed' : 'blocked';
 
+    const organizationId = await this.prisma.organizationIdFor(args.workspaceId);
+
     const row = await this.prisma.complianceCheck.create({
       data: {
         workspaceId: args.workspaceId,
+        organizationId,
         agentId: args.agentId,
         contactId,
         callId: args.callId ?? null,
@@ -556,7 +562,7 @@ export class ComplianceService {
         const contact =
           existing ??
           (await this.prisma.contact.create({
-            data: { workspaceId: args.workspaceId, phone },
+            data: { workspaceId: args.workspaceId, organizationId: await this.prisma.organizationIdFor(args.workspaceId), phone },
           }));
         contactId = contact.id;
       }
@@ -580,6 +586,7 @@ export class ComplianceService {
           where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
           create: {
             workspaceId: args.workspaceId,
+            organizationId: await this.prisma.organizationIdFor(args.workspaceId),
             phone,
             source: 'request',
             reason: `auto: caller said "${phrase}"`,

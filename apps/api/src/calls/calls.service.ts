@@ -55,9 +55,15 @@ export class CallsService {
 
     const transcript = await this.voice.getTranscript({ callId: session.test_session_id });
 
+    const ws = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
+        organizationId: ws.organizationId,
         agentId: agent.id,
         agentVersionId: version.id,
         direction: 'browser_test',
@@ -160,6 +166,7 @@ export class CallsService {
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
+        organizationId: ws.organizationId,
         agentId: agent.id,
         agentVersionId: version.id,
         contactId: checkResult.contact_id,
@@ -318,9 +325,15 @@ export class CallsService {
       });
       if (!version) return;
 
+      const ws = await this.prisma.workspace.findUniqueOrThrow({
+        where: { id: version.agent.workspaceId },
+        select: { organizationId: true },
+      });
+
       call = await this.prisma.call.create({
         data: {
           workspaceId: version.agent.workspaceId,
+          organizationId: ws.organizationId,
           agentId: version.agentId,
           agentVersionId: version.id,
           direction: 'inbound',
@@ -342,6 +355,7 @@ export class CallsService {
       data: {
         callId: call.id,
         workspaceId: call.workspaceId,
+        organizationId: call.organizationId,
         eventType: payload.event_type,
         payload: (payload.data as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },

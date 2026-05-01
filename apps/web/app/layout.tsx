@@ -3,7 +3,8 @@ import { Geist, Geist_Mono } from 'next/font/google';
 import Link from 'next/link';
 import {
   ClerkProvider,
-  Show,
+  SignedIn,
+  SignedOut,
   SignInButton,
   SignUpButton,
   UserButton,
@@ -35,11 +36,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <span>VoiceForge AI</span>
             </Link>
             <nav className="flex items-center gap-3 text-sm">
-              <Show when="signed-out">
+              <SignedOut>
                 <SignInButton mode="modal"><button className="rounded-md px-3 py-1.5 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900">Sign in</button></SignInButton>
                 <SignUpButton mode="modal"><button className="rounded-md bg-zinc-900 px-3 py-1.5 font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200">Sign up</button></SignUpButton>
-              </Show>
-              <Show when="signed-in">
+              </SignedOut>
+              <SignedIn>
                 <Link
                   href="/dashboard"
                   className="rounded-md px-3 py-1.5 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
@@ -47,7 +48,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   Dashboard
                 </Link>
                 <UserButton />
-              </Show>
+              </SignedIn>
             </nav>
           </header>
           <QueryProvider>
