@@ -16,14 +16,14 @@ import { AzureAiFoundryAdapter } from './azure-aifoundry.adapter';
 import { LlmCacheService } from '../llm-cache.service';
 import type { GenerateAgentDto, GenerateAgentResult } from '@voiceforge/shared';
 
-function makeValidSpec(overrides: Partial<import('@voiceforge/shared').AgentSpec> = {}) {
+function makeValidSpec(overrides: Partial<import('@voiceforge/shared').AgentSpec> = {}): import('@voiceforge/shared').AgentSpec {
   return {
     schema_version: '1.0' as const,
     name: 'Test Agent',
     industry: 'healthcare',
     agent_type: 'inbound_receptionist' as const,
     language: 'en',
-    voice: { tone: 'professional' },
+    voice: { tone: 'professional', allow_interruptions: true },
     identity: { business_name: 'Test Corp', agent_name: 'Alice' },
     goals: ['Greet caller', 'Collect info'],
     required_fields: [],
@@ -33,7 +33,7 @@ function makeValidSpec(overrides: Partial<import('@voiceforge/shared').AgentSpec
       do_not_make_up_answers: true,
       fallback_to_human_when_unsure: true,
     },
-    knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
+    knowledge: { retrieval_mode: 'agent_scoped' as const, max_chunks: 5, source_ids: [] as string[] },
     tools: [],
     handoff: { enabled: false, conditions: [] },
     compliance: {

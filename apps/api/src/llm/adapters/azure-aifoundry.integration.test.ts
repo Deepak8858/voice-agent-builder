@@ -23,7 +23,7 @@ function makeValidSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
     industry: 'healthcare',
     agent_type: 'inbound_receptionist' as const,
     language: 'en',
-    voice: { tone: 'professional' },
+    voice: { tone: 'professional', allow_interruptions: true },
     identity: { business_name: 'Test Corp', agent_name: 'Alice' },
     goals: ['Greet caller', 'Collect info'],
     required_fields: [],
@@ -93,7 +93,7 @@ async function buildAdapter(opts: {
     async del(key: string): Promise<void> {
       inMemoryCacheStore.delete(key);
     },
-  } as unknown as CacheService);
+  } as unknown as import('../../cache/cache.service').CacheService);
 
   return { adapter: new AzureAiFoundryAdapter(cacheService), cacheService };
 }
@@ -224,7 +224,7 @@ describe('AzureAiFoundryAdapter (missing API key)', () => {
       async del(key: string): Promise<void> {
         innerCache.delete(key);
       },
-    } as unknown as CacheService);
+    } as unknown as import('../../cache/cache.service').CacheService);
 
     const adapter = new AzureAiFoundryAdapter(cacheService);
 

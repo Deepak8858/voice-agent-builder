@@ -302,18 +302,14 @@ export class KnowledgeService {
 
     const chunks = await this.prisma.knowledgeChunk.findMany({
       where,
-      include: {
-        source: {
-          select: { id: true, title: true, sourceType: true, agentId: true },
-        },
-      },
+      include: { source: true },
     });
     if (chunks.length === 0) return [];
 
     const [queryVec] = await this.embedder.embed([trimmed]);
     const scored = chunks
       .map((c) => {
-        const emb = this.coerceVec(c.embedding);
+        const emb = this.coerceVec((c as unknown as Record<string, Prisma.JsonValue | null>).embedding);
         if (!emb) return null;
         return {
           chunk: c,

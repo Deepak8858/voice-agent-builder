@@ -22,7 +22,7 @@ function makeSpec(overrides: Partial<CreateRuntimeAgentInput['spec']> = {}): Cre
     industry: 'dental',
     agent_type: 'inbound_receptionist',
     language: 'en',
-    voice: { voice_id: 'female-1', tone: 'friendly' },
+    voice: { voice_id: 'female-1', tone: 'friendly', allow_interruptions: true },
     identity: { business_name: 'Test Corp', agent_name: 'Alice', disclosure: 'Hi, I am Alice' },
     goals: ['answer calls', 'book appointments'],
     required_fields: [],
@@ -70,8 +70,8 @@ describe('VapiVoiceAdapter', () => {
         spec: makeSpec(),
       });
 
-      const req = vi.mocked(globalThis.fetch).mock.calls[0];
-      const body = JSON.parse(req![1].body as string);
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
       expect(body.metadata.voiceforge_agent_id).toBe('ag-meta');
       expect(body.metadata.voiceforge_workspace_id).toBe('ws-meta');
       expect(body.metadata.voiceforge_agent_version_id).toBe('v-meta');
@@ -100,8 +100,8 @@ describe('VapiVoiceAdapter', () => {
 
       expect(result.provider_call_id).toBe('call-456');
       expect(result.status).toBe('queued');
-      const req = vi.mocked(globalThis.fetch).mock.calls[0];
-      const body = JSON.parse(req![1].body as string);
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
       expect(body.customer.number).toBe('+14155551234');
       expect(body.assistantId).toBe('vapi-asst-outbound');
     });
@@ -145,8 +145,8 @@ describe('VapiVoiceAdapter', () => {
       globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 
       await adapter.endCall({ callId: 'call-123', reason: 'user_requested' });
-      const req = vi.mocked(globalThis.fetch).mock.calls[0];
-      const body = JSON.parse(req![1].body as string);
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
       expect(body.reason).toBe('user_requested');
     });
   });
