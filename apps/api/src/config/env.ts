@@ -31,6 +31,7 @@ const EnvSchema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().optional(),
 
   JWT_SECRET: z.string().default('change-me-in-development'),
   ENCRYPTION_KEY: z.string().optional(),
