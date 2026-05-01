@@ -69,6 +69,15 @@ export class KnowledgeController {
     if (!file) {
       throw new KnowledgeFileInvalidError('No file provided. Use multipart field "file".');
     }
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || safeName.length > 255) {
+      throw new KnowledgeFileInvalidError('Invalid filename.');
+    }
+    // Validate mime type against allow-list
+    const allowedMimes = ['application/pdf', 'text/plain', 'text/csv', 'text/markdown', 'application/json'];
+    if (!allowedMimes.includes(file.mimetype)) {
+      throw new KnowledgeFileInvalidError(`Unsupported file type: ${file.mimetype}`);
+    }
     const form: KnowledgeUploadForm = KnowledgeUploadFormSchema.parse({
       title: rawBody.title,
       agent_id: rawBody.agent_id === '' ? null : rawBody.agent_id,
@@ -76,7 +85,7 @@ export class KnowledgeController {
     return this.knowledge.uploadFile(workspaceId, user.id, {
       buffer: file.buffer,
       mimeType: file.mimetype,
-      filename: file.originalname,
+      filename: safeName,
       title: form.title,
       agentId: form.agent_id ?? null,
     });

@@ -38,6 +38,7 @@ model User {
 
 model Organization {
   id            String   @id @default(uuid()) @db.Uuid
+  clerkOrgId    String?  @unique @map("clerk_org_id")
   name          String
   slug          String   @unique
   ownerUserId   String   @map("owner_user_id") @db.Uuid
@@ -52,6 +53,7 @@ model Organization {
   usageRecords UsageRecord[]
 
   @@index([ownerUserId])
+  @@index([clerkOrgId])
   @@map("organizations")
 }
 
@@ -247,7 +249,7 @@ model Call {
   contactId         String?  @map("contact_id") @db.Uuid
   direction         String   // inbound | outbound | browser_test
   status            String   @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
-  provider          String   @default("mock")
+  provider          String   @default("")
   providerCallId    String?  @map("provider_call_id")
   fromNumber        String?  @map("from_number")
   toNumber          String?  @map("to_number")
@@ -604,6 +606,21 @@ model StripeEvent {
   @@index([stripeEventId])
   @@index([type, created])
   @@map("stripe_events")
+}
+
+model WebhookEvent {
+  id              String    @id @default(uuid()) @db.Uuid
+  provider        String
+  providerEventId String    @map("provider_event_id")
+  eventType       String    @map("event_type")
+  payload         Json
+  processedAt     DateTime? @map("processed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([provider, providerEventId])
+  @@index([provider, eventType])
+  @@index([processedAt])
+  @@map("webhook_events")
 }
 
 model GoogleCalendarConfig {

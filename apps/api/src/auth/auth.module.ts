@@ -1,24 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
+import { ClerkWebhookController } from './clerk-webhook.controller';
 import { ClerkAuthService } from './clerk-auth.service';
-import { MockAuthService } from './mock-auth.service';
-import { env } from '../config/env';
 
 @Global()
 @Module({
-  controllers: [AuthController],
-  providers: [
-    MockAuthService,
-    ClerkAuthService,
-    {
-      provide: AuthService,
-      inject: [MockAuthService, ClerkAuthService],
-      useFactory: (mock: MockAuthService, clerk: ClerkAuthService): AuthService => {
-        return env.AUTH_PROVIDER === 'clerk' ? clerk : mock;
-      },
-    },
-  ],
-  exports: [AuthService],
+  controllers: [AuthController, ClerkWebhookController],
+  providers: [ClerkAuthService],
+  exports: [ClerkAuthService],
 })
 export class AuthModule {}

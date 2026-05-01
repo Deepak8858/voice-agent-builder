@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Injectable,
   Logger,
+  SetMetadata,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { CacheService } from '../cache/cache.service';
@@ -27,11 +28,7 @@ export const SKIP_RATE_LIMIT_KEY = Symbol('SKIP_RATE_LIMIT');
  * getHealth() { ... }
  * ```
  */
-export const SkipRateLimit = () => {
-  // Set a non-null value so getMetadata() returns truthy.
-  Reflect.defineMetadata(SKIP_RATE_LIMIT_KEY, true, {});
-  return () => {};
-};
+export const SkipRateLimit = () => SetMetadata(SKIP_RATE_LIMIT_KEY, true);
 
 @Injectable()
 export class RateLimitGuard implements CanActivate {

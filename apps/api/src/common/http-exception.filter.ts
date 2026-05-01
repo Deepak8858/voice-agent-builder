@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { logger } from '../logging';
+import { isProduction } from '../config/env';
 import type { ApiError, ApiErrorCode } from '@voiceforge/shared';
 
 /**
@@ -48,7 +49,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       logger.error({ err: exception, correlationId, method: req.method, url: req.url }, exception.message);
-      error.message = exception.message;
+      error.message = isProduction()
+        ? 'Unexpected server error.'
+        : exception.message;
     } else {
       logger.error({ correlationId, method: req.method, url: req.url }, 'Unhandled non-Error exception');
     }

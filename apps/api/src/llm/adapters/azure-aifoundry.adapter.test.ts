@@ -14,7 +14,6 @@ vi.mock('../../config/env', () => ({
 
 import { AzureAiFoundryAdapter } from './azure-aifoundry.adapter';
 import { LlmCacheService } from '../llm-cache.service';
-import { MockAgentGeneratorService } from '../../agents/mock-generator.service';
 import type { GenerateAgentDto, GenerateAgentResult } from '@voiceforge/shared';
 
 function makeValidSpec(overrides: Partial<import('@voiceforge/shared').AgentSpec> = {}) {
@@ -59,7 +58,6 @@ describe('AzureAiFoundryAdapter', () => {
   let originalFetch: typeof globalThis.fetch;
   let mockCache: Record<string, unknown>;
   let mockCacheService: LlmCacheService;
-  let mockGen: MockAgentGeneratorService;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
@@ -74,17 +72,12 @@ describe('AzureAiFoundryAdapter', () => {
       },
       async del(_key: string): Promise<void> {},
     } as import('../../cache/cache.service').CacheService);
-
-    mockGen = new MockAgentGeneratorService();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  // -------------------------------------------------------------------------
-  // Test 1: Cache hit — returns cached result without calling fetch
-  // -------------------------------------------------------------------------
   it('returns cached result without calling Azure API', async () => {
     const cachedResult: GenerateAgentResult = {
       spec: makeValidSpec({ name: 'Cached Agent' }),
@@ -104,16 +97,13 @@ describe('AzureAiFoundryAdapter', () => {
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as never;
 
-    const adapter = new AzureAiFoundryAdapter(mockGen, cacheServiceWithHit);
+    const adapter = new AzureAiFoundryAdapter(cacheServiceWithHit);
     const result = await adapter.generate(BASE_DTO);
 
     expect(result.suggested_name).toBe('Cached Agent');
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // Test 2: Cache miss + successful Azure response — calls API, caches result
-  // -------------------------------------------------------------------------
   it('calls Azure API on cache miss and caches the result', async () => {
     const validSpec = makeValidSpec({ name: 'Azure Agent' });
 
@@ -124,69 +114,47 @@ describe('AzureAiFoundryAdapter', () => {
     });
     globalThis.fetch = fetchMock;
 
-    const adapter = new AzureAiFoundryAdapter(mockGen, mockCacheService);
+    const adapter = new AzureAiFoundryAdapter(mockCacheService);
     const result = await adapter.generate(BASE_DTO);
 
-    // The adapter called Azure (not mock) — result is from API
     expect(result.suggested_name).toBe('Azure Agent');
     expect(result.rationale).toContain('Azure AI Foundry Kimi 2.6');
-
-    // API was called (the mock picks `ai-receptionist` for this prompt)
     expect(fetchMock).toHaveBeenCalled();
     expect(result.matched_template_slug).toBe('ai-receptionist');
 
-    // Result was cached
     const cacheKey = mockCacheService.buildKey(BASE_DTO);
     expect(mockCache[cacheKey]).toBeDefined();
     expect((mockCache[cacheKey] as GenerateAgentResult).suggested_name).toBe('Azure Agent');
   });
 
-  // -------------------------------------------------------------------------
-  // Test 3: HTTP 401 error — falls back to mock
-  // -------------------------------------------------------------------------
-  it('falls back to mock on HTTP 401 (auth error)', async () => {
+  it('throws on HTTP 401 (auth error)', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }),
     );
 
-    const adapter = new AzureAiFoundryAdapter(mockGen, mockCacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    const adapter = new AzureAiFoundryAdapter(mockCacheService);
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('Unauthorized');
   });
 
-  // -------------------------------------------------------------------------
-  // Test 4: Invalid JSON response — falls back to mock
-  // -------------------------------------------------------------------------
-  it('falls back to mock when model returns non-JSON response', async () => {
+  it('throws when model returns non-JSON response', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         choices: [{ message: { content: 'This is not JSON at all' } }],
       }), { status: 200 }),
     );
 
-    const adapter = new AzureAiFoundryAdapter(mockGen, mockCacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    const adapter = new AzureAiFoundryAdapter(mockCacheService);
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow();
   });
 
-  // -------------------------------------------------------------------------
-  // Test 5: Valid JSON but invalid schema — falls back to mock
-  // -------------------------------------------------------------------------
-  it('falls back to mock when model returns valid JSON but invalid AgentSpec', async () => {
+  it('throws when model returns valid JSON but invalid AgentSpec', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
       }), { status: 200 }),
     );
 
-    const adapter = new AzureAiFoundryAdapter(mockGen, mockCacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    const adapter = new AzureAiFoundryAdapter(mockCacheService);
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('invalid Agent Spec');
   });
 });

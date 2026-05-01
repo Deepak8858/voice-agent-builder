@@ -1,45 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { MockEmbeddingAdapter } from './embeddings/mock.embedding.adapter';
 import { FileParser } from './parsers/file-parser';
 import { cosineSim, splitIntoChunks } from './knowledge.service';
-
-describe('MockEmbeddingAdapter', () => {
-  const adapter = new MockEmbeddingAdapter();
-
-  it('returns fixed-dimension vectors for every input', async () => {
-    const vecs = await adapter.embed(['hello world', 'goodbye']);
-    expect(vecs).toHaveLength(2);
-    for (const v of vecs) expect(v).toHaveLength(adapter.dimensions);
-  });
-
-  it('is deterministic across calls', async () => {
-    const [a] = await adapter.embed(['Acme dental clinic books appointments']);
-    const [b] = await adapter.embed(['Acme dental clinic books appointments']);
-    expect(a).toEqual(b);
-  });
-
-  it('produces L2-normalized vectors', async () => {
-    const [v] = await adapter.embed(['the quick brown fox jumps over a lazy dog']);
-    const mag = Math.sqrt(v.reduce((acc, x) => acc + x * x, 0));
-    expect(mag).toBeCloseTo(1, 5);
-  });
-
-  it('ranks token-overlap higher than unrelated text via cosine similarity', async () => {
-    const [query, related, unrelated] = await adapter.embed([
-      'book a dental cleaning appointment',
-      'we schedule dental cleaning appointments for new patients',
-      'recipe for chocolate banana smoothie',
-    ]);
-    const rel = cosineSim(query, related);
-    const unr = cosineSim(query, unrelated);
-    expect(rel).toBeGreaterThan(unr);
-  });
-
-  it('handles empty input by returning a non-zero unit vector', async () => {
-    const [v] = await adapter.embed(['']);
-    expect(v.some((x) => x !== 0)).toBe(true);
-  });
-});
 
 describe('splitIntoChunks', () => {
   it('returns empty array for empty input', () => {

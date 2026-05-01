@@ -19,8 +19,8 @@ const SESSION_WORKSPACE_TTL = 300; // 5 minutes
  * of record for tenancy + agents.
  *
  * Sign-up and sign-in are NOT handled here \u2014 Clerk's hosted UI owns those.
- * The auth controller's POST /signup / /login endpoints are only used by the
- * MockAuthService path; under AUTH_PROVIDER=clerk the frontend uses Clerk UI.
+ * The auth controller's POST /signup / /login endpoints are disabled under
+ * Clerk auth; the frontend uses Clerk UI exclusively.
  */
 @Injectable()
 export class ClerkAuthService extends AuthService {

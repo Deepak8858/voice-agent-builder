@@ -4,7 +4,7 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import cors from 'cors';
 import { AppModule } from './app.module';
-import { env } from './config/env';
+import { env, isProduction } from './config/env';
 import { logger } from './logging';
 
 async function bootstrap() {
@@ -30,6 +30,9 @@ async function bootstrap() {
   const allowedOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : [`http://localhost:${env.WEB_PORT ?? 3000}`];
+  if (isProduction() && allowedOrigins.length === 0) {
+    throw new Error('ALLOWED_ORIGINS must be explicitly set in production.');
+  }
   const corsResult = cors({
     origin: allowedOrigins,
     credentials: true,

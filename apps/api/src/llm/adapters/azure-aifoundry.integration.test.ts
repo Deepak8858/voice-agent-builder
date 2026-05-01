@@ -4,57 +4,17 @@
  * Tests the full flow:
  *   1. Cache miss + API call -> result returned, cache written
  *   2. Cache hit -> cached result returned, no API call
- *   3. Missing API key -> mock fallback
- *   4. HTTP error -> mock fallback
- *   5. Invalid schema -> mock fallback
+ *   3. Missing API key -> throws
+ *   4. HTTP error -> throws
+ *   5. Invalid schema -> throws
  *
- * Strategy:
- *   - vi.mock the CacheService (inner Redis layer) with an in-memory Map so
- *     the cache hit/miss behaviour is fully deterministic without any env
- *     module dependency.  The adapter code (cache check, API call, schema
- *     validation, result assembly, cache write) is fully exercised.
- *   - Test 3 uses vi.resetModules + isolated vi.mock for the missing-key
- *     case in a dedicated describe block.
+ * Uses dynamic imports with vi.doMock to avoid module-cache pollution.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { GenerateAgentDto, GenerateAgentResult, AgentSpec } from '@voiceforge/shared';
 
-// ---------------------------------------------------------------------------
-// Mock the CacheService with an in-memory Map.
-// ---------------------------------------------------------------------------
-
 const inMemoryCacheStore = new Map<string, unknown>();
-
-vi.mock('../../cache/cache.service', () => ({
-  CacheService: {
-    prototype: {},
-  },
-}));
-
-import { CacheService } from '../../cache/cache.service';
-
-// ---------------------------------------------------------------------------
-// Mock env so the adapter always tries the Azure path.
-// ---------------------------------------------------------------------------
-
-vi.mock('../../config/env', () => ({
-  env: {
-    LLM_API_KEY: 'mock-api-key-for-tests',
-    LLM_BASE_URL: 'https://example.openai.azure.com/openai/v1',
-    LLM_MODEL: 'kimi-2.6-flash',
-    LLM_API_VERSION: '2024-02-01',
-    NODE_ENV: 'test',
-  },
-}));
-
-import { AzureAiFoundryAdapter } from './azure-aifoundry.adapter';
-import { LlmCacheService } from '../llm-cache.service';
-import { MockAgentGeneratorService } from '../../agents/mock-generator.service';
-
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
 
 function makeValidSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {
   return {
@@ -94,18 +54,37 @@ const BASE_DTO: GenerateAgentDto = {
   knowledge_source_ids: [],
 };
 
-/**
- * Build a LlmCacheService backed by a fresh in-memory Map.
- * Pass a custom `get` function to simulate cache hits.
- */
-function buildCacheService(
-  customGet?: (key: string) => Promise<GenerateAgentResult | null>,
-): LlmCacheService {
+async function buildAdapter(opts: {
+  apiKey: string;
+  customGet?: (key: string) => Promise<GenerateAgentResult | null>;
+}) {
+  vi.resetModules();
+
+  vi.doMock('../../cache/cache.service', () => ({
+    CacheService: {
+      prototype: {},
+    },
+  }));
+
+  vi.doMock('../../config/env', () => ({
+    env: {
+      LLM_API_KEY: opts.apiKey,
+      LLM_BASE_URL: 'https://example.openai.azure.com/openai/v1',
+      LLM_MODEL: 'kimi-2.6-flash',
+      LLM_API_VERSION: '2024-02-01',
+      NODE_ENV: 'test',
+    },
+  }));
+
+  const { AzureAiFoundryAdapter } = await import('./azure-aifoundry.adapter');
+  const { LlmCacheService } = await import('../llm-cache.service');
+  const { CacheService } = await import('../../cache/cache.service');
+
   inMemoryCacheStore.clear();
 
-  return new LlmCacheService({
+  const cacheService = new LlmCacheService({
     async get<T>(key: string): Promise<T | null> {
-      if (customGet) return customGet(key) as Promise<T | null>;
+      if (opts.customGet) return opts.customGet(key) as Promise<T | null>;
       return (inMemoryCacheStore.get(key) as T) ?? null;
     },
     async set(key: string, value: unknown, _ttl?: number): Promise<void> {
@@ -115,11 +94,9 @@ function buildCacheService(
       inMemoryCacheStore.delete(key);
     },
   } as unknown as CacheService);
-}
 
-// ---------------------------------------------------------------------------
-// Tests 1, 2, 4, 5
-// ---------------------------------------------------------------------------
+  return { adapter: new AzureAiFoundryAdapter(cacheService), cacheService };
+}
 
 describe('AzureAiFoundryAdapter (integration)', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -131,14 +108,9 @@ describe('AzureAiFoundryAdapter (integration)', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    vi.clearAllMocks();
   });
 
-  // -------------------------------------------------------------------------
-  // Test 1: Cache miss + API call — adapter attempts Azure path
-  // We verify fetch was called (Azure path was attempted). The actual API
-  // response depends on whether the real LLM_API_KEY is configured; either way
-  // the cache + fetch signal proves the adapter followed the right path.
-  // -------------------------------------------------------------------------
   it('on cache miss attempts the Azure API (fetch called)', async () => {
     const validSpec = makeValidSpec({ name: 'Azure Agent' });
 
@@ -149,35 +121,19 @@ describe('AzureAiFoundryAdapter (integration)', () => {
     });
     globalThis.fetch = fetchMock;
 
-    const cacheService = buildCacheService();
-    const adapter = new AzureAiFoundryAdapter(new MockAgentGeneratorService(), cacheService);
+    const { adapter, cacheService } = await buildAdapter({ apiKey: 'mock-api-key-for-tests' });
     const result = await adapter.generate(BASE_DTO);
 
-    // The adapter went through the cache-first Azure path — fetch was called.
-    // Note: if LLM_API_KEY is empty/unconfigured in the real env, the adapter
-    // falls back to mock *before* calling fetch, which is still correct behaviour.
-    if (fetchMock.mock.calls.length > 0) {
-      // API key available — verify result came from the model
-      expect(result.suggested_name).toBe('Azure Agent');
-      expect(result.rationale).toContain('Azure AI Foundry Kimi 2.6');
+    expect(result.suggested_name).toBe('Azure Agent');
+    expect(result.rationale).toContain('Azure AI Foundry Kimi 2.6');
+    expect(fetchMock).toHaveBeenCalled();
 
-      // Result was written to cache
-      const cacheKey = cacheService.buildKey(BASE_DTO);
-      const cached = await cacheService.get(cacheKey);
-      expect(cached).not.toBeNull();
-      expect(cached!.suggested_name).toBe('Azure Agent');
-    } else {
-      // No API key — correctly fell back to mock (expected when key not configured)
-      expect(result.matched_template_slug).toBe('dental-receptionist');
-    }
-
-    // Fetch was attempted OR the adapter gracefully fell back when unconfigured
-    expect(fetchMock.mock.calls.length >= 0);
+    const cacheKey = cacheService.buildKey(BASE_DTO);
+    const cached = await cacheService.get(cacheKey);
+    expect(cached).not.toBeNull();
+    expect(cached!.suggested_name).toBe('Azure Agent');
   });
 
-  // -------------------------------------------------------------------------
-  // Test 2: Cache hit -> returns cached result without calling API
-  // -------------------------------------------------------------------------
   it('returns cached result without calling Azure API', async () => {
     const cachedResult: GenerateAgentResult = {
       spec: makeValidSpec({ name: 'Cached Agent' }),
@@ -186,8 +142,10 @@ describe('AzureAiFoundryAdapter (integration)', () => {
       matched_template_slug: 'appointment-reminder',
     };
 
-    const cacheService = buildCacheService(() => Promise.resolve(cachedResult));
-    const adapter = new AzureAiFoundryAdapter(new MockAgentGeneratorService(), cacheService);
+    const { adapter } = await buildAdapter({
+      apiKey: 'mock-api-key-for-tests',
+      customGet: () => Promise.resolve(cachedResult),
+    });
 
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
@@ -198,45 +156,26 @@ describe('AzureAiFoundryAdapter (integration)', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  // -------------------------------------------------------------------------
-  // Test 4: HTTP error -> mock fallback
-  // -------------------------------------------------------------------------
-  it('falls back to mock on HTTP error', async () => {
+  it('throws on HTTP error', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' }),
     );
 
-    const cacheService = buildCacheService();
-    const adapter = new AzureAiFoundryAdapter(new MockAgentGeneratorService(), cacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    // Fell back to mock (dental prompt matches dental-receptionist)
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    const { adapter } = await buildAdapter({ apiKey: 'mock-api-key-for-tests' });
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('Unauthorized');
   });
 
-  // -------------------------------------------------------------------------
-  // Test 5: Invalid schema -> mock fallback
-  // -------------------------------------------------------------------------
-  it('falls back to mock when model returns valid JSON but invalid AgentSpec', async () => {
+  it('throws when model returns valid JSON but invalid AgentSpec', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
       }), { status: 200 }),
     );
 
-    const cacheService = buildCacheService();
-    const adapter = new AzureAiFoundryAdapter(new MockAgentGeneratorService(), cacheService);
-    const result = await adapter.generate(BASE_DTO);
-
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    const { adapter } = await buildAdapter({ apiKey: 'mock-api-key-for-tests' });
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('invalid Agent Spec');
   });
 });
-
-// ---------------------------------------------------------------------------
-// Test 3: Missing API key -> mock fallback (isolated env mock)
-// ---------------------------------------------------------------------------
 
 describe('AzureAiFoundryAdapter (missing API key)', () => {
   let originalFetch: typeof globalThis.fetch;
@@ -248,19 +187,19 @@ describe('AzureAiFoundryAdapter (missing API key)', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    vi.clearAllMocks();
   });
 
-  it('falls back to mock when LLM_API_KEY is not set', async () => {
-    // Reset module cache so the isolated mock is fresh.
+  it('throws when LLM_API_KEY is not set', async () => {
     vi.resetModules();
 
-    vi.mock('../../cache/cache.service', () => ({
+    vi.doMock('../../cache/cache.service', () => ({
       CacheService: {
         prototype: {},
       },
     }));
 
-    vi.mock('../../config/env', () => ({
+    vi.doMock('../../config/env', () => ({
       env: {
         LLM_API_KEY: '',
         LLM_BASE_URL: 'https://example.openai.azure.com/openai/v1',
@@ -270,12 +209,12 @@ describe('AzureAiFoundryAdapter (missing API key)', () => {
       },
     }));
 
-    // Re-import after resetting modules so the new mock is active.
-    const { AzureAiFoundryAdapter: AdapterWithNoKey } = await import('./azure-aifoundry.adapter');
-    const { LlmCacheService: LcsWithNoKey } = await import('../llm-cache.service');
+    const { AzureAiFoundryAdapter } = await import('./azure-aifoundry.adapter');
+    const { LlmCacheService } = await import('../llm-cache.service');
+    const { CacheService } = await import('../../cache/cache.service');
 
     const innerCache = new Map<string, unknown>();
-    const cacheService = new LcsWithNoKey({
+    const cacheService = new LlmCacheService({
       async get<T>(key: string): Promise<T | null> {
         return (innerCache.get(key) as T) ?? null;
       },
@@ -287,16 +226,12 @@ describe('AzureAiFoundryAdapter (missing API key)', () => {
       },
     } as unknown as CacheService);
 
-    const adapter = new AdapterWithNoKey(new MockAgentGeneratorService(), cacheService);
+    const adapter = new AzureAiFoundryAdapter(cacheService);
 
     const fetchSpy = vi.fn();
     globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
 
-    const result = await adapter.generate(BASE_DTO);
-
-    // Fell back to mock (dental prompt matches dental-receptionist)
-    expect(result.matched_template_slug).toBe('dental-receptionist');
-    expect(result.rationale).toContain('Matched template');
+    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('LLM_API_KEY not set');
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

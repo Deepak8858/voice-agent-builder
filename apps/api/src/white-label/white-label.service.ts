@@ -18,6 +18,22 @@ import { AppError, ForbiddenError, ValidationError } from '../common/errors';
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
 const DEFAULT_INVITE_EXPIRY_DAYS = 14;
 
+// Domain regex: allows letters, numbers, hyphens, dots; no protocol, no path
+const DOMAIN_REGEX = /^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)*$/i;
+
+function isValidDomain(domain: string): boolean {
+  return DOMAIN_REGEX.test(domain) && domain.length <= 253;
+}
+
+function isValidLogoUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 @Injectable()
 export class WhiteLabelService {
   constructor(
@@ -41,6 +57,9 @@ export class WhiteLabelService {
     dto: UpdateWhiteLabelSettingsDto,
   ): Promise<WhiteLabelSettings> {
     if (dto.custom_domain) {
+      if (!isValidDomain(dto.custom_domain)) {
+        throw new ValidationError('Invalid custom domain format.', { custom_domain: dto.custom_domain });
+      }
       const conflict = await this.prisma.whiteLabelSettings.findUnique({
         where: { customDomain: dto.custom_domain },
       });
@@ -49,6 +68,9 @@ export class WhiteLabelService {
           custom_domain: dto.custom_domain,
         });
       }
+    }
+    if (dto.logo_url && !isValidLogoUrl(dto.logo_url)) {
+      throw new ValidationError('Logo URL must be a valid HTTPS URL.', { logo_url: dto.logo_url });
     }
 
     const data: Prisma.WhiteLabelSettingsUncheckedCreateInput = {
@@ -342,6 +364,11 @@ export class WhiteLabelService {
     }
     if (!invite.clientWorkspaceId) {
       throw new ValidationError('Invite is not bound to a client workspace yet.');
+    }
+
+    const actor = await this.prisma.user.findUnique({ where: { id: actorUserId } });
+    if (!actor || actor.email !== invite.email) {
+      throw new ForbiddenError('This invite was sent to a different email address.');
     }
 
     const accepted = await this.prisma.$transaction(async (tx) => {

@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  Body,
   Controller,
   Get,
   Inject,
+  Param,
   Post,
   Req,
   UseGuards,
@@ -13,9 +15,26 @@ import type {
   CreatePortalSessionDto,
   SessionUser,
 } from '@voiceforge/shared';
+import {
+  CreateCheckoutSessionDtoSchema,
+  CreatePortalSessionDtoSchema,
+} from '@voiceforge/shared';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingService, ForbiddenPlanError } from './billing.service';
+
+function isTrustedRedirectUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    // Require HTTPS in production; allow localhost/http in dev
+    if (process.env.NODE_ENV === 'production' && u.protocol !== 'https:') return false;
+    return true;
+  } catch {
+    // Allow relative URLs
+    return url.startsWith('/');
+  }
+}
 
 @Controller('workspaces/:workspaceId/billing')
 @UseGuards(WorkspaceGuard)
@@ -35,29 +54,33 @@ export class BillingController {
   }
 
   @Get('subscription')
-  async getSubscription(@Req() req: Request): Promise<unknown> {
-    const orgId = await this.getOrgId(req.params['workspaceId']);
+  async getSubscription(@Param('workspaceId') workspaceId: string): Promise<unknown> {
+    const orgId = await this.getOrgId(workspaceId);
     return this.billing.getSubscription(orgId);
   }
 
   @Get('usage')
-  async getUsage(@Req() req: Request): Promise<unknown> {
-    const user = (req as Request & { user: SessionUser }).user;
+  async getUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
+  ): Promise<unknown> {
     const { period_start, period_end } = req.query as Record<string, string>;
     return this.billing.getWorkspaceUsage(
-      user.active_workspace_id,
+      workspaceId,
       period_start ? new Date(period_start) : undefined,
       period_end ? new Date(period_end) : undefined,
     );
   }
 
   @Post('checkout')
-  async createCheckout(@Req() req: Request): Promise<{ url: string }> {
-    const orgId = await this.getOrgId(req.params['workspaceId']);
-    const dto = req.body as CreateCheckoutSessionDto;
-    if (!dto.priceId || !dto.successUrl || !dto.cancelUrl) {
-      throw new BadRequestException('priceId, successUrl, cancelUrl are required');
+  async createCheckout(
+    @Param('workspaceId') workspaceId: string,
+    @Body(new ZodValidationPipe(CreateCheckoutSessionDtoSchema)) dto: CreateCheckoutSessionDto,
+  ): Promise<{ url: string }> {
+    if (!isTrustedRedirectUrl(dto.successUrl) || !isTrustedRedirectUrl(dto.cancelUrl)) {
+      throw new BadRequestException('Invalid redirect URL');
     }
+    const orgId = await this.getOrgId(workspaceId);
     try {
       return await this.billing.createCheckoutSession(orgId, dto);
     } catch (err) {
@@ -67,9 +90,14 @@ export class BillingController {
   }
 
   @Post('portal')
-  async createPortal(@Req() req: Request): Promise<{ url: string }> {
-    const orgId = await this.getOrgId(req.params['workspaceId']);
-    const dto = (req.body ?? {}) as CreatePortalSessionDto;
+  async createPortal(
+    @Param('workspaceId') workspaceId: string,
+    @Body(new ZodValidationPipe(CreatePortalSessionDtoSchema)) dto: CreatePortalSessionDto,
+  ): Promise<{ url: string }> {
+    if (dto.returnUrl && !isTrustedRedirectUrl(dto.returnUrl)) {
+      throw new BadRequestException('Invalid redirect URL');
+    }
+    const orgId = await this.getOrgId(workspaceId);
     return this.billing.createPortalSession(orgId, dto);
   }
 }

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Header, Param, Patch, Post, Put, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
+import { z } from 'zod';
 import {
   CreateAgentDtoSchema,
   CreateAgentVersionDtoSchema,
@@ -15,6 +16,11 @@ import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CurrentUser } from '../common/current-user.decorator';
 import { AgentsService } from './agents.service';
+
+const UpdateFlowDtoSchema = z.object({
+  nodes: z.array(z.record(z.unknown())),
+  edges: z.array(z.record(z.unknown())),
+});
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/agents')
@@ -95,7 +101,7 @@ export class AgentsController {
   async updateFlow(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId') agentId: string,
-    @Body() body: { nodes: unknown[]; edges: unknown[] },
+    @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: { nodes: unknown[]; edges: unknown[] },
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.updateFlow(workspaceId, agentId, user.id, body);
