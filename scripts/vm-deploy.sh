@@ -190,6 +190,8 @@ server {
 server {
     listen 443 ssl http2;
     server_name vocal.devdeepak.me;
+    ssl_certificate /etc/letsencrypt/live/vocal.devdeepak.me/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/vocal.devdeepak.me/privkey.pem;
     location /api/v1/ {
         proxy_pass http://api_local/;
         proxy_http_version 1.1;
@@ -229,8 +231,8 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf "$NGINX_CONF" "$NGINX_ENABLED"
 nginx -t && systemctl reload nginx
 
-# Optional: certbot SSL (non-interactive)
-certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || true
+# Optional: certbot SSL (non-interactive) — use certonly so it doesn't modify our config
+certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect || true
 systemctl reload nginx
 log "Done."
 
