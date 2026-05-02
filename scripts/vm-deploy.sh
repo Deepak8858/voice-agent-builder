@@ -147,6 +147,7 @@ docker run --rm \
   --env-file "$ENV_FILE" \
   -e DATABASE_URL="${DIRECT_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
+  -u root \
   voiceforge-api:latest \
   sh -c 'npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
 log "Done."
