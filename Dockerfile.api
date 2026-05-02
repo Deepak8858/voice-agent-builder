@@ -62,6 +62,8 @@ COPY --chown=nodeuser:nodegroup --from=builder /app/apps/api/dist ./apps/api/dis
 COPY --chown=nodeuser:nodegroup --from=builder /app/apps/api/prisma ./apps/api/prisma
 COPY --chown=nodeuser:nodegroup --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --chown=nodeuser:nodegroup --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --chown=nodeuser:nodegroup --from=builder /app/node_modules/prisma ./node_modules/prisma
+COPY --chown=nodeuser:nodegroup --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
 # Switch to non-root user
 USER nodeuser

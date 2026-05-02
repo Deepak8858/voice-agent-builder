@@ -141,15 +141,13 @@ log "Done."
 # ---------------------------------------------------------------------------
 log "[7/10] Running Prisma migrations..."
 DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d '\r')
-log "DEBUG: DIRECT_URL length=${#DIRECT_URL}"
-log "DEBUG: DIRECT_URL starts with=${DIRECT_URL:0:20}"
 docker run --rm \
   --env-file "$ENV_FILE" \
   -e DATABASE_URL="${DIRECT_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   -u root \
   voiceforge-api:latest \
-  sh -c 'npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
+  ./node_modules/.bin/prisma migrate deploy --schema=/prisma/schema.prisma
 log "Done."
 
 # ---------------------------------------------------------------------------
