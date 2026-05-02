@@ -243,19 +243,6 @@ export class ToolsService {
       throw new ToolExecutionFailedError(errorMessage);
     }
   }
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      const updated = await this.prisma.toolInvocation.update({
-        where: { id: invocation.id },
-        data: {
-          status: 'failed',
-          finishedAt: new Date(),
-          errorMessage,
-        },
-      });
-      await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, 'failed');
-      throw new ToolExecutionFailedError(errorMessage);
-    }
-  }
 
   async listInvocations(
     workspaceId: string,

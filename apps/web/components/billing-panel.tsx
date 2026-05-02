@@ -90,7 +90,6 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
     },
   });
 
-  const plan = subscription.data?.plan ?? 'free';
   const status = subscription.data?.status ?? 'active';
   const limits = usage.data?.limits ?? {};
   const metrics = usage.data?.usage ?? {};
