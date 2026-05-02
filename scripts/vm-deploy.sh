@@ -141,9 +141,11 @@ log "Done."
 # ---------------------------------------------------------------------------
 log "[7/10] Running Prisma migrations..."
 DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"')
+DATABASE_URL=$(grep '^DATABASE_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"')
 docker run --rm \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   -e DIRECT_URL="${DIRECT_URL}" \
+  -e DATABASE_URL="${DATABASE_URL}" \
   --entrypoint npx \
   node:20-slim \
   prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma
