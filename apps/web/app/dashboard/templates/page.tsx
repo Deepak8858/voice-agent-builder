@@ -12,7 +12,30 @@ interface TemplateSummary {
 }
 
 export default async function TemplatesPage() {
-  const { items } = await apiFetch<{ items: TemplateSummary[] }>('/templates');
+  let items: TemplateSummary[] = [];
+  let apiError: string | null = null;
+
+  try {
+    const res = await apiFetch<{ items: TemplateSummary[] }>('/templates');
+    items = res.items;
+  } catch (err) {
+    apiError = (err as Error).message;
+  }
+
+  if (apiError) {
+    return (
+      <div className="flex flex-col gap-6">
+        <header>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+            Templates
+          </h1>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+            Could not load templates: <code className="text-xs">{apiError}</code>
+          </p>
+        </header>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
