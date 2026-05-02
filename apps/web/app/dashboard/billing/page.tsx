@@ -5,6 +5,12 @@ import type { SessionUser } from '@voiceforge/shared';
 export default async function BillingPage() {
   const me = await apiFetch<SessionUser>('/auth/me');
 
+  const priceIds = {
+    starter: process.env.NEXT_PUBLIC_STRIPE_STARTER_PRICE_ID ?? null,
+    growth: process.env.NEXT_PUBLIC_STRIPE_GROWTH_PRICE_ID ?? null,
+    enterprise: process.env.NEXT_PUBLIC_STRIPE_ENTERPRISE_PRICE_ID ?? null,
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -16,7 +22,7 @@ export default async function BillingPage() {
         </p>
       </header>
 
-      <BillingPanel workspaceId={me.active_workspace_id} />
+      <BillingPanel workspaceId={me.active_workspace_id} priceIds={priceIds} />
     </div>
   );
 }

@@ -22,6 +22,19 @@ const EnvSchema = z.object({
   LLM_PROVIDER: z.enum(['local', 'github', 'openai', 'anthropic', 'azure-aifoundry']).default('local'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
+  VAPI_API_KEY: z.string().optional(),
+  VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
+  VAPI_WEBHOOK_SECRET: z.string().optional(),
+  VAPI_PHONE_NUMBER_ID: z.string().optional(),
+  RETELL_API_KEY: z.string().optional(),
+  RETELL_BASE_URL: z.string().default('https://api.retellai.com'),
+  RETELL_WEBHOOK_SECRET: z.string().optional(),
+
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
+  WEB_BASE_URL: z.string().default('http://localhost:3000'),
+  DEFAULT_COUNTRY: z.string().default('US'),
+
   CLERK_SECRET_KEY: z.string().optional(),
   CLERK_PUBLISHABLE_KEY: z.string().optional(),
   CLERK_WEBHOOK_SECRET: z.string().optional(),
@@ -33,6 +46,7 @@ const EnvSchema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().optional(),
 
   VAPI_API_KEY: z.string().optional(),
   RETELL_API_KEY: z.string().optional(),

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
 import type { WebhookConfig } from '@voiceforge/shared';
+import type { ToolExecutor, ToolCallResult } from './tools.service';
 
 export interface WebhookExecutionResult {
   status: number;
@@ -9,7 +10,9 @@ export interface WebhookExecutionResult {
 }
 
 @Injectable()
-export class WebhookExecutor {
+export class WebhookExecutor implements ToolExecutor {
+  readonly name = 'webhook';
+
   /**
    * Posts the payload to the configured URL. When `hmac_secret` is set, signs
    * the JSON body with HMAC-SHA256 and sends the signature in

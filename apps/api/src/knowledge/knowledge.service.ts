@@ -277,6 +277,22 @@ export class KnowledgeService {
   }
 
   /**
+   * Cosine-similarity search via pgvector. Falls back to JSON embed if pgvector
+   * is unavailable or dimension does not match.
+   */
+  async pgvectorSearch(workspaceId: string, queryEmbedding: number[], topK = 5) {
+    const chunks = await this.prisma.$queryRaw<Array<{ id: string; content: string; source_id: string }>>`
+      SELECT id, content, source_id
+      FROM knowledge_chunks kc
+      JOIN knowledge_sources ks ON ks.id = kc.source_id
+      WHERE ks.workspace_id = ${workspaceId}
+      ORDER BY kc.embedding_vector <=> ${queryEmbedding}::vector
+      LIMIT ${topK}
+    `;
+    return chunks;
+  }
+
+  /**
    * Cosine-similarity search over chunk embeddings. Pulls all chunks visible
    * to the (workspace, agent) pair into memory and ranks them. Replace with
    * pgvector + ANN index in Phase 10 hardening.
@@ -290,6 +306,41 @@ export class KnowledgeService {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];
 
+    const [queryVec] = await this.embedder.embed([trimmed]);
+
+    // Try pgvector path when embedder dim is 1536 (Azure Ada v2 default)
+    if (this.embedder.dimensions === 1536) {
+      try {
+        const vectorChunks = await this.pgvectorSearch(workspaceId, queryVec, k);
+        if (vectorChunks.length > 0) {
+          const rows = await this.prisma.knowledgeChunk.findMany({
+            where: { id: { in: vectorChunks.map((c) => c.id) } },
+            include: {
+              source: {
+                select: { id: true, title: true, sourceType: true, agentId: true },
+              },
+            },
+          });
+          return vectorChunks.map((vc) => {
+            const row = rows.find((r) => r.id === vc.id);
+            return {
+              chunk_id: vc.id,
+              source_id: vc.source_id,
+              source_title: row?.source.title ?? '',
+              source_type: (row?.source.sourceType ?? 'text') as KnowledgeSearchHit['source_type'],
+              agent_id: row?.source.agentId ?? null,
+              chunk_index: row?.chunkIndex ?? 0,
+              content: vc.content,
+              score: 1,
+            };
+          });
+        }
+      } catch (err) {
+        this.logger.warn(`pgvector search failed, falling back to JSON: ${(err as Error).message}`);
+      }
+    }
+
+    // JSON embed fallback
     const where: Prisma.KnowledgeChunkWhereInput = {
       workspaceId,
       source: { status: 'ready' },
@@ -306,7 +357,6 @@ export class KnowledgeService {
     });
     if (chunks.length === 0) return [];
 
-    const [queryVec] = await this.embedder.embed([trimmed]);
     const scored = chunks
       .map((c) => {
         const emb = this.coerceVec((c as unknown as Record<string, Prisma.JsonValue | null>).embedding);

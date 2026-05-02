@@ -21,14 +21,36 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { validateToolInput } from './input-validator';
 import { WebhookExecutor } from './webhook-executor';
+import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
+
+export interface ToolExecutor {
+  readonly name: string;
+  execute(params: Record<string, unknown>, config: Record<string, string>): Promise<ToolCallResult>;
+}
+
+export interface ToolCallResult {
+  success: boolean;
+  result?: unknown;
+  error?: string;
+}
 
 @Injectable()
 export class ToolsService {
+  private readonly executors: Map<string, ToolExecutor>;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly executor: WebhookExecutor,
-  ) {}
+    private readonly webhookExecutor: WebhookExecutor,
+    private readonly googleCalendarExecutor: GoogleCalendarExecutor,
+  ) {
+    this.executors = new Map([
+      ['webhook', webhookExecutor],
+      ['http_post', webhookExecutor],
+      ['http_get', webhookExecutor],
+      [googleCalendarExecutor.name, googleCalendarExecutor],
+    ]);
+  }
 
   async list(workspaceId: string, agentId?: string | null): Promise<ToolSummary[]> {
     const rows = await this.prisma.integrationTool.findMany({
@@ -180,9 +202,9 @@ export class ToolsService {
       },
     });
 
-    const executableTypes: ToolType[] = ['webhook', 'http_post', 'http_get'];
-    if (!executableTypes.includes(tool.toolType as ToolType)) {
-      const errorMessage = `Tool type ${tool.toolType} is not yet executable.`;
+    const exec = this.executors.get(tool.toolType as string);
+    if (!exec) {
+      const errorMessage = `Tool type ${tool.toolType} is not supported for execution.`;
       const failed = await this.prisma.toolInvocation.update({
         where: { id: invocation.id },
         data: {
@@ -196,20 +218,15 @@ export class ToolsService {
     }
 
     try {
-      const result = await this.executor.execute(
-        tool.config as unknown as WebhookConfig,
-        dto.arguments,
-      );
-      const status = result.status >= 200 && result.status < 300 ? 'success' : 'failed';
+      const result = await exec.execute(dto.arguments ?? {}, tool.config as Record<string, string>);
+      const status = result.success ? 'success' : 'failed';
       const updated = await this.prisma.toolInvocation.update({
         where: { id: invocation.id },
         data: {
           status,
           finishedAt: new Date(),
-          responseStatus: result.status,
-          responseBody: this.serializeResponse(result.body),
-          durationMs: result.duration_ms,
-          errorMessage: status === 'failed' ? `HTTP ${result.status}` : null,
+          responseBody: this.serializeResponse(result.result),
+          errorMessage: result.error ?? null,
         },
       });
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, status);

@@ -7,6 +7,11 @@ import { useApi } from '@/lib/use-api';
 
 interface BillingPanelProps {
   workspaceId: string;
+  priceIds?: {
+    starter: string | null;
+    growth: string | null;
+    enterprise: string | null;
+  };
 }
 
 const PLAN_LABELS: Record<string, string> = {
@@ -42,7 +47,7 @@ function isTrustedCheckoutUrl(url: string): boolean {
   }
 }
 
-export function BillingPanel({ workspaceId }: BillingPanelProps) {
+export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
   const { call } = useApi();
 
   const subscription = useQuery({
@@ -55,12 +60,30 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     queryFn: () => call<WorkspaceUsageDto>(`/workspaces/${workspaceId}/billing/usage`),
   });
 
+  const plan = subscription.data?.plan ?? 'free';
+
+  const getPriceIdForPlan = (targetPlan: string): string | null => {
+    if (targetPlan === 'starter') return priceIds?.starter ?? null;
+    if (targetPlan === 'growth') return priceIds?.growth ?? null;
+    if (targetPlan === 'enterprise') return priceIds?.enterprise ?? null;
+    return null;
+  };
+
+  const upgradeToPlan = (currentPlan: string): string => {
+    if (currentPlan === 'free') return 'starter';
+    if (currentPlan === 'starter') return 'growth';
+    if (currentPlan === 'growth') return 'enterprise';
+    return 'growth';
+  };
+
   const checkout = useMutation({
     mutationFn: async () => {
+      const targetPlan = upgradeToPlan(plan);
+      const selectedPriceId = getPriceIdForPlan(targetPlan);
       const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/checkout`, {
         method: 'POST',
         body: JSON.stringify({
-          priceId: 'price_1', // placeholder; real Stripe price IDs come from env/config
+          priceId: selectedPriceId ?? 'price_1',
           successUrl: `${window.location.origin}/dashboard/billing?checkout=success`,
           cancelUrl: `${window.location.origin}/dashboard/billing?checkout=cancel`,
         }),
@@ -85,7 +108,6 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     },
   });
 
-  const plan = subscription.data?.plan ?? 'free';
   const status = subscription.data?.status ?? 'active';
   const limits = usage.data?.limits ?? {};
   const metrics = usage.data?.usage ?? {};
