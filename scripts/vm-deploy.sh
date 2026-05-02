@@ -193,7 +193,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/vocal.devdeepak.me/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/vocal.devdeepak.me/privkey.pem;
     location /api/v1/ {
-        proxy_pass http://api_local/;
+        proxy_pass http://api_local;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -204,7 +204,7 @@ server {
         proxy_buffering off;
     }
     location /api/health {
-        proxy_pass http://api_local/health;
+        proxy_pass http://api_local/api/v1/health;
         access_log off;
     }
     location / {
@@ -241,7 +241,7 @@ log "Done."
 # ---------------------------------------------------------------------------
 log "[10/10] Running health checks..."
 sleep 8
-API_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:4000/health || echo "000")
+API_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:4000/api/v1/health || echo "000")
 WEB_OK=$(curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/api/health || echo "000")
 
 if [ "$API_OK" = "200" ] && [ "$WEB_OK" = "200" ]; then
