@@ -115,6 +115,15 @@ export class CallsService {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
     }
 
+    const outbound = await this.billing.canStartOutboundCall(workspaceId);
+    if (!outbound.allowed) {
+      throw new ForbiddenPlanError(
+        outbound.limit === -1
+          ? 'Outbound calls are not available on your plan.'
+          : `Monthly outbound call limit reached (${outbound.limit}). Please upgrade or wait until next billing cycle.`,
+      );
+    }
+
     const { agent, version } = await this.resolveAgentVersion(
       workspaceId,
       agentId,
