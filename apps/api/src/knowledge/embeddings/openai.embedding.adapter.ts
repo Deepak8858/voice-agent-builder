@@ -4,9 +4,8 @@ import type { EmbeddingProvider } from './embedding.provider.interface';
 
 /**
  * OpenAI embedding adapter (text-embedding-3-small, 1536 dims by default).
- * Uses fetch directly to avoid pulling the OpenAI SDK as a runtime dep until
- * Phase 10 hardening. If `OPENAI_API_KEY` is missing the constructor throws so
- * the module factory can fall back to the mock adapter.
+ * Uses fetch directly to avoid pulling the OpenAI SDK as a runtime dep.
+ * `OPENAI_API_KEY` is required — mock embedders have been removed.
  */
 @Injectable()
 export class OpenAIEmbeddingAdapter implements EmbeddingProvider {
@@ -18,9 +17,7 @@ export class OpenAIEmbeddingAdapter implements EmbeddingProvider {
 
   constructor() {
     if (!env.OPENAI_API_KEY) {
-      throw new Error(
-        'OPENAI_API_KEY is required for OpenAIEmbeddingAdapter. Set EMBEDDING_PROVIDER=mock or configure the key.',
-      );
+      throw new Error('OPENAI_API_KEY is required. Set the key before booting the API.');
     }
     this.apiKey = env.OPENAI_API_KEY;
   }

@@ -49,19 +49,9 @@ export class BillingService {
     if (sub?.stripeCustomerId) return sub.stripeCustomerId;
 
     if (!this.stripe) {
-      // In mock mode, return a synthetic customer ID so callers don't break.
-      const mockId = `cus_mock_${organizationId.slice(0, 8)}`;
-      await this.prisma.subscription.upsert({
-        where: { organizationId },
-        create: {
-          organizationId,
-          stripeCustomerId: mockId,
-          plan: 'free',
-          status: 'active',
-        },
-        update: { stripeCustomerId: mockId },
-      });
-      return mockId;
+      throw new InternalServerErrorException(
+        'Stripe is not configured. Set STRIPE_SECRET_KEY before calling billing endpoints.',
+      );
     }
 
     const org = await this.prisma.organization.findUniqueOrThrow({

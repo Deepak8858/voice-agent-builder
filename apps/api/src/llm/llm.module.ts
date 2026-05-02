@@ -41,9 +41,16 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
           case 'azure-aifoundry':
             if (!env.LLM_API_KEY) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_API_KEY not set.');
             return azure;
-          case 'mock':
+          case 'local':
+            logger.log('Using local template-based agent generator (deterministic, no external LLM API).');
+            return local;
           default:
-            logger.log('Using local template-based agent generator (no external LLM API key required).');
+            // env.ts enum forbids any other value, but in production we want
+            // explicit failure if someone bypasses the schema (env override).
+            if (env.NODE_ENV === 'production') {
+              throw new Error(`Unsupported LLM_PROVIDER=${env.LLM_PROVIDER}. Set local|github|openai|anthropic|azure-aifoundry.`);
+            }
+            logger.warn(`Unknown LLM_PROVIDER=${env.LLM_PROVIDER}; falling back to local generator.`);
             return local;
         }
       },

@@ -19,8 +19,17 @@ function resolveVoiceProvider(vapi: VapiVoiceAdapter, retell: RetellVoiceAdapter
       }
       return retell;
     default:
-      logger.warn('No VOICE_PROVIDER configured. Voice calls will fail until a provider is set and its API key is provided.');
-      // Return vapi as a placeholder so module boots; it will error on first use if not configured.
+      // Production must fail-fast: silently booting with no voice provider
+      // hides config bugs until first call placement.
+      if (env.NODE_ENV === 'production') {
+        throw new Error(
+          'VOICE_PROVIDER must be set in production. Choose `vapi` or `retell` and provide the matching API key.',
+        );
+      }
+      logger.warn(
+        `No VOICE_PROVIDER configured (NODE_ENV=${env.NODE_ENV}). Voice calls will throw until a provider is set.`,
+      );
+      // Non-prod: return vapi shell so the module boots; it errors on first use.
       return vapi;
   }
 }

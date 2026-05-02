@@ -448,6 +448,9 @@ export class CallsService {
     }
 
     // Lazily ensure a runtime agent exists on the provider side.
+    // Idempotent: createAgent on Vapi/Retell either creates new or returns
+    // the existing assistant id. Errors here are non-fatal — the subsequent
+    // outbound call attempt will surface a structured VOICE_PROVIDER_ERROR.
     try {
       await this.voice.createAgent({
         workspaceId,
@@ -456,7 +459,7 @@ export class CallsService {
         spec: version.specJson as unknown as AgentSpec,
       });
     } catch {
-      // Mock provider always succeeds; real adapters should surface errors via `voice.startOutboundCall`.
+      // best-effort; real adapters surface errors via the call placement path
     }
 
     return { agent, version };
