@@ -44,7 +44,7 @@ export class ToolsService {
     private readonly webhookExecutor: WebhookExecutor,
     private readonly googleCalendarExecutor: GoogleCalendarExecutor,
   ) {
-    this.executors = new Map([
+    this.executors = new Map<string, ToolExecutor>([
       ['webhook', webhookExecutor],
       ['http_post', webhookExecutor],
       ['http_get', webhookExecutor],

@@ -9,7 +9,7 @@ import {
   type GenerateAgentResult,
 } from '@voiceforge/shared';
 import { env } from '../../config/env';
-import { MockAgentGeneratorService } from '../../agents/mock-generator.service';
+import { LocalTemplateAgentGenerator } from '../../agents/local-template-generator.service';
 import type { LlmAgentGenerator } from '../llm.provider.interface';
 
 /**
@@ -18,14 +18,14 @@ import type { LlmAgentGenerator } from '../llm.provider.interface';
  *
  * Always validates the model output via `AgentSpecSchema`. On any failure
  * (network, parse, schema, missing key) it falls back to the deterministic
- * mock generator so the user still gets a working draft.
+ * local template generator so the user still gets a working draft.
  */
 @Injectable()
 export class AnthropicLlmAdapter implements LlmAgentGenerator {
   readonly name = 'anthropic';
   private readonly logger = new Logger(AnthropicLlmAdapter.name);
 
-  constructor(private readonly mock: MockAgentGeneratorService) {}
+  constructor(private readonly fallback: LocalTemplateAgentGenerator) {}
 
   private get model(): string {
     return env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
@@ -40,7 +40,7 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
   async generate(input: GenerateAgentDto): Promise<GenerateAgentResult> {
     if (!env.ANTHROPIC_API_KEY) {
       this.logger.warn('ANTHROPIC_API_KEY not set — falling back to MockAgentGeneratorService.');
-      return this.mock.generate(input);
+      return this.fallback.generate(input);
     }
 
     const baseTemplate = this.pickTemplate(input);
@@ -49,7 +49,7 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
       const parsed = AgentSpecSchema.safeParse(spec);
       if (!parsed.success) {
         this.logger.warn(`Anthropic returned invalid Agent Spec: ${parsed.error.message}`);
-        return this.mock.generate(input);
+        return this.fallback.generate(input);
       }
       return {
         spec: parsed.data,
@@ -59,7 +59,7 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
       };
     } catch (err) {
       this.logger.warn(`Anthropic call failed: ${(err as Error).message}. Falling back to mock.`);
-      return this.mock.generate(input);
+      return this.fallback.generate(input);
     }
   }
 

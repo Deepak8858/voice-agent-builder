@@ -64,27 +64,27 @@ export class StripeWebhookService {
       create: {
         stripeEventId: event.id,
         type: event.type,
-        apiVersion: event.apiVersion ?? null,
+        apiVersion: event.api_version ?? null,
         created: new Date(event.created * 1000),
-        data: event.data.object as Prisma.InputJsonValue,
+        data: event.data.object as unknown as Prisma.InputJsonValue,
         livemode: event.livemode,
-        pendingWebhooks: event.pendingWebhooks,
+        pendingWebhooks: event.pending_webhooks,
         processedAt: new Date(),
       },
       update: { processedAt: new Date(), errorMessage: null },
     });
   }
 
-  private async markError(stripeEventId: string, errorMessage: string): Promise<void> {
+  private async markError(event: Stripe.Event, errorMessage: string): Promise<void> {
     await this.prisma.stripeEvent.upsert({
-      where: { stripeEventId },
+      where: { stripeEventId: event.id },
       create: {
-        stripeEventId,
-        type: 'unknown',
-        created: new Date(),
-        data: {},
-        livemode: false,
-        pendingWebhooks: 0,
+        stripeEventId: event.id,
+        type: event.type,
+        created: new Date(event.created * 1000),
+        data: event.data.object as unknown as Prisma.InputJsonValue,
+        livemode: event.livemode,
+        pendingWebhooks: event.pending_webhooks,
         errorMessage,
       },
       update: { errorMessage },

@@ -1,6 +1,6 @@
 import { Controller, Get, Patch, Body } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import { SessionUser } from '../../common/decorators/session-user.decorator';
+import { PrismaService } from '../prisma/prisma.service';
+import { SessionUser } from '../common/decorators/session-user.decorator';
 
 @Controller('auth')
 export class MeController {

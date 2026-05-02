@@ -41,7 +41,6 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
           case 'azure-aifoundry':
             if (!env.LLM_API_KEY) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_API_KEY not set.');
             return azure;
-          case 'mock':
           default:
             logger.log('Using local template-based agent generator (no external LLM API key required).');
             return local;

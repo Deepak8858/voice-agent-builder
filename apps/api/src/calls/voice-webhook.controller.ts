@@ -36,7 +36,12 @@ export class VoiceWebhookController {
       throw new UnauthorizedException('Missing webhook secret');
     }
 
-    await this.callsService.ingestEvent({ provider, event: body });
+    const event = body as Record<string, unknown>;
+    await this.callsService.ingestEvent(provider, {
+      event_type: String(event['event_type'] ?? 'unknown'),
+      provider_call_id: event['provider_call_id'] as string | undefined,
+      data: event['data'] as Record<string, unknown> | undefined,
+    });
     return { received: true };
   }
 }
