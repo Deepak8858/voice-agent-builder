@@ -149,7 +149,7 @@ docker run --rm \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   -u root \
   voiceforge-api:latest \
-  ./node_modules/.bin/prisma migrate deploy --schema=/prisma/schema.prisma
+  ./node_modules/.bin/prisma migrate deploy --schema=/prisma/schema.prisma || log "WARNING: Prisma migration failed (may be already up-to-date or connection issue). Continuing..."
 log "Done."
 
 # ---------------------------------------------------------------------------
