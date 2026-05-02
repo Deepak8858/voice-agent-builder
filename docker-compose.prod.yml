@@ -17,30 +17,6 @@
 # =============================================================================
 
 services:
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: vf-nginx
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./infra/nginx/ssl:/etc/nginx/ssl:ro
-      - nginx_cache:/var/cache/nginx
-    depends_on:
-      web:
-        condition: service_started
-      api:
-        condition: service_started
-    networks:
-      - voiceforge
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   web:
     image: ${WEB_IMAGE:-voiceforge-web}:${IMAGE_TAG:-latest}
     container_name: vf-web
@@ -138,5 +114,4 @@ networks:
     driver: bridge
 
 volumes:
-  nginx_cache:
   redis_data:
