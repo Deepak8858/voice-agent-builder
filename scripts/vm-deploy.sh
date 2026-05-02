@@ -147,6 +147,13 @@ docker run --rm \
   --env-file "$ENV_FILE" \
   -e DATABASE_URL="${DIRECT_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
+  --entrypoint node \
+  node:20 \
+  -e "console.log('INSIDE_CONTAINER_DB_URL=[' + process.env.DATABASE_URL + ']')"
+docker run --rm \
+  --env-file "$ENV_FILE" \
+  -e DATABASE_URL="${DIRECT_URL}" \
+  -v "${APP_DIR}/apps/api/prisma:/prisma" \
   --entrypoint sh \
   node:20 \
   -c 'apt-get update -qq && apt-get install -y -qq openssl ca-certificates > /dev/null 2>&1 && npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
