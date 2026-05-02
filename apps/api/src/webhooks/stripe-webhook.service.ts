@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Stripe from 'stripe';
+import { Prisma } from '@prisma/client';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingService } from '../billing/billing.service';
@@ -49,24 +50,25 @@ export class StripeWebhookService {
 
     try {
       await this.dispatch(event);
-      await this.markProcessed(event.id);
+      await this.markProcessed(event);
       return { handled: true, message: `Event ${event.id} processed` };
     } catch (err) {
-      await this.markError(event.id, String(err));
+      await this.markError(event, String(err));
       return { handled: false, message: String(err) };
     }
   }
 
-  private async markProcessed(stripeEventId: string): Promise<void> {
+  private async markProcessed(event: Stripe.Event): Promise<void> {
     await this.prisma.stripeEvent.upsert({
-      where: { stripeEventId },
+      where: { stripeEventId: event.id },
       create: {
-        stripeEventId,
-        type: 'unknown',
-        created: new Date(),
-        data: {},
-        livemode: false,
-        pendingWebhooks: 0,
+        stripeEventId: event.id,
+        type: event.type,
+        apiVersion: event.apiVersion ?? null,
+        created: new Date(event.created * 1000),
+        data: event.data.object as Prisma.InputJsonValue,
+        livemode: event.livemode,
+        pendingWebhooks: event.pendingWebhooks,
         processedAt: new Date(),
       },
       update: { processedAt: new Date(), errorMessage: null },
