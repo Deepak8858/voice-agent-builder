@@ -26,6 +26,7 @@ import { VoiceModule } from './voice/voice.module';
 import { WhiteLabelModule } from './white-label/white-label.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
+import { EmailModule } from './email/email.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
     WhiteLabelModule,
     StripeWebhookModule,
     BillingModule,
+    EmailModule,
   ],
 })
 export class AppModule implements OnApplicationShutdown {
