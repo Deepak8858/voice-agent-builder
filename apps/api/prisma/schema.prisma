@@ -338,7 +338,7 @@ model CallEvent {
   id             String   @id @default(uuid()) @db.Uuid
   callId         String   @map("call_id") @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
   eventType      String   @map("event_type")
   eventTime      DateTime @default(now()) @map("event_time")
   payload        Json?
@@ -356,7 +356,7 @@ model CallEvaluation {
   id             String   @id @default(uuid()) @db.Uuid
   callId         String   @unique @map("call_id") @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
   agentId        String   @map("agent_id") @db.Uuid
   agentVersionId String?  @map("agent_version_id") @db.Uuid
   overallScore   Float    @map("overall_score")
