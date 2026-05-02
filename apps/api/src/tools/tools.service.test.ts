@@ -41,6 +41,7 @@ function makeService(opts: { tool?: ToolRow | null }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
   const prisma = {
+    organizationIdFor: vi.fn(async () => 'org-1'),
     integrationTool: {
       findFirst: vi.fn(async () => opts.tool ?? null),
     },

@@ -18,6 +18,7 @@ export function useApi() {
         headers.set('content-type', 'application/json');
       }
       if (token) headers.set('authorization', `Bearer ${token}`);
+      headers.set('x-requested-with', 'XMLHttpRequest');
 
       const res = await fetch(`${API_BASE}${path}`, {
         ...init,

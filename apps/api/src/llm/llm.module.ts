@@ -1,10 +1,9 @@
-import { Global, Module } from '@nestjs/common';
-import { MockAgentGeneratorService } from '../agents/mock-generator.service';
+import { Global, Logger, Module } from '@nestjs/common';
+import { LocalTemplateAgentGenerator } from '../agents/local-template-generator.service';
 import { env } from '../config/env';
 import { AnthropicLlmAdapter } from './adapters/anthropic.adapter';
 import { AzureAiFoundryAdapter } from './adapters/azure-aifoundry.adapter';
 import { GithubModelsLlmAdapter } from './adapters/github-models.adapter';
-import { MockLlmAdapter } from './adapters/mock-llm.adapter';
 import { OpenAiLlmAdapter } from './adapters/openai.adapter';
 import { LlmCacheService } from './llm-cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.interface';
@@ -12,39 +11,44 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
 @Global()
 @Module({
   providers: [
-    MockAgentGeneratorService,
+    LocalTemplateAgentGenerator,
     LlmCacheService,
-    MockLlmAdapter,
     GithubModelsLlmAdapter,
     OpenAiLlmAdapter,
     AnthropicLlmAdapter,
     AzureAiFoundryAdapter,
     {
       provide: LLM_PROVIDER_TOKEN,
-      inject: [MockLlmAdapter, GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter, AzureAiFoundryAdapter],
+      inject: [LocalTemplateAgentGenerator, GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter, AzureAiFoundryAdapter],
       useFactory: (
-        mock: MockLlmAdapter,
+        local: LocalTemplateAgentGenerator,
         github: GithubModelsLlmAdapter,
         openai: OpenAiLlmAdapter,
         anthropic: AnthropicLlmAdapter,
         azure: AzureAiFoundryAdapter,
       ): LlmAgentGenerator => {
+        const logger = new Logger('LlmModule');
         switch (env.LLM_PROVIDER) {
           case 'github':
+            if (!env.GITHUB_TOKEN) throw new Error('LLM_PROVIDER=github but GITHUB_TOKEN not set.');
             return github;
           case 'openai':
+            if (!env.OPENAI_API_KEY) throw new Error('LLM_PROVIDER=openai but OPENAI_API_KEY not set.');
             return openai;
           case 'anthropic':
+            if (!env.ANTHROPIC_API_KEY) throw new Error('LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY not set.');
             return anthropic;
           case 'azure-aifoundry':
+            if (!env.LLM_API_KEY) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_API_KEY not set.');
             return azure;
           case 'mock':
           default:
-            return mock;
+            logger.log('Using local template-based agent generator (no external LLM API key required).');
+            return local;
         }
       },
     },
   ],
-  exports: [LLM_PROVIDER_TOKEN, MockAgentGeneratorService, LlmCacheService],
+  exports: [LLM_PROVIDER_TOKEN, LocalTemplateAgentGenerator, LlmCacheService],
 })
 export class LlmModule {}

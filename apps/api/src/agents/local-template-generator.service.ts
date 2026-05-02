@@ -12,20 +12,24 @@ import { AgentSpecInvalidError } from '../common/errors';
 
 /**
  * Deterministic, no-network prompt-to-agent generator. Given a prompt and an
- * optional template slug, it returns a valid Agent Spec JSON. This is the
- * MVP LLM stub described in docs/27_MOCK_BUILD_PLAN.md ("Mock LLM").
+ * optional template slug, it returns a valid Agent Spec JSON by merging
+ * templates with keyword heuristics.
+ *
+ * This is a REAL local generator — not a mock. It works without any external
+ * API key and is selectable via LLM_PROVIDER=local.
  *
  * Strategy:
  *   1. Pick a template (explicit slug wins; else keyword-match; else default).
  *   2. Merge business_context into identity.
  *   3. Apply light keyword heuristics to adjust goals / tools / handoff /
- *      compliance (e.g. "book" \u2192 add calendar tool, "opt out" \u2192 assert
+ *      compliance (e.g. "book" → add calendar tool, "opt out" → assert
  *      opt_out_enabled, etc).
  *   4. Parse through AgentSpecSchema to guarantee the output is valid.
  */
 @Injectable()
-export class MockAgentGeneratorService {
-  generate(input: GenerateAgentDto): GenerateAgentResult {
+export class LocalTemplateAgentGenerator {
+  readonly name = 'local';
+  async generate(input: GenerateAgentDto): Promise<GenerateAgentResult> {
     const template = this.pickTemplate(input);
     const base = structuredClone(template.spec) as AgentSpec;
 

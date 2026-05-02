@@ -82,7 +82,7 @@ export default async function DashboardHome() {
           <li>\u2022 Create your first agent from a template or prompt</li>
           <li>\u2022 Upload FAQs or a PDF knowledge base (Phase 2)</li>
           <li>\u2022 Connect Google Calendar for booking tools (Phase 2)</li>
-          <li>\u2022 Test a mock call and review the transcript (Phase 3)</li>
+          <li>\u2022 Test a call and review the transcript (Phase 3)</li>
           <li>\u2022 Configure compliance: consent, DNC, opt-out (Phase 6)</li>
           <li>\u2022 Brand your client dashboard (Phase 8)</li>
         </ul>

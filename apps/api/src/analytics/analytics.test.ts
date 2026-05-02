@@ -67,6 +67,7 @@ function makePrisma(state: {
   events: EventRow[];
 }) {
   return {
+    organizationIdFor: vi.fn(async () => 'org-1'),
     analyticsEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const row: EventRow = {

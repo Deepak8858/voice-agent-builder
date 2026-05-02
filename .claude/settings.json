@@ -1,6 +1,6 @@
 {
   "enabledPlugins": {
-    "deploy-on-aws@claude-plugins-official": true,
-    "aws-serverless@claude-plugins-official": true
+    "deploy-on-aws@claude-plugins-official": false,
+    "aws-serverless@claude-plugins-official": false
   }
 }

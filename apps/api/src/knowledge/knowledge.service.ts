@@ -82,9 +82,12 @@ export class KnowledgeService {
       if (!agent) throw new AgentNotFoundError(dto.agent_id);
     }
 
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+
     const created = await this.prisma.knowledgeSource.create({
       data: {
         workspaceId,
+        organizationId,
         agentId: dto.agent_id ?? null,
         sourceType: dto.source_type,
         title: dto.title,
@@ -99,7 +102,7 @@ export class KnowledgeService {
     });
 
     if (dto.source_type === 'text' && dto.content) {
-      await this.processSource(created.id, workspaceId, dto.agent_id ?? null, dto.content);
+      await this.processSource(created.id, workspaceId, organizationId, dto.agent_id ?? null, dto.content);
     } else if (dto.source_type === 'url' && dto.file_url) {
       // URL-based ingest is not yet implemented; mark ready with no chunks so
       // the source is visible. Phase 10 will add a URL fetcher worker.
@@ -139,9 +142,12 @@ export class KnowledgeService {
 
     const parsed = await this.fileParser.parse(input.buffer, input.mimeType, input.filename);
 
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+
     const created = await this.prisma.knowledgeSource.create({
       data: {
         workspaceId,
+        organizationId,
         agentId: input.agentId ?? null,
         sourceType: 'file',
         title: input.title,
@@ -158,7 +164,7 @@ export class KnowledgeService {
       },
     });
 
-    await this.processSource(created.id, workspaceId, input.agentId ?? null, parsed.text);
+    await this.processSource(created.id, workspaceId, organizationId, input.agentId ?? null, parsed.text);
 
     await this.audit.log({
       workspaceId,
@@ -347,17 +353,13 @@ export class KnowledgeService {
 
     const chunks = await this.prisma.knowledgeChunk.findMany({
       where,
-      include: {
-        source: {
-          select: { id: true, title: true, sourceType: true, agentId: true },
-        },
-      },
+      include: { source: true },
     });
     if (chunks.length === 0) return [];
 
     const scored = chunks
       .map((c) => {
-        const emb = this.coerceVec(c.embedding);
+        const emb = this.coerceVec((c as unknown as Record<string, Prisma.JsonValue | null>).embedding);
         if (!emb) return null;
         return {
           chunk: c,
@@ -382,6 +384,7 @@ export class KnowledgeService {
   private async processSource(
     sourceId: string,
     workspaceId: string,
+    organizationId: string,
     agentId: string | null,
     text: string,
   ): Promise<void> {
@@ -411,6 +414,7 @@ export class KnowledgeService {
         data: chunks.map((content, idx) => ({
           sourceId,
           workspaceId,
+          organizationId,
           agentId,
           chunkIndex: idx,
           content,

@@ -25,6 +25,10 @@ function makeService(opts: {
   const evals = vi.fn(async () => null);
 
   const prisma = {
+    organizationIdFor: vi.fn(async () => 'org-1'),
+    workspace: {
+      findUniqueOrThrow: vi.fn(async () => ({ organizationId: 'org-1' })),
+    },
     call: {
       findFirst: vi.fn(async () => opts.callByProviderCallId ?? null),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -48,7 +52,7 @@ function makeService(opts: {
     },
   };
   const audit = { log: vi.fn() };
-  const voice = { name: 'mock' };
+  const voice = { name: 'vapi' };
   const evaluations = { evaluateCall: evals, getForCall: vi.fn() };
   const compliance = {
     check: vi.fn(),
@@ -118,7 +122,7 @@ describe('CallsService.ingestEvent', () => {
       event_type: 'call.started',
       provider_call_id: 'call_xyz',
       data: {
-        provider_runtime_id: 'mock_rt_42',
+        provider_runtime_id: 'rt_42',
         from_number: '+15550001111',
         to_number: '+18004443333',
         contact_name: 'John',

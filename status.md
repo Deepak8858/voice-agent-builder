@@ -112,16 +112,29 @@ voice-agent-builder/
 - [x] `AuthModule` dispatches between Mock and Clerk based on `AUTH_PROVIDER`
 - [x] Server-side (`lib/api.ts`) and client-side (`lib/use-api.ts`) fetch helpers forward the Clerk session token
 
-## Not yet done
+## Phase 10 — Production Hardening (IN PROGRESS → MOSTLY DONE)
 
-- [x] `npm install` at the repo root
-- [x] `npm run typecheck` (all workspaces clean)
-- [x] `npm run test` (165 / 165 passing)
-- [x] `npm run db:generate` (Prisma Client generated)
-- [x] `npm run db:push` and `npm run db:seed` against the user's Supabase instance
-- [x] Azure VM production deployment complete (ACR, Docker Compose, Nginx, Let's Encrypt SSL)
-- [ ] Live end-to-end smoke test via public domain (sign up via Clerk → dashboard loads → generate agent → save draft → builder page)
-- [ ] Phase 10 Production Hardening (load testing, backup validation, security audit)
+- [x] Security audit (API + Web) — 2026-05-01
+- [x] Rate limiting applied globally via APP_GUARD + fixed SkipRateLimit decorator
+- [x] Metrics endpoint protected with bearer token auth
+- [x] Mock auth cookies signed with HMAC + secure flag in production
+- [x] Production error message sanitization (no Prisma schema leaks)
+- [x] Voice webhook HMAC signature verification added
+- [x] Billing controller URL validation + ZodValidationPipe + workspace param fix
+- [x] White-label invite email verification + logo_url/custom_domain validation
+- [x] Knowledge upload filename sanitization + MIME type allow-list
+- [x] Agent flow update validated with Zod schema
+- [x] CORS production guard (ALLOWED_ORIGINS assertion)
+- [x] Next.js CSP + security headers (nosniff, frame-options, referrer-policy, permissions-policy)
+- [x] Next.js middleware.ts created (replaces non-functional proxy.ts)
+- [x] Billing panel open-redirect validation (Stripe domain allow-list)
+- [x] CSRF protection via X-Requested-With header on all API calls
+- [x] Enhanced k6 scripts (auth-flow, spike, soak, compliance-load)
+- [x] Backup validation script (`scripts/backup-validation.js`)
+- [x] Operations runbook (`docs/RUNBOOK.md`)
+- [ ] Load test execution against production
+- [ ] Live end-to-end smoke test via public domain
+- [ ] Phase 10 final sign-off
 
 ## What the user needs to provide
 

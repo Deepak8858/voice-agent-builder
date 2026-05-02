@@ -12,6 +12,7 @@ export async function apiFetch<T>(
   const token = await getToken();
   const headers = new Headers(init.headers);
   headers.set('content-type', 'application/json');
+  headers.set('x-requested-with', 'XMLHttpRequest');
   if (token) headers.set('authorization', `Bearer ${token}`);
 
   const res = await fetch(`${API_BASE}${path}`, {

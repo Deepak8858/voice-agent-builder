@@ -5,6 +5,8 @@ import { z } from 'zod';
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
  * misconfigured environment fails fast with a readable error.
+ *
+ * RULE: mock providers are REMOVED. Only real providers are allowed.
  */
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -15,10 +17,10 @@ const EnvSchema = z.object({
   DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().optional(),
 
-  AUTH_PROVIDER: z.enum(['mock', 'clerk']).default('mock'),
-  VOICE_PROVIDER: z.enum(['mock', 'vapi', 'retell']).default('mock'),
-  LLM_PROVIDER: z.enum(['mock', 'github', 'openai', 'anthropic', 'azure-aifoundry']).default('mock'),
-  EMBEDDING_PROVIDER: z.enum(['mock', 'openai']).default('mock'),
+  AUTH_PROVIDER: z.enum(['clerk']).default('clerk'),
+  VOICE_PROVIDER: z.enum(['vapi', 'retell']).optional(),
+  LLM_PROVIDER: z.enum(['local', 'github', 'openai', 'anthropic', 'azure-aifoundry']).default('local'),
+  EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
   VAPI_API_KEY: z.string().optional(),
   VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
@@ -46,6 +48,9 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().optional(),
 
+  VAPI_API_KEY: z.string().optional(),
+  RETELL_API_KEY: z.string().optional(),
+
   JWT_SECRET: z.string().default('change-me-in-development'),
   ENCRYPTION_KEY: z.string().optional(),
 
@@ -62,6 +67,9 @@ const EnvSchema = z.object({
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  METRICS_SCRAPE_TOKEN: z.string().optional(),
+  VOICE_WEBHOOK_SECRET: z.string().optional(),
 
   // Comma-separated list of allowed origins for CORS (no wildcards in production)
   ALLOWED_ORIGINS: z

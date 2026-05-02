@@ -5,7 +5,6 @@ import {
   EMBEDDING_PROVIDER_TOKEN,
   type EmbeddingProvider,
 } from './embeddings/embedding.provider.interface';
-import { MockEmbeddingAdapter } from './embeddings/mock.embedding.adapter';
 import { OpenAIEmbeddingAdapter } from './embeddings/openai.embedding.adapter';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeService } from './knowledge.service';
@@ -13,20 +12,15 @@ import { FileParser } from './parsers/file-parser';
 
 const embeddingProvider: Provider = {
   provide: EMBEDDING_PROVIDER_TOKEN,
-  inject: [MockEmbeddingAdapter],
-  useFactory: (mock: MockEmbeddingAdapter): EmbeddingProvider => {
+  useFactory: (): EmbeddingProvider => {
     const logger = new Logger('KnowledgeModule');
     if (env.EMBEDDING_PROVIDER === 'openai') {
-      try {
-        return new OpenAIEmbeddingAdapter();
-      } catch (err) {
-        logger.warn(
-          `Falling back to mock embedder: ${(err as Error).message}`,
-        );
-        return mock;
+      if (!env.OPENAI_API_KEY) {
+        throw new Error('EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set.');
       }
+      return new OpenAIEmbeddingAdapter();
     }
-    return mock;
+    throw new Error(`Unsupported EMBEDDING_PROVIDER: ${env.EMBEDDING_PROVIDER}`);
   },
 };
 
@@ -36,7 +30,6 @@ const embeddingProvider: Provider = {
     KnowledgeService,
     WorkspaceGuard,
     FileParser,
-    MockEmbeddingAdapter,
     embeddingProvider,
   ],
   exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN],

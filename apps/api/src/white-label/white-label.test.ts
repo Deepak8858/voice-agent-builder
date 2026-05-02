@@ -72,6 +72,7 @@ function makePrisma(state: {
   invites: InviteRow[];
   calls: CallRow[];
   compliance: ComplianceRow[];
+  users?: { id: string; email: string }[];
 }) {
   let nextId = 1;
   const id = () => `id-${nextId++}`;
@@ -260,6 +261,14 @@ function makePrisma(state: {
         ).length;
       }),
     },
+    user: {
+      findUnique: vi.fn(async ({ where }: { where: any }) => {
+        if (where.id) {
+          return state.users?.find((u) => u.id === where.id) ?? null;
+        }
+        return null;
+      }),
+    },
     $transaction: vi.fn(async (fn: any) => fn(tx)),
   };
 }
@@ -288,6 +297,7 @@ function freshState() {
     invites: [] as InviteRow[],
     calls: [] as CallRow[],
     compliance: [] as ComplianceRow[],
+    users: [] as { id: string; email: string }[],
   };
 }
 
@@ -619,6 +629,7 @@ describe('WhiteLabelService invites', () => {
       invitedBy: ACTOR,
       createdAt: new Date(),
     });
+    state.users.push({ id: 'user-2', email: 'a@b.com' });
     const svc = new WhiteLabelService(makePrisma(state) as never, audit);
     const r = await svc.acceptInvite('user-2', 'tok-123');
     expect(r.status).toBe('accepted');

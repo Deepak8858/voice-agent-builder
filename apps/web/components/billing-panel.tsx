@@ -35,6 +35,18 @@ const METRIC_LABELS: Record<string, string> = {
   agents: 'Agents',
 };
 
+function isTrustedCheckoutUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && (
+      u.hostname === 'checkout.stripe.com' ||
+      u.hostname.endsWith('.stripe.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
   const { call } = useApi();
 
@@ -76,6 +88,9 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
           cancelUrl: `${window.location.origin}/dashboard/billing?checkout=cancel`,
         }),
       });
+      if (!isTrustedCheckoutUrl(data.url)) {
+        throw new Error('Untrusted redirect URL received from server');
+      }
       window.location.href = data.url;
     },
   });
@@ -84,8 +99,11 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
     mutationFn: async () => {
       const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/portal`, {
         method: 'POST',
-        body: JSON.stringify({ returnUrl: window.location.href }),
+        body: JSON.stringify({ returnUrl: `${window.location.origin}/dashboard/billing` }),
       });
+      if (!isTrustedCheckoutUrl(data.url)) {
+        throw new Error('Untrusted redirect URL received from server');
+      }
       window.location.href = data.url;
     },
   });

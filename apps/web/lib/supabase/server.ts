@@ -1,38 +1,30 @@
-import 'server-only';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { auth } from '@clerk/nextjs/server';
+import { createClient } from '@supabase/supabase-js';
 
-/**
- * Server-side Supabase client. Call this inside server components, route
- * handlers, and server actions. Cookies are forwarded so supabase-js can
- * read the authenticated session if present.
- */
-export async function createSupabaseServerClient() {
+function getEnv() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !key) {
     throw new Error(
-      'Supabase env vars missing. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY.',
+      'Missing Supabase client environment variables. ' +
+        'Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY in .env',
     );
   }
+  return { url, key };
+}
 
-  const store = await cookies();
+/**
+ * Server-side Supabase client authenticated via Clerk session token.
+ * Use in Server Components or server actions where RLS should enforce
+ * permissions based on the current user's Clerk identity.
+ */
+export async function createServerSupabaseClient() {
+  const { getToken } = await auth();
+  const { url, key } = getEnv();
 
-  return createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return store.getAll().map(({ name, value }) => ({ name, value }));
-      },
-      setAll(list) {
-        // In server components cookies() is read-only; guard the write.
-        try {
-          for (const { name, value, options } of list) {
-            store.set({ name, value, ...options });
-          }
-        } catch {
-          // Ignore in RSC; set via middleware/route handler instead.
-        }
-      },
+  return createClient(url, key, {
+    async accessToken() {
+      return getToken();
     },
   });
 }

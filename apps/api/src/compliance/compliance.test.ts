@@ -52,6 +52,7 @@ interface State {
 function makePrisma(state: State) {
   let nextId = 1;
   return {
+    organizationIdFor: vi.fn(async () => 'org-1'),
     agent: {
       findFirst: vi.fn(async () => state.agent),
     },

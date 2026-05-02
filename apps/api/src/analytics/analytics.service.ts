@@ -31,9 +31,11 @@ export class AnalyticsService {
     workspaceId: string,
     dto: RecordAnalyticsEventDto,
   ): Promise<AnalyticsEvent> {
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
     const row = await this.prisma.analyticsEvent.create({
       data: {
         workspaceId,
+        organizationId,
         agentId: dto.agent_id ?? null,
         callId: dto.call_id ?? null,
         eventType: dto.event_type,
@@ -52,9 +54,11 @@ export class AnalyticsService {
     payload?: Record<string, unknown>;
   }): Promise<void> {
     try {
+      const organizationId = await this.prisma.organizationIdFor(input.workspaceId);
       await this.prisma.analyticsEvent.create({
         data: {
           workspaceId: input.workspaceId,
+          organizationId,
           agentId: input.agentId ?? null,
           callId: input.callId ?? null,
           eventType: input.eventType,

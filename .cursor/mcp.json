@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "clerk": {
+      "command": "npx",
+      "args": ["-y", "@clerk/mcp@latest"],
+      "env": {
+        "CLERK_SECRET_KEY": "YOUR_CLERK_SECRET_KEY_HERE"
+      }
+    }
+  }
+}

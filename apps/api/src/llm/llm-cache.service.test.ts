@@ -23,7 +23,7 @@ describe('LlmCacheService', () => {
       const input: GenerateAgentDto = {
         prompt: 'Create a support agent',
         template_slug: 'support',
-        business_context: { industry: 'tech' },
+        business_context: { business_name: 'TechCo' },
         knowledge_source_ids: [],
       };
       const key1 = service.buildKey(input);
@@ -36,13 +36,13 @@ describe('LlmCacheService', () => {
       const input1: GenerateAgentDto = {
         prompt: 'Create a support agent',
         template_slug: 'support',
-        business_context: { a: '1', b: '2', c: '3' },
+        business_context: { business_name: 'A', timezone: 'UTC', industry_hint: 'tech' },
         knowledge_source_ids: [],
       };
       const input2: GenerateAgentDto = {
         prompt: 'Create a support agent',
         template_slug: 'support',
-        business_context: { c: '3', a: '1', b: '2' },
+        business_context: { industry_hint: 'tech', business_name: 'A', timezone: 'UTC' },
         knowledge_source_ids: [],
       };
       expect(service.buildKey(input1)).toBe(service.buildKey(input2));
@@ -64,13 +64,13 @@ describe('LlmCacheService', () => {
       const input1: GenerateAgentDto = {
         prompt: 'Create a support agent',
         template_slug: 'support',
-        business_context: { a: '1', b: null as unknown as string, c: undefined as unknown as string, d: '', e: '2' },
+        business_context: { business_name: 'A', timezone: null as unknown as string },
         knowledge_source_ids: [],
       };
       const input2: GenerateAgentDto = {
         prompt: 'Create a support agent',
         template_slug: 'support',
-        business_context: { a: '1', e: '2' },
+        business_context: { business_name: 'A' },
         knowledge_source_ids: [],
       };
       expect(service.buildKey(input1)).toBe(service.buildKey(input2));
@@ -98,10 +98,31 @@ describe('LlmCacheService', () => {
   describe('get', () => {
     it('returns cached result on hit', async () => {
       const result: GenerateAgentResult = {
-        agentSpec: { name: 'test-agent', version: '1.0.0' } as import('@voiceforge/shared').AgentSpec,
-        validation: { valid: true, errors: [] },
-        cached: false,
-        generationMs: 100,
+        spec: {
+          schema_version: '1.0',
+          name: 'Test Agent',
+          industry: 'healthcare',
+          agent_type: 'inbound_receptionist',
+          language: 'en',
+          voice: { tone: 'professional', allow_interruptions: true },
+          identity: { business_name: 'Test Corp', agent_name: 'Alice' },
+          goals: ['Greet caller', 'Collect info'],
+          required_fields: [],
+          conversation_rules: {
+            ask_one_question_at_a_time: true,
+            confirm_critical_information: true,
+            do_not_make_up_answers: true,
+            fallback_to_human_when_unsure: true,
+          },
+          knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
+          tools: [],
+          handoff: { enabled: false, conditions: [] },
+          compliance: { ai_disclosure_required: true, recording_notice_required: false, opt_out_enabled: true, consent_required_for_outbound: true },
+          analytics: { success_events: [] },
+        },
+        suggested_name: 'Test Agent',
+        rationale: 'Generated from cache test',
+        matched_template_slug: 'ai-receptionist',
       };
       (cacheService.get as ReturnType<typeof vi.fn>).mockResolvedValue(result);
 
@@ -132,10 +153,31 @@ describe('LlmCacheService', () => {
   describe('set', () => {
     it('calls cache.set with correct TTL', async () => {
       const result: GenerateAgentResult = {
-        agentSpec: { name: 'test-agent', version: '1.0.0' } as import('@voiceforge/shared').AgentSpec,
-        validation: { valid: true, errors: [] },
-        cached: false,
-        generationMs: 100,
+        spec: {
+          schema_version: '1.0',
+          name: 'Test Agent',
+          industry: 'healthcare',
+          agent_type: 'inbound_receptionist',
+          language: 'en',
+          voice: { tone: 'professional', allow_interruptions: true },
+          identity: { business_name: 'Test Corp', agent_name: 'Alice' },
+          goals: ['Greet caller'],
+          required_fields: [],
+          conversation_rules: {
+            ask_one_question_at_a_time: true,
+            confirm_critical_information: true,
+            do_not_make_up_answers: true,
+            fallback_to_human_when_unsure: true,
+          },
+          knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
+          tools: [],
+          handoff: { enabled: false, conditions: [] },
+          compliance: { ai_disclosure_required: true, recording_notice_required: false, opt_out_enabled: true, consent_required_for_outbound: true },
+          analytics: { success_events: [] },
+        },
+        suggested_name: 'Test Agent',
+        rationale: 'Generated from cache test',
+        matched_template_slug: null,
       };
       (cacheService.set as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 

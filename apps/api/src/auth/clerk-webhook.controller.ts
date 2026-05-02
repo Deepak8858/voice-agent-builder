@@ -1,57 +1,244 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { BadRequestException, Controller, Headers, HttpCode, Logger, Post, Req, UnauthorizedException } from '@nestjs/common';
+import type { Request } from 'express';
+import { Webhook } from 'svix';
+import { AuditService } from '../audit/audit.service';
+import { CacheService } from '../cache/cache.service';
+import { env } from '../config/env';
+import { PrismaService } from '../prisma/prisma.service';
+
+interface ClerkEvent {
+  type: string;
+  data: Record<string, unknown>;
+  timestamp?: number;
+}
+
+interface ClerkUserData {
+  id: string;
+  email_addresses?: Array<{ email_address: string; id: string }>;
+  primary_email_address_id?: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  username?: string | null;
+}
+
+interface ClerkOrgData {
+  id: string;
+  name?: string;
+  slug?: string;
+}
+
+interface ClerkOrgMembershipData {
+  id: string;
+  organization: ClerkOrgData;
+  public_user_data?: { user_id: string };
+  role?: string;
+}
 
 @Controller('webhooks/clerk')
 export class ClerkWebhookController {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ClerkWebhookController.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly cache: CacheService,
+  ) {}
 
   @Post()
-  @HttpCode(HttpStatus.OK)
-  async handle(@Body() body: { type: string; data: Record<string, unknown> }) {
-    const { type, data } = body;
-
-    if (type === 'user.created' || type === 'user.updated') {
-      await this.prisma.user.upsert({
-        where: { id: data.id as string },
-        update: {
-          email: (data.email_addresses as Array<{ email_address: string }>)?.[0]?.email_address,
-          name: (data.first_name as string | undefined) ?? undefined,
-        },
-        create: {
-          id: data.id as string,
-          email: (data.email_addresses as Array<{ email_address: string }>)?.[0]?.email_address ?? 'missing',
-          name: data.first_name as string | undefined,
-        },
-      });
+  @HttpCode(204)
+  async receive(
+    @Headers() headers: Record<string, string>,
+    @Req() req: Request & { rawBody?: Buffer },
+  ): Promise<void> {
+    if (!env.CLERK_WEBHOOK_SECRET) {
+      if (env.NODE_ENV === 'production') {
+        throw new UnauthorizedException('Clerk webhook not configured');
+      }
+      this.logger.warn('CLERK_WEBHOOK_SECRET not set; allowing webhook in non-production mode.');
     }
 
-    if (type === 'organization.created' || type === 'organization.updated') {
-      await this.prisma.organization.upsert({
-        where: { id: data.id as string },
-        update: { name: data.name as string },
-        create: {
-          id: data.id as string,
-          name: data.name as string,
-          slug: (data.slug as string) ?? data.id as string,
-          ownerUserId: (data.created_by as string) ?? '00000000-0000-0000-0000-000000000000',
-        },
-      });
-    }
+    const rawBody = req.rawBody?.toString('utf8') ?? JSON.stringify(req.body ?? {});
 
-    if (type === 'organizationMembership.created' || type === 'organizationMembership.updated') {
-      const membershipId = data.id as string;
-      const userId = data.public_user_data?.user_id as string;
-      const orgId = data.organization_id as string;
-      const role = (data.role as string) ?? 'viewer';
-      if (userId && orgId) {
-        await this.prisma.membership.upsert({
-          where: { userId_workspaceId: { userId, workspaceId: orgId } },
-          update: { role },
-          create: { id: membershipId, userId, workspaceId: orgId, role },
+    let event: ClerkEvent;
+    if (env.CLERK_WEBHOOK_SECRET) {
+      try {
+        const wh = new Webhook(env.CLERK_WEBHOOK_SECRET);
+        event = wh.verify(rawBody, {
+          'svix-id': headers['svix-id'],
+          'svix-timestamp': headers['svix-timestamp'],
+          'svix-signature': headers['svix-signature'],
+        }) as ClerkEvent;
+      } catch (err) {
+        this.logger.warn(`Clerk webhook signature invalid: ${(err as Error).message}`);
+        await this.audit.log({
+          workspaceId: null,
+          actorUserId: null,
+          action: 'clerk.webhook.rejected',
+          resourceType: 'clerk_webhook',
+          metadata: { reason: 'invalid_signature' },
         });
+        throw new UnauthorizedException('Invalid webhook signature');
+      }
+    } else {
+      try {
+        event = JSON.parse(rawBody) as ClerkEvent;
+      } catch {
+        throw new BadRequestException('Invalid JSON payload');
       }
     }
 
-    return { received: true };
+    const providerEventId = (event.data?.id as string) ?? `${event.type}_${event.timestamp ?? Date.now()}`;
+    await this.prisma.webhookEvent.upsert({
+      where: { provider_providerEventId: { provider: 'clerk', providerEventId } },
+      create: {
+        provider: 'clerk',
+        providerEventId,
+        eventType: event.type,
+        payload: event.data as unknown as import('@prisma/client/runtime/library').JsonObject,
+      },
+      update: {},
+    });
+
+    await this.handle(event);
+
+    await this.prisma.webhookEvent.updateMany({
+      where: { provider: 'clerk', providerEventId },
+      data: { processedAt: new Date() },
+    });
+  }
+
+  private async handle(event: ClerkEvent): Promise<void> {
+    switch (event.type) {
+      case 'user.created':
+      case 'user.updated':
+        await this.upsertUser(event.data as unknown as ClerkUserData);
+        break;
+      case 'user.deleted':
+        await this.deleteUser(event.data as unknown as { id: string });
+        break;
+      case 'organization.created':
+      case 'organization.updated':
+        await this.upsertOrg(event.data as unknown as ClerkOrgData);
+        break;
+      case 'organization.deleted':
+        await this.deleteOrg(event.data as unknown as { id: string });
+        break;
+      case 'organizationMembership.created':
+      case 'organizationMembership.updated':
+        await this.upsertMembership(event.data as unknown as ClerkOrgMembershipData);
+        break;
+      default:
+        this.logger.debug(`Ignoring Clerk event ${event.type}`);
+    }
+  }
+
+  private async upsertUser(data: ClerkUserData): Promise<void> {
+    const externalAuthId = data.id;
+    const email =
+      data.email_addresses?.find((e) => e.id === data.primary_email_address_id)?.email_address ??
+      data.email_addresses?.[0]?.email_address ??
+      null;
+    if (!email) return;
+    const name =
+      [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || null;
+
+    await this.prisma.user.upsert({
+      where: { externalAuthId },
+      create: { externalAuthId, email, name },
+      update: { email, name },
+    });
+
+    await this.cache.del(`session:user:${externalAuthId}`);
+  }
+
+  private async deleteUser(data: { id: string }): Promise<void> {
+    const user = await this.prisma.user.findUnique({ where: { externalAuthId: data.id } });
+    if (!user) return;
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { email: `deleted-${user.id}@voiceforge.local`, name: 'Deleted User', externalAuthId: null },
+    });
+    await this.cache.del(`session:user:${data.id}`);
+  }
+
+  private async upsertOrg(data: ClerkOrgData): Promise<void> {
+    if (!data.id) return;
+    const slug = data.slug ?? `clerk-${data.id}`;
+    await this.prisma.organization.upsert({
+      where: { slug },
+      create: {
+        slug,
+        name: data.name ?? slug,
+        clerkOrgId: data.id,
+        ownerUserId: '00000000-0000-0000-0000-000000000000',
+      },
+      update: { name: data.name ?? slug, clerkOrgId: data.id },
+    });
+  }
+
+  private async deleteOrg(data: { id: string }): Promise<void> {
+    const org = await this.prisma.organization.findUnique({ where: { clerkOrgId: data.id } });
+    if (!org) {
+      this.logger.debug(`Clerk org delete received for ${data.id}; no matching record, skipping.`);
+      return;
+    }
+    await this.prisma.organization.update({
+      where: { id: org.id },
+      data: { status: 'archived', name: `Deleted - ${org.name}` },
+    });
+  }
+
+  private async upsertMembership(data: ClerkOrgMembershipData): Promise<void> {
+    const orgSlug = data.organization?.slug ?? `clerk-${data.organization?.id}`;
+    const externalAuthId = data.public_user_data?.user_id;
+    if (!orgSlug || !externalAuthId) return;
+
+    const org = await this.prisma.organization.findUnique({ where: { slug: orgSlug } });
+    const user = await this.prisma.user.findUnique({ where: { externalAuthId } });
+    if (!org || !user) return;
+
+    const workspace = await this.prisma.workspace.findFirst({
+      where: { organizationId: org.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!workspace) return;
+
+    const cleanRole = (data.role ?? 'member').replace('org:', '');
+
+    await this.prisma.membership.upsert({
+      where: { userId_workspaceId: { userId: user.id, workspaceId: workspace.id } },
+      create: {
+        userId: user.id,
+        workspaceId: workspace.id,
+        role: cleanRole,
+      },
+      update: { role: cleanRole },
+    });
+
+    await this.prisma.appOrgMembership.upsert({
+      where: { organizationId_userId: { organizationId: org.id, userId: user.id } },
+      create: {
+        organizationId: org.id,
+        userId: user.id,
+        clerkUserId: externalAuthId,
+        clerkOrgId: data.organization.id,
+        role: cleanRole,
+      },
+      update: {
+        clerkUserId: externalAuthId,
+        clerkOrgId: data.organization.id,
+        role: cleanRole,
+      },
+    });
+
+    if (cleanRole === 'admin' || cleanRole === 'owner') {
+      await this.prisma.organization.updateMany({
+        where: { id: org.id, ownerUserId: '00000000-0000-0000-0000-000000000000' },
+        data: { ownerUserId: user.id },
+      });
+    }
+
+    await this.cache.del(`session:user:${externalAuthId}`);
+    await this.cache.del(`session:workspace:user:${externalAuthId}`);
   }
 }
