@@ -1,12 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
-import type { WebhookConfig } from '@voiceforge/shared';
 import type { ToolExecutor, ToolCallResult } from './tools.service';
 
-export interface WebhookExecutionResult {
-  status: number;
-  body: unknown;
-  duration_ms: number;
+interface WebhookExecutorConfig {
+  url: string;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  headers?: Record<string, string>;
+  hmac_secret?: string;
+  timeout_ms?: number;
 }
 
 @Injectable()
@@ -16,32 +17,42 @@ export class WebhookExecutor implements ToolExecutor {
   /**
    * Posts the payload to the configured URL. When `hmac_secret` is set, signs
    * the JSON body with HMAC-SHA256 and sends the signature in
-   * `X-VoiceForge-Signature: sha256=<hex>`. Caller is responsible for catching
-   * exceptions — this method does not retry.
+   * `X-VoiceForge-Signature: sha256=<hex>`.
+   *
+   * Returns a `ToolCallResult` with `success=true` for HTTP 2xx, `success=false`
+   * with an `error` message otherwise. Network errors surface via thrown
+   * exceptions caught by the calling ToolsService.
    */
-  async execute(config: WebhookConfig, payload: unknown): Promise<WebhookExecutionResult> {
-    const method = config.method ?? 'POST';
+  async execute(
+    params: Record<string, unknown>,
+    config: Record<string, unknown>,
+  ): Promise<ToolCallResult> {
+    const cfg = config as unknown as WebhookExecutorConfig;
+    if (!cfg.url) {
+      return { success: false, error: 'webhook tool config missing url' };
+    }
+    const method = cfg.method ?? 'POST';
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'user-agent': 'VoiceForge-Webhook/1.0',
-      ...(config.headers ?? {}),
+      ...(cfg.headers ?? {}),
     };
 
     let body: string | undefined;
     if (method !== 'GET' && method !== 'DELETE') {
-      body = JSON.stringify(payload ?? {});
-      if (config.hmac_secret) {
-        const signature = createHmac('sha256', config.hmac_secret).update(body).digest('hex');
+      body = JSON.stringify(params ?? {});
+      if (cfg.hmac_secret) {
+        const signature = createHmac('sha256', cfg.hmac_secret).update(body).digest('hex');
         headers['x-voiceforge-signature'] = `sha256=${signature}`;
       }
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.timeout_ms ?? 10_000);
+    const timeout = setTimeout(() => controller.abort(), cfg.timeout_ms ?? 10_000);
 
     const t = Date.now();
     try {
-      const res = await fetch(config.url, {
+      const res = await fetch(cfg.url, {
         method,
         headers,
         body,
@@ -50,7 +61,14 @@ export class WebhookExecutor implements ToolExecutor {
       const duration_ms = Date.now() - t;
       const text = await res.text();
       const parsed = this.tryJson(text);
-      return { status: res.status, body: parsed, duration_ms };
+      if (res.status >= 200 && res.status < 300) {
+        return { success: true, result: { status: res.status, body: parsed, duration_ms } };
+      }
+      return {
+        success: false,
+        error: `HTTP ${res.status}`,
+        result: { status: res.status, body: parsed, duration_ms },
+      };
     } finally {
       clearTimeout(timeout);
     }

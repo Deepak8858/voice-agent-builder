@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('workspaces/:workspaceId/audit-logs')
 export class AuditController {
@@ -20,7 +20,7 @@ export class AuditController {
       take: take + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       orderBy: { createdAt: 'desc' },
-      include: { user: { select: { email: true, name: true } } },
+      include: { actor: { select: { email: true, name: true } } },
     });
     const hasMore = logs.length > take;
     const items = hasMore ? logs.slice(0, -1) : logs;

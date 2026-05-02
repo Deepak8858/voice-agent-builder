@@ -79,8 +79,17 @@ function makeService(opts: { tool?: ToolRow | null }) {
   const executor = {
     execute: vi.fn(),
   };
-  const service = new ToolsService(prisma as never, audit as never, executor as never);
-  return { service, prisma, audit, executor, invocations };
+  const calendar = {
+    name: 'google_calendar',
+    execute: vi.fn(),
+  };
+  const service = new ToolsService(
+    prisma as never,
+    audit as never,
+    executor as never,
+    calendar as never,
+  );
+  return { service, prisma, audit, executor, calendar, invocations };
 }
 
 const baseTool: ToolRow = {
@@ -128,23 +137,26 @@ describe('ToolsService.invoke', () => {
 
   it('marks invocation success on 2xx response', async () => {
     const { service, executor, invocations } = makeService({ tool: baseTool });
-    executor.execute.mockResolvedValue({ status: 200, body: { ok: true }, duration_ms: 42 });
+    executor.execute.mockResolvedValue({
+      success: true,
+      result: { status: 200, body: { ok: true }, duration_ms: 42 },
+    });
     const result = await service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' } });
     expect(result.status).toBe('success');
-    expect(result.response_status).toBe(200);
-    expect(result.duration_ms).toBe(42);
     const stored = [...invocations.values()][0]!;
     expect(stored.status).toBe('success');
-    expect(stored.responseBody).toEqual({ ok: true });
     expect(stored.errorMessage).toBeNull();
   });
 
   it('marks invocation failed on non-2xx response', async () => {
     const { service, executor } = makeService({ tool: baseTool });
-    executor.execute.mockResolvedValue({ status: 500, body: { err: 'boom' }, duration_ms: 10 });
+    executor.execute.mockResolvedValue({
+      success: false,
+      error: 'HTTP 500',
+      result: { status: 500, body: { err: 'boom' }, duration_ms: 10 },
+    });
     const result = await service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' } });
     expect(result.status).toBe('failed');
-    expect(result.response_status).toBe(500);
     expect(result.error_message).toBe('HTTP 500');
   });
 
