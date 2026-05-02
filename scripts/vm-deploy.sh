@@ -146,7 +146,7 @@ docker run --rm \
   -e DIRECT_URL="${DIRECT_URL}" \
   --entrypoint npx \
   node:20-slim \
-  prisma migrate deploy --schema=/prisma/schema.prisma
+  prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma
 log "Done."
 
 # ---------------------------------------------------------------------------
