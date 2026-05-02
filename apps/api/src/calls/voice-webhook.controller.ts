@@ -1,28 +1,48 @@
-import { Body, Controller, HttpCode, Param, Post } from '@nestjs/common';
+import { Controller, Post, Body, Headers, HttpCode, HttpStatus, Req } from '@nestjs/common';
+import { Request } from 'express';
+import * as crypto from 'crypto';
 import { CallsService } from './calls.service';
 
-interface WebhookPayload {
-  event_type: string;
-  provider_call_id?: string;
-  data?: Record<string, unknown>;
+function verifyHmac(payload: string, sig: string, secret: string): boolean {
+  if (!secret || !sig) return process.env.NODE_ENV !== 'production';
+  try {
+    const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig));
+  } catch { return false; }
 }
 
-/**
- * Public endpoint that receives provider webhooks (Vapi / Retell). HMAC
- * verification will be added in Phase 6 once we wire real providers; for now
- * this records events into call_events and updates the parent call status
- * when `event_type === 'call.ended'`.
- */
-@Controller('voice/webhooks')
+@Controller('webhooks/voice')
 export class VoiceWebhookController {
-  constructor(private readonly calls: CallsService) {}
+  constructor(private readonly callsService: CallsService) {}
 
-  @Post(':provider')
-  @HttpCode(204)
-  async receive(
-    @Param('provider') provider: string,
-    @Body() payload: WebhookPayload,
-  ): Promise<void> {
-    await this.calls.ingestEvent(provider, payload);
+  @Post('vapi')
+  @HttpCode(HttpStatus.OK)
+  async vapiWebhook(@Req() req: Request, @Headers('x-vapi-signature') sig: string) {
+    const raw = (req as any).rawBody ? (req as any).rawBody.toString() : JSON.stringify(req.body);
+    if (!verifyHmac(raw, sig, process.env.VAPI_WEBHOOK_SECRET ?? '')) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[VoiceWebhook] Vapi HMAC skipped in dev');
+      } else {
+        return { error: 'Unauthorized' };
+      }
+    }
+    const event = JSON.parse(raw);
+    await this.callsService.ingestEvent({ provider: 'vapi', event });
+    return { received: true };
+  }
+
+  @Post('retell')
+  @HttpCode(HttpStatus.OK)
+  async retellWebhook(@Body() body: unknown, @Headers('x-retell-signature') sig: string) {
+    const payload = JSON.stringify(body);
+    if (!verifyHmac(payload, sig, process.env.RETELL_WEBHOOK_SECRET ?? '')) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[VoiceWebhook] Retell HMAC skipped in dev');
+      } else {
+        return { error: 'Unauthorized' };
+      }
+    }
+    await this.callsService.ingestEvent({ provider: 'retell', event: body });
+    return { received: true };
   }
 }
