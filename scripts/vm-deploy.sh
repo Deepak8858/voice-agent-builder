@@ -148,8 +148,8 @@ docker run --rm \
   -e DATABASE_URL="${DIRECT_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   --entrypoint sh \
-  node:20-slim \
-  -c 'apt-get update -qq && apt-get install -y -qq openssl > /dev/null 2>&1 && npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
+  node:20 \
+  -c 'apt-get update -qq && apt-get install -y -qq openssl ca-certificates > /dev/null 2>&1 && npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
 log "Done."
 
 # ---------------------------------------------------------------------------
