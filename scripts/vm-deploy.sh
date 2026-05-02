@@ -140,7 +140,7 @@ log "Done."
 # 7. Run Prisma migrations
 # ---------------------------------------------------------------------------
 log "[7/10] Running Prisma migrations..."
-DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"')
+DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d '\r')
 docker run --rm \
   --env-file "$ENV_FILE" \
   -e DATABASE_URL="${DIRECT_URL}" \
