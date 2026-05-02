@@ -143,9 +143,9 @@ log "[7/10] Running Prisma migrations..."
 docker run --rm \
   --env-file "$ENV_FILE" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
-  --entrypoint npx \
+  --entrypoint sh \
   node:20-slim \
-  prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma
+  -c 'apt-get update -qq && apt-get install -y -qq openssl > /dev/null 2>&1 && npx prisma@5.22.0 migrate deploy --schema=/prisma/schema.prisma'
 log "Done."
 
 # ---------------------------------------------------------------------------
