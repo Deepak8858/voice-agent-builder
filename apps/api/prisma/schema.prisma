@@ -62,7 +62,7 @@ model Organization {
 
 model Workspace {
   id                 String     @id @default(uuid()) @db.Uuid
-  organizationId     String     @map("organization_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
   parentWorkspaceId  String?    @map("parent_workspace_id") @db.Uuid
   type               String     @default("direct") // agency | client | direct
   name               String
@@ -175,7 +175,7 @@ model Agent {
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   workspace         Workspace       @relation(fields: [workspaceId], references: [id])
-  organization      Organization    @relation(fields: [organizationId], references: [id])
+  organization      Organization?   @relation(fields: [organizationId], references: [id])
   creator           User?           @relation("AgentCreatedBy", fields: [createdBy], references: [id])
   versions          AgentVersion[]
   knowledgeSources  KnowledgeSource[]
@@ -196,7 +196,7 @@ model Agent {
 model AgentVersion {
   id                  String   @id @default(uuid()) @db.Uuid
   agentId             String   @map("agent_id") @db.Uuid
-  organizationId      String   @map("organization_id") @db.Uuid
+  organizationId      String?   @map("organization_id") @db.Uuid
   versionNumber       Int      @map("version_number")
   specJson            Json     @map("spec_json")
   provider            String?
@@ -243,7 +243,7 @@ model AgentTemplate {
 model KnowledgeSource {
   id              String   @id @default(uuid()) @db.Uuid
   workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String   @map("organization_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
   agentId         String?  @map("agent_id") @db.Uuid
   sourceType      String   @map("source_type") // url | text | file
   title           String
@@ -271,7 +271,7 @@ model KnowledgeChunk {
   id              String   @id @default(uuid()) @db.Uuid
   sourceId        String   @map("source_id") @db.Uuid
   workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String   @map("organization_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
   agentId         String?  @map("agent_id") @db.Uuid
   chunkIndex      Int      @map("chunk_index")
   content         String
@@ -297,7 +297,7 @@ model KnowledgeChunk {
 model Call {
   id                String   @id @default(uuid()) @db.Uuid
   workspaceId       String   @map("workspace_id") @db.Uuid
-  organizationId    String   @map("organization_id") @db.Uuid
+  organizationId    String?   @map("organization_id") @db.Uuid
   agentId           String   @map("agent_id") @db.Uuid
   agentVersionId    String?  @map("agent_version_id") @db.Uuid
   contactId         String?  @map("contact_id") @db.Uuid
@@ -434,7 +434,7 @@ model IntegrationTool {
 model ToolInvocation {
   id              String   @id @default(uuid()) @db.Uuid
   workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String   @map("organization_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
   toolId          String   @map("tool_id") @db.Uuid
   agentId         String?  @map("agent_id") @db.Uuid
   callId          String?  @map("call_id") @db.Uuid
@@ -648,7 +648,7 @@ model Subscription {
 
 model UsageRecord {
   id              String   @id @default(uuid()) @db.Uuid
-  organizationId  String   @map("organization_id") @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
   workspaceId     String   @map("workspace_id") @db.Uuid
   billableMetric  String   @map("billable_metric") // calls | minutes | tools | agents
   quantity        Int      @map("quantity")
