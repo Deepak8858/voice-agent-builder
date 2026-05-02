@@ -424,6 +424,9 @@ export class CallsService {
       try {
         await this.queue.enqueue('evaluation', 'evaluate', { callId: call.id, workspaceId: call.workspaceId });
       } catch {}
+
+      // Phase 9: record usage for provider-driven call completion
+      await this.recordUsage(call.workspaceId, updated.id, updated.direction, durationSeconds);
     }
   }
 
