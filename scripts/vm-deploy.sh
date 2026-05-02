@@ -140,8 +140,10 @@ log "Done."
 # 7. Run Prisma migrations
 # ---------------------------------------------------------------------------
 log "[7/10] Running Prisma migrations..."
+DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"')
 docker run --rm \
   --env-file "$ENV_FILE" \
+  -e DATABASE_URL="${DIRECT_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   --entrypoint sh \
   node:20-slim \
