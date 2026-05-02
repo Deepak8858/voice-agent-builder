@@ -141,9 +141,11 @@ log "Done."
 # ---------------------------------------------------------------------------
 log "[7/10] Running Prisma migrations..."
 DIRECT_URL=$(grep '^DIRECT_URL=' "$ENV_FILE" | cut -d'=' -f2- | tr -d '"' | tr -d '\r')
+# Temporarily replace postgresql:// with postgres:// to work around Prisma P1013
+DATABASE_URL="${DIRECT_URL/postgresql:\/\//postgres:\/\/}"
 docker run --rm \
   --env-file "$ENV_FILE" \
-  -e DATABASE_URL="${DIRECT_URL}" \
+  -e DATABASE_URL="${DATABASE_URL}" \
   -v "${APP_DIR}/apps/api/prisma:/prisma" \
   -u root \
   voiceforge-api:latest \
