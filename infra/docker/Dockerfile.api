@@ -1,0 +1,77 @@
+# =============================================================================
+# VoiceForge AI — API Container (NestJS)
+# =============================================================================
+# Build context: repository root (monorepo)
+# ---------------------------------------------------------------------------
+
+FROM --platform=linux/amd64 node:20-alpine AS builder
+WORKDIR /app
+
+# Install build dependencies (python3/make for native modules like sharp)
+RUN apk add --no-cache python3 make g++
+
+# Copy workspace manifests first for layer caching
+COPY package*.json ./
+COPY apps/api/package*.json ./apps/api/
+COPY packages/shared/package*.json ./packages/shared/
+COPY packages/ui/package*.json ./packages/ui/
+
+# Install monorepo dependencies
+RUN npm ci --ignore-scripts
+
+# Copy source
+COPY apps/api ./apps/api
+COPY packages/shared ./packages/shared
+COPY packages/ui ./packages/ui
+COPY tsconfig.base.json ./
+
+# Generate Prisma client before building (if schema exists)
+RUN if [ -f apps/api/prisma/schema.prisma ]; then \
+      npx prisma generate --schema=apps/api/prisma/schema.prisma; \
+    fi
+
+# Build shared packages then API
+RUN npm run build -w @voiceforge/shared
+RUN npm run build -w @voiceforge/api
+
+# =============================================================================
+# Production stage
+# =============================================================================
+FROM --platform=linux/amd64 node:20-alpine AS production
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Add tini + openssl for Prisma runtime
+RUN apk add --no-cache tini openssl \
+    && addgroup -g 1001 nodegroup \
+    && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
+    && chown -R nodeuser:nodegroup /app
+
+# Copy package manifests and install production deps only
+COPY --chown=1001:1001 package*.json ./
+COPY --chown=1001:1001 apps/api/package*.json ./apps/api/
+COPY --chown=1001:1001 packages/shared/package*.json ./packages/shared/
+COPY --chown=1001:1001 packages/ui/package*.json ./packages/ui/
+RUN npm ci --ignore-scripts --omit=dev
+
+# Copy built artifacts (owned by nodeuser)
+COPY --chown=1001:1001 --from=builder /app/apps/api/dist ./apps/api/dist
+COPY --chown=1001:1001 --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --chown=1001:1001 --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --chown=1001:1001 --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --chown=1001:1001 --from=builder /app/node_modules/prisma ./node_modules/prisma
+COPY --chown=1001:1001 --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+
+# Switch to non-root user
+USER nodeuser
+
+# Health-check endpoint (NestJS default)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:4000/api/v1/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+
+EXPOSE 4000
+
+# Use tini as init system to properly handle SIGTERM and forward to Node.js
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "apps/api/dist/main.js"]

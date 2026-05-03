@@ -1,0 +1,97 @@
+# =============================================================================
+# VoiceForge AI — Local Development Docker Compose Stack
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.yml up --build
+# Prerequisite: create .env from .env.example with real values.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vf-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voiceforge
+      POSTGRES_PASSWORD: voiceforge
+      POSTGRES_DB: voiceforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voiceforge -d voiceforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: vf-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: vf-api
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      DATABASE_URL: postgresql://voiceforge:voiceforge@postgres:5432/voiceforge
+      DIRECT_URL: postgresql://voiceforge:voiceforge@postgres:5432/voiceforge
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: local-dev-secret-change-me
+      ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      AUTH_PROVIDER: mock
+      VOICE_PROVIDER: mock
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
+        NEXT_PUBLIC_APP_URL: http://localhost:3000
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ""
+        NEXT_PUBLIC_CLERK_SIGN_IN_URL: /sign-in
+        NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL: /dashboard
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL: /dashboard
+    container_name: vf-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
