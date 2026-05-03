@@ -24,14 +24,12 @@ export class HealthController {
     // Redis / Valkey check
     const redis = await this.queue.ping();
 
-    // LLM check — available if provider is configured (non-mock)
-    const llmStatus = this.llm.name !== 'mock' ? 'ok' : 'ok';
-
+    // LLM provider always resolves to a real adapter (mock providers removed).
     return {
       status: db === 'ok' && redis !== 'error' ? 'ok' : 'degraded',
       db,
       redis,
-      llm: { provider: this.llm.name, status: llmStatus },
+      llm: { provider: this.llm.name, status: 'ok' },
       time: new Date().toISOString(),
       uptime: process.uptime(),
     };

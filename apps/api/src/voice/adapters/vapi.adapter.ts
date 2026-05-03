@@ -187,13 +187,35 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   // createBrowserTestSession
   // -------------------------------------------------------------------------
   async createBrowserTestSession(
-    _input: CreateBrowserTestSessionInput,
+    input: CreateBrowserTestSessionInput,
   ): Promise<BrowserTestSessionResult> {
-    // Vapi does not expose a browser-test / sandbox API.
-    // Return a placeholder session that the UI can use to poll.
-    const sessionId = `test_${Date.now()}`;
+    // Vapi web call: POST /call with type=webCall returns a webCallUrl the
+    // browser SDK can connect to. Requires the assistant to already exist
+    // via createAgent (which caches assistantIdMap).
+    const assistantId = this.assistantIdMap.get(input.agentVersionId);
+    if (!assistantId) {
+      throw new AppError(
+        'VOICE_PROVIDER_ERROR',
+        `No vapi assistant found for agent version ${input.agentVersionId}. Call createAgent first.`,
+        400,
+      );
+    }
+    const call = await vapiRequest<{ id: string; webCallUrl?: string }>(
+      'POST',
+      '/call',
+      {
+        type: 'webCall',
+        assistantId,
+        metadata: {
+          voiceforge_workspace_id: input.workspaceId,
+          voiceforge_agent_id: input.agentId,
+          voiceforge_agent_version_id: input.agentVersionId,
+        },
+      },
+    );
     return {
-      test_session_id: sessionId,
+      test_session_id: call.id,
+      web_socket_url: call.webCallUrl ?? undefined,
       expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     };
   }

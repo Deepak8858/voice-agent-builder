@@ -10,8 +10,11 @@ export class WebhookExecutor implements ToolExecutor {
   /**
    * Posts the payload to the configured URL. When `hmac_secret` is set, signs
    * the JSON body with HMAC-SHA256 and sends the signature in
-   * `X-VoiceForge-Signature: sha256=<hex>`. Caller is responsible for catching
-   * exceptions — this method does not retry.
+   * `X-VoiceForge-Signature: sha256=<hex>`.
+   *
+   * Returns a `ToolCallResult` with `success=true` for HTTP 2xx, `success=false`
+   * with an `error` message otherwise. Network errors surface via thrown
+   * exceptions caught by the calling ToolsService.
    */
   async execute(params: Record<string, unknown>, config: Record<string, string>): Promise<ToolCallResult> {
     const webhookConfig = config as unknown as WebhookConfig;
@@ -45,7 +48,10 @@ export class WebhookExecutor implements ToolExecutor {
       const duration_ms = Date.now() - t;
       const text = await res.text();
       const parsed = this.tryJson(text);
-      return { success: res.ok, result: { status: res.status, body: parsed, duration_ms } };
+      const result = { status: res.status, body: parsed, duration_ms };
+      return res.ok
+        ? { success: true, result }
+        : { success: false, error: `HTTP ${res.status}`, result };
     } finally {
       clearTimeout(timeout);
     }

@@ -49,19 +49,9 @@ export class BillingService {
     if (sub?.stripeCustomerId) return sub.stripeCustomerId;
 
     if (!this.stripe) {
-      // In mock mode, return a synthetic customer ID so callers don't break.
-      const mockId = `cus_mock_${organizationId.slice(0, 8)}`;
-      await this.prisma.subscription.upsert({
-        where: { organizationId },
-        create: {
-          organizationId,
-          stripeCustomerId: mockId,
-          plan: 'free',
-          status: 'active',
-        },
-        update: { stripeCustomerId: mockId },
-      });
-      return mockId;
+      throw new InternalServerErrorException(
+        'Stripe is not configured. Set STRIPE_SECRET_KEY before calling billing endpoints.',
+      );
     }
 
     const org = await this.prisma.organization.findUniqueOrThrow({
@@ -266,8 +256,8 @@ export class BillingService {
 
   async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean; remaining: number; limit: number }> {
     const usage = await this.getWorkspaceUsage(workspaceId);
-    const limit = usage.limits.calls;
-    const used = usage.metrics.calls;
+    const limit = usage.limits.calls ?? 0;
+    const used = usage.metrics.calls ?? 0;
     const remaining = limit === -1 ? -1 : Math.max(0, limit - used);
     return { allowed: remaining !== 0, remaining, limit };
   }
