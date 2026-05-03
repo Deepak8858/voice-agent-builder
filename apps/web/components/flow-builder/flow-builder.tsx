@@ -113,14 +113,14 @@ export function FlowBuilder({ initialNodes, initialEdges, onSave }: FlowBuilderP
   }, [setNodes]);
 
   return (
-    <div className="flex h-full gap-0">
+    <div className="flex h-full gap-0 rounded-xl border border-border overflow-hidden">
       {/* Left: Node palette */}
-      <div className="w-52 flex-shrink-0 overflow-y-auto border-r border-zinc-200 dark:border-zinc-800">
+      <div className="w-52 flex-shrink-0 overflow-y-auto border-r border-border bg-sidebar">
         <NodePalette onDragStart={onDragStart} />
       </div>
 
       {/* Center: Canvas */}
-      <div className="flex-1">
+      <div className="flex-1 bg-muted/30">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -137,7 +137,6 @@ export function FlowBuilder({ initialNodes, initialEdges, onSave }: FlowBuilderP
           onPaneClick={onPaneClick}
           nodeTypes={NODE_TYPES}
           fitView
-          className="bg-zinc-50 dark:bg-zinc-950"
         >
           <Background />
           <Controls />
@@ -145,7 +144,7 @@ export function FlowBuilder({ initialNodes, initialEdges, onSave }: FlowBuilderP
       </div>
 
       {/* Right: Config panel */}
-      <div className="w-72 flex-shrink-0 overflow-y-auto border-l border-zinc-200 dark:border-zinc-800">
+      <div className="w-72 flex-shrink-0 overflow-y-auto border-l border-border bg-sidebar">
         <NodeConfigPanel
           node={selectedNode}
           onChange={handleConfigChange}

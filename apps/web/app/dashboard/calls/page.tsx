@@ -1,7 +1,9 @@
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import { Badge, Card, CardTitle } from '@/components/ui/primitives';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import type { CallSummary, SessionUser } from '@voiceforge/shared';
+import { Phone, ArrowRight } from 'lucide-react';
 
 export default async function CallsPage() {
   const me = await apiFetch<SessionUser>('/auth/me');
@@ -10,48 +12,65 @@ export default async function CallsPage() {
   );
 
   return (
-    <div className="flex flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Calls
-        </h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+    <div className="flex flex-col gap-8">
+      <div>
+        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Calls</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
           All calls across this workspace. Includes browser tests, inbound, and outbound.
         </p>
-      </header>
+      </div>
 
       <Card>
-        <CardTitle>Recent calls ({items.length})</CardTitle>
-        {items.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">
-            No calls yet. Open an agent and click <em>Test call</em> to generate one.
-          </p>
-        ) : (
-          <ul className="mt-3 divide-y divide-zinc-200 dark:divide-zinc-800">
-            {items.map((c) => (
-              <li key={c.id} className="flex items-center justify-between py-3 text-sm">
-                <div className="min-w-0 flex-1">
+        <CardHeader>
+          <CardTitle className="text-base">Recent calls ({items.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent">
+                <Phone className="h-6 w-6 text-accent-foreground" />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                No calls yet. Open an agent and click <em>Test call</em> to generate one.
+              </p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-border">
+              {items.map((c) => (
+                <li key={c.id}>
                   <Link
-                    className="font-medium text-zinc-900 hover:underline dark:text-zinc-50"
                     href={`/dashboard/calls/${c.id}`}
+                    className="group flex items-center justify-between gap-4 py-4 text-sm transition-colors hover:bg-accent/30 px-2 -mx-2 rounded-lg"
                   >
-                    {c.contact_name ?? c.to_number ?? c.from_number ?? 'Unknown contact'}
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-foreground">
+                        {c.contact_name ?? c.to_number ?? c.from_number ?? 'Unknown contact'}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        <span className="capitalize">{c.direction.replace('_', ' ')}</span>
+                        {' · '}
+                        {c.provider}
+                        {' · '}
+                        {new Date(c.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {c.duration_seconds != null ? (
+                        <span className="text-xs text-muted-foreground font-mono">
+                          {c.duration_seconds}s
+                        </span>
+                      ) : null}
+                      <Badge variant="secondary" className="capitalize">
+                        {c.status.replace('_', ' ')}
+                      </Badge>
+                      <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+                    </div>
                   </Link>
-                  <p className="text-xs text-zinc-500">
-                    {c.direction.replace('_', ' ')} · {c.provider} ·{' '}
-                    {new Date(c.created_at).toLocaleString()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {c.duration_seconds != null ? (
-                    <span className="text-xs text-zinc-500">{c.duration_seconds}s</span>
-                  ) : null}
-                  <Badge>{c.status.replace('_', ' ')}</Badge>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
       </Card>
     </div>
   );

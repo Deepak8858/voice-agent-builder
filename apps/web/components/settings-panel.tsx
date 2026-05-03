@@ -1,9 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Card, CardHeader, CardTitle } from '@/components/ui/primitives';
-import { Badge } from '@/components/ui/primitives';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useApi } from '@/lib/use-api';
+import { User, Users, ClipboardList } from 'lucide-react';
 
 type Tab = 'general' | 'team' | 'audit';
 
@@ -60,86 +62,91 @@ export function SettingsPanel() {
   }, [activeTab, currentWorkspaceId, call]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {(['general', 'team', 'audit'] as Tab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium capitalize transition-colors ${
-              activeTab === tab
-                ? 'border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100'
-                : 'text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200'
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+    <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Tab)} className="w-full">
+      <TabsList>
+        <TabsTrigger value="general" className="gap-1.5">
+          <User className="h-3.5 w-3.5" />
+          General
+        </TabsTrigger>
+        <TabsTrigger value="team" className="gap-1.5">
+          <Users className="h-3.5 w-3.5" />
+          Team
+        </TabsTrigger>
+        <TabsTrigger value="audit" className="gap-1.5">
+          <ClipboardList className="h-3.5 w-3.5" />
+          Audit
+        </TabsTrigger>
+      </TabsList>
 
-      {activeTab === 'general' && (
+      <TabsContent value="general" className="mt-6">
         <Card>
           <CardHeader>
             <CardTitle>Account Information</CardTitle>
           </CardHeader>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">User ID</span>
-              <span className="text-sm font-mono">{me?.id ?? '—'}</span>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex items-center justify-between py-2 border-b border-border">
+              <span className="text-sm text-muted-foreground">User ID</span>
+              <span className="text-sm font-mono text-foreground">{me?.id ?? '—'}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">Workspaces</span>
-              <span className="text-sm">{me?.workspaces.length ?? 0}</span>
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-muted-foreground">Workspaces</span>
+              <span className="text-sm font-medium text-foreground">{me?.workspaces.length ?? 0}</span>
             </div>
-          </div>
+          </CardContent>
         </Card>
-      )}
+      </TabsContent>
 
-      {activeTab === 'team' && (
-        <div className="flex flex-col gap-3">
-          {loading ? (
-            <p className="text-sm text-zinc-500">Loading members...</p>
-          ) : members.length === 0 ? (
-            <p className="text-sm text-zinc-500">No team members found.</p>
-          ) : (
-            members.map((member) => (
+      <TabsContent value="team" className="mt-6">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading members…</p>
+        ) : members.length === 0 ? (
+          <Card className="py-12 text-center">
+            <CardDescription className="text-muted-foreground">No team members found.</CardDescription>
+          </Card>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {members.map((member) => (
               <Card key={member.id}>
-                <div className="flex items-center justify-between">
+                <CardContent className="py-4 flex items-center justify-between">
                   <div className="flex flex-col">
-                    <span className="text-sm font-medium">{member.name ?? member.email}</span>
-                    <span className="text-xs text-zinc-500">{member.email}</span>
+                    <span className="text-sm font-medium text-foreground">{member.name ?? member.email}</span>
+                    <span className="text-xs text-muted-foreground">{member.email}</span>
                   </div>
-                  <Badge>{member.role}</Badge>
-                </div>
+                  <Badge variant="secondary">{member.role}</Badge>
+                </CardContent>
               </Card>
-            ))
-          )}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </TabsContent>
 
-      {activeTab === 'audit' && (
-        <div className="flex flex-col gap-2">
-          {loading ? (
-            <p className="text-sm text-zinc-500">Loading audit logs...</p>
-          ) : auditLogs.length === 0 ? (
-            <p className="text-sm text-zinc-500">No audit logs found.</p>
-          ) : (
-            auditLogs.map((log) => (
+      <TabsContent value="audit" className="mt-6">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading audit logs…</p>
+        ) : auditLogs.length === 0 ? (
+          <Card className="py-12 text-center">
+            <CardDescription className="text-muted-foreground">No audit logs found.</CardDescription>
+          </Card>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {auditLogs.map((log) => (
               <Card key={log.id}>
-                <div className="flex items-center justify-between">
+                <CardContent className="py-4 flex items-center justify-between">
                   <div className="flex flex-col">
-                    <span className="text-sm font-medium">{log.action}</span>
-                    <span className="text-xs text-zinc-500">
+                    <span className="text-sm font-medium text-foreground">{log.action}</span>
+                    <span className="text-xs text-muted-foreground">
                       {log.user?.name ?? log.user?.email ?? 'System'} &middot;{' '}
                       {new Date(log.createdAt).toLocaleString()}
                     </span>
                   </div>
-                </div>
+                </CardContent>
               </Card>
-            ))
-          )}
-        </div>
-      )}
-    </div>
+            ))}
+          </div>
+        )}
+      </TabsContent>
+    </Tabs>
   );
 }
+
+import { CardDescription } from '@/components/ui/card';

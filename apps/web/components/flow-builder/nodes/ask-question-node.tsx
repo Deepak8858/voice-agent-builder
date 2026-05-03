@@ -7,7 +7,7 @@ export const AskQuestionNode = memo(function AskQuestionNode({ data }: NodeProps
   const question = (data?.question as string) ?? 'Ask a question...';
   const captureField = (data?.capture_field as string) ?? '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-violet-300 bg-violet-50 px-4 py-3 shadow-sm dark:border-violet-700 dark:bg-violet-950">
+    <div className="min-w-[200px] rounded-xl border-2 border-violet-400 bg-violet-50 px-4 py-3 shadow-sm dark:bg-violet-950/40">
       <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-violet-500">Ask Question</p>
       <p className="mb-1 line-clamp-2 text-sm text-violet-900 dark:text-violet-100">{question}</p>
       {captureField ? (

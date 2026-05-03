@@ -12,8 +12,12 @@ import type {
   ToolInvocationSummary,
 } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
-import { Badge, Card, CardTitle, Textarea } from '@/components/ui/primitives';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { Separator } from '@/components/ui/separator';
 import { useApi } from '@/lib/use-api';
+import { ArrowLeft, Play, Power, Trash2, Plug } from 'lucide-react';
 
 interface PageProps {
   params: Promise<{ toolId: string }>;
@@ -98,115 +102,149 @@ export default function ToolDetailPage({ params }: PageProps) {
   });
 
   if (toolQuery.isPending) {
-    return <p className="text-sm text-zinc-500">Loading tool…</p>;
+    return (
+      <div className="flex items-center justify-center py-20">
+        <p className="text-sm text-muted-foreground">Loading tool…</p>
+      </div>
+    );
   }
   if (toolQuery.isError || !toolQuery.data) {
-    return <p className="text-sm text-red-600">{(toolQuery.error as Error)?.message}</p>;
+    return (
+      <div className="flex items-center justify-center py-20">
+        <p className="text-sm text-destructive">{(toolQuery.error as Error)?.message}</p>
+      </div>
+    );
   }
   const tool = toolQuery.data;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+    <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link
             href="/dashboard/integrations"
-            className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-2"
           >
-            ← Back to integrations
+            <ArrowLeft className="h-3 w-3" />
+            Back to integrations
           </Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
             {tool.name}
           </h1>
-          <p className="mt-1 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-            <Badge>{tool.tool_type}</Badge>
-            <Badge>{tool.enabled ? 'enabled' : 'disabled'}</Badge>
-            {tool.config.hmac_secret_set ? <Badge>HMAC signed</Badge> : null}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="capitalize">{tool.tool_type}</Badge>
+            <Badge variant={tool.enabled ? 'default' : 'secondary'}>
+              {tool.enabled ? 'enabled' : 'disabled'}
+            </Badge>
+            {tool.config.hmac_secret_set ? <Badge variant="outline">HMAC signed</Badge> : null}
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={() => toggleEnabled.mutate()}>
+          <Button variant="outline" size="sm" onClick={() => toggleEnabled.mutate()} className="gap-2">
+            <Power className="h-3.5 w-3.5" />
             {tool.enabled ? 'Disable' : 'Enable'}
           </Button>
           <Button
-            variant="ghost"
+            variant="outline"
+            size="sm"
+            className="gap-2 text-destructive hover:bg-destructive/10"
             onClick={() => {
               if (confirm('Delete this tool?')) remove.mutate();
             }}
           >
+            <Trash2 className="h-3.5 w-3.5" />
             Delete
           </Button>
         </div>
-      </header>
+      </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
         <Card>
-          <CardTitle>Test invocation</CardTitle>
-          <p className="mt-2 text-xs text-zinc-500">
-            Send arguments as JSON. The server validates against the tool&apos;s input
-            schema before firing the webhook.
-          </p>
-          <Textarea
-            rows={10}
-            value={argsText}
-            onChange={(e) => setArgsText(e.target.value)}
-            className="mt-3 font-mono text-xs"
-          />
-          <div className="mt-3">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Play className="h-4 w-4 text-primary" />
+              Test invocation
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <p className="text-xs text-muted-foreground">
+              Send arguments as JSON. The server validates against the tool&apos;s input
+              schema before firing the webhook.
+            </p>
+            <Textarea
+              rows={10}
+              value={argsText}
+              onChange={(e) => setArgsText(e.target.value)}
+              className="font-mono text-xs"
+            />
             <Button
               onClick={() => invokeMutation.mutate()}
               disabled={invokeMutation.isPending || !tool.enabled}
+              className="gap-2 w-fit"
             >
+              <Play className="h-4 w-4" />
               {invokeMutation.isPending ? 'Invoking…' : 'Invoke tool'}
             </Button>
-          </div>
+          </CardContent>
         </Card>
 
         <Card>
-          <CardTitle>Configuration</CardTitle>
-          <dl className="mt-3 space-y-2 text-sm">
-            <Row label="URL" value={tool.config.url} />
-            <Row label="Method" value={tool.config.method ?? 'POST'} />
-            <Row label="Timeout" value={`${tool.config.timeout_ms ?? 10_000} ms`} />
-            <Row label="HMAC" value={tool.config.hmac_secret_set ? 'set' : 'not set'} />
-            <Row label="Agent" value={tool.agent_id ?? 'workspace-wide'} />
-          </dl>
-          <p className="mt-4 text-xs uppercase tracking-wide text-zinc-500">Input schema</p>
-          <pre className="mt-1 max-h-72 overflow-auto rounded-md border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs dark:border-zinc-800 dark:bg-zinc-900">
-            {JSON.stringify(tool.input_schema, null, 2)}
-          </pre>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Plug className="h-4 w-4 text-primary" />
+              Configuration
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="space-y-3 text-sm">
+              <Row label="URL" value={tool.config.url} />
+              <Row label="Method" value={tool.config.method ?? 'POST'} />
+              <Row label="Timeout" value={`${tool.config.timeout_ms ?? 10_000} ms`} />
+              <Row label="HMAC" value={tool.config.hmac_secret_set ? 'set' : 'not set'} />
+              <Row label="Agent" value={tool.agent_id ?? 'workspace-wide'} />
+            </dl>
+            <Separator className="my-4" />
+            <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Input schema</p>
+            <pre className="max-h-72 overflow-auto rounded-md border border-border bg-muted p-4 font-mono text-xs">
+              {JSON.stringify(tool.input_schema, null, 2)}
+            </pre>
+          </CardContent>
         </Card>
       </div>
 
       <Card>
-        <CardTitle>Recent invocations ({invocationsQuery.data?.items.length ?? 0})</CardTitle>
-        {invocationsQuery.data && invocationsQuery.data.items.length > 0 ? (
-          <ul className="mt-3 divide-y divide-zinc-200 dark:divide-zinc-800">
-            {invocationsQuery.data.items.map((inv) => (
-              <li key={inv.id} className="flex items-center justify-between py-3 text-sm">
-                <div className="min-w-0">
-                  <p className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {new Date(inv.started_at).toLocaleString()}
-                  </p>
-                  <p className="text-xs text-zinc-500">
-                    {inv.duration_ms != null ? `${inv.duration_ms}ms · ` : ''}
-                    {inv.error_message ?? '—'}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {inv.response_status != null ? (
-                    <span className="text-xs text-zinc-500">HTTP {inv.response_status}</span>
-                  ) : null}
-                  <Badge>{inv.status}</Badge>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-3 text-sm text-zinc-500">
-            No invocations yet. Use the test panel above to fire one.
-          </p>
-        )}
+        <CardHeader>
+          <CardTitle className="text-base">Recent invocations ({invocationsQuery.data?.items.length ?? 0})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {invocationsQuery.data && invocationsQuery.data.items.length > 0 ? (
+            <ul className="divide-y divide-border">
+              {invocationsQuery.data.items.map((inv) => (
+                <li key={inv.id} className="flex items-center justify-between py-3 text-sm">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">
+                      {new Date(inv.started_at).toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {inv.duration_ms != null ? `${inv.duration_ms}ms · ` : ''}
+                      {inv.error_message ?? '—'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {inv.response_status != null ? (
+                      <span className="text-xs text-muted-foreground font-mono">HTTP {inv.response_status}</span>
+                    ) : null}
+                    <Badge variant="secondary">{inv.status}</Badge>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No invocations yet. Use the test panel above to fire one.
+            </p>
+          )}
+        </CardContent>
       </Card>
     </div>
   );
@@ -215,10 +253,8 @@ export default function ToolDetailPage({ params }: PageProps) {
 function Row({ label, value }: { label: string; value: string | null | undefined }) {
   return (
     <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs uppercase tracking-wide text-zinc-500">{label}</dt>
-      <dd className="text-right font-medium text-zinc-900 dark:text-zinc-50">
-        {value ?? '—'}
-      </dd>
+      <dt className="text-xs uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="text-right font-medium text-foreground">{value ?? '—'}</dd>
     </div>
   );
 }
