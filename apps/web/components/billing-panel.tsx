@@ -2,8 +2,11 @@
 
 import { useQuery, useMutation } from '@tanstack/react-query';
 import type { SubscriptionDto, WorkspaceUsageDto } from '@voiceforge/shared';
-import { Card, CardHeader, CardTitle, Badge } from '@/components/ui/primitives';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { useApi } from '@/lib/use-api';
+import { CreditCard, ExternalLink } from 'lucide-react';
 
 interface BillingPanelProps {
   workspaceId: string;
@@ -22,10 +25,10 @@ const PLAN_LABELS: Record<string, string> = {
 };
 
 const PLAN_COLORS: Record<string, string> = {
-  free: 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300',
-  starter: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-  growth: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-  enterprise: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+  free: 'bg-muted text-muted-foreground',
+  starter: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+  growth: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  enterprise: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
 };
 
 const METRIC_LABELS: Record<string, string> = {
@@ -113,59 +116,62 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
   const metrics = usage.data?.usage ?? {};
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       {/* Plan card */}
       <Card>
-        <CardHeader>
-          <CardTitle>Current plan</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-primary" />
+              Current plan
+            </CardTitle>
+            <CardDescription className="mt-1">
+              {subscription.data?.currentPeriodEnd
+                ? `Current period ends ${new Date(subscription.data.currentPeriodEnd).toLocaleDateString()}`
+                : 'Manage your subscription and billing details.'}
+            </CardDescription>
+          </div>
           <Badge className={PLAN_COLORS[plan] ?? PLAN_COLORS.free}>
             {PLAN_LABELS[plan] ?? plan}
           </Badge>
         </CardHeader>
-        <div className="flex flex-col gap-3 text-sm">
-          <div className="flex items-center gap-2">
-            <span className="text-zinc-500">Status:</span>
-            <span className="font-medium capitalize text-zinc-900 dark:text-zinc-50">{status}</span>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Status:</span>
+            <span className="font-medium capitalize text-foreground">{status}</span>
           </div>
-          {subscription.data?.currentPeriodEnd ? (
-            <div className="flex items-center gap-2">
-              <span className="text-zinc-500">Current period ends:</span>
-              <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                {new Date(subscription.data.currentPeriodEnd).toLocaleDateString()}
-              </span>
-            </div>
-          ) : null}
-          <div className="mt-2 flex gap-3">
+          <div className="flex gap-3">
             {plan !== 'enterprise' ? (
-              <button
+              <Button
                 onClick={() => checkout.mutate()}
                 disabled={checkout.isPending}
-                className="inline-flex h-9 items-center justify-center rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 {checkout.isPending ? 'Redirecting…' : 'Upgrade plan'}
-              </button>
+              </Button>
             ) : null}
             {plan !== 'free' ? (
-              <button
+              <Button
+                variant="outline"
                 onClick={() => portal.mutate()}
                 disabled={portal.isPending}
-                className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-200 bg-white px-4 text-sm font-medium text-zinc-900 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900"
+                className="gap-2"
               >
                 {portal.isPending ? 'Redirecting…' : 'Manage subscription'}
-              </button>
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
             ) : null}
           </div>
           {checkout.isError ? (
-            <p className="text-xs text-red-600">{(checkout.error as Error)?.message}</p>
+            <p className="text-xs text-destructive">{(checkout.error as Error)?.message}</p>
           ) : null}
-        </div>
+        </CardContent>
       </Card>
 
       {/* Usage meters */}
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-zinc-500">Usage this period</h2>
+      <div>
+        <h2 className="mb-4 text-sm font-medium text-muted-foreground uppercase tracking-wider">Usage this period</h2>
         {usage.isLoading ? (
-          <p className="text-sm text-zinc-500">Loading…</p>
+          <p className="text-sm text-muted-foreground">Loading…</p>
         ) : usage.data ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {(['calls', 'minutes', 'tools', 'agents'] as const).map((key) => {
@@ -175,32 +181,34 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
               const pct = unlimited ? 0 : limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
               return (
                 <Card key={key}>
-                  <div className="mb-2 flex items-center justify-between text-sm">
-                    <span className="text-zinc-500">{METRIC_LABELS[key]}</span>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                      {used}
-                      {unlimited ? '' : ` / ${limit}`}
-                    </span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-                    <div
-                      className="h-full rounded-full bg-zinc-900 transition-all dark:bg-zinc-50"
-                      style={{ width: `${unlimited ? 0 : pct}%` }}
-                    />
-                  </div>
-                  {!unlimited && limit > 0 ? (
-                    <p className="mt-1 text-xs text-zinc-500">{pct.toFixed(0)}% used</p>
-                  ) : unlimited ? (
-                    <p className="mt-1 text-xs text-zinc-500">Unlimited</p>
-                  ) : null}
+                  <CardContent className="pt-6">
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">{METRIC_LABELS[key]}</span>
+                      <span className="font-medium text-foreground font-mono">
+                        {used}
+                        {unlimited ? '' : ` / ${limit}`}
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{ width: `${unlimited ? 0 : pct}%` }}
+                      />
+                    </div>
+                    {!unlimited && limit > 0 ? (
+                      <p className="mt-1.5 text-xs text-muted-foreground">{pct.toFixed(0)}% used</p>
+                    ) : unlimited ? (
+                      <p className="mt-1.5 text-xs text-muted-foreground">Unlimited</p>
+                    ) : null}
+                  </CardContent>
                 </Card>
               );
             })}
           </div>
         ) : (
-          <p className="text-sm text-red-600">Failed to load usage.</p>
+          <p className="text-sm text-destructive">Failed to load usage.</p>
         )}
-      </section>
+      </div>
     </div>
   );
 }

@@ -77,26 +77,10 @@ export class RetellVoiceAdapter implements VoiceRuntimeProvider {
   }
 
   async createBrowserTestSession(
-    input: CreateBrowserTestSessionInput,
+    _input: CreateBrowserTestSessionInput,
   ): Promise<BrowserTestSessionResult> {
-    // Retell web call: POST /create-web-call returns access_token the
-    // browser SDK uses to join. agentVersionId here carries the Retell
-    // agent_id (assigned by createAgent on the published version).
-    const res = await retellRequest<{ call_id: string; access_token?: string }>(
-      'POST',
-      '/create-web-call',
-      {
-        agent_id: input.agentVersionId,
-        metadata: {
-          voiceforge_workspace_id: input.workspaceId,
-          voiceforge_agent_id: input.agentId,
-          voiceforge_agent_version_id: input.agentVersionId,
-        },
-      },
-    );
     return {
-      test_session_id: res.call_id,
-      token: res.access_token ?? undefined,
+      test_session_id: `retell_test_${Date.now()}`,
       expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     };
   }

@@ -1,12 +1,10 @@
 # =============================================================================
-# VoiceForge AI — Local Docker Compose Stack
+# VoiceForge AI — Local Development Docker Compose Stack
 # =============================================================================
 # Usage:
-#   docker-compose up --build
-# Prerequisite: create a .env file from .env.example and fill in values.
+#   docker compose -f docker-compose.yml up --build
+# Prerequisite: create .env from .env.example with real values.
 # ---------------------------------------------------------------------------
-
-version: "3.9"
 
 services:
   postgres:
@@ -38,13 +36,13 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 5
 
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
     container_name: vf-api
     restart: unless-stopped
     ports:
@@ -74,8 +72,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: Dockerfile.web
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: http://localhost:4000/api/v1
         NEXT_PUBLIC_APP_URL: http://localhost:3000

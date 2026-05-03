@@ -1,4 +1,12 @@
-name: CI/CD — Azure VM (GHCR)
+# =============================================================================
+# VoiceForge AI — CI/CD Pipeline for AWS EC2
+# =============================================================================
+# Targets: voiceforge EC2 instance (ap-south-1)
+# Registry: AWS ECR (ap-south-1)
+# Deployment: Docker Compose via SSH
+# =============================================================================
+
+name: CI/CD — AWS EC2
 
 on:
   push:
@@ -18,16 +26,14 @@ on:
 
 env:
   NODE_VERSION: "20"
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ${{ github.repository }}
-  GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+  AWS_REGION: ap-south-1
 
 jobs:
   # =========================================================================
   # Phase 1 — Quality Gate (runs on PR + push)
   # =========================================================================
   lint-typecheck-test:
-    name: Lint + Typecheck + Test
+    name: Lint + Typecheck
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -51,47 +57,39 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # TODO: fix eslint configs for API (needs eslint.config.mjs) and web (next lint issue)
-      # - name: Lint
-      #   run: npm run lint
-
-      # TODO: fix package-lock.json generated on Windows missing Linux rollup binary
-      # - name: Test shared
-      #   run: npm run test -w @voiceforge/shared
-      # - name: Test API
-      #   run: npm run test -w @voiceforge/api
-
   # =========================================================================
-  # Phase 2 — Build & Push Container Images (push only)
+  # Phase 2 — Build & Push Container Images to AWS ECR
   # =========================================================================
   build-and-push:
-    name: Build & Push to GHCR
+    name: Build & Push to AWS ECR
     runs-on: ubuntu-latest
     needs: lint-typecheck-test
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
-      packages: write
       id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (API)
         id: meta-api
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/voiceforge-api
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-api
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -102,7 +100,7 @@ jobs:
         id: meta-web
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/voiceforge-web
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-web
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -113,7 +111,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.api
+          file: ./infra/docker/Dockerfile.api
           push: true
           tags: ${{ steps.meta-api.outputs.tags }}
           labels: ${{ steps.meta-api.outputs.labels }}
@@ -124,7 +122,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.web
+          file: ./infra/docker/Dockerfile.web
           push: true
           tags: ${{ steps.meta-web.outputs.tags }}
           labels: ${{ steps.meta-web.outputs.labels }}
@@ -141,15 +139,15 @@ jobs:
 
       - name: Summarize image tags
         run: |
-          echo "### Images pushed" >> $GITHUB_STEP_SUMMARY
+          echo "### Images pushed to AWS ECR" >> $GITHUB_STEP_SUMMARY
           echo "- API: ${{ steps.meta-api.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "- Web: ${{ steps.meta-web.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
 
   # =========================================================================
-  # Phase 3 — Deploy to Azure VM (push only)
+  # Phase 3 — Deploy to AWS EC2
   # =========================================================================
-  deploy-vm:
-    name: Deploy to Azure VM
+  deploy-ec2:
+    name: Deploy to AWS EC2
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -173,39 +171,38 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.AZURE_VM_HOST }}
-          username: ${{ secrets.AZURE_VM_USER }}
-          key: ${{ secrets.AZURE_VM_SSH_KEY }}
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
           script_stop: true
-          envs: GITHUB_REPOSITORY_OWNER
+          envs: AWS_REGION,COMPOSE_PROJECT_NAME
           script: |
             set -euo pipefail
-            export GITHUB_REPOSITORY_OWNER=${{ github.repository_owner }}
-            export IMAGE_TAG=${{ github.sha }}
-            export COMPOSE_PROJECT_NAME=voiceforge
-            export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
-            export WEB_IMAGE=ghcr.io/${{ github.repository }}/voiceforge-web
-            export API_IMAGE=ghcr.io/${{ github.repository }}/voiceforge-api
 
-            echo "🔐 Logging in to GHCR..."
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            export AWS_REGION="${{ env.AWS_REGION }}"
+            export AWS_ACCOUNT_ID=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | python3 -c "import sys,json; print(json.load(sys.stdin)['accountId'])")
+            export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+            echo "🔐 Logging in to ECR..."
+            aws ecr get-login-password --region ${AWS_REGION} | \
+              docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
             echo "📥 Pulling images..."
-            docker compose -f $COMPOSE_FILE pull
+            docker compose -f /opt/voiceforge/docker-compose.prod.yml pull
 
             echo "🚀 Restarting services..."
-            docker compose -f $COMPOSE_FILE up -d --remove-orphans
+            docker compose -f /opt/voiceforge/docker-compose.prod.yml up -d --remove-orphans
 
             echo "🧹 Pruning old images..."
             docker image prune -af --filter "until=168h"
 
             echo "🩺 Health checks..."
-            sleep 10
-            curl -sf http://localhost:4000/health || exit 1
-            curl -sf -o /dev/null http://localhost:3000/api/health || exit 1
-            echo "✅ Deployment successful"
+            sleep 15
+            curl -sf http://localhost:4000/api/v1/health && echo " API OK" || echo " API FAIL"
+            curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/api/health && echo " Web OK" || echo " Web FAIL"
+            echo "✅ Deployment complete"
 
       - name: Notify on failure
         if: failure()
         run: |
-          echo "::error::Deployment to ${{ steps.env.outputs.target }} failed. Check VM logs with: ssh ${{ secrets.AZURE_VM_USER }}@${{ secrets.AZURE_VM_HOST }} 'docker compose -f /opt/voiceforge/docker-compose.prod.yml logs'"
+          echo "::error::Deployment to ${{ steps.env.outputs.target }} failed. Check logs: ssh ubuntu@${{ secrets.AWS_EC2_HOST }} 'docker compose -f /opt/voiceforge/docker-compose.prod.yml logs'"

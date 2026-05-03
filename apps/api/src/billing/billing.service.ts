@@ -254,6 +254,14 @@ export class BillingService {
     return limit === -1 || currentCallCount < limit;
   }
 
+  async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean; remaining: number; limit: number }> {
+    const usage = await this.getWorkspaceUsage(workspaceId);
+    const limit = usage.limits.calls;
+    const used = usage.metrics.calls;
+    const remaining = limit === -1 ? -1 : Math.max(0, limit - used);
+    return { allowed: remaining !== 0, remaining, limit };
+  }
+
   async enforceAgentLimit(organizationId: string): Promise<void> {
     const count = await this.prisma.agent.count({
       where: { workspace: { organizationId } },

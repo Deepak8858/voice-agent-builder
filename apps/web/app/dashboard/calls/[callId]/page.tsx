@@ -1,9 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ApiCallError, apiFetch } from '@/lib/api';
-import { Badge, Card, CardTitle } from '@/components/ui/primitives';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/cn';
 import type { CallDetail, SessionUser } from '@voiceforge/shared';
+import { Phone, ArrowLeft, Clock, Calendar, User, MapPin } from 'lucide-react';
 
 interface PageProps {
   params: Promise<{ callId: string }>;
@@ -23,91 +26,112 @@ export default async function CallDetailPage({ params }: PageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <Link
-            href="/dashboard/calls"
-            className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-          >
-            ← Back to calls
-          </Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-            {detail.contact_name ?? detail.to_number ?? 'Call'}
-          </h1>
-          <p className="mt-1 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-            <Badge>{detail.status.replace('_', ' ')}</Badge>
-            <span>
-              {detail.direction.replace('_', ' ')} · {detail.provider}
-            </span>
-          </p>
+    <div className="flex flex-col gap-8">
+      <div>
+        <Link
+          href="/dashboard/calls"
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-2"
+        >
+          <ArrowLeft className="h-3 w-3" />
+          Back to calls
+        </Link>
+        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
+          {detail.contact_name ?? detail.to_number ?? 'Call'}
+        </h1>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge variant={detail.status === 'completed' ? 'default' : 'secondary'} className="capitalize">
+            {detail.status.replace('_', ' ')}
+          </Badge>
+          <span className="text-sm text-muted-foreground capitalize">
+            {detail.direction.replace('_', ' ')} · {detail.provider}
+          </span>
         </div>
-      </header>
+      </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
         <Card>
-          <CardTitle>Transcript</CardTitle>
-          {detail.turns.length > 0 ? (
-            <ul className="mt-3 flex flex-col gap-2">
-              {detail.turns.map((t, idx) => (
-                <li
-                  key={idx}
-                  className={cn(
-                    'flex max-w-[85%] flex-col rounded-lg px-3 py-2 text-sm',
-                    t.speaker === 'agent'
-                      ? 'self-start bg-zinc-100 dark:bg-zinc-900'
-                      : 'self-end bg-blue-50 dark:bg-blue-950/40',
-                  )}
-                >
-                  <span className="text-[10px] uppercase tracking-wide text-zinc-500">
-                    {t.speaker} · {Math.round(t.at_ms / 1000)}s
-                  </span>
-                  <span>{t.text}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-3 text-sm text-zinc-500">
-              No transcript yet. Real provider transcripts arrive via webhooks.
-            </p>
-          )}
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Phone className="h-4 w-4 text-primary" />
+              Transcript
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {detail.turns.length > 0 ? (
+              <ul className="flex flex-col gap-3">
+                {detail.turns.map((t, idx) => (
+                  <li
+                    key={idx}
+                    className={cn(
+                      'flex max-w-[85%] flex-col rounded-xl px-4 py-3 text-sm',
+                      t.speaker === 'agent'
+                        ? 'self-start bg-muted border border-border'
+                        : 'self-end bg-primary/10 text-primary-foreground border border-primary/20',
+                    )}
+                  >
+                    <span className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground mb-1">
+                      {t.speaker} · {Math.round(t.at_ms / 1000)}s
+                    </span>
+                    <span className="text-foreground">{t.text}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No transcript yet. Real provider transcripts arrive via webhooks.
+              </p>
+            )}
+          </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
           <Card>
-            <CardTitle>Metadata</CardTitle>
-            <dl className="mt-3 space-y-2 text-sm">
-              <Row label="Agent" value={detail.agent_name ?? detail.agent_id} />
-              <Row label="From" value={detail.from_number ?? '—'} />
-              <Row label="To" value={detail.to_number ?? '—'} />
-              <Row label="Started" value={fmt(detail.started_at)} />
-              <Row label="Ended" value={fmt(detail.ended_at)} />
-              <Row
-                label="Duration"
-                value={detail.duration_seconds != null ? `${detail.duration_seconds}s` : '—'}
-              />
-              <Row label="Outcome" value={detail.outcome ?? '—'} />
-              <Row label="Provider" value={detail.provider} />
-            </dl>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-primary" />
+                Metadata
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <dl className="space-y-3 text-sm">
+                <Row label="Agent" value={detail.agent_name ?? detail.agent_id} />
+                <Row label="From" value={detail.from_number ?? '—'} />
+                <Row label="To" value={detail.to_number ?? '—'} />
+                <Separator />
+                <Row label="Started" value={fmt(detail.started_at)} />
+                <Row label="Ended" value={fmt(detail.ended_at)} />
+                <Row
+                  label="Duration"
+                  value={detail.duration_seconds != null ? `${detail.duration_seconds}s` : '—'}
+                />
+                <Separator />
+                <Row label="Outcome" value={detail.outcome ?? '—'} />
+                <Row label="Provider" value={detail.provider} />
+              </dl>
+            </CardContent>
           </Card>
 
           {detail.evaluation ? (
             <Card>
-              <CardTitle>Evaluation</CardTitle>
-              <p className="mt-3 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-                {(detail.evaluation.overall_score * 100).toFixed(0)}%
-              </p>
-              <p className="mt-1 text-xs text-zinc-500">{detail.evaluation.summary}</p>
-              <ul className="mt-3 space-y-1 text-sm">
-                {detail.evaluation.metric_scores.map((m) => (
-                  <li key={m.name} className="flex items-start justify-between gap-3">
-                    <span className="text-xs uppercase tracking-wide text-zinc-500">{m.name}</span>
-                    <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                      {(m.score * 100).toFixed(0)}%
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <CardHeader>
+                <CardTitle className="text-base">Evaluation</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-3xl font-semibold text-foreground font-[family-name:var(--font-serif)]">
+                  {(detail.evaluation.overall_score * 100).toFixed(0)}%
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">{detail.evaluation.summary}</p>
+                <ul className="mt-4 space-y-2">
+                  {detail.evaluation.metric_scores.map((m) => (
+                    <li key={m.name} className="flex items-center justify-between gap-3">
+                      <span className="text-xs uppercase tracking-wide text-muted-foreground">{m.name}</span>
+                      <span className="font-medium text-foreground font-mono">
+                        {(m.score * 100).toFixed(0)}%
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
             </Card>
           ) : null}
         </div>
@@ -119,8 +143,8 @@ export default async function CallDetailPage({ params }: PageProps) {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start justify-between gap-3">
-      <dt className="text-xs uppercase tracking-wide text-zinc-500">{label}</dt>
-      <dd className="text-right font-medium text-zinc-900 dark:text-zinc-50">{value}</dd>
+      <dt className="text-xs uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="text-right font-medium text-foreground">{value}</dd>
     </div>
   );
 }

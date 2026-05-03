@@ -10,15 +10,17 @@ import type {
 } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
 import {
-  Badge,
   Card,
   CardHeader,
   CardTitle,
-  Input,
-  Label,
-  Select,
-} from '@/components/ui/primitives';
+  CardContent,
+  CardDescription,
+} from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useApi } from '@/lib/use-api';
+import { Building2, Mail, Users, BarChart3 } from 'lucide-react';
 
 interface ClientsPanelProps {
   workspaceId: string;
@@ -96,60 +98,69 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
   });
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.2fr_1fr]">
-      <div className="flex flex-col gap-4">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.2fr_1fr]">
+      <div className="flex flex-col gap-6">
         <Card>
-          <CardHeader>
-            <CardTitle>Client workspaces</CardTitle>
-            <Badge>{clients.data?.items.length ?? 0}</Badge>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-primary" />
+              Client workspaces
+            </CardTitle>
+            <Badge variant="secondary">{clients.data?.items.length ?? 0}</Badge>
           </CardHeader>
-          {clients.isLoading ? (
-            <p className="text-sm text-zinc-500">Loading…</p>
-          ) : clients.data?.items.length === 0 ? (
-            <p className="text-sm text-zinc-500">
-              No client workspaces yet. Create one to start managing agents on their behalf.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-1">
-              {clients.data?.items.map((c) => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSelected(c.id)}
-                    className={`flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-900 ${
-                      selected === c.id
-                        ? 'border-zinc-900 dark:border-zinc-100'
-                        : 'border-zinc-200 dark:border-zinc-800'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-medium text-zinc-900 dark:text-zinc-50">{c.name}</div>
-                      <div className="text-xs text-zinc-500">{c.slug}</div>
-                    </div>
-                    <Badge>{c.status}</Badge>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <CardContent>
+            {clients.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : clients.data?.items.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No client workspaces yet. Create one to start managing agents on their behalf.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {clients.data?.items.map((c) => (
+                  <li key={c.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(c.id)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-4 py-3 text-left text-sm transition-all hover:bg-accent ${
+                        selected === c.id
+                          ? 'border-primary bg-accent shadow-sm'
+                          : 'border-border bg-background'
+                      }`}
+                    >
+                      <div>
+                        <div className="font-medium text-foreground">{c.name}</div>
+                        <div className="text-xs text-muted-foreground">{c.slug}</div>
+                      </div>
+                      <Badge variant="outline" className="capitalize">{c.status}</Badge>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
         </Card>
 
         {selected ? <ClientUsageCard workspaceId={workspaceId} clientId={selected} /> : null}
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Add a client</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-primary" />
+              Add a client
+            </CardTitle>
           </CardHeader>
-          <div className="flex flex-col gap-3">
+          <CardContent className="flex flex-col gap-4">
             <div>
               <Label>Workspace name</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Plumbing" />
+              <Input className="mt-1.5" value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Plumbing" />
             </div>
             <div>
               <Label>Slug</Label>
               <Input
+                className="mt-1.5"
                 value={slug}
                 onChange={(e) => setSlug(e.target.value.toLowerCase())}
                 placeholder="acme-plumbing"
@@ -162,17 +173,21 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
             >
               {createClient.isPending ? 'Creating…' : 'Create client workspace'}
             </Button>
-          </div>
+          </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Invite a client user</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Mail className="h-4 w-4 text-primary" />
+              Invite a client user
+            </CardTitle>
           </CardHeader>
-          <div className="flex flex-col gap-3">
+          <CardContent className="flex flex-col gap-4">
             <div>
               <Label>Email</Label>
               <Input
+                className="mt-1.5"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="owner@acme.com"
@@ -180,12 +195,16 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
             </div>
             <div>
               <Label>Role</Label>
-              <Select value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'viewer')}>
+              <select
+                className="mt-1.5 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                value={role}
+                onChange={(e) => setRole(e.target.value as 'admin' | 'viewer')}
+              >
                 <option value="admin">Admin</option>
                 <option value="viewer">Viewer</option>
-              </Select>
+              </select>
             </div>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-muted-foreground">
               Invite is bound to the selected client workspace
               {selected ? ` (${clients.data?.items.find((c) => c.id === selected)?.name ?? ''})` : ' (select one above)'}.
             </p>
@@ -196,48 +215,54 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
             >
               {createInvite.isPending ? 'Sending…' : 'Send invite'}
             </Button>
-          </div>
+          </CardContent>
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Pending invites</CardTitle>
-            <Badge>{invites.data?.items.filter((i) => i.status === 'pending').length ?? 0}</Badge>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-primary" />
+              Pending invites
+            </CardTitle>
+            <Badge variant="secondary">{invites.data?.items.filter((i) => i.status === 'pending').length ?? 0}</Badge>
           </CardHeader>
-          {invites.isLoading ? (
-            <p className="text-sm text-zinc-500">Loading…</p>
-          ) : invites.data?.items.length === 0 ? (
-            <p className="text-sm text-zinc-500">No invites yet.</p>
-          ) : (
-            <ul className="flex flex-col gap-1 text-sm">
-              {invites.data?.items.map((i) => (
-                <li
-                  key={i.id}
-                  className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800"
-                >
-                  <div>
-                    <div className="font-medium text-zinc-900 dark:text-zinc-50">{i.email}</div>
-                    <div className="text-xs text-zinc-500">
-                      {i.role} · expires {new Date(i.expires_at).toLocaleDateString()}
+          <CardContent>
+            {invites.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : invites.data?.items.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No invites yet.</p>
+            ) : (
+              <ul className="flex flex-col gap-2 text-sm">
+                {invites.data?.items.map((i) => (
+                  <li
+                    key={i.id}
+                    className="flex items-center justify-between rounded-lg border border-border bg-background px-4 py-3"
+                  >
+                    <div>
+                      <div className="font-medium text-foreground">{i.email}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {i.role} · expires {new Date(i.expires_at).toLocaleDateString()}
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge>{i.status}</Badge>
-                    {i.status === 'pending' ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        onClick={() => revokeInvite.mutate(i.id)}
-                        disabled={revokeInvite.isPending}
-                      >
-                        Revoke
-                      </Button>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline">{i.status}</Badge>
+                      {i.status === 'pending' ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => revokeInvite.mutate(i.id)}
+                          disabled={revokeInvite.isPending}
+                        >
+                          Revoke
+                        </Button>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
         </Card>
       </div>
     </div>
@@ -261,7 +286,9 @@ function ClientUsageCard({
   if (usage.isLoading) {
     return (
       <Card>
-        <p className="text-sm text-zinc-500">Loading usage…</p>
+        <CardContent className="py-8">
+          <p className="text-sm text-muted-foreground">Loading usage…</p>
+        </CardContent>
       </Card>
     );
   }
@@ -270,23 +297,28 @@ function ClientUsageCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Usage (last 30 days)</CardTitle>
+        <CardTitle className="flex items-center gap-2">
+          <BarChart3 className="h-4 w-4 text-primary" />
+          Usage (last 30 days)
+        </CardTitle>
       </CardHeader>
-      <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-        <Stat label="Calls" value={u.total_calls.toString()} />
-        <Stat label="Minutes" value={u.total_minutes.toFixed(1)} />
-        <Stat label="Blocked" value={u.blocked_calls.toString()} />
-        <Stat label="Active agents" value={u.active_agents.toString()} />
-      </div>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+          <Stat label="Calls" value={u.total_calls.toString()} />
+          <Stat label="Minutes" value={u.total_minutes.toFixed(1)} />
+          <Stat label="Blocked" value={u.blocked_calls.toString()} />
+          <Stat label="Active agents" value={u.active_agents.toString()} />
+        </div>
+      </CardContent>
     </Card>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-      <div className="text-xs text-zinc-500">{label}</div>
-      <div className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">{value}</div>
+    <div className="rounded-lg border border-border bg-background p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-xl font-semibold text-foreground font-[family-name:var(--font-serif)]">{value}</div>
     </div>
   );
 }

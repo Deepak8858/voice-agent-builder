@@ -5,6 +5,7 @@ import { AuthController } from './auth.controller';
 import { ClerkWebhookController } from './clerk-webhook.controller';
 import { MeController } from './me.controller';
 import { ClerkAuthService } from './clerk-auth.service';
+import { AuthService } from './auth.service';
 
 @Global()
 @Module({
@@ -12,8 +13,9 @@ import { ClerkAuthService } from './clerk-auth.service';
   controllers: [AuthController, ClerkWebhookController, MeController],
   providers: [
     ClerkAuthService,
+    { provide: AuthService, useExisting: ClerkAuthService },
     { provide: 'AUTH_SERVICE', useExisting: ClerkAuthService },
   ],
-  exports: [ClerkAuthService, 'AUTH_SERVICE'],
+  exports: [ClerkAuthService, AuthService, 'AUTH_SERVICE'],
 })
 export class AuthModule {}

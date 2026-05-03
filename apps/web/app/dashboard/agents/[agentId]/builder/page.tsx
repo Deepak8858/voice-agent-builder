@@ -1,12 +1,15 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { apiFetch, ApiCallError } from '@/lib/api';
-import { Card, CardTitle, Badge } from '@/components/ui/primitives';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
 import { KnowledgePanel } from '@/components/knowledge-panel';
 import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
 import type { AgentDetail, SessionUser } from '@voiceforge/shared';
+import { ArrowLeft, Bot, Rocket, FileCode, Layers, Sparkles, Radio } from 'lucide-react';
 
 interface PageProps {
   params: Promise<{ agentId: string }>;
@@ -26,67 +29,92 @@ export default async function AgentBuilderPage({ params }: PageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+    <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link
             href="/dashboard/agents"
-            className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-2"
           >
-            \u2190 Back to agents
+            <ArrowLeft className="h-3 w-3" />
+            Back to agents
           </Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
             {agent.name}
           </h1>
-          <p className="mt-1 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-            <Badge>{agent.status}</Badge>
-            <span>
-              {agent.industry} \u00b7 {agent.agent_type.replace('_', ' ')}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Badge
+              variant={agent.status === 'published' ? 'default' : 'secondary'}
+              className="capitalize"
+            >
+              {agent.status}
+            </Badge>
+            <span className="text-sm text-muted-foreground capitalize">
+              {agent.industry} &middot; {agent.agent_type.replace('_', ' ')}
             </span>
-          </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <TestCallDrawer workspaceId={me.active_workspace_id} agentId={agent.id} />
-          <Button>Publish</Button>
+          <Button className="gap-2">
+            <Rocket className="h-4 w-4" />
+            Publish
+          </Button>
         </div>
-      </header>
+      </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.3fr_1fr]">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.3fr_1fr]">
         <Card>
-          <CardTitle>Agent Spec JSON</CardTitle>
-          {agent.active_spec ? (
-            <pre className="mt-3 max-h-[32rem] overflow-auto rounded-md bg-zinc-950 p-4 text-xs leading-relaxed text-zinc-100">
-              {JSON.stringify(agent.active_spec, null, 2)}
-            </pre>
-          ) : (
-            <p className="mt-3 text-sm text-zinc-500">No active version. Save a draft spec first.</p>
-          )}
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileCode className="h-4 w-4 text-primary" />
+              Agent Spec JSON
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {agent.active_spec ? (
+              <pre className="max-h-[32rem] overflow-auto rounded-md bg-muted p-4 text-xs leading-relaxed font-mono">
+                {JSON.stringify(agent.active_spec, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-sm text-muted-foreground">No active version. Save a draft spec first.</p>
+            )}
+          </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
           <Card>
-            <CardTitle>Versions ({agent.versions.length})</CardTitle>
-            <ul className="mt-3 space-y-2 text-sm">
-              {agent.versions.map((v) => (
-                <li
-                  key={v.id}
-                  className="flex items-center justify-between rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800"
-                >
-                  <div>
-                    <p className="font-medium text-zinc-900 dark:text-zinc-50">
-                      v{v.version_number}
-                    </p>
-                    <p className="text-xs text-zinc-500">
-                      {new Date(v.created_at).toLocaleString()}
-                    </p>
-                  </div>
-                  <Badge>{v.deployment_status.replace('_', ' ')}</Badge>
-                </li>
-              ))}
-              {agent.versions.length === 0 ? (
-                <li className="text-xs text-zinc-500">No versions yet.</li>
-              ) : null}
-            </ul>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Layers className="h-4 w-4 text-primary" />
+                Versions ({agent.versions.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-2">
+                {agent.versions.map((v) => (
+                  <li
+                    key={v.id}
+                    className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2.5"
+                  >
+                    <div>
+                      <p className="font-medium text-sm text-foreground">
+                        v{v.version_number}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {new Date(v.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="capitalize">
+                      {v.deployment_status.replace('_', ' ')}
+                    </Badge>
+                  </li>
+                ))}
+                {agent.versions.length === 0 ? (
+                  <li className="text-xs text-muted-foreground">No versions yet.</li>
+                ) : null}
+              </ul>
+            </CardContent>
           </Card>
 
           <KnowledgePanel workspaceId={me.active_workspace_id} agentId={agent.id} />
@@ -94,13 +122,32 @@ export default async function AgentBuilderPage({ params }: PageProps) {
           <SuggestionsPanel workspaceId={me.active_workspace_id} agentId={agent.id} />
 
           <Card>
-            <CardTitle>Coming soon</CardTitle>
-            <ul className="mt-3 space-y-1 text-xs text-zinc-500">
-              <li>Visual flow builder (Phase 2)</li>
-              <li>Embeddings + retrieval (Phase 2)</li>
-              <li>Real Vapi/Retell deploy (Phase 3+)</li>
-              <li>Compliance editor (Phase 6)</li>
-            </ul>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-primary" />
+                Coming soon
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-1.5 text-xs text-muted-foreground">
+                <li className="flex items-center gap-2">
+                  <Radio className="h-3 w-3 text-primary/70" />
+                  Visual flow builder
+                </li>
+                <li className="flex items-center gap-2">
+                  <Radio className="h-3 w-3 text-primary/70" />
+                  Embeddings + retrieval
+                </li>
+                <li className="flex items-center gap-2">
+                  <Radio className="h-3 w-3 text-primary/70" />
+                  Real Vapi/Retell deploy
+                </li>
+                <li className="flex items-center gap-2">
+                  <Radio className="h-3 w-3 text-primary/70" />
+                  Compliance editor
+                </li>
+              </ul>
+            </CardContent>
           </Card>
         </div>
       </div>
