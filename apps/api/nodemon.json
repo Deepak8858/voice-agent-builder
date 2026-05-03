@@ -1,4 +1,7 @@
 {
+  "env": {
+    "DOTENV_CONFIG_PATH": "../../.env"
+  },
   "watch": ["src", "../../packages/shared/src"],
   "ext": "ts,json",
   "ignore": ["**/*.test.ts", "dist", "node_modules"],

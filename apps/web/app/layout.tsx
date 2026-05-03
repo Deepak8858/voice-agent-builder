@@ -47,7 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-background/80 px-6 py-3 backdrop-blur">
             <Link href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
               <Logo size={24} />
-              <span className="font-[family-name:var(--font-serif)] text-xl">VoiceForge</span>
+              <span className="font-serif text-xl">VoiceForge</span>
             </Link>
             <nav className="flex items-center gap-3 text-sm">
               <Show

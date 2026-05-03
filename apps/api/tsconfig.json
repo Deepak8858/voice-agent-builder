@@ -4,11 +4,13 @@
     "target": "ES2022",
     "module": "CommonJS",
     "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "useDefineForClassFields": false,
     "strictPropertyInitialization": false,
     "outDir": "./dist",
+    "rootDir": "../..",
     "baseUrl": ".",
     "noEmit": false,
     "paths": {
