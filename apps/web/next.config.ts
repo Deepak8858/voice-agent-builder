@@ -4,19 +4,24 @@ const nextConfig: NextConfig = {
   output: "standalone",
   async headers() {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+    const clerkOrigins = [
+      'https://*.clerk.accounts.dev',
+      'https://accounts.devdeepak.me',
+      'https://clerk.devdeepak.me',
+    ].join(' ');
     const csp = [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev",
+      `script-src 'self' 'unsafe-eval' 'unsafe-inline' ${clerkOrigins}`,
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https://*.clerk.accounts.dev https://img.clerk.com",
+      `img-src 'self' data: blob: ${clerkOrigins} https://img.clerk.com`,
       "font-src 'self'",
-      `connect-src 'self' ${apiUrl} https://*.clerk.accounts.dev https://api.stripe.com`,
-      "frame-src 'self' https://checkout.stripe.com https://*.clerk.accounts.dev",
+      `connect-src 'self' ${apiUrl} ${clerkOrigins} https://api.stripe.com`,
+      `frame-src 'self' https://checkout.stripe.com ${clerkOrigins}`,
       "worker-src 'self' blob:",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
-    ].join("; ");
+    ].join('; ');
 
     return [
       {
