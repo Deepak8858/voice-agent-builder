@@ -48,7 +48,10 @@ export class WebhookExecutor implements ToolExecutor {
       const duration_ms = Date.now() - t;
       const text = await res.text();
       const parsed = this.tryJson(text);
-      return { success: res.ok, result: { status: res.status, body: parsed, duration_ms } };
+      const result = { status: res.status, body: parsed, duration_ms };
+      return res.ok
+        ? { success: true, result }
+        : { success: false, error: `HTTP ${res.status}`, result };
     } finally {
       clearTimeout(timeout);
     }
