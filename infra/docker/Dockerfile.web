@@ -35,7 +35,7 @@ COPY packages/ui/package*.json ./packages/ui/
 # package-lock.json generated on Windows omits Linux native binaries.
 # Removing it forces fresh resolution inside the Linux container.
 RUN rm -f package-lock.json
-RUN npm ci --ignore-scripts
+RUN npm install --ignore-scripts --no-audit --no-fund
 
 # Copy source
 COPY apps/web ./apps/web
