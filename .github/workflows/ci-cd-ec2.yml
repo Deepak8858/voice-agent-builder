@@ -178,9 +178,10 @@ jobs:
           envs: AWS_REGION,COMPOSE_PROJECT_NAME
           script: |
             set -euo pipefail
+            export PATH=$HOME/.local/bin:/usr/local/bin:$PATH
 
             export AWS_REGION="${{ env.AWS_REGION }}"
-            export AWS_ACCOUNT_ID=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | python3 -c "import sys,json; print(json.load(sys.stdin)['accountId'])")
+            export AWS_ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID }}"
             export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
 
             echo "🔐 Logging in to ECR..."
