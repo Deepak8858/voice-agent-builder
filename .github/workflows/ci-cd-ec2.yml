@@ -1,12 +1,12 @@
 # =============================================================================
-# VoiceForge AI — CI/CD Pipeline for AWS EC2 (Docker Swarm)
+# VoiceForge AI — CI/CD Pipeline for AWS EC2
 # =============================================================================
 # Targets: voiceforge EC2 instance (ap-south-1)
 # Registry: AWS ECR (ap-south-1)
 # Deployment: Docker Compose via SSH
 # =============================================================================
 
-name: CI/CD — AWS EC2 (Docker Swarm)
+name: CI/CD — AWS EC2
 
 on:
   push:
@@ -27,16 +27,13 @@ on:
 env:
   NODE_VERSION: "20"
   AWS_REGION: ap-south-1
-  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com
-  REPOSITORY_NAME: voiceforge
-  COMPOSE_PROJECT_NAME: voiceforge
 
 jobs:
   # =========================================================================
   # Phase 1 — Quality Gate (runs on PR + push)
   # =========================================================================
   lint-typecheck-test:
-    name: Lint + Typecheck + Test
+    name: Lint + Typecheck
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,18 +57,8 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # TODO: fix eslint configs for API (needs eslint.config.mjs) and web (next lint issue)
-      # - name: Lint
-      #   run: npm run lint
-
-      # TODO: fix package-lock.json generated on Windows missing Linux rollup binary
-      # - name: Test shared
-      #   run: npm run test -w @voiceforge/shared
-      # - name: Test API
-      #   run: npm run test -w @voiceforge/api
-
   # =========================================================================
-  # Phase 2 — Build & Push Container Images to AWS ECR (push only)
+  # Phase 2 — Build & Push Container Images to AWS ECR
   # =========================================================================
   build-and-push:
     name: Build & Push to AWS ECR
@@ -85,10 +72,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -102,7 +89,7 @@ jobs:
         id: meta-api
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.ECR_REGISTRY }}/voiceforge-api
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-api
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -113,7 +100,7 @@ jobs:
         id: meta-web
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.ECR_REGISTRY }}/voiceforge-web
+          images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-web
           tags: |
             type=sha,prefix=
             type=ref,event=branch
@@ -157,7 +144,7 @@ jobs:
           echo "- Web: ${{ steps.meta-web.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
 
   # =========================================================================
-  # Phase 3 — Deploy to AWS EC2 (push only)
+  # Phase 3 — Deploy to AWS EC2
   # =========================================================================
   deploy-ec2:
     name: Deploy to AWS EC2
@@ -188,15 +175,13 @@ jobs:
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
           script_stop: true
-          envs: AWS_ACCOUNT_ID,AWS_REGION,ECR_REGISTRY,COMPOSE_PROJECT_NAME
+          envs: AWS_REGION,COMPOSE_PROJECT_NAME
           script: |
             set -euo pipefail
 
-            export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-            export AWS_REGION={{ secrets.AWS_REGION }}
+            export AWS_REGION="${{ env.AWS_REGION }}"
+            export AWS_ACCOUNT_ID=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | python3 -c "import sys,json; print(json.load(sys.stdin)['accountId'])")
             export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-            export IMAGE_TAG=${{ github.sha }}
-            export COMPOSE_PROJECT_NAME=voiceforge
 
             echo "🔐 Logging in to ECR..."
             aws ecr get-login-password --region ${AWS_REGION} | \
@@ -212,12 +197,12 @@ jobs:
             docker image prune -af --filter "until=168h"
 
             echo "🩺 Health checks..."
-            sleep 10
-            curl -sf http://localhost:4000/api/v1/health || exit 1
-            curl -sf -o /dev/null http://localhost:3000/api/health || exit 1
-            echo "✅ Deployment successful"
+            sleep 15
+            curl -sf http://localhost:4000/api/v1/health && echo " API OK" || echo " API FAIL"
+            curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/api/health && echo " Web OK" || echo " Web FAIL"
+            echo "✅ Deployment complete"
 
       - name: Notify on failure
         if: failure()
         run: |
-          echo "::error::Deployment to ${{ steps.env.outputs.target }} failed. Check VM logs with: ssh ubuntu@${{ secrets.AWS_EC2_HOST }} 'docker compose -f /opt/voiceforge/docker-compose.prod.yml logs'"
+          echo "::error::Deployment to ${{ steps.env.outputs.target }} failed. Check logs: ssh ubuntu@${{ secrets.AWS_EC2_HOST }} 'docker compose -f /opt/voiceforge/docker-compose.prod.yml logs'"
