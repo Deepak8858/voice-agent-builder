@@ -7,6 +7,8 @@
 FROM --platform=linux/amd64 node:20-alpine AS builder
 WORKDIR /app
 
+ARG CLERK_SECRET_KEY
+
 # Install build dependencies (python3/make for native modules like sharp)
 RUN apk add --no-cache python3 make g++
 
@@ -41,6 +43,8 @@ FROM --platform=linux/amd64 node:20-alpine AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
+ARG CLERK_SECRET_KEY
+ENV CLERK_SECRET_KEY=$CLERK_SECRET_KEY
 
 # Add tini + openssl for Prisma runtime
 RUN apk add --no-cache tini openssl \
