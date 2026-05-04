@@ -207,39 +207,40 @@ jobs:
             export IMAGE_TAG="$(echo "${{ github.sha }}" | cut -c1-7)"
             export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
 
-            # Run docker as root so it can read root-owned /opt/voiceforge/.env.
-            # Pass IMAGE_TAG/ECR_REGISTRY explicitly via `env` since sudoers strips environment.
-            run_docker() {
-              sudo env "IMAGE_TAG=${IMAGE_TAG}" "ECR_REGISTRY=${ECR_REGISTRY}" docker "$@"
-            }
-
-            echo "🔐 Logging in to ECR (as root, so docker compose can pull as root)..."
-            aws ecr get-login-password --region ${AWS_REGION} | \
-              run_docker login --username AWS --password-stdin ${ECR_REGISTRY}
-
             echo "🔍 Verifying /opt/voiceforge/.env exists on EC2..."
             if ! sudo test -f /opt/voiceforge/.env; then
               echo "::error::/opt/voiceforge/.env missing on EC2. Create it manually before deploy."
               exit 1
             fi
 
+            echo "🔓 Ensuring deploy user can read /opt/voiceforge/.env..."
+            # File may be root-owned with 600 perms. Grant deploy user's group read access
+            # so docker compose (running as deploy user) can read env_file. Stays unreadable
+            # to other users.
+            sudo chgrp "$(id -gn)" /opt/voiceforge/.env
+            sudo chmod 640 /opt/voiceforge/.env
+
+            echo "🔐 Logging in to ECR..."
+            aws ecr get-login-password --region ${AWS_REGION} | \
+              docker login --username AWS --password-stdin ${ECR_REGISTRY}
+
             echo "📥 Pulling images..."
-            run_docker compose -f ${COMPOSE_FILE} pull
+            docker compose -f ${COMPOSE_FILE} pull
 
             echo "🗃️  Running Prisma migrations..."
-            run_docker compose -f ${COMPOSE_FILE} run --rm \
+            docker compose -f ${COMPOSE_FILE} run --rm \
               --entrypoint sh api -c "npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma"
 
             echo "🚀 Restarting services..."
-            run_docker compose -f ${COMPOSE_FILE} up -d --remove-orphans
+            docker compose -f ${COMPOSE_FILE} up -d --remove-orphans
 
             echo "🧹 Pruning old images..."
-            run_docker image prune -af --filter "until=168h"
+            docker image prune -af --filter "until=168h"
 
             echo "🩺 Health checks..."
             sleep 15
-            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo " API OK" || { echo " API FAIL"; run_docker compose -f ${COMPOSE_FILE} logs api --tail=100; exit 1; }
-            curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health | grep -q "200" && echo " Web OK" || { echo " Web FAIL"; run_docker compose -f ${COMPOSE_FILE} logs web --tail=100; exit 1; }
+            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo " API OK" || { echo " API FAIL"; docker compose -f ${COMPOSE_FILE} logs api --tail=100; exit 1; }
+            curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health | grep -q "200" && echo " Web OK" || { echo " Web FAIL"; docker compose -f ${COMPOSE_FILE} logs web --tail=100; exit 1; }
             echo "✅ Deployment complete"
 
       - name: Notify on failure
