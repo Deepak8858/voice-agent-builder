@@ -224,24 +224,8 @@ jobs:
             aws ecr get-login-password --region ${AWS_REGION} | \
               docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
-            echo "🔧 Diagnostic info..."
-            id
-            docker --version || echo "docker missing"
-            docker compose version || echo "compose v2 plugin missing"
-            ls -la /opt/voiceforge/.env
-            head -1 /opt/voiceforge/.env || echo "cannot read .env"
-            echo "ECR_REGISTRY=${ECR_REGISTRY}"
-            echo "IMAGE_TAG=${IMAGE_TAG}"
-
             echo "📥 Pulling images..."
-            set +e
-            docker compose -f ${COMPOSE_FILE} pull 2>&1
-            pull_rc=$?
-            set -e
-            if [ $pull_rc -ne 0 ]; then
-              echo "::error::docker compose pull failed (exit $pull_rc)"
-              exit $pull_rc
-            fi
+            docker compose -f ${COMPOSE_FILE} pull
 
             echo "🗃️  Running Prisma migrations..."
             docker compose -f ${COMPOSE_FILE} run --rm \
