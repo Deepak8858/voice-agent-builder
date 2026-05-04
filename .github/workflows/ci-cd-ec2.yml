@@ -107,6 +107,25 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=${{ github.event.inputs.environment }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
+      - name: Validate required build-time secrets
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+        run: |
+          missing=()
+          for v in NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
+                   NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required build-time values: ${missing[*]}"
+            echo "Set them in repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
       - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
@@ -117,8 +136,6 @@ jobs:
           labels: ${{ steps.meta-api.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
 
       - name: Build and push Web image
         uses: docker/build-push-action@v6
@@ -187,36 +204,84 @@ jobs:
             export AWS_REGION="${{ env.AWS_REGION }}"
             export AWS_ACCOUNT_ID="${{ secrets.AWS_ACCOUNT_ID }}"
             export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+            export IMAGE_TAG="$(echo "${{ github.sha }}" | cut -c1-7)"
 
             echo "🔐 Logging in to ECR..."
             aws ecr get-login-password --region ${AWS_REGION} | \
               docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
-            echo "📝 Injecting secrets into /opt/voiceforge/.env..."
-            # Update CLERK_SECRET_KEY in existing .env or create new one
-            if [ -f /opt/voiceforge/.env ]; then
-              if grep -q "^CLERK_SECRET_KEY=" /opt/voiceforge/.env; then
-                sed -i "s|^CLERK_SECRET_KEY=.*|CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}|" /opt/voiceforge/.env
-              else
-                echo "CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}" >> /opt/voiceforge/.env
-              fi
-            else
-              echo "CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}" > /opt/voiceforge/.env
-            fi
+            echo "📝 Writing /opt/voiceforge/.env from CI secrets..."
+            sudo mkdir -p /opt/voiceforge
+            sudo tee /opt/voiceforge/.env > /dev/null <<'ENVEOF'
+            NODE_ENV=production
+            API_PORT=4000
+            WEB_PORT=3000
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
+            NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_CLERK_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_IN_URL }}
+            NEXT_PUBLIC_CLERK_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_UP_URL }}
+            NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL }}
+            NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL }}
+            CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
+            CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            CLERK_WEBHOOK_SECRET=${{ secrets.CLERK_WEBHOOK_SECRET }}
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            DIRECT_URL=${{ secrets.DIRECT_URL }}
+            SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+            SUPABASE_STORAGE_BUCKET=${{ vars.SUPABASE_STORAGE_BUCKET || 'voiceforge' }}
+            REDIS_URL=redis://redis:6379
+            AUTH_PROVIDER=clerk
+            VOICE_PROVIDER=${{ vars.VOICE_PROVIDER || 'mock' }}
+            VAPI_API_KEY=${{ secrets.VAPI_API_KEY }}
+            VAPI_WEBHOOK_SECRET=${{ secrets.VAPI_WEBHOOK_SECRET }}
+            VAPI_PHONE_NUMBER_ID=${{ secrets.VAPI_PHONE_NUMBER_ID }}
+            RETELL_API_KEY=${{ secrets.RETELL_API_KEY }}
+            RETELL_WEBHOOK_SECRET=${{ secrets.RETELL_WEBHOOK_SECRET }}
+            LLM_PROVIDER=${{ vars.LLM_PROVIDER || 'mock' }}
+            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+            ANTHROPIC_MODEL=${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+            GITHUB_TOKEN=${{ secrets.LLM_GITHUB_TOKEN }}
+            STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
+            STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
+            STRIPE_STARTER_PRICE_ID=${{ vars.STRIPE_STARTER_PRICE_ID }}
+            STRIPE_GROWTH_PRICE_ID=${{ vars.STRIPE_GROWTH_PRICE_ID }}
+            STRIPE_ENTERPRISE_PRICE_ID=${{ vars.STRIPE_ENTERPRISE_PRICE_ID }}
+            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+            EMAIL_FROM=${{ vars.EMAIL_FROM || 'VoiceForge <noreply@voiceforge.ai>' }}
+            WEB_BASE_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
+            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            ALLOWED_ORIGINS=${{ vars.ALLOWED_ORIGINS }}
+            METRICS_SCRAPE_TOKEN=${{ secrets.METRICS_SCRAPE_TOKEN }}
+            VOICE_WEBHOOK_SECRET=${{ secrets.VOICE_WEBHOOK_SECRET }}
+            ENVEOF
+            sudo chown root:root /opt/voiceforge/.env
+            sudo chmod 600 /opt/voiceforge/.env
 
             echo "📥 Pulling images..."
-            docker compose -f /opt/voiceforge/docker-compose.prod.yml pull
+            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
+              docker compose -f /opt/voiceforge/docker-compose.prod.yml pull
+
+            echo "🗃️  Running Prisma migrations..."
+            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
+              docker compose -f /opt/voiceforge/docker-compose.prod.yml run --rm \
+              --entrypoint sh api -c "npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma"
 
             echo "🚀 Restarting services..."
-            docker compose -f /opt/voiceforge/docker-compose.prod.yml up -d --remove-orphans
+            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
+              docker compose -f /opt/voiceforge/docker-compose.prod.yml up -d --remove-orphans
 
             echo "🧹 Pruning old images..."
-            docker image prune -af --filter "until=168h"
+            sudo docker image prune -af --filter "until=168h"
 
             echo "🩺 Health checks..."
             sleep 15
-            curl -sf http://localhost:4000/api/v1/health && echo " API OK" || echo " API FAIL"
-            curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/api/health && echo " Web OK" || echo " Web FAIL"
+            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo " API OK" || { echo " API FAIL"; sudo docker compose -f /opt/voiceforge/docker-compose.prod.yml logs api --tail=100; exit 1; }
+            curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health | grep -q "200" && echo " Web OK" || { echo " Web FAIL"; sudo docker compose -f /opt/voiceforge/docker-compose.prod.yml logs web --tail=100; exit 1; }
             echo "✅ Deployment complete"
 
       - name: Notify on failure
