@@ -210,57 +210,11 @@ jobs:
             aws ecr get-login-password --region ${AWS_REGION} | \
               docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
-            echo "📝 Writing /opt/voiceforge/.env from CI secrets..."
-            sudo mkdir -p /opt/voiceforge
-            sudo tee /opt/voiceforge/.env > /dev/null <<'ENVEOF'
-            NODE_ENV=production
-            API_PORT=4000
-            WEB_PORT=3000
-            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-            NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
-            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
-            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-            NEXT_PUBLIC_CLERK_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_IN_URL }}
-            NEXT_PUBLIC_CLERK_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_UP_URL }}
-            NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL }}
-            NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL }}
-            CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
-            CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
-            CLERK_WEBHOOK_SECRET=${{ secrets.CLERK_WEBHOOK_SECRET }}
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            DIRECT_URL=${{ secrets.DIRECT_URL }}
-            SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-            SUPABASE_STORAGE_BUCKET=${{ vars.SUPABASE_STORAGE_BUCKET || 'voiceforge' }}
-            REDIS_URL=redis://redis:6379
-            AUTH_PROVIDER=clerk
-            VOICE_PROVIDER=${{ vars.VOICE_PROVIDER || 'mock' }}
-            VAPI_API_KEY=${{ secrets.VAPI_API_KEY }}
-            VAPI_WEBHOOK_SECRET=${{ secrets.VAPI_WEBHOOK_SECRET }}
-            VAPI_PHONE_NUMBER_ID=${{ secrets.VAPI_PHONE_NUMBER_ID }}
-            RETELL_API_KEY=${{ secrets.RETELL_API_KEY }}
-            RETELL_WEBHOOK_SECRET=${{ secrets.RETELL_WEBHOOK_SECRET }}
-            LLM_PROVIDER=${{ vars.LLM_PROVIDER || 'mock' }}
-            ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-            ANTHROPIC_MODEL=${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
-            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-            GITHUB_TOKEN=${{ secrets.LLM_GITHUB_TOKEN }}
-            STRIPE_SECRET_KEY=${{ secrets.STRIPE_SECRET_KEY }}
-            STRIPE_WEBHOOK_SECRET=${{ secrets.STRIPE_WEBHOOK_SECRET }}
-            STRIPE_STARTER_PRICE_ID=${{ vars.STRIPE_STARTER_PRICE_ID }}
-            STRIPE_GROWTH_PRICE_ID=${{ vars.STRIPE_GROWTH_PRICE_ID }}
-            STRIPE_ENTERPRISE_PRICE_ID=${{ vars.STRIPE_ENTERPRISE_PRICE_ID }}
-            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
-            EMAIL_FROM=${{ vars.EMAIL_FROM || 'VoiceForge <noreply@voiceforge.ai>' }}
-            WEB_BASE_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
-            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            ALLOWED_ORIGINS=${{ vars.ALLOWED_ORIGINS }}
-            METRICS_SCRAPE_TOKEN=${{ secrets.METRICS_SCRAPE_TOKEN }}
-            VOICE_WEBHOOK_SECRET=${{ secrets.VOICE_WEBHOOK_SECRET }}
-            ENVEOF
-            sudo chown root:root /opt/voiceforge/.env
-            sudo chmod 600 /opt/voiceforge/.env
+            echo "🔍 Verifying VM-managed /opt/voiceforge/.env exists..."
+            if [ ! -f /opt/voiceforge/.env ]; then
+              echo "::error::/opt/voiceforge/.env missing on EC2. Create it manually before deploy."
+              exit 1
+            fi
 
             echo "📥 Pulling images..."
             sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
