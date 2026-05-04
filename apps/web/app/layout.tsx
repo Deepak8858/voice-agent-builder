@@ -43,7 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${dmSans.variable} ${dmSerif.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        <ClerkProvider>
+        <ClerkProvider publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}>
           <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-background/80 px-6 py-3 backdrop-blur">
             <Link href="/" className="flex items-center gap-2.5 font-semibold tracking-tight">
               <Logo size={24} />
