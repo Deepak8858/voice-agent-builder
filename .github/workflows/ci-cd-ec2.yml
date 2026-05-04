@@ -217,25 +217,22 @@ jobs:
             fi
 
             echo "📥 Pulling images..."
-            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
-              docker compose -f /opt/voiceforge/docker-compose.prod.yml pull
+            docker compose -f /opt/voiceforge/docker-compose.prod.yml pull
 
             echo "🗃️  Running Prisma migrations..."
-            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
-              docker compose -f /opt/voiceforge/docker-compose.prod.yml run --rm \
+            docker compose -f /opt/voiceforge/docker-compose.prod.yml run --rm \
               --entrypoint sh api -c "npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma"
 
             echo "🚀 Restarting services..."
-            sudo IMAGE_TAG=${IMAGE_TAG} ECR_REGISTRY=${ECR_REGISTRY} \
-              docker compose -f /opt/voiceforge/docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f /opt/voiceforge/docker-compose.prod.yml up -d --remove-orphans
 
             echo "🧹 Pruning old images..."
-            sudo docker image prune -af --filter "until=168h"
+            docker image prune -af --filter "until=168h"
 
             echo "🩺 Health checks..."
             sleep 15
-            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo " API OK" || { echo " API FAIL"; sudo docker compose -f /opt/voiceforge/docker-compose.prod.yml logs api --tail=100; exit 1; }
-            curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health | grep -q "200" && echo " Web OK" || { echo " Web FAIL"; sudo docker compose -f /opt/voiceforge/docker-compose.prod.yml logs web --tail=100; exit 1; }
+            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo " API OK" || { echo " API FAIL"; docker compose -f /opt/voiceforge/docker-compose.prod.yml logs api --tail=100; exit 1; }
+            curl -sf --max-time 10 -o /dev/null -w "%{http_code}\n" http://localhost:3000/api/health | grep -q "200" && echo " Web OK" || { echo " Web FAIL"; docker compose -f /opt/voiceforge/docker-compose.prod.yml logs web --tail=100; exit 1; }
             echo "✅ Deployment complete"
 
       - name: Notify on failure
