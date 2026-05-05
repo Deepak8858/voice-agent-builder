@@ -58,6 +58,28 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
     return result;
   }
 
+  async healthCheck(): Promise<'ok' | 'unavailable'> {
+    try {
+      const url = `${this.endpoint}/chat/completions?api-version=${this.apiVersion}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'api-key': env.LLM_API_KEY ?? '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      return res.ok ? 'ok' : 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
+  }
+
   private async callModel(input: GenerateAgentDto, base: AgentTemplateSeed): Promise<unknown> {
     const url = `${this.endpoint}/chat/completions?api-version=${this.apiVersion}`;
 

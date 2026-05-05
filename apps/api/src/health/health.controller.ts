@@ -13,7 +13,6 @@ export class HealthController {
 
   @Get()
   async check() {
-    // DB check
     let db: 'ok' | 'error' = 'ok';
     try {
       await this.prisma.$queryRaw`SELECT 1`;
@@ -21,14 +20,23 @@ export class HealthController {
       db = 'error';
     }
 
-    // Redis / Valkey check
     const redis = await this.queue.ping();
 
+    let llm: 'ok' | 'unavailable' = 'unavailable';
+    if (this.llm.healthCheck) {
+      llm = await this.llm.healthCheck();
+    }
+
+    const allHealthy = db === 'ok' && redis === 'ok' && llm === 'ok';
+    const anyUp = db === 'ok' || redis === 'ok';
+
     return {
-      status: db === 'ok' && redis === 'ok' ? 'ok' : 'degraded',
-      db,
-      redis,
-      llm: { provider: this.llm.name, status: 'ok' },
+      status: allHealthy ? 'healthy' : anyUp ? 'degraded' : 'unhealthy',
+      checks: {
+        db,
+        redis,
+        llm: { provider: this.llm.name, status: llm },
+      },
       time: new Date().toISOString(),
       uptime: process.uptime(),
     };

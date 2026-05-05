@@ -54,6 +54,29 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
     };
   }
 
+  async healthCheck(): Promise<'ok' | 'unavailable'> {
+    try {
+      const { apiKey, baseUrl } = this.client;
+      const res = await fetch(`${baseUrl}/messages`, {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      return res.ok ? 'ok' : 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
+  }
+
   private pickTemplate(input: GenerateAgentDto): AgentTemplateSeed {
     if (input.template_slug) {
       const direct = findTemplateBySlug(input.template_slug);

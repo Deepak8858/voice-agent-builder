@@ -55,6 +55,27 @@ export class GithubModelsLlmAdapter implements LlmAgentGenerator {
     };
   }
 
+  async healthCheck(): Promise<'ok' | 'unavailable'> {
+    try {
+      const res = await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.GITHUB_TOKEN ?? ''}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: this.model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      return res.ok ? 'ok' : 'unavailable';
+    } catch {
+      return 'unavailable';
+    }
+  }
+
   private pickTemplate(input: GenerateAgentDto): AgentTemplateSeed {
     if (input.template_slug) {
       const direct = findTemplateBySlug(input.template_slug);
