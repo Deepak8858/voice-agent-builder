@@ -8,11 +8,13 @@ const isPublicRoute = createRouteMatcher([
   '/sign-up(.*)',
   '/api/webhooks/(.*)',
   '/api/health',
-  '/api/v1/auth/me',
+]);
+
+const isProtectedRoute = createRouteMatcher([
+  '/dashboard(.*)',
 ]);
 
 export default clerkMiddleware(async (auth, req: NextRequest) => {
-  const { userId } = await auth();
   const pathname = req.nextUrl.pathname;
 
   // Allow static assets and Next.js internals
@@ -23,16 +25,14 @@ export default clerkMiddleware(async (auth, req: NextRequest) => {
     return NextResponse.next();
   }
 
-  // Allow API routes (backend handles auth) and public routes
+  // Allow API routes and public routes through
   if (pathname.startsWith('/api/') || isPublicRoute(req)) {
     return NextResponse.next();
   }
 
-  // Protect everything else — redirect unauthenticated users to sign-in
-  if (!userId) {
-    const signInUrl = new URL('/sign-in', req.url);
-    signInUrl.searchParams.set('redirect_url', pathname);
-    return NextResponse.redirect(signInUrl.toString());
+  // Protect dashboard routes — Clerk's auth.protect() redirects to sign-in
+  if (isProtectedRoute(req)) {
+    await auth.protect();
   }
 
   return NextResponse.next();
