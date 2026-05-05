@@ -1,4 +1,4 @@
-import { clerkMiddleware, createRouteMatcher, redirectToSignIn } from '@clerk/nextjs/server';
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
@@ -12,7 +12,6 @@ const isPublicRoute = createRouteMatcher([
 ]);
 
 export default clerkMiddleware(async (auth, req: NextRequest) => {
-  const { userId } = await auth();
   const pathname = req.nextUrl.pathname;
 
   // Allow static assets and Next.js internals
@@ -28,10 +27,8 @@ export default clerkMiddleware(async (auth, req: NextRequest) => {
     return NextResponse.next();
   }
 
-  // Protect everything else — redirect unauthenticated users to sign-in
-  if (!userId) {
-    return redirectToSignIn({ returnBackUrl: pathname });
-  }
+  // Protect everything else — Clerk's protect() redirects unauthenticated users
+  await auth().protect();
 
   return NextResponse.next();
 });
