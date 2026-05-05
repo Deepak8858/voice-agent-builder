@@ -1,25 +1,41 @@
 # =============================================================================
-# VoiceForge AI — Production Docker Compose for AWS EC2 (Docker Swarm)
+# VoiceForge AI — Production Docker Compose for AWS EC2
 # =============================================================================
-# Usage on EC2:
-#   export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-#   export REGION=ap-south-1
-#   export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
-#   aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-#   docker compose -f docker-compose.prod.yml pull
+# Usage on EC2 (local build):
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Usage on EC2 (ECR, after CI/CD):
+#   aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-south-1.amazonaws.com
+#   export IMAGE_TAG=latest  # or sha tag from CI
+#   docker compose -f docker-compose.prod.yml -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.prod.yml up -d
 #
 # Prerequisites on EC2:
 #   - Docker + Docker Compose v2 installed
-#   - Docker Swarm initialized: docker swarm init
-#   - /opt/voiceforge/.env file created from secret injection
-#   - /opt/voiceforge/data/certbot populated with TLS certs (Let's Encrypt)
+#   - /opt/voiceforge/.env file
+#   - /opt/voiceforge/data/letsencrypt -> /etc/letsencrypt (SSL certs)
+#   - /opt/voiceforge/data/certbot-www (certbot webroot)
+#   - /opt/voiceforge/nginx/nginx.conf
 #   - Ports 80 and 443 open in AWS Security Group
 # =============================================================================
 
 services:
   web:
-    image: ${ECR_REGISTRY}/voiceforge-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ./infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: "https://vocal.devdeepak.me/api/v1"
+        NEXT_PUBLIC_APP_URL: "https://vocal.devdeepak.me"
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_live_Y2xlcmsuZGV2ZGVlcGFrLm1lJA"
+        NEXT_PUBLIC_SUPABASE_URL: "https://nsgshzxxhytjmiiasobc.supabase.co"
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_8RlbxXqpf_pC9v7sj6yEAg_2dCh4-IC"
+        NEXT_PUBLIC_CLERK_SIGN_IN_URL: "/sign-in"
+        NEXT_PUBLIC_CLERK_SIGN_UP_URL: "/sign-up"
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL: "/dashboard"
+        NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL: "/dashboard"
+    image: voiceforge-web:latest
     container_name: vf-web
     restart: always
     ports:
@@ -32,28 +48,23 @@ services:
       HOSTNAME: 0.0.0.0
     networks:
       - voiceforge
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 1G
-        reservations:
-          cpus: "0.5"
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
-    image: ${ECR_REGISTRY}/voiceforge-api:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ./infra/docker/Dockerfile.api
+    image: voiceforge-api:latest
     container_name: vf-api
     restart: always
     ports:
@@ -69,25 +80,17 @@ services:
         condition: service_healthy
     networks:
       - voiceforge
-    deploy:
-      resources:
-        limits:
-          cpus: "1.5"
-          memory: 2G
-        reservations:
-          cpus: "0.75"
-          memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4000/api/v1/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
@@ -103,11 +106,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
 
   nginx:
     image: nginx:1.27-alpine
@@ -127,11 +125,6 @@ services:
         condition: service_healthy
     networks:
       - voiceforge
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
     logging:
       driver: "json-file"
       options:
