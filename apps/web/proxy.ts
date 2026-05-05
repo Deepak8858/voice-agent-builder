@@ -12,6 +12,7 @@ const isPublicRoute = createRouteMatcher([
 ]);
 
 export default clerkMiddleware(async (auth, req: NextRequest) => {
+  const { userId } = await auth();
   const pathname = req.nextUrl.pathname;
 
   // Allow static assets and Next.js internals
@@ -27,8 +28,12 @@ export default clerkMiddleware(async (auth, req: NextRequest) => {
     return NextResponse.next();
   }
 
-  // Protect everything else — Clerk's protect() redirects unauthenticated users
-  await auth().protect();
+  // Protect everything else — redirect unauthenticated users to sign-in
+  if (!userId) {
+    const signInUrl = new URL('/sign-in', req.url);
+    signInUrl.searchParams.set('redirect_url', pathname);
+    return NextResponse.redirect(signInUrl.toString());
+  }
 
   return NextResponse.next();
 });
