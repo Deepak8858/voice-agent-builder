@@ -11,8 +11,7 @@ import { env } from '../config/env';
  *   - AWS ElastiCache Serverless: rediss://:<password>@<name>.serverless.<region>.cache.amazonaws.com:6379
  *   - Upstash / Redis Cloud:      rediss://default:<password>@<host>:<port>
  *
- * When REDIS_URL is empty (default in local dev), the service runs in stub
- * mode and enqueue() becomes a no-op so Phase 0/1 still boots without Redis.
+ * `REDIS_URL` is required (validated by `env`).
  */
 @Injectable()
 export class QueueService implements OnModuleDestroy {
@@ -20,19 +19,14 @@ export class QueueService implements OnModuleDestroy {
   private readonly queues = new Map<string, Queue>();
   private connection: Redis | null = null;
 
-  enabled(): boolean {
-    return Boolean(env.REDIS_URL && env.REDIS_URL.length > 0);
-  }
-
   /**
    * Shared ioredis connection. Used by QueueService itself for BullMQ and
    * by CacheService for key/value reads and writes. Created lazily on the
    * first caller.
    */
-  getConnection(): Redis | null {
-    if (!this.enabled()) return null;
+  getConnection(): Redis {
     if (!this.connection) {
-      const url = env.REDIS_URL as string;
+      const url = env.REDIS_URL;
       const options: RedisOptions = {
         // Required by BullMQ workers.
         maxRetriesPerRequest: null,
@@ -70,9 +64,8 @@ export class QueueService implements OnModuleDestroy {
     return this.connection;
   }
 
-  queue(name: string): Queue | null {
+  queue(name: string): Queue {
     const conn = this.getConnection();
-    if (!conn) return null;
     const existing = this.queues.get(name);
     if (existing) return existing;
     const q = new Queue(name, { connection: conn });
@@ -82,19 +75,13 @@ export class QueueService implements OnModuleDestroy {
 
   async enqueue<T extends object>(queueName: string, jobName: string, payload: T): Promise<void> {
     const q = this.queue(queueName);
-    if (!q) {
-      this.logger.debug(`[queue:${queueName}] stub executing ${jobName}`);
-      return;
-    }
     await q.add(jobName, payload);
   }
 
   /** Round-trip ping; useful for readiness probes. */
-  async ping(): Promise<'ok' | 'disabled' | 'error'> {
-    const conn = this.getConnection();
-    if (!conn) return 'disabled';
+  async ping(): Promise<'ok' | 'error'> {
     try {
-      const reply = await conn.ping();
+      const reply = await this.getConnection().ping();
       return reply === 'PONG' ? 'ok' : 'error';
     } catch {
       return 'error';

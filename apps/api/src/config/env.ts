@@ -15,11 +15,11 @@ const EnvSchema = z.object({
 
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
-  REDIS_URL: z.string().optional(),
+  REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['clerk']).default('clerk'),
   VOICE_PROVIDER: z.enum(['vapi', 'retell']).optional(),
-  LLM_PROVIDER: z.enum(['local', 'github', 'openai', 'anthropic', 'azure-aifoundry']).default('local'),
+  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
   VAPI_API_KEY: z.string().optional(),

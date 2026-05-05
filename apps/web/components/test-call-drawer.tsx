@@ -84,8 +84,7 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
                   ))}
                   {detailQuery.data.turns.length === 0 ? (
                     <li className="text-sm text-muted-foreground">
-                      No transcript yet. Mock provider returns scripted text only after the
-                      session is created.
+                      No transcript yet. Transcript appears once the session ends.
                     </li>
                   ) : null}
                 </ul>
@@ -93,7 +92,7 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
             </div>
 
             <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs text-muted-foreground">
-              <span>Mock provider · transcript is scripted</span>
+              <span>Browser test session</span>
               <a className="inline-flex items-center gap-1 text-primary hover:underline" href={`/dashboard/calls/${callId}`}>
                 Open full call
                 <ArrowRight className="h-3 w-3" />

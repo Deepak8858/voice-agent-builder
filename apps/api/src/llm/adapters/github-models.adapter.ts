@@ -36,7 +36,7 @@ export class GithubModelsLlmAdapter implements LlmAgentGenerator {
 
   async generate(input: GenerateAgentDto): Promise<GenerateAgentResult> {
     if (!env.GITHUB_TOKEN) {
-      throw new Error('GITHUB_TOKEN not set. Set the key or switch LLM_PROVIDER to local.');
+      throw new Error('GITHUB_TOKEN not set. Set the key or switch LLM_PROVIDER.');
     }
 
     const baseTemplate = this.pickTemplate(input);

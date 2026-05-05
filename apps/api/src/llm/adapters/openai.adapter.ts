@@ -35,7 +35,7 @@ export class OpenAiLlmAdapter implements LlmAgentGenerator {
 
   async generate(input: GenerateAgentDto): Promise<GenerateAgentResult> {
     if (!env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY not set. Set the key or switch LLM_PROVIDER to local.');
+      throw new Error('OPENAI_API_KEY not set. Set the key or switch LLM_PROVIDER.');
     }
 
     const baseTemplate = this.pickTemplate(input);

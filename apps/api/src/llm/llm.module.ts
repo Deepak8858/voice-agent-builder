@@ -1,5 +1,4 @@
-import { Global, Logger, Module } from '@nestjs/common';
-import { LocalTemplateAgentGenerator } from '../agents/local-template-generator.service';
+import { Global, Module } from '@nestjs/common';
 import { env } from '../config/env';
 import { AnthropicLlmAdapter } from './adapters/anthropic.adapter';
 import { AzureAiFoundryAdapter } from './adapters/azure-aifoundry.adapter';
@@ -11,7 +10,6 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
 @Global()
 @Module({
   providers: [
-    LocalTemplateAgentGenerator,
     LlmCacheService,
     GithubModelsLlmAdapter,
     OpenAiLlmAdapter,
@@ -19,15 +17,13 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
     AzureAiFoundryAdapter,
     {
       provide: LLM_PROVIDER_TOKEN,
-      inject: [LocalTemplateAgentGenerator, GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter, AzureAiFoundryAdapter],
+      inject: [GithubModelsLlmAdapter, OpenAiLlmAdapter, AnthropicLlmAdapter, AzureAiFoundryAdapter],
       useFactory: (
-        local: LocalTemplateAgentGenerator,
         github: GithubModelsLlmAdapter,
         openai: OpenAiLlmAdapter,
         anthropic: AnthropicLlmAdapter,
         azure: AzureAiFoundryAdapter,
       ): LlmAgentGenerator => {
-        const logger = new Logger('LlmModule');
         switch (env.LLM_PROVIDER) {
           case 'github':
             if (!env.GITHUB_TOKEN) throw new Error('LLM_PROVIDER=github but GITHUB_TOKEN not set.');
@@ -42,12 +38,11 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
             if (!env.LLM_API_KEY) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_API_KEY not set.');
             return azure;
           default:
-            logger.log('Using local template-based agent generator (no external LLM API key required).');
-            return local;
+            throw new Error(`Unsupported LLM_PROVIDER: ${env.LLM_PROVIDER}. Choose one of: github, openai, anthropic, azure-aifoundry.`);
         }
       },
     },
   ],
-  exports: [LLM_PROVIDER_TOKEN, LocalTemplateAgentGenerator, LlmCacheService],
+  exports: [LLM_PROVIDER_TOKEN, LlmCacheService],
 })
 export class LlmModule {}
