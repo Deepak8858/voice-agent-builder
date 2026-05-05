@@ -7,6 +7,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
 import { CacheService } from '../cache/cache.service';
+import { UserProvisioningService } from './user-provisioning.service';
+import { WorkspaceProvisioningService } from './workspace-provisioning.service';
 
 const SESSION_USER_TTL = 300; // 5 minutes
 const SESSION_WORKSPACE_TTL = 300; // 5 minutes
@@ -30,6 +32,8 @@ export class ClerkAuthService extends AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly userProvisioning: UserProvisioningService,
+    private readonly workspaceProvisioning: WorkspaceProvisioningService,
   ) {
     super();
     this.client = env.CLERK_SECRET_KEY
@@ -56,7 +60,6 @@ export class ClerkAuthService extends AuthService {
   }
 
   async logout(req: Request, _res: Response): Promise<void> {
-    // Re-verify the token to extract the Clerk user ID for cache invalidation.
     const token = this.extractBearerToken(req);
     if (token && env.CLERK_SECRET_KEY) {
       try {
@@ -90,7 +93,6 @@ export class ClerkAuthService extends AuthService {
     const clerkUserId = claims.sub;
     if (!clerkUserId) return null;
 
-    // Cache the full SessionUser result keyed by userId.
     const userKey = `session:user:${clerkUserId}`;
     const cached = await this.cache.get<SessionUser>(userKey);
     if (cached) {
@@ -112,12 +114,9 @@ export class ClerkAuthService extends AuthService {
   }
 
   private async buildSessionUser(clerkUserId: string, clerkOrgId: string | null): Promise<SessionUser | null> {
-    // Use raw Clerk ID consistently (webhooks also use raw ID)
     const externalAuthId = clerkUserId;
-    const existing = await this.prisma.user.findUnique({ where: { externalAuthId } });
-    const user = existing ?? (await this.provisionUser(externalAuthId, clerkUserId, clerkOrgId));
+    const user = await this.findOrProvisionUser(externalAuthId, clerkUserId, clerkOrgId);
 
-    // Also cache workspace lookup by workspaceId for fast workspace-scoped requests.
     const workspaceKey = `session:workspace:${user.id}`;
     const cachedWorkspace = await this.cache.get<SessionUser>(workspaceKey);
     if (cachedWorkspace) return cachedWorkspace;
@@ -148,26 +147,23 @@ export class ClerkAuthService extends AuthService {
       active_workspace_role: activeMembership.role as SessionUser['active_workspace_role'],
     };
 
-    // Cache workspace lookup (same object, different key) so workspace-scoped requests can also hit cache.
     await this.cache.set(workspaceKey, sessionUser, SESSION_WORKSPACE_TTL);
     return sessionUser;
   }
 
-  // ------------------------------------------------------------------------
-  // Provisioning helpers
-  // ------------------------------------------------------------------------
+  private async findOrProvisionUser(externalAuthId: string, clerkUserId: string, clerkOrgId: string | null) {
+    const existing = await this.prisma.user.findUnique({ where: { externalAuthId } });
+    if (existing) return existing;
 
-  private async provisionUser(
-    externalAuthId: string,
-    clerkUserId: string,
-    clerkOrgId: string | null,
-  ) {
-    const clerkUser = await this.client!.users.getUser(clerkUserId);
+    if (!this.client) {
+      return this.prisma.user.create({
+        data: { externalAuthId, email: `${clerkUserId}@clerk.invalid`, name: null },
+      });
+    }
+
+    const clerkUser = await this.client.users.getUser(clerkUserId);
     const email = clerkUser.emailAddresses[0]?.emailAddress ?? `${clerkUserId}@clerk.invalid`;
-    const name =
-      [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') ||
-      clerkUser.username ||
-      null;
+    const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || null;
 
     const user = await this.prisma.user.upsert({
       where: { externalAuthId },
@@ -180,10 +176,10 @@ export class ClerkAuthService extends AuthService {
   }
 
   private async provisionOrgWorkspace(userId: string, clerkOrgId: string | null) {
-    const orgSlug = clerkOrgId
-      ? this.orgSlug(clerkOrgId)
+    const orgSlug = this.workspaceProvisioning.orgSlug(clerkOrgId ?? '');
+    const orgName = clerkOrgId
+      ? await this.workspaceProvisioning.resolveOrgName(clerkOrgId, orgSlug)
       : `personal-${userId.slice(0, 8)}`;
-    const orgName = await this.resolveOrgName(clerkOrgId, orgSlug);
 
     const organization = await this.prisma.organization.upsert({
       where: { slug: orgSlug },
@@ -206,29 +202,12 @@ export class ClerkAuthService extends AuthService {
       });
     }
 
-    const membership = await this.prisma.membership.upsert({
+    return this.prisma.membership.upsert({
       where: { userId_workspaceId: { userId, workspaceId: workspace.id } },
       create: { userId, workspaceId: workspace.id, role: 'owner' },
       update: {},
       include: { workspace: true },
     });
-    return membership;
-  }
-
-  private async resolveOrgName(clerkOrgId: string | null, fallback: string): Promise<string> {
-    if (!clerkOrgId || !this.client) return fallback;
-    try {
-      const org = await this.client.organizations.getOrganization({
-        organizationId: clerkOrgId,
-      });
-      return org.name ?? fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  private orgSlug(clerkOrgId: string): string {
-    return `clerk-${clerkOrgId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 32)}`;
   }
 
   private extractBearerToken(req: Request): string | null {

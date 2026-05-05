@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -29,6 +29,8 @@ export interface ListAgentsResult {
 
 @Injectable()
 export class AgentsService {
+  private readonly logger = new Logger(AgentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -142,6 +144,14 @@ export class AgentsService {
     });
 
     await this.cacheInvalidator.invalidateAgentList(workspaceId);
+
+    // Phase 9: warn at 80% agent creation capacity
+    try {
+      const w = await this.billing.checkAgentCreationWarning(organizationId);
+      if (w.warning) {
+        this.logger.warn(`Agent creation warning for org ${organizationId}: ${w.warning}`);
+      }
+    } catch {}
 
     return this.get(workspaceId, agent.id);
   }

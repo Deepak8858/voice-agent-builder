@@ -215,7 +215,13 @@ export class BillingService {
     gate: FeatureGate,
   ): Promise<boolean> {
     const sub = await this.getSubscription(organizationId);
-    const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
+    let plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
+
+    // Treat expired trials as free plan
+    if (sub?.status === 'trialing' && sub?.trialEnd && new Date(sub.trialEnd) < new Date()) {
+      plan = 'free';
+    }
+
     const limits = SHARED_PLAN_LIMITS[plan];
 
     switch (gate) {
@@ -274,6 +280,23 @@ export class BillingService {
         `Your ${plan} plan allows a limited number of published agents. Please upgrade to publish more.`,
       );
     }
+  }
+
+  async checkAgentCreationWarning(organizationId: string): Promise<{ warning: string | null; current: number; limit: number }> {
+    const sub = await this.getSubscription(organizationId);
+    const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
+    const limit = SHARED_PLAN_LIMITS[plan].agents;
+    if (limit === -1) return { warning: null, current: 0, limit: -1 };
+    const current = await this.prisma.agent.count({ where: { workspace: { organizationId } } });
+    const threshold = Math.floor(limit * 0.8);
+    if (current >= threshold && current <= limit) {
+      return {
+        warning: `You have ${current}/${limit} agents (${Math.round((current / limit) * 100)}% of your plan limit). Upgrade to publish more agents.`,
+        current,
+        limit,
+      };
+    }
+    return { warning: null, current, limit };
   }
 }
 

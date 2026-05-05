@@ -1,51 +1,29 @@
 import { Body, Controller, Get, Inject, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { z } from 'zod';
-import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService } from './auth.service';
 
-const SignupSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(6).optional(),
-  name: z.string().optional(),
-  organization_name: z.string().optional(),
-});
-// Explicitly typed DTO to avoid Zod inference quirks with strict:false
-interface SignupDto {
-  email: string;
-  password?: string;
-  name?: string;
-  organization_name?: string;
-}
-
-const LoginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().optional(),
-});
-interface LoginDto {
-  email: string;
-  password?: string;
-}
-
+/**
+ * Auth controller - signup/login delegated to Clerk UI.
+ * Sign-up/sign-in via POST /auth/signup and /auth/login are disabled.
+ * Only /auth/me and /auth/logout are functional.
+ */
 @Controller('auth')
 export class AuthController {
   constructor(@Inject(AuthService) private readonly auth: AuthService) {}
 
   @Post('signup')
-  async signup(
-    @Body(new ZodValidationPipe(SignupSchema)) dto: SignupDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    return this.auth.signup(dto, res);
+  async signup() {
+    throw new UnauthorizedError(
+      'Sign-up happens via Clerk UI. Use the Sign-up button.',
+    );
   }
 
   @Post('login')
-  async login(
-    @Body(new ZodValidationPipe(LoginSchema)) dto: LoginDto,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    return this.auth.login(dto, res);
+  async login() {
+    throw new UnauthorizedError(
+      'Sign-in happens via Clerk UI. Use the Sign-in button.',
+    );
   }
 
   @Post('logout')

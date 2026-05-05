@@ -1,0 +1,31 @@
+[     258ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/:0
+[     258ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/ui@1/dist/ui.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/:0
+[     346ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[     372ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/110q6k5sdl4es.js:0
+[     553ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[    1054ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[    1863ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[    3493ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[    6788ms] [ERROR] Loading the script 'https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js' violates the following Content Security Policy directive: "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://*.clerk.accounts.dev". Note that 'script-src-elem' was not explicitly set, so 'script-src' is used as a fallback. The action has been blocked. @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1
+[    6790ms] e: Clerk: Failed to load Clerk JS, failed to load script: https://clerk.devdeepak.me/npm/@clerk/clerk-js@6/dist/clerk.browser.js
+
+(code="failed_to_load_clerk_js")
+
+
+    at r (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:3122)
+    at https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:3588
+[   15346ms] [ERROR] e: Clerk: Failed to load Clerk JS
+
+(code="failed_to_load_clerk_js")
+
+
+    at r (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:3122)
+    at et (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:3485)
+    at h.getClerkJsEntryChunk (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:41456)
+    at h.getEntryChunks (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:40940)
+    at new h (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:38565)
+    at h.getOrCreateInstance (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:38980)
+    at eO (https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:44063)
+    at https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:2:43751
+    at ay (https://vocal.devdeepak.me/_next/static/chunks/110q6k5sdl4es.js:1:56831)
+    at oZ (https://vocal.devdeepak.me/_next/static/chunks/110q6k5sdl4es.js:1:77088) @ https://vocal.devdeepak.me/_next/static/chunks/0lwjsatrdqoth.js:1

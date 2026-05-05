@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
       'https://*.clerk.accounts.dev',
       'https://accounts.devdeepak.me',
       'https://clerk.devdeepak.me',
+      'https://*.devdeepak.me',
     ].join(' ');
     const csp = [
       "default-src 'self'",

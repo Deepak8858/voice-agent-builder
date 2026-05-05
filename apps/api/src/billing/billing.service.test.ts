@@ -121,6 +121,66 @@ describe('BillingService', () => {
       expect(await svc.checkFeatureGate('org-fake', 'bulk_import')).toBe(true);
       expect(await svc.checkFeatureGate('org-fake', 'api_access')).toBe(true);
     });
+
+    it('treats expired trialing as free plan for feature gates', async () => {
+      const expiredTrial = new Date(Date.now() - 86400000); // yesterday
+      const prisma = makePrisma({
+        subscription: { plan: 'trialing', status: 'trialing', trialEnd: expiredTrial },
+      });
+      const svc = makeService(prisma);
+      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(false);
+      expect(await svc.checkFeatureGate('org-fake', 'analytics')).toBe(false);
+      expect(await svc.checkFeatureGate('org-fake', 'white_label')).toBe(false);
+    });
+
+    it('treats active trialing as paid plan for feature gates', async () => {
+      const futureTrial = new Date(Date.now() + 86400000); // tomorrow
+      const prisma = makePrisma({
+        subscription: { plan: 'starter', status: 'trialing', trialEnd: futureTrial },
+      });
+      const svc = makeService(prisma);
+      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(true);
+      expect(await svc.checkFeatureGate('org-fake', 'analytics')).toBe(true);
+    });
+  });
+
+  describe('checkAgentCreationWarning', () => {
+    it('returns null warning when far below 80% threshold', async () => {
+      const prisma = makePrisma({ subscription: { plan: 'starter', status: 'active' }, agentCount: 0 });
+      const svc = makeService(prisma);
+      const result = await svc.checkAgentCreationWarning('org-fake');
+      expect(result.warning).toBeNull();
+      expect(result.current).toBe(0);
+      expect(result.limit).toBe(3);
+    });
+
+    it('returns warning at 80% for starter (2/3 agents)', async () => {
+      // starter has 3 agents, 80% = floor(2.4) = 2, so 2 >= 2 && 2 <= 3 → warning
+      const prisma = makePrisma({ subscription: { plan: 'starter', status: 'active' }, agentCount: 2 });
+      const svc = makeService(prisma);
+      const result = await svc.checkAgentCreationWarning('org-fake');
+      expect(result.warning).not.toBeNull();
+      expect(result.warning).toContain('2/3');
+      expect(result.current).toBe(2);
+    });
+
+    it('returns warning at 80% for free plan (1/1 agents)', async () => {
+      // free has 1 agent, 80% = floor(0.8) = 0, so 1 >= 0 && 1 <= 1 → warning (at 100% of limit)
+      const prisma = makePrisma({ subscription: { plan: 'free', status: 'active' }, agentCount: 1 });
+      const svc = makeService(prisma);
+      const result = await svc.checkAgentCreationWarning('org-fake');
+      expect(result.warning).not.toBeNull();
+      expect(result.warning).toContain('1/1');
+      expect(result.current).toBe(1);
+    });
+
+    it('returns null warning for unlimited plan (enterprise)', async () => {
+      const prisma = makePrisma({ subscription: { plan: 'enterprise', status: 'active' }, agentCount: 50 });
+      const svc = makeService(prisma);
+      const result = await svc.checkAgentCreationWarning('org-fake');
+      expect(result.warning).toBeNull();
+      expect(result.limit).toBe(-1);
+    });
   });
 
   describe('enforceAgentLimit', () => {
