@@ -13,11 +13,6 @@ export abstract class BaseWorker<T extends object = object> implements OnModuleD
     concurrency = 5,
   ) {
     const connection = queueService.getConnection();
-    if (!connection) {
-      this.logger.warn(`[${queueName}] Redis not configured — worker disabled`);
-      this.worker = null as unknown as Worker;
-      return;
-    }
     this.worker = new Worker(queueName, this.processor.bind(this), {
       connection,
       concurrency,

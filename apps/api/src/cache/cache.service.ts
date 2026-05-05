@@ -4,8 +4,7 @@ import { QueueService } from '../queue/queue.service';
 /**
  * Generic Valkey/Redis-backed cache. Reuses the shared ioredis connection
  * created by QueueService so there's exactly one TCP connection per API
- * instance. Safe to call even when Valkey is not configured \u2014 writes become
- * no-ops and reads return null so callers do not have to branch.
+ * instance.
  *
  * Suggested key scheme:
  *   vf:v1:<namespace>:<workspace_id?>:<id>
@@ -18,19 +17,13 @@ export class CacheService {
 
   constructor(private readonly queue: QueueService) {}
 
-  enabled(): boolean {
-    return this.queue.enabled();
-  }
-
   private k(key: string): string {
     return key.startsWith(this.prefix) ? key : `${this.prefix}${key}`;
   }
 
   async get<T>(key: string): Promise<T | null> {
-    const conn = this.queue.getConnection();
-    if (!conn) return null;
     try {
-      const raw = await conn.get(this.k(key));
+      const raw = await this.queue.getConnection().get(this.k(key));
       return raw === null ? null : (JSON.parse(raw) as T);
     } catch (err) {
       this.logger.debug(`[cache.get:${key}] ${(err as Error).message}`);
@@ -39,10 +32,9 @@ export class CacheService {
   }
 
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
-    const conn = this.queue.getConnection();
-    if (!conn) return;
     const payload = JSON.stringify(value);
     try {
+      const conn = this.queue.getConnection();
       if (ttlSeconds && ttlSeconds > 0) {
         await conn.set(this.k(key), payload, 'EX', ttlSeconds);
       } else {
@@ -54,10 +46,8 @@ export class CacheService {
   }
 
   async del(key: string): Promise<void> {
-    const conn = this.queue.getConnection();
-    if (!conn) return;
     try {
-      await conn.del(this.k(key));
+      await this.queue.getConnection().del(this.k(key));
     } catch (err) {
       this.logger.debug(`[cache.del:${key}] ${(err as Error).message}`);
     }
@@ -82,13 +72,10 @@ export class CacheService {
   /**
    * Atomically increment a counter and optionally set its TTL.
    * Returns the new counter value. Useful for rate limiting.
-   *
-   * If Redis is disabled, returns 1 (allows first request through).
    */
   async incr(key: string, ttlSeconds?: number): Promise<number> {
-    const conn = this.queue.getConnection();
-    if (!conn) return 1;
     try {
+      const conn = this.queue.getConnection();
       const fullKey = this.k(key);
       const pipeline = conn.pipeline();
       pipeline.incr(fullKey);
