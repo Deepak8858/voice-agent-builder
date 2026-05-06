@@ -189,6 +189,16 @@ jobs:
             echo "target=staging" >> $GITHUB_OUTPUT
           fi
 
+      - name: Upload compose file to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          source: "infra/docker/docker-compose.prod.yml"
+          target: "/tmp/"
+          strip_components: 2
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -206,6 +216,11 @@ jobs:
             export ECR_REGISTRY=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
             export IMAGE_TAG="$(echo "${{ github.sha }}" | cut -c1-7)"
             export COMPOSE_FILE=/opt/voiceforge/docker-compose.prod.yml
+
+            echo "📄 Updating compose file from repo..."
+            sudo mkdir -p /opt/voiceforge
+            sudo mv /tmp/docker-compose.prod.yml ${COMPOSE_FILE}
+            sudo chmod 644 ${COMPOSE_FILE}
 
             echo "🔍 Verifying /opt/voiceforge/.env exists on EC2..."
             if ! sudo test -f /opt/voiceforge/.env; then
