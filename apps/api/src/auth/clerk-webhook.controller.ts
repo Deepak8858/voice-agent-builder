@@ -142,11 +142,38 @@ export class ClerkWebhookController {
     const name =
       [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || null;
 
-    await this.prisma.user.upsert({
-      where: { externalAuthId },
-      create: { externalAuthId, email, name },
-      update: { email, name },
-    });
+    // Check if user already exists by email (API request path may have created it)
+    const byEmail = await this.prisma.user.findUnique({ where: { email } });
+    if (byEmail) {
+      await this.prisma.user.update({
+        where: { id: byEmail.id },
+        data: { externalAuthId, name },
+      });
+      await this.cache.del(`session:user:${externalAuthId}`);
+      return;
+    }
+
+    try {
+      await this.prisma.user.upsert({
+        where: { externalAuthId },
+        create: { externalAuthId, email, name },
+        update: { email, name },
+      });
+    } catch (err: unknown) {
+      const prismaErr = err as { code?: string };
+      if (prismaErr.code === 'P2002') {
+        // Race condition — user was created between our check and upsert
+        const raced = await this.prisma.user.findUnique({ where: { email } });
+        if (raced) {
+          await this.prisma.user.update({
+            where: { id: raced.id },
+            data: { externalAuthId, name },
+          });
+        }
+      } else {
+        throw err;
+      }
+    }
 
     await this.cache.del(`session:user:${externalAuthId}`);
   }
