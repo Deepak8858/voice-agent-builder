@@ -246,8 +246,11 @@ jobs:
             docker compose -f ${COMPOSE_FILE} run --rm \
               --entrypoint sh api -c "npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma"
 
-            echo "🚀 Restarting services..."
-            docker compose -f ${COMPOSE_FILE} up -d --remove-orphans
+            echo "🛑 Stopping existing stack..."
+            docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
+
+            echo "🚀 Starting updated services..."
+            docker compose -f ${COMPOSE_FILE} up -d
 
             echo "🧹 Pruning old images..."
             docker image prune -af --filter "until=168h"
