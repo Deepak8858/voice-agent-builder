@@ -1,7 +1,5 @@
-import { Controller, Get, Inject, Param, Req } from '@nestjs/common';
-import type { Request } from 'express';
+import { Controller, Get, Inject, Param } from '@nestjs/common';
 import { AuthService } from '../auth/auth.service';
-import { UnauthorizedError } from '../common/errors';
 import { TemplatesService } from './templates.service';
 
 @Controller('templates')
@@ -12,16 +10,12 @@ export class TemplatesController {
   ) {}
 
   @Get()
-  async list(@Req() req: Request) {
-    const user = await this.auth.getSessionUser(req);
-    if (!user) throw new UnauthorizedError();
+  async list() {
     return { items: await this.service.list() };
   }
 
   @Get(':templateSlug')
-  async get(@Req() req: Request, @Param('templateSlug') slug: string) {
-    const user = await this.auth.getSessionUser(req);
-    if (!user) throw new UnauthorizedError();
+  async get(@Param('templateSlug') slug: string) {
     return this.service.getBySlug(slug);
   }
 }

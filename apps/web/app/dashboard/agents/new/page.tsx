@@ -61,6 +61,7 @@ export default function NewAgentPage() {
   const templatesQuery = useQuery({
     queryKey: ['templates'],
     queryFn: () => call<{ items: TemplateSummary[] }>('/templates'),
+    enabled: Boolean(workspaceId),
   });
 
   const knowledgeQuery = useQuery({
