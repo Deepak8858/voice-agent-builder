@@ -1,23 +1,22 @@
 'use client';
 
-import { useAuth } from '@clerk/nextjs';
 import { useCallback } from 'react';
 import type { ApiEnvelope } from '@voiceforge/shared';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
+const API_BASE = '/api/proxy';
 
+/**
+ * Browser hook for API calls. Uses fetch to Next.js proxy which adds
+ * session context and internal key before forwarding to NestJS.
+ */
 export function useApi() {
-  const { getToken } = useAuth();
-
   const call = useCallback(
     async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-      const token = await getToken();
       const headers = new Headers(init.headers);
       const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
       if (!isFormData && !headers.has('content-type')) {
         headers.set('content-type', 'application/json');
       }
-      if (token) headers.set('authorization', `Bearer ${token}`);
       headers.set('x-requested-with', 'XMLHttpRequest');
 
       const res = await fetch(`${API_BASE}${path}`, {
@@ -36,7 +35,7 @@ export function useApi() {
       }
       return body.data as T;
     },
-    [getToken],
+    [],
   );
 
   return { call };

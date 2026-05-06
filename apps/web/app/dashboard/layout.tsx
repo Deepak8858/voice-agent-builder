@@ -1,5 +1,5 @@
-import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
+import { requireUser } from '@/lib/auth/session';
 import { AppSidebar } from '@/components/layout/app-sidebar';
 import { Separator } from '@/components/ui/separator';
 
@@ -8,10 +8,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { userId } = await auth();
-  if (!userId) {
-    redirect('/');
-  }
+  await requireUser();
   return (
     <div className="flex flex-1 min-h-[calc(100vh-57px)]">
       <AppSidebar />

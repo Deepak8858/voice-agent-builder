@@ -1,6 +1,6 @@
 // VoiceForge AI — Prisma schema
-// Phase 2: Multi-tenant RLS alignment. Every customer-owned table has organization_id.
-// New tables: AppOrgMembership (Clerk role cache), WorkspaceMembership (client access).
+// Multi-tenant RLS alignment. Every customer-owned table has organization_id.
+// Identity provider: Supabase Auth (auth.users). public.users.auth_user_id links to it.
 
 generator client {
   provider        = "prisma-client-js"
@@ -21,44 +21,45 @@ datasource db {
 
 model User {
   id              String       @id @default(uuid()) @db.Uuid
-  externalAuthId  String?      @unique @map("external_auth_id")
+  authUserId      String?      @unique @map("auth_user_id") @db.Uuid
   email           String       @unique
   name            String?
   createdAt       DateTime     @default(now()) @map("created_at")
   updatedAt       DateTime     @updatedAt @map("updated_at")
 
-  ownedOrganizations Organization[]    @relation("OrganizationOwner")
-  memberships        Membership[]
-  appOrgMemberships  AppOrgMembership[]
+  ownedOrganizations  Organization[]        @relation("OrganizationOwner")
+  createdOrganizations Organization[]       @relation("OrganizationCreatedBy")
+  memberships         Membership[]
   workspaceMemberships WorkspaceMembership[]
-  auditLogs          AuditLog[]
-  createdAgents      Agent[]           @relation("AgentCreatedBy")
-  createdVersions    AgentVersion[]    @relation("AgentVersionCreatedBy")
-  createdKnowledge   KnowledgeSource[] @relation("KnowledgeSourceCreatedBy")
+  invitesSent         OrgInvite[]           @relation("OrgInviteCreatedBy")
+  auditLogs           AuditLog[]
+  createdAgents       Agent[]               @relation("AgentCreatedBy")
+  createdVersions     AgentVersion[]        @relation("AgentVersionCreatedBy")
+  createdKnowledge    KnowledgeSource[]     @relation("KnowledgeSourceCreatedBy")
 
   @@map("users")
 }
 
 model Organization {
-  id            String   @id @default(uuid()) @db.Uuid
-  clerkOrgId    String?  @unique @map("clerk_org_id")
-  name          String
-  slug          String   @unique
-  ownerUserId   String   @map("owner_user_id") @db.Uuid
-  plan          String   @default("free")
-  status        String   @default("active")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String
+  slug            String   @unique
+  ownerUserId     String   @map("owner_user_id") @db.Uuid
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  plan            String   @default("free")
+  status          String   @default("active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  owner        User             @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
-  workspaces   Workspace[]
+  owner         User           @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
+  createdBy     User?          @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id])
+  workspaces    Workspace[]
   subscriptions Subscription[]
-  usageRecords UsageRecord[]
-  appOrgMemberships AppOrgMembership[]
-  agents       Agent[]
+  usageRecords  UsageRecord[]
+  invites       OrgInvite[]
+  agents        Agent[]
 
   @@index([ownerUserId])
-  @@index([clerkOrgId])
   @@map("organizations")
 }
 
@@ -119,42 +120,39 @@ model Membership {
   @@map("memberships")
 }
 
-// Clerk org membership cache for RLS and backend joins
-model AppOrgMembership {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  userId         String    @map("user_id") @db.Uuid
-  clerkUserId    String    @map("clerk_user_id")
-  clerkOrgId     String    @map("clerk_org_id")
-  role           String    // owner | admin | member | viewer
-  permissions    String[]  @default([])
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([organizationId, userId])
-  @@index([clerkUserId])
-  @@index([clerkOrgId])
-  @@map("app_org_memberships")
-}
-
 // Workspace-level access for client users (agency model)
 model WorkspaceMembership {
   id          String    @id @default(uuid()) @db.Uuid
   workspaceId String    @map("workspace_id") @db.Uuid
   userId      String    @map("user_id") @db.Uuid
-  clerkUserId String    @map("clerk_user_id")
   role        String    // owner | admin | member | viewer
   createdAt   DateTime  @default(now()) @map("created_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([workspaceId, clerkUserId])
-  @@index([clerkUserId])
+  @@unique([workspaceId, userId])
   @@map("workspace_memberships")
+}
+
+// Email-based invites into an organization (replaces Clerk invitations)
+model OrgInvite {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  email          String
+  role           String    // owner | admin | member | viewer
+  token          String    @unique
+  expiresAt      DateTime  @default(dbgenerated("(now() + interval '7 days')")) @map("expires_at")
+  acceptedAt     DateTime? @map("accepted_at")
+  invitedByUserId String?  @map("invited_by_user_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User?        @relation("OrgInviteCreatedBy", fields: [invitedByUserId], references: [id])
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("org_invites")
 }
 
 // --------------------------------------------------------------------------

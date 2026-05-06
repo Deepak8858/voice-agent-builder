@@ -1,10 +1,11 @@
-import { Body, Controller, Headers, HttpCode, Logger, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
-import type { Request } from 'express';
+import { Body, Controller, Headers, HttpCode, Logger, Param, Post, UnauthorizedException } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { env } from '../config/env';
+import { Public } from '../common/decorators/public.decorator';
 import { SkipRateLimit } from '../common/rate-limit.guard';
 import { CallsService } from './calls.service';
 
+@Public()
 @Controller('voice/webhooks')
 export class VoiceWebhookController {
   private readonly logger = new Logger(VoiceWebhookController.name);

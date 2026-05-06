@@ -11,10 +11,10 @@ export type OrganizationPlan = z.infer<typeof OrganizationPlanSchema>;
 
 export const SessionUserSchema = z.object({
   id: z.string().uuid(),
-  email: z.string().email(),
+  email: z.string(),
   name: z.string().nullable(),
-  active_workspace_id: z.string().uuid(),
-  active_workspace_name: z.string(),
+  active_workspace_id: z.string().uuid().nullable(),
+  active_workspace_name: z.string().nullable(),
   active_workspace_role: WorkspaceRoleSchema,
 });
 export type SessionUser = z.infer<typeof SessionUserSchema>;

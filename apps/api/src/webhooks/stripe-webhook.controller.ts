@@ -1,7 +1,9 @@
 import { Controller, Headers, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
+import { Public } from '../common/decorators/public.decorator';
 import { StripeWebhookService } from './stripe-webhook.service';
 
+@Public()
 @Controller('webhooks/stripe')
 export class StripeWebhookController {
   constructor(private readonly service: StripeWebhookService) {}
