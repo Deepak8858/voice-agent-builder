@@ -7,11 +7,39 @@ import type { AgentSummary, SessionUser } from '@voiceforge/shared';
 import { Bot, Plus, ArrowRight } from 'lucide-react';
 
 export default async function AgentsPage() {
-  const me = await apiFetch<SessionUser>('/auth/me');
-  const res = await apiFetch<{ items: AgentSummary[] }>(
-    `/workspaces/${me.active_workspace_id}/agents`,
-  );
-  const agents = res.items;
+  let agents: AgentSummary[] = [];
+  let apiError: string | null = null;
+
+  try {
+    const me = await apiFetch<SessionUser>('/auth/me');
+    const res = await apiFetch<{ items: AgentSummary[] }>(
+      `/workspaces/${me.active_workspace_id}/agents`,
+    );
+    agents = res.items;
+  } catch (err) {
+    apiError = (err as Error).message;
+  }
+
+  if (apiError) {
+    return (
+      <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Agents</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Could not load agents: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
+            </p>
+          </div>
+          <Link href="/dashboard/agents/new">
+            <Button className="gap-2">
+              <Plus className="h-4 w-4" />
+              New agent
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">

@@ -6,10 +6,31 @@ import type { CallSummary, SessionUser } from '@voiceforge/shared';
 import { Phone, ArrowRight } from 'lucide-react';
 
 export default async function CallsPage() {
-  const me = await apiFetch<SessionUser>('/auth/me');
-  const { items } = await apiFetch<{ items: CallSummary[] }>(
-    `/workspaces/${me.active_workspace_id}/calls`,
-  );
+  let items: CallSummary[] = [];
+  let apiError: string | null = null;
+
+  try {
+    const me = await apiFetch<SessionUser>('/auth/me');
+    const res = await apiFetch<{ items: CallSummary[] }>(
+      `/workspaces/${me.active_workspace_id}/calls`,
+    );
+    items = res.items;
+  } catch (err) {
+    apiError = (err as Error).message;
+  }
+
+  if (apiError) {
+    return (
+      <div className="flex flex-col gap-8">
+        <div>
+          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Calls</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Could not load calls: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">

@@ -156,6 +156,13 @@ export class ClerkAuthService extends AuthService {
     if (existing) return existing;
 
     if (!this.client) {
+      const fallback = await this.prisma.user.findUnique({ where: { email: `${clerkUserId}@clerk.invalid` } });
+      if (fallback) {
+        if (!fallback.externalAuthId) {
+          return this.prisma.user.update({ where: { id: fallback.id }, data: { externalAuthId } });
+        }
+        return fallback;
+      }
       return this.prisma.user.create({
         data: { externalAuthId, email: `${clerkUserId}@clerk.invalid`, name: null },
       });
@@ -165,14 +172,41 @@ export class ClerkAuthService extends AuthService {
     const email = clerkUser.emailAddresses[0]?.emailAddress ?? `${clerkUserId}@clerk.invalid`;
     const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || clerkUser.username || null;
 
-    const user = await this.prisma.user.upsert({
-      where: { externalAuthId },
-      create: { externalAuthId, email, name },
-      update: { email, name },
-    });
+    // Check if user already exists by email (webhook may have created it first)
+    const byEmail = await this.prisma.user.findUnique({ where: { email } });
+    if (byEmail) {
+      if (!byEmail.externalAuthId || byEmail.externalAuthId === externalAuthId) {
+        const user = await this.prisma.user.update({
+          where: { id: byEmail.id },
+          data: { externalAuthId, name },
+        });
+        await this.provisionOrgWorkspace(user.id, clerkOrgId);
+        return user;
+      }
+      return byEmail;
+    }
 
-    await this.provisionOrgWorkspace(user.id, clerkOrgId);
-    return user;
+    try {
+      const user = await this.prisma.user.upsert({
+        where: { externalAuthId },
+        create: { externalAuthId, email, name },
+        update: { email, name },
+      });
+      await this.provisionOrgWorkspace(user.id, clerkOrgId);
+      return user;
+    } catch (err: unknown) {
+      // Race condition: webhook created user between our check and upsert
+      const prismaErr = err as { code?: string };
+      if (prismaErr.code === 'P2002') {
+        const raced = await this.prisma.user.findUnique({ where: { email } })
+          ?? await this.prisma.user.findUnique({ where: { externalAuthId } });
+        if (raced) {
+          await this.provisionOrgWorkspace(raced.id, clerkOrgId);
+          return raced;
+        }
+      }
+      throw err;
+    }
   }
 
   private async provisionOrgWorkspace(userId: string, clerkOrgId: string | null) {
