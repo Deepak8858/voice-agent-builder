@@ -7,10 +7,8 @@ import {
   Param,
   Patch,
   Post,
-  Req,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
 import {
   AcceptClientInviteDtoSchema,
   CreateClientInviteDtoSchema,
@@ -22,7 +20,6 @@ import {
   type SessionUser,
   type UpdateWhiteLabelSettingsDto,
 } from '@voiceforge/shared';
-import { AuthService } from '../auth/auth.service';
 import { CurrentUser } from '../common/current-user.decorator';
 import { UnauthorizedError } from '../common/errors';
 import { WorkspaceGuard } from '../common/workspace.guard';
@@ -112,23 +109,19 @@ export class ClientInvitesController {
 }
 
 /**
- * Standalone (no workspace guard) — only requires auth. The token itself
- * is the access credential.
+ * Standalone (no workspace guard) — only requires an authenticated user.
+ * The token in the body is the access credential for the invite itself.
  */
 @Controller('invites/accept')
 export class InviteAcceptController {
-  constructor(
-    private readonly service: WhiteLabelService,
-    private readonly auth: AuthService,
-  ) {}
+  constructor(private readonly service: WhiteLabelService) {}
 
   @Post()
   @HttpCode(200)
   async accept(
-    @Req() req: Request,
     @Body(new ZodValidationPipe(AcceptClientInviteDtoSchema)) dto: AcceptClientInviteDto,
+    @CurrentUser() user: SessionUser | undefined,
   ) {
-    const user = await this.auth.getSessionUser(req);
     if (!user) throw new UnauthorizedError();
     return this.service.acceptInvite(user.id, dto.token);
   }

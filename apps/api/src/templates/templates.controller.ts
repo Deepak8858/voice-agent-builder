@@ -1,26 +1,21 @@
-import { Controller, Get, Inject, Param, Req } from '@nestjs/common';
-import type { Request } from 'express';
-import { AuthService } from '../auth/auth.service';
+import { Controller, Get, Param } from '@nestjs/common';
+import { CurrentUser } from '../common/current-user.decorator';
 import { UnauthorizedError } from '../common/errors';
+import type { SessionUser } from '@voiceforge/shared';
 import { TemplatesService } from './templates.service';
 
 @Controller('templates')
 export class TemplatesController {
-  constructor(
-    private readonly service: TemplatesService,
-    @Inject(AuthService) private readonly auth: AuthService,
-  ) {}
+  constructor(private readonly service: TemplatesService) {}
 
   @Get()
-  async list(@Req() req: Request) {
-    const user = await this.auth.getSessionUser(req);
+  async list(@CurrentUser() user: SessionUser | undefined) {
     if (!user) throw new UnauthorizedError();
     return { items: await this.service.list() };
   }
 
   @Get(':templateSlug')
-  async get(@Req() req: Request, @Param('templateSlug') slug: string) {
-    const user = await this.auth.getSessionUser(req);
+  async get(@Param('templateSlug') slug: string, @CurrentUser() user: SessionUser | undefined) {
     if (!user) throw new UnauthorizedError();
     return this.service.getBySlug(slug);
   }

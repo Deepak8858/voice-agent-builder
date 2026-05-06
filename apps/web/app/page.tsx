@@ -1,5 +1,4 @@
 import Link from 'next/link';
-import { Show, SignInButton, SignUpButton } from '@clerk/nextjs';
 import { Button } from '@/components/ui/button';
 import {
   Mic2,
@@ -43,27 +42,17 @@ export default function Home() {
           </p>
 
           <div className="mt-10 flex items-center justify-center gap-4">
-            <Show when="signed-out">
-              <SignUpButton mode="modal">
-                <Button size="lg" className="gap-2 px-8 shadow-lg shadow-primary/20">
-                  Get started free
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </SignUpButton>
-              <SignInButton mode="modal">
-                <Button variant="outline" size="lg">
-                  Sign in
-                </Button>
-              </SignInButton>
-            </Show>
-            <Show when="signed-in">
-              <Link href="/dashboard">
-                <Button size="lg" className="gap-2 px-8 shadow-lg shadow-primary/20">
-                  Open dashboard
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
-            </Show>
+            <Link href="/sign-up">
+              <Button size="lg" className="gap-2 px-8 shadow-lg shadow-primary/20">
+                Get started free
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
+            <Link href="/sign-in">
+              <Button variant="outline" size="lg">
+                Sign in
+              </Button>
+            </Link>
           </div>
         </div>
       </section>
@@ -180,30 +169,16 @@ export default function Home() {
               Start free. No credit card required. Get a working agent in under five minutes.
             </p>
             <div className="mt-8 flex justify-center gap-4">
-              <Show when="signed-out">
-                <SignUpButton mode="modal">
-                  <Button
-                    size="lg"
-                    variant="secondary"
-                    className="gap-2 px-8 text-primary shadow-lg"
-                  >
-                    Get started free
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                </SignUpButton>
-              </Show>
-              <Show when="signed-in">
-                <Link href="/dashboard">
-                  <Button
-                    size="lg"
-                    variant="secondary"
-                    className="gap-2 px-8 text-primary shadow-lg"
-                  >
-                    Open dashboard
-                    <ArrowRight className="h-4 w-4" />
-                  </Button>
-                </Link>
-              </Show>
+              <Link href="/sign-up">
+                <Button
+                  size="lg"
+                  variant="secondary"
+                  className="gap-2 px-8 text-primary shadow-lg"
+                >
+                  Get started free
+                  <ArrowRight className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
         </div>

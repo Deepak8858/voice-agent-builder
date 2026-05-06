@@ -17,7 +17,6 @@ const EnvSchema = z.object({
   DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
-  AUTH_PROVIDER: z.enum(['clerk']).default('clerk'),
   VOICE_PROVIDER: z.enum(['vapi', 'retell']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
@@ -35,9 +34,14 @@ const EnvSchema = z.object({
   WEB_BASE_URL: z.string().default('http://localhost:3000'),
   DEFAULT_COUNTRY: z.string().default('US'),
 
-  CLERK_SECRET_KEY: z.string().optional(),
-  CLERK_PUBLISHABLE_KEY: z.string().optional(),
-  CLERK_WEBHOOK_SECRET: z.string().optional(),
+  // Supabase (used by backend for service-role operations)
+  SUPABASE_URL: z.string().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+
+  // Shared secret between Next.js frontend and this NestJS API. The
+  // frontend is the only legitimate caller; it forwards the verified
+  // user context via x-app-user-id / x-org-id headers.
+  INTERNAL_API_KEY: z.string().min(32).optional(),
 
   GITHUB_TOKEN: z.string().optional(),
   LLM_MODEL: z.string().optional(),
