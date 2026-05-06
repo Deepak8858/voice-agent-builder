@@ -59,29 +59,31 @@ export async function POST(
       const { orgId } = body as { orgId?: string };
       if (!orgId) return NextResponse.json({ error: 'orgId required' }, { status: 400 });
 
-      // Verify membership + get role
+      const appUserId = user.user_metadata?.app_user_id;
+      if (!appUserId) return NextResponse.json({ error: 'User profile not found' }, { status: 400 });
+
+      // Find membership where workspace belongs to target organization
       const { data: membership } = await supabase
         .from('memberships')
-        .select('role, workspaces(organization_id)')
-        .eq('user_id', user.user_metadata?.app_user_id)
-        .eq('workspace_id', orgId)
+        .select('role, workspaces!inner(organization_id)')
+        .eq('user_id', appUserId)
+        .eq('workspaces.organization_id', orgId)
         .single();
 
       if (!membership) {
-        return NextResponse.json({ error: 'Not a member of that workspace' }, { status: 403 });
+        return NextResponse.json({ error: 'Not a member of that organization' }, { status: 403 });
       }
 
       // Update JWT app_metadata
       const orgRole = membership.role;
-      const orgId_ = (membership.workspaces as unknown as { organization_id: string }).organization_id;
 
       const adminClient = (await import('@/lib/supabase/admin')).createSupabaseAdminClient();
       await adminClient.auth.admin.updateUserById(user.id, {
-        user_metadata: { ...user.user_metadata, active_org_id: orgId_ },
-        app_metadata: { ...user.app_metadata, active_org_id: orgId_, active_org_role: orgRole },
+        user_metadata: { ...user.user_metadata, active_org_id: orgId },
+        app_metadata: { ...user.app_metadata, active_org_id: orgId, active_org_role: orgRole },
       });
 
-      return NextResponse.json({ success: true, activeOrgId: orgId_ });
+      return NextResponse.json({ success: true, activeOrgId: orgId });
     }
 
     default:

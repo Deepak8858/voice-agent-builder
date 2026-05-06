@@ -53,6 +53,12 @@ export class InternalAuthGuard implements CanActivate {
       return true;
     }
 
+    // Validate UUID format to prevent spoofing
+    if (!isValidUUID(appUserId)) {
+      this.logger.warn(`Invalid x-app-user-id format: ${appUserId}`);
+      throw new UnauthorizedError();
+    }
+
     const role = (headerString(req, 'x-org-role') ?? 'viewer') as SessionUser['active_workspace_role'];
 
     req.user = {
@@ -73,4 +79,9 @@ function headerString(req: Request, key: string): string | null {
   if (typeof v === 'string' && v.length > 0) return v;
   if (Array.isArray(v) && v[0]) return v[0];
   return null;
+}
+
+function isValidUUID(str: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
 }

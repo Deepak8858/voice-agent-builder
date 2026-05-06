@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
@@ -30,8 +31,28 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(redirect);
   }
 
+  const user = data.user;
+  const adminClient = createSupabaseAdminClient();
+
+  // For new OAuth signups, user_metadata.app_user_id is not set by default.
+  // Look up the public.users row and update user_metadata if needed.
+  if (!user.user_metadata?.app_user_id) {
+    const { data: appUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('auth_user_id', user.id)
+      .single();
+
+    if (appUser) {
+      // Update user_metadata so future sessions have app_user_id
+      await adminClient.auth.admin.updateUserById(user.id, {
+        user_metadata: { ...user.user_metadata, app_user_id: appUser.id },
+      });
+    }
+  }
+
   // Check if user has an active org in app_metadata
-  const activeOrgId = data.user.app_metadata?.active_org_id;
+  const activeOrgId = user.app_metadata?.active_org_id;
 
   if (!activeOrgId) {
     // New user or no org — redirect to onboarding
