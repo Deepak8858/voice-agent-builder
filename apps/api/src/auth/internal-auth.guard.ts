@@ -57,7 +57,7 @@ export class InternalAuthGuard implements CanActivate {
 
     // Validate UUID format to prevent spoofing
     const userId = appUserId ?? authUserId;
-    if (!isValidUUID(userId)) {
+    if (!userId || !isValidUUID(userId)) {
       this.logger.warn(`Invalid user id format: ${userId}`);
       throw new UnauthorizedError();
     }
