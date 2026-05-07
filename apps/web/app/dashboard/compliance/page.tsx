@@ -35,7 +35,7 @@ export default async function CompliancePage() {
         </p>
       </div>
 
-      <CompliancePanel workspaceId={me.active_workspace_id} />
+      <CompliancePanel workspaceId={me.active_workspace_id ?? ''} />
     </div>
   );
 }

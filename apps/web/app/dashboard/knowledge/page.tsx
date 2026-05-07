@@ -37,7 +37,7 @@ export default async function KnowledgePage() {
       </div>
 
       <KnowledgePanel
-        workspaceId={me.active_workspace_id}
+        workspaceId={me.active_workspace_id ?? ''}
         agentId={null}
         title="Workspace knowledge"
       />

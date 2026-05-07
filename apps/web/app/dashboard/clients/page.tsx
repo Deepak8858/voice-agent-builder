@@ -35,7 +35,7 @@ export default async function ClientsPage() {
         </p>
       </div>
 
-      <ClientsPanel workspaceId={me.active_workspace_id} />
+      <ClientsPanel workspaceId={me.active_workspace_id ?? ''} />
     </div>
   );
 }

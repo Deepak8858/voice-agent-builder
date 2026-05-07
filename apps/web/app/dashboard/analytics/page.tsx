@@ -35,7 +35,7 @@ export default async function AnalyticsPage() {
         </p>
       </div>
 
-      <AnalyticsPanel workspaceId={me.active_workspace_id} />
+      <AnalyticsPanel workspaceId={me.active_workspace_id ?? ''} />
     </div>
   );
 }

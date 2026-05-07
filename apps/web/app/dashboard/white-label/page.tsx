@@ -34,7 +34,7 @@ export default async function WhiteLabelPage() {
         </p>
       </div>
 
-      <WhiteLabelPanel workspaceId={me.active_workspace_id} />
+      <WhiteLabelPanel workspaceId={me.active_workspace_id ?? ''} />
     </div>
   );
 }

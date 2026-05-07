@@ -40,7 +40,7 @@ export default async function BillingPage() {
         </p>
       </div>
 
-      <BillingPanel workspaceId={me.active_workspace_id} priceIds={priceIds} />
+      <BillingPanel workspaceId={me.active_workspace_id ?? ''} priceIds={priceIds} />
     </div>
   );
 }

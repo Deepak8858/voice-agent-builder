@@ -55,7 +55,7 @@ export default async function AgentBuilderPage({ params }: PageProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <TestCallDrawer workspaceId={me.active_workspace_id} agentId={agent.id} />
+          <TestCallDrawer workspaceId={me.active_workspace_id ?? ''} agentId={agent.id} />
           <Button className="gap-2">
             <Rocket className="h-4 w-4" />
             Publish
@@ -117,9 +117,9 @@ export default async function AgentBuilderPage({ params }: PageProps) {
             </CardContent>
           </Card>
 
-          <KnowledgePanel workspaceId={me.active_workspace_id} agentId={agent.id} />
+          <KnowledgePanel workspaceId={me.active_workspace_id ?? ''} agentId={agent.id} />
 
-          <SuggestionsPanel workspaceId={me.active_workspace_id} agentId={agent.id} />
+          <SuggestionsPanel workspaceId={me.active_workspace_id ?? ''} agentId={agent.id} />
 
           <Card>
             <CardHeader>

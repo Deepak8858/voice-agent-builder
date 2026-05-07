@@ -17,6 +17,7 @@ const EnvSchema = z.object({
   DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
+  AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
   VOICE_PROVIDER: z.enum(['vapi', 'retell']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
@@ -36,6 +37,7 @@ const EnvSchema = z.object({
 
   // Supabase (used by backend for service-role operations)
   SUPABASE_URL: z.string().optional(),
+  SUPABASE_JWT_SECRET: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
 
   // Shared secret between Next.js frontend and this NestJS API. The
