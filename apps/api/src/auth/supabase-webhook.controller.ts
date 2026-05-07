@@ -63,14 +63,14 @@ export class SupabaseWebhookController {
   private async handleUpsert(record: SupabaseUserRecord): Promise<void> {
     if (!record.id) return;
 
-    const externalAuthId = record.id;
+    const authUserId = record.id;
     const email = record.email ?? `${record.id}@supabase.invalid`;
     const name = record.user_metadata?.full_name ?? record.user_metadata?.name ?? null;
 
     try {
       await this.prisma.user.upsert({
-        where: { externalAuthId },
-        create: { externalAuthId, email, name },
+        where: { authUserId },
+        create: { authUserId, email, name },
         update: { email, name },
       });
     } catch (err: unknown) {
@@ -80,7 +80,7 @@ export class SupabaseWebhookController {
         if (raced) {
           await this.prisma.user.update({
             where: { id: raced.id },
-            data: { externalAuthId, name },
+            data: { authUserId, name },
           });
         }
       } else {
@@ -88,16 +88,16 @@ export class SupabaseWebhookController {
       }
     }
 
-    await this.cache.del(`session:user:${externalAuthId}`);
+    await this.cache.del(`session:user:${authUserId}`);
   }
 
   private async handleDelete(record: SupabaseUserRecord): Promise<void> {
     if (!record.id) return;
-    const user = await this.prisma.user.findUnique({ where: { externalAuthId: record.id } });
+    const user = await this.prisma.user.findUnique({ where: { authUserId: record.id } });
     if (!user) return;
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { email: `deleted-${user.id}@voiceforge.local`, name: 'Deleted User', externalAuthId: null },
+      data: { email: `deleted-${user.id}@voiceforge.local`, name: 'Deleted User', authUserId: null },
     });
     await this.cache.del(`session:user:${record.id}`);
   }

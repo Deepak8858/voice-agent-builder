@@ -104,8 +104,8 @@ export class SupabaseAuthService extends AuthService {
     supabaseUserId: string,
     claims: SupabaseJWTPayload,
   ): Promise<SessionUser | null> {
-    const externalAuthId = supabaseUserId;
-    const user = await this.findOrProvisionUser(externalAuthId, supabaseUserId, claims);
+    const authUserId = supabaseUserId;
+    const user = await this.findOrProvisionUser(authUserId, supabaseUserId, claims);
 
     const workspaceKey = `session:workspace:${user.id}`;
     const cachedWorkspace = await this.cache.get<SessionUser>(workspaceKey);
@@ -134,11 +134,11 @@ export class SupabaseAuthService extends AuthService {
   }
 
   private async findOrProvisionUser(
-    externalAuthId: string,
+    authUserId: string,
     supabaseUserId: string,
     claims: SupabaseJWTPayload,
   ) {
-    const existing = await this.prisma.user.findUnique({ where: { externalAuthId } });
+    const existing = await this.prisma.user.findUnique({ where: { authUserId } });
     if (existing) return existing;
 
     const email = claims.email ?? `${supabaseUserId}@supabase.invalid`;
@@ -146,10 +146,10 @@ export class SupabaseAuthService extends AuthService {
 
     const byEmail = await this.prisma.user.findUnique({ where: { email } });
     if (byEmail) {
-      if (!byEmail.externalAuthId || byEmail.externalAuthId === externalAuthId) {
+      if (!byEmail.authUserId || byEmail.authUserId === authUserId) {
         const user = await this.prisma.user.update({
           where: { id: byEmail.id },
-          data: { externalAuthId, name },
+          data: { authUserId, name },
         });
         await this.provisionPersonalWorkspace(user.id, supabaseUserId);
         return user;
@@ -159,8 +159,8 @@ export class SupabaseAuthService extends AuthService {
 
     try {
       const user = await this.prisma.user.upsert({
-        where: { externalAuthId },
-        create: { externalAuthId, email, name },
+        where: { authUserId },
+        create: { authUserId, email, name },
         update: { email, name },
       });
       await this.provisionPersonalWorkspace(user.id, supabaseUserId);
@@ -168,13 +168,13 @@ export class SupabaseAuthService extends AuthService {
     } catch (err: unknown) {
       const prismaErr = err as { code?: string };
       if (prismaErr.code === 'P2002') {
-        const raced = await this.prisma.user.findUnique({ where: { externalAuthId } })
+        const raced = await this.prisma.user.findUnique({ where: { authUserId } })
           ?? await this.prisma.user.findUnique({ where: { email } });
         if (raced) {
-          if (!raced.externalAuthId || raced.externalAuthId === externalAuthId) {
+          if (!raced.authUserId || raced.authUserId === authUserId) {
             const updated = await this.prisma.user.update({
               where: { id: raced.id },
-              data: { externalAuthId, name: name ?? raced.name },
+              data: { authUserId, name: name ?? raced.name },
             });
             await this.provisionPersonalWorkspace(updated.id, supabaseUserId);
             return updated;
