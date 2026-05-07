@@ -9,7 +9,7 @@ const isPublicRoute = [
   '/api/webhooks',
 ];
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
   // Static assets - skip
