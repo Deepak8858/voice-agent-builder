@@ -1,0 +1,7 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e304]:
+    - img [ref=e305]
+    - heading "This page couldn’t load" [level=1] [ref=e307]
+    - paragraph [ref=e308]: A server error occurred. Reload to try again.
+    - button "Reload" [ref=e311] [cursor=pointer]
+  - paragraph [ref=e312]: ERROR 3296245523

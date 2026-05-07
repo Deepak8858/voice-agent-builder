@@ -1,0 +1,7 @@
+[     121ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://vocal.devdeepak.me/sign-out:0
+[   15349ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://vocal.devdeepak.me/sign-out:0
+[   30281ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ https://vocal.devdeepak.me/:0
+[   47040ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ https://vocal.devdeepak.me/:0
+[   71630ms] [LOG] %c%s color: red; background: yellow; font-size: 24px; WARNING! @ https://www.gstatic.com/_/mss/boq-identity/_/js/k=boq-identity.OAuthUi.en_US.ZMwkZ6MzVRM.es5.O/am=nh8AAABQBIABAP7_3wBB1OB6BqBAAAAAAAAAAAAYAAAi/d=1/excm=_b,_tp,errorview/ed=1/dg=0/wt=2/ujg=1/rs=AOaEmlFeU37qUAKXJBEf9zpQVZHVZu22Ow/dti=1/m=_b,_tp:506
+[   71630ms] [LOG] %c%s font-size: 18px; Using this console may allow attackers to impersonate you and steal your information using an attack called Self-XSS.
+Do not enter or paste code that you do not understand. @ https://www.gstatic.com/_/mss/boq-identity/_/js/k=boq-identity.OAuthUi.en_US.ZMwkZ6MzVRM.es5.O/am=nh8AAABQBIABAP7_3wBB1OB6BqBAAAAAAAAAAAAYAAAi/d=1/excm=_b,_tp,errorview/ed=1/dg=0/wt=2/ujg=1/rs=AOaEmlFeU37qUAKXJBEf9zpQVZHVZu22Ow/dti=1/m=_b,_tp:506

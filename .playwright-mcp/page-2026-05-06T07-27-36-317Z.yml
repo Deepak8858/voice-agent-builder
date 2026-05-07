@@ -1,0 +1,92 @@
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Dashboard" [active] [ref=e10] [cursor=pointer]:
+        - /url: /dashboard
+      - button "Open user menu" [ref=e117] [cursor=pointer]:
+        - img "'s logo" [ref=e120]
+  - main [ref=e11]:
+    - generic [ref=e122]:
+      - complementary [ref=e123]:
+        - generic [ref=e124]:
+          - paragraph [ref=e125]: Platform
+          - navigation [ref=e126]:
+            - link "Overview" [ref=e127] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e128]
+              - text: Overview
+            - link "Agents" [ref=e133] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e134]
+              - text: Agents
+            - link "Calls" [ref=e137] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e138]
+              - text: Calls
+            - link "Templates" [ref=e140] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e141]
+              - text: Templates
+            - link "Knowledge" [ref=e145] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e146]
+              - text: Knowledge
+            - link "Integrations" [ref=e148] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e149]
+              - text: Integrations
+            - link "Clients" [ref=e151] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e152]
+              - text: Clients
+            - link "Compliance" [ref=e157] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e158]
+              - text: Compliance
+            - link "Analytics" [ref=e161] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e162]
+              - text: Analytics
+            - link "White label" [ref=e164] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e165]
+              - text: White label
+            - link "Billing" [ref=e171] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e172]
+              - text: Billing
+            - link "Settings" [ref=e174] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e175]
+              - text: Settings
+      - generic [ref=e180]:
+        - generic [ref=e181]:
+          - generic [ref=e182]:
+            - heading "Welcome back, deepak" [level=1] [ref=e183]
+            - paragraph [ref=e184]:
+              - generic [ref=e185]:
+                - text: "Workspace:"
+                - generic [ref=e186]: Demo Workspace
+          - link "New agent" [ref=e187] [cursor=pointer]:
+            - /url: /dashboard/agents/new
+            - button "New agent" [ref=e188]:
+              - img
+              - text: New agent
+        - generic [ref=e189]:
+          - generic [ref=e190]:
+            - heading "API not reachable" [level=3] [ref=e191]
+            - paragraph [ref=e192]:
+              - text: "The backend returned:"
+              - code [ref=e193]: Cannot read properties of undefined (reading 'items')
+          - paragraph [ref=e195]:
+            - text: Start the API with
+            - code [ref=e196]: npm run dev
+            - text: after setting DATABASE_URL in
+            - code [ref=e197]: .env
+            - text: .
+  - region "Notifications alt+T"
+  - alert [ref=e115]

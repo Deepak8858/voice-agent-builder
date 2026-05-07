@@ -1,0 +1,40 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - button "Sign in" [ref=e10]
+      - button "Sign up" [ref=e11]
+  - main [ref=e12]:
+    - generic [ref=e115]:
+      - generic [ref=e116]:
+        - generic [ref=e118]:
+          - heading "Use another method" [level=1] [ref=e119]
+          - paragraph [ref=e120]: Facing issues? You can use any of these methods to sign in.
+        - generic [ref=e122]:
+          - generic [ref=e123]:
+            - button "Sign in with Google Continue with Google" [ref=e126] [cursor=pointer]:
+              - generic [ref=e127]:
+                - generic "Sign in with Google" [ref=e129]
+                - generic [ref=e130]: Continue with Google
+            - button "Email code to deepak7238kgs@gmail.com" [ref=e131] [cursor=pointer]:
+              - img [ref=e133]
+              - generic [ref=e137]: Email code to deepak7238kgs@gmail.com
+              - img [ref=e138]
+          - link "Back" [ref=e141] [cursor=pointer]:
+            - /url: https://vocal.devdeepak.me/sign-in/factor-one
+            - paragraph [ref=e142]: Back
+      - generic [ref=e143]:
+        - generic [ref=e144]:
+          - generic [ref=e145]: Don’t have any of these?
+          - link "Get help" [ref=e146] [cursor=pointer]:
+            - /url: https://vocal.devdeepak.me/sign-in/factor-one
+        - generic [ref=e150]:
+          - paragraph [ref=e151]: Secured by
+          - link "Clerk logo" [ref=e152] [cursor=pointer]:
+            - /url: https://go.clerk.com/components
+            - img [ref=e153]
+  - region "Notifications alt+T"
+  - alert [ref=e14]
