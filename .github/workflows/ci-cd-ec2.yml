@@ -109,14 +109,13 @@ jobs:
 
       - name: Validate required build-time secrets
         env:
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
         run: |
           missing=()
-          for v in NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
+          for v in NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
                    NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL; do
             if [ -z "${!v:-}" ]; then missing+=("$v"); fi
           done
@@ -150,13 +149,9 @@ jobs:
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
             NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL }}
-            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-            NEXT_PUBLIC_CLERK_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_IN_URL }}
-            NEXT_PUBLIC_CLERK_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_SIGN_UP_URL }}
-            NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL }}
-            NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=${{ vars.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
 
       - name: Summarize image tags
         run: |
