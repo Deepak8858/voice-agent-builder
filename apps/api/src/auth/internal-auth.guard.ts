@@ -48,21 +48,24 @@ export class InternalAuthGuard implements CanActivate {
     }
 
     const appUserId = headerString(req, 'x-app-user-id');
-    if (!appUserId) {
+    const authUserId = headerString(req, 'x-user-id'); // Supabase auth.users.id
+
+    if (!appUserId && !authUserId) {
       // No user context — caller is the platform itself; allow but with no user.
       return true;
     }
 
     // Validate UUID format to prevent spoofing
-    if (!isValidUUID(appUserId)) {
-      this.logger.warn(`Invalid x-app-user-id format: ${appUserId}`);
+    const userId = appUserId ?? authUserId;
+    if (!isValidUUID(userId)) {
+      this.logger.warn(`Invalid user id format: ${userId}`);
       throw new UnauthorizedError();
     }
 
     const role = (headerString(req, 'x-org-role') ?? 'viewer') as SessionUser['active_workspace_role'];
 
     req.user = {
-      id: appUserId,
+      id: userId,
       email: headerString(req, 'x-user-email') ?? '',
       name: null,
       active_workspace_id: headerString(req, 'x-workspace-id') ?? null,
