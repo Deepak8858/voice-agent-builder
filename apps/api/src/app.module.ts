@@ -1,8 +1,10 @@
 import { Module, OnApplicationShutdown } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 // Import and start OpenTelemetry before any instrumented modules (Prisma, Express, etc.).
 import { otel } from './tracing';
 otel.start();
 import { logger } from './logging';
+import { RateLimitGuard } from './common/rate-limit.guard';
 import { MetricsModule } from './common/metrics.module';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -54,6 +56,12 @@ import { EmailModule } from './email/email.module';
     StripeWebhookModule,
     BillingModule,
     EmailModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: RateLimitGuard,
+    },
   ],
 })
 export class AppModule implements OnApplicationShutdown {
