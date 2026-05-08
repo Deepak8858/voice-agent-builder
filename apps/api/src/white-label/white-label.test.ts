@@ -689,6 +689,26 @@ describe('WhiteLabelService invites', () => {
       ValidationError,
     );
   });
+
+  it('rejects when user email does not match invite email', async () => {
+    const state = freshState();
+    state.invites.push({
+      id: 'inv1',
+      agencyWorkspaceId: AGENCY,
+      clientWorkspaceId: 'child',
+      email: 'invited@example.com',
+      role: 'admin',
+      token: 'tok-mismatch',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400_000),
+      acceptedAt: null,
+      invitedBy: ACTOR,
+      createdAt: new Date(),
+    });
+    state.users.push({ id: 'user-2', email: 'wrong@email.com' });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    await expect(svc.acceptInvite('user-2', 'tok-mismatch')).rejects.toBeInstanceOf(AppError);
+  });
 });
 
 describe('WhiteLabelSettings validation', () => {

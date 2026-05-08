@@ -108,10 +108,7 @@ export class ClientInvitesController {
   }
 }
 
-/**
- * Standalone (no workspace guard) — only requires an authenticated user.
- * The token in the body is the access credential for the invite itself.
- */
+@UseGuards(WorkspaceGuard)
 @Controller('invites/accept')
 export class InviteAcceptController {
   constructor(private readonly service: WhiteLabelService) {}
