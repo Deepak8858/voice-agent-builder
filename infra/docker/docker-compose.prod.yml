@@ -13,7 +13,7 @@
 #   - Docker + Docker Compose v2 installed
 #   - Docker Swarm initialized: docker swarm init
 #   - /opt/voiceforge/.env file created from secret injection
-#   - /opt/voiceforge/data/certbot populated with TLS certs (Let's Encrypt)
+#   - /opt/voiceforge/data/certs populated with TLS certs (self-signed or Let's Encrypt)
 #   - Ports 80 and 443 open in AWS Security Group
 # =============================================================================
 
@@ -118,7 +118,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./data/certbot/conf:/etc/letsencrypt:ro
+      - ./data/certs:/opt/certs:ro
       - ./data/certbot/www:/var/www/certbot:ro
     depends_on:
       web:
