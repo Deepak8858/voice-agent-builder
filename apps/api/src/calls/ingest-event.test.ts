@@ -259,7 +259,7 @@ describe('Webhook security', () => {
 
     // The webhook handler should verify HMAC using HMAC_SECRET
     const expectedSignature = 'sha256=expected'; // What it should be
-    const signatureValid = providedSignature === expectedSignature;
+    const signatureValid = (providedSignature as string) === (expectedSignature as string);
 
     // Invalid signature should result in 401
     expect(signatureValid).toBe(false);

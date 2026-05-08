@@ -115,7 +115,7 @@ describe('Session validation edge cases', () => {
       const headers = {}; // No x-internal-key header
       const expected = 'secret-key';
 
-      const isValid = typeof headers['x-internal-key'] === 'string' && headers['x-internal-key'] === expected;
+      const isValid = typeof (headers as Record<string, string>)['x-internal-key'] === 'string' && (headers as Record<string, string>)['x-internal-key'] === expected;
       expect(isValid).toBe(false);
     });
 
@@ -123,7 +123,7 @@ describe('Session validation edge cases', () => {
       const headers = { 'x-internal-key': 'wrong-key' };
       const expected = 'correct-key';
 
-      const isValid = headers['x-internal-key'] === expected;
+      const isValid = (headers as Record<string, string>)['x-internal-key'] === expected;
       expect(isValid).toBe(false);
     });
 
