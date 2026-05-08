@@ -184,13 +184,15 @@ jobs:
             echo "target=staging" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload compose file to EC2
+      - name: Upload compose file and nginx config to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: "infra/docker/docker-compose.prod.yml"
+          source: |
+            infra/docker/docker-compose.prod.yml
+            infra/nginx/nginx.conf
           target: "/tmp/"
           strip_components: 2
 
@@ -217,6 +219,21 @@ jobs:
             sudo mv /tmp/docker-compose.prod.yml ${COMPOSE_FILE}
             sudo chmod 644 ${COMPOSE_FILE}
 
+            echo "📄 Updating nginx config..."
+            sudo mkdir -p /opt/voiceforge/nginx
+            sudo mv /tmp/nginx.conf /opt/voiceforge/nginx/nginx.conf
+            sudo chmod 644 /opt/voiceforge/nginx/nginx.conf
+
+            echo "🔐 Creating SSL certs if missing..."
+            sudo mkdir -p /opt/voiceforge/data/certs
+            if [ ! -f /opt/voiceforge/data/certs/cert.pem ]; then
+              sudo openssl req -x509 -nodes -days 90 -newkey rsa:2048 \
+                -keyout /opt/voiceforge/data/certs/key.pem \
+                -out /opt/voiceforge/data/certs/cert.pem \
+                -subj '/CN=vocal.devdeepak.me' 2>/dev/null
+              echo "SSL certs created"
+            fi
+
             echo "🔍 Verifying /opt/voiceforge/.env exists on EC2..."
             if ! sudo test -f /opt/voiceforge/.env; then
               echo "::error::/opt/voiceforge/.env missing on EC2. Create it manually before deploy."
@@ -224,9 +241,6 @@ jobs:
             fi
 
             echo "🔓 Ensuring deploy user can read /opt/voiceforge/.env..."
-            # File may be root-owned with 600 perms. Grant deploy user's group read access
-            # so docker compose (running as deploy user) can read env_file. Stays unreadable
-            # to other users.
             sudo chgrp "$(id -gn)" /opt/voiceforge/.env
             sudo chmod 640 /opt/voiceforge/.env
 
@@ -241,7 +255,8 @@ jobs:
             docker compose -f ${COMPOSE_FILE} run --rm \
               --entrypoint sh api -c "npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma"
 
-            echo "🛑 Stopping existing stack..."
+            echo "🛑 Stopping existing stack (including manual nginx)..."
+            docker rm -f vf-nginx 2>/dev/null || true
             docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
 
             echo "🚀 Starting updated services..."
