@@ -184,23 +184,21 @@ jobs:
             echo "target=staging" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload compose file to EC2
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.AWS_EC2_HOST }}
-          username: ${{ secrets.AWS_EC2_USER }}
-          key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: "./infra/docker/docker-compose.prod.yml"
-          target: "/tmp/docker-compose.prod.yml"
+      - name: Setup SSH key for direct scp
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AWS_EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.AWS_EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Upload nginx config to EC2
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.AWS_EC2_HOST }}
-          username: ${{ secrets.AWS_EC2_USER }}
-          key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: "./infra/nginx/nginx.conf"
-          target: "/tmp/nginx.conf"
+      - name: Upload compose & nginx files to EC2
+        run: |
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            infra/docker/docker-compose.prod.yml \
+            ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:/tmp/docker-compose.prod.yml
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            infra/nginx/nginx.conf \
+            ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:/tmp/nginx.conf
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -222,14 +220,14 @@ jobs:
 
             echo "📄 Updating compose file from repo..."
             sudo mkdir -p /opt/voiceforge
-            sudo rm -rf /tmp/docker-compose.prod.yml /opt/voiceforge/docker-compose.prod.yml
+            sudo rm -rf /opt/voiceforge/docker-compose.prod.yml
             sudo mv /tmp/docker-compose.prod.yml ${COMPOSE_FILE}
             sudo chmod 644 ${COMPOSE_FILE}
 
             echo "📄 Updating nginx config..."
             sudo mkdir -p /opt/voiceforge/nginx
-            sudo rm -rf /tmp/nginx.conf /opt/voiceforge/nginx/nginx.conf
-            sudo cp /tmp/nginx.conf /opt/voiceforge/nginx/nginx.conf
+            sudo rm -rf /opt/voiceforge/nginx/nginx.conf
+            sudo mv /tmp/nginx.conf /opt/voiceforge/nginx/nginx.conf
             sudo chmod 644 /opt/voiceforge/nginx/nginx.conf
 
             echo "🔐 Creating SSL certs if missing..."
