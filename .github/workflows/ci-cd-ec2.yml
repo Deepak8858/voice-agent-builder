@@ -184,15 +184,23 @@ jobs:
             echo "target=staging" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload compose file and nginx config to EC2
+      - name: Upload compose file to EC2
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          source: |
-            infra/docker/docker-compose.prod.yml
-            infra/nginx/nginx.conf
+          source: "./infra/docker/docker-compose.prod.yml"
+          target: "/tmp/"
+          strip_components: 2
+
+      - name: Upload nginx config to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          source: "./infra/nginx/nginx.conf"
           target: "/tmp/"
           strip_components: 2
 
