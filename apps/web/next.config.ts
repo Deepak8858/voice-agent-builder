@@ -8,12 +8,13 @@ const nextConfig: NextConfig = {
       'https://*.supabase.co',
       'https://*.supabase.com',
     ].join(' ');
+    const monacoCdn = 'https://cdn.jsdelivr.net';
     const csp = [
       "default-src 'self'",
-      `script-src 'self' 'unsafe-eval' 'unsafe-inline' ${supabaseOrigins}`,
-      "style-src 'self' 'unsafe-inline'",
+      `script-src 'self' 'unsafe-eval' 'unsafe-inline' ${supabaseOrigins} ${monacoCdn}`,
+      `style-src 'self' 'unsafe-inline' ${monacoCdn}`,
       `img-src 'self' data: blob: ${supabaseOrigins}`,
-      "font-src 'self'",
+      `font-src 'self' data: ${monacoCdn}`,
       `connect-src 'self' ${apiUrl} ${supabaseOrigins} https://api.stripe.com`,
       `frame-src 'self' https://checkout.stripe.com ${supabaseOrigins}`,
       "worker-src 'self' blob:",
@@ -30,7 +31,7 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
         ],
       },
     ];
