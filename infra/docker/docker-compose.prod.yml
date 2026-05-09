@@ -19,7 +19,7 @@
 
 services:
   web:
-    image: ${ECR_REGISTRY}/voiceforge-web:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY:-393060838606.dkr.ecr.ap-south-1.amazonaws.com}/voiceforge-web:${IMAGE_TAG:-latest}
     container_name: vf-web
     restart: always
     ports:
@@ -53,7 +53,7 @@ services:
       start_period: 15s
 
   api:
-    image: ${ECR_REGISTRY}/voiceforge-api:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY:-393060838606.dkr.ecr.ap-south-1.amazonaws.com}/voiceforge-api:${IMAGE_TAG:-latest}
     container_name: vf-api
     restart: always
     ports:
