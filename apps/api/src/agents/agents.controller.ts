@@ -28,10 +28,13 @@ export class AgentsController {
   constructor(private readonly agents: AgentsService) {}
 
   @Get()
-  async list(@Param('workspaceId') workspaceId: string, @Res() res: Response) {
+  async list(
+    @Param('workspaceId') workspaceId: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const result = await this.agents.list(workspaceId);
     res.setHeader('X-Cache-Hit', result.fromCache ? 'true' : 'false');
-    return res.json({ items: result.agents });
+    return { items: result.agents };
   }
 
   @Post()

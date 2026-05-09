@@ -129,7 +129,7 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       },
       voice: {
         provider: 'vapi',
-        ...(spec.voice.voice_id ? { voiceId: spec.voice.voice_id } : {}),
+        voiceId: spec.voice.voice_id || 'Clara',
         ...(spec.voice.speaking_rate ? { speakingRate: spec.voice.speaking_rate } : {}),
       },
       firstMessage: spec.conversation_rules.first_message,
@@ -140,12 +140,7 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       },
     };
 
-    // Compliance / legal
-    if (spec.compliance.recording_notice_required) {
-      (assistantPayload as Record<string, unknown>).spcallbacks = {
-        onCallStart: [{ do: 'say', args: { text: 'This call may be recorded for quality assurance.' } }],
-      };
-    }
+    // Compliance: Vapi rejects 'spcallbacks'. Recording notice belongs in the system prompt.
 
     const assistant = await vapiRequest<{ id: string }>('POST', '/assistant', assistantPayload);
 
@@ -235,8 +230,10 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
     }
 
     const callPayload: Record<string, unknown> = {
+      type: 'outboundPhoneCall',
       assistantId,
-      customer: { number: input.toNumber },
+      phoneNumberId: env.VAPI_PHONE_NUMBER_ID,
+      customer: { number: input.toNumber, ...(input.contactName ? { name: input.contactName } : {}) },
       metadata: {
         voiceforge_workspace_id: input.workspaceId,
         voiceforge_agent_id: input.agentId,
@@ -245,13 +242,9 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       },
     };
 
-    if (input.fromNumber) {
-      (callPayload as Record<string, unknown>).caller = { number: input.fromNumber };
-    }
-
     const call = await vapiRequest<{ id: string; status: string }>(
       'POST',
-      '/call/outbound',
+      '/call',
       callPayload,
     );
 

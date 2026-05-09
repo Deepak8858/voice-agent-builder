@@ -44,14 +44,13 @@ export async function POST(
     headers['x-org-role'] = user.app_metadata.active_org_role as string;
   }
 
-  const body = req.body;
+  const body = await req.text();
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}/api/v1${pathString}`, {
+  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'POST',
     headers,
     body,
     cache: 'no-store',
-    // Pass through duplex for streaming
     ...(req.signal ? { signal: req.signal } : {}),
   });
 
@@ -100,7 +99,7 @@ export async function GET(
     headers['x-org-role'] = user.app_metadata.active_org_role as string;
   }
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}/api/v1${pathString}`, {
+  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -150,7 +149,7 @@ export async function PATCH(
 
   const body = await req.text();
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}/api/v1${pathString}`, {
+  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'PATCH',
     headers,
     body,
@@ -189,7 +188,7 @@ export async function DELETE(
     headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
   }
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}/api/v1${pathString}`, {
+  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'DELETE',
     headers,
     cache: 'no-store',
