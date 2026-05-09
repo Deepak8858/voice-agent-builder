@@ -265,6 +265,16 @@ jobs:
             docker rm -f vf-nginx 2>/dev/null || true
             docker compose -f ${COMPOSE_FILE} down --remove-orphans || true
 
+            echo "🔍 Checking for processes blocking ports 80/443..."
+            for port in 80 443; do
+              pid=$(sudo lsof -t -i:$port 2>/dev/null || true)
+              if [ -n "$pid" ]; then
+                echo "Killing PID $pid on port $port..."
+                sudo kill -9 $pid 2>/dev/null || true
+                sleep 2
+              fi
+            done
+
             echo "🚀 Starting updated services..."
             docker compose -f ${COMPOSE_FILE} up -d
 
