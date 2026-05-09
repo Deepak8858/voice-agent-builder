@@ -32,6 +32,7 @@ export interface StartOutboundCallInput {
   agentVersionId: string;
   toNumber: string;
   fromNumber?: string;
+  contactName?: string;
   metadata?: Record<string, unknown>;
 }
 export interface StartOutboundCallResult {

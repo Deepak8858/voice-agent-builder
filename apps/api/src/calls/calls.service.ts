@@ -169,6 +169,7 @@ export class CallsService {
       agentVersionId: version.id,
       toNumber: dto.to_number,
       fromNumber: dto.from_number,
+      contactName: dto.contact_name,
       metadata: dto.metadata,
     });
 
