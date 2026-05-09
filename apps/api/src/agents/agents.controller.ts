@@ -17,9 +17,25 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CurrentUser } from '../common/current-user.decorator';
 import { AgentsService } from './agents.service';
 
+const FlowNodeSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(['start', 'speak', 'ask-question', 'condition', 'tool-call', 'transfer', 'end']),
+  data: z.record(z.unknown()),
+  position: z.object({ x: z.number(), y: z.number() }).optional(),
+});
+
+const FlowEdgeSchema = z.object({
+  id: z.string().min(1),
+  source: z.string().min(1),
+  target: z.string().min(1),
+  sourceHandle: z.string().optional(),
+  targetHandle: z.string().optional(),
+  type: z.string().optional(),
+});
+
 const UpdateFlowDtoSchema = z.object({
-  nodes: z.array(z.record(z.unknown())),
-  edges: z.array(z.record(z.unknown())),
+  nodes: z.array(FlowNodeSchema),
+  edges: z.array(FlowEdgeSchema),
 });
 
 @UseGuards(WorkspaceGuard)
@@ -100,11 +116,11 @@ export class AgentsController {
     return this.agents.pause(workspaceId, agentId, user.id);
   }
 
-  @Put(':agentId/flow')
+  @Patch(':agentId/flow')
   async updateFlow(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId') agentId: string,
-    @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: { nodes: unknown[]; edges: unknown[] },
+    @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: z.infer<typeof UpdateFlowDtoSchema>,
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.updateFlow(workspaceId, agentId, user.id, body);

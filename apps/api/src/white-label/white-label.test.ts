@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WhiteLabelService } from './white-label.service';
+import { WhiteLabelSettingsSchema, UpdateWhiteLabelSettingsDtoSchema } from '@voiceforge/shared/schemas/white-label';
 import { AppError, ValidationError } from '../common/errors';
 
 interface WorkspaceRow {
@@ -687,5 +688,69 @@ describe('WhiteLabelService invites', () => {
     await expect(svc.acceptInvite('user-2', 'tok-y')).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+
+  it('rejects when user email does not match invite email', async () => {
+    const state = freshState();
+    state.invites.push({
+      id: 'inv1',
+      agencyWorkspaceId: AGENCY,
+      clientWorkspaceId: 'child',
+      email: 'invited@example.com',
+      role: 'admin',
+      token: 'tok-mismatch',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400_000),
+      acceptedAt: null,
+      invitedBy: ACTOR,
+      createdAt: new Date(),
+    });
+    state.users.push({ id: 'user-2', email: 'wrong@email.com' });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    await expect(svc.acceptInvite('user-2', 'tok-mismatch')).rejects.toBeInstanceOf(AppError);
+  });
+});
+
+describe('WhiteLabelSettings validation', () => {
+  it('should reject logoUrl without https protocol', () => {
+    const result = WhiteLabelSettingsSchema.safeParse({
+      workspace_id: '00000000-0000-0000-0000-000000000001',
+      brand_name: null,
+      logo_url: 'http://malicious.com/logo.png',
+      primary_color: null,
+      custom_domain: null,
+      support_email: null,
+      hide_platform_branding: false,
+      updated_at: new Date().toISOString(),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept logoUrl with https protocol', () => {
+    const result = WhiteLabelSettingsSchema.safeParse({
+      workspace_id: '00000000-0000-0000-0000-000000000001',
+      brand_name: null,
+      logo_url: 'https://cdn.example.com/logo.png',
+      primary_color: null,
+      custom_domain: null,
+      support_email: null,
+      hide_platform_branding: false,
+      updated_at: new Date().toISOString(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject UpdateWhiteLabelSettingsDto with http logo URL', () => {
+    const result = UpdateWhiteLabelSettingsDtoSchema.safeParse({
+      logo_url: 'http://malicious.com/logo.png',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should accept UpdateWhiteLabelSettingsDto with https logo URL', () => {
+    const result = UpdateWhiteLabelSettingsDtoSchema.safeParse({
+      logo_url: 'https://cdn.example.com/logo.png',
+    });
+    expect(result.success).toBe(true);
   });
 });

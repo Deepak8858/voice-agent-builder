@@ -13,7 +13,7 @@ const DOMAIN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-
 export const WhiteLabelSettingsSchema = z.object({
   workspace_id: z.string().uuid(),
   brand_name: z.string().nullable(),
-  logo_url: z.string().url().nullable(),
+  logo_url: z.string().url().startsWith('https://').nullable(),
   primary_color: z.string().nullable(),
   custom_domain: z.string().nullable(),
   support_email: z.string().email().nullable(),
@@ -24,7 +24,7 @@ export type WhiteLabelSettings = z.infer<typeof WhiteLabelSettingsSchema>;
 
 export const UpdateWhiteLabelSettingsDtoSchema = z.object({
   brand_name: z.string().min(1).max(120).nullable().optional(),
-  logo_url: z.string().url().nullable().optional(),
+  logo_url: z.string().url().startsWith('https://').nullable().optional(),
   primary_color: z.string().regex(HEX_COLOR, 'Must be a hex color like #112233').nullable().optional(),
   custom_domain: z
     .string()

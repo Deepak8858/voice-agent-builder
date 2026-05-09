@@ -1,0 +1,14 @@
+{
+  "name": "voiceforge-load-tests",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "k6 run *.test.ts",
+    "test:auth": "k6 run auth.test.ts",
+    "test:agents": "k6 run agent-generation.test.ts",
+    "test:knowledge": "k6 run knowledge-retrieval.test.ts",
+    "test:webhooks": "k6 run webhooks.test.ts",
+    "test:mixed": "k6 run mixed-scenario.test.ts"
+  },
+  "description": "k6 load tests for VoiceForge API - install k6 binary separately from https://k6.io/docs/getting-started/installation/"
+}

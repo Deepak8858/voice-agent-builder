@@ -333,7 +333,7 @@ export class AgentsService {
     workspaceId: string,
     agentId: string,
     actorUserId: string,
-    body: { nodes: unknown[]; edges: unknown[] },
+    body: { nodes?: unknown[]; edges?: unknown[] },
   ): Promise<AgentDetail> {
     const agent = await this.prisma.agent.findFirstOrThrow({ where: { id: agentId, workspaceId } });
     const spec = (agent.specJson ?? {}) as Record<string, unknown>;

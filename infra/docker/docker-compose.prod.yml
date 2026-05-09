@@ -118,7 +118,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./data/certs:/opt/certs:ro
+      - /opt/voiceforge/data/certs:/opt/certs:ro
       - ./data/certbot/www:/var/www/certbot:ro
     depends_on:
       web:
@@ -138,9 +138,58 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: vf-prometheus
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    environment:
+      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: vf-grafana
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin123}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
 networks:
   voiceforge:
     driver: bridge
 
 volumes:
   redis_data:
+  prometheus_data:
+  grafana_data:

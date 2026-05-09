@@ -11,6 +11,7 @@ import type { Request } from 'express';
 import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import type { SessionUser } from '@voiceforge/shared';
+import { IS_PUBLIC_KEY } from './decorators/public.decorator';
 
 /**
  * Metadata key used by @SkipRateLimit() to mark routes to skip rate limiting.
@@ -45,6 +46,10 @@ export class RateLimitGuard implements CanActivate {
     // Allow routes marked with @SkipRateLimit()
     const skip = Reflect.getMetadata(SKIP_RATE_LIMIT_KEY, ctx.getHandler());
     if (skip) return true;
+
+    // Allow routes marked with @Public()
+    const isPublic = Reflect.getMetadata(IS_PUBLIC_KEY, ctx.getHandler());
+    if (isPublic) return true;
 
     const req = ctx.switchToHttp().getRequest<Request & { user?: SessionUser }>();
     const user = req.user;
