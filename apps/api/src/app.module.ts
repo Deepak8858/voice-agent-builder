@@ -29,6 +29,12 @@ import { WhiteLabelModule } from './white-label/white-label.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
 import { EmailModule } from './email/email.module';
+import { AgentOrchestratorModule } from './orchestrator/orchestrator.module';
+import { OutboundCampaignModule } from './outbound-campaign/outbound-campaign.module';
+import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
+import { WorkspaceCrmModule } from './workspace-crm/workspace-crm.module';
+import { CrmRoutingModule } from './crm-routing/crm-routing.module';
+import { TwilioModule } from './twilio-adapter/twilio.module';
 
 @Module({
   imports: [
@@ -56,6 +62,12 @@ import { EmailModule } from './email/email.module';
     StripeWebhookModule,
     BillingModule,
     EmailModule,
+    TwilioModule,
+    AgentOrchestratorModule,
+    OutboundCampaignModule,
+    PhoneNumbersModule,
+    WorkspaceCrmModule,
+    CrmRoutingModule,
   ],
   providers: [
     {

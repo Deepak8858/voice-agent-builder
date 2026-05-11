@@ -1,0 +1,3 @@
+[    1777ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://vocal.devdeepak.me/api/proxy/auth/me:0
+[    2546ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://vocal.devdeepak.me/api/proxy/templates:0
+[    3875ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://vocal.devdeepak.me/api/proxy/templates:0

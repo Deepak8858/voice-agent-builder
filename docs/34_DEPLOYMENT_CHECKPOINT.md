@@ -122,7 +122,7 @@ $env:VM_IP = "20.122.143.176"
 az vm run-command invoke `
   --resource-group $env:RG --name $env:VM_NAME `
   --command-id RunShellScript `
-  --scripts "cd /opt/voiceforge && git pull origin main && docker build -f Dockerfile.api -t voiceforge-api:latest . && docker build -f Dockerfile.web -t voiceforge-web:latest --build-arg NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1 --build-arg NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<KEY> --build-arg NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in --build-arg NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up --build-arg NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard --build-arg NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard ."
+  --scripts "cd /opt/voiceforge && git pull origin main && docker build -f Dockerfile.api -t voiceforge-api:latest . && docker build -f Dockerfile.web -t voiceforge-web:latest --build-arg NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1 --build-arg NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me --build-arg NEXT_PUBLIC_SUPABASE_URL=https://nsgshzxxhytjmiiasobc.supabase.co --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<KEY> ."
 
 # 3. Deploy stack
 az vm run-command invoke `

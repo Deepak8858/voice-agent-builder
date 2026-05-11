@@ -39,10 +39,8 @@ The frontend has **no active XSS vectors** and **no server-only secrets are leak
 
 ## 3. Auth State Validation
 
-- **Edge middleware is completely absent.** `proxy.ts` exports `clerkMiddleware()` but Next.js **ignores it** because the file is not named `middleware.ts`.
-- API routes (`/api/*`) have **no middleware-level auth**.
-- Supabase session refresh in middleware (`lib/supabase/middleware.ts`) is **never executed**.
-- Client-side `'use client'` pages render the full UI **before** confirming auth.
+- **Edge middleware is now properly implemented** via `apps/web/middleware.ts`.
+- `SUPABASE_JWT_SECRET` is server-side only, validated at API layer via `SupabaseAuthService`.
 
 **Risk:** HIGH — Unauthenticated users can view agent-creation forms, tool panels, compliance editor, etc.
 
@@ -118,12 +116,12 @@ The frontend has **no active XSS vectors** and **no server-only secrets are leak
 | # | Task | File(s) | Priority |
 |---|------|---------|----------|
 | 1 | Add CSP + security headers to `next.config.ts` | `next.config.ts` | HIGH |
-| 2 | Rename `proxy.ts` to `middleware.ts` and verify Clerk middleware runs | `proxy.ts` | HIGH |
+| 2 | Verify Supabase middleware auth on staging before removing AuthGate fallback | `middleware.ts` | HIGH |
 | 3 | Add `AuthGate` wrapper to all client dashboard pages | Multiple | MEDIUM |
 | 4 | Validate open-redirect URLs in billing panel | `billing-panel.tsx` | MEDIUM |
 | 5 | Add `X-Requested-With` header to all API calls | `lib/use-api.ts`, `lib/api.ts` | LOW |
 | 6 | Replace raw `useState` forms with `react-hook-form` + `zod` schemas | Multiple | LOW |
 | 7 | Validate `primary_color` as hex to prevent style injection | `white-label-panel.tsx` | LOW |
 | 8 | Convert knowledge search from GET query params to POST body | `knowledge-panel.tsx`, API | LOW |
-| 9 | Fix `CLERK_SECRET_KEY` value to a real `sk_` secret | `.env.local` | INFO |
+| 9 | Rotate `SUPABASE_JWT_SECRET` and `JWT_SECRET` periodically | `.env` | INFO |
 | 10 | Audit health route for information disclosure | `app/api/health/route.ts` | INFO |

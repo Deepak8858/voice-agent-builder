@@ -1,0 +1,13 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]
+  - main [ref=e11]:
+    - generic [ref=e13]:
+      - heading "404" [level=1] [ref=e14]
+      - heading "This page could not be found." [level=2] [ref=e16]
+  - region "Notifications alt+T"
+  - alert [ref=e17]

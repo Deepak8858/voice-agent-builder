@@ -8,7 +8,6 @@ import { toast } from 'sonner';
 import type {
   AgentDetail,
   AgentSummary,
-  GenerateAgentResult,
   KnowledgeSourceSummary,
   SessionUser,
 } from '@voiceforge/shared';
@@ -75,7 +74,7 @@ export default function NewAgentPage() {
   const generateMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId) throw new Error('No active workspace');
-      return call<GenerateAgentResult>(
+      const res = await call<{ agent_id: string; status_url: string; spec?: unknown; suggested_name?: string; rationale?: string; matched_template_slug?: string }>(
         `/workspaces/${workspaceId}/agents/generate`,
         {
           method: 'POST',
@@ -91,9 +90,11 @@ export default function NewAgentPage() {
           }),
         },
       );
+      return res;
     },
     onSuccess: (res) => {
-      draft.setGenerated(res);
+      draft.setGenerated(res as Parameters<typeof draft.setGenerated>[0]);
+      if (res.spec) draft.setDraftSpec(res.spec as Parameters<typeof draft.setDraftSpec>[0]);
       toast.success('Agent Spec generated.');
     },
     onError: (err: Error) => toast.error(err.message),

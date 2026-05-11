@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
 import type { AgentSpec } from '@voiceforge/shared';
@@ -110,6 +110,7 @@ function mapRole(role: string): 'agent' | 'caller' {
 @Injectable()
 export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   readonly name = 'vapi';
+  private readonly logger = new Logger(VapiVoiceAdapter.name);
 
   // agentVersionId (VoiceForge) -> vapi assistant id
   private readonly assistantIdMap = new Map<string, string>();
@@ -309,5 +310,37 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       url: data?.url ?? null,
       duration_seconds: data?.duration ?? null,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // handleWebhook
+  // -------------------------------------------------------------------------
+  async handleWebhook(
+    payload: Record<string, unknown>,
+    _signature?: string,
+  ): Promise<{ event: string; callId: string; processed: boolean }> {
+    const event = (payload['event'] as string) ?? 'unknown';
+    const callId = (payload['call'] as Record<string, unknown>)?.['id'] as string | undefined ?? '';
+
+    this.logger.log(`Vapi webhook: ${event} for call ${callId}`);
+
+    switch (event) {
+      case 'call.started':
+      case 'call.ended':
+      case 'call.ringing':
+      case 'call.queued':
+      case 'call.in_progress':
+      case 'call.completed':
+      case 'call.ended_by_customer':
+      case 'call.ended_by_operator':
+      case 'recording.available':
+      case 'transcript.generated':
+        this.logger.debug(`Vapi event processed: ${event}`);
+        break;
+      default:
+        this.logger.warn(`Unknown Vapi webhook event: ${event}`);
+    }
+
+    return { event, callId, processed: true };
   }
 }

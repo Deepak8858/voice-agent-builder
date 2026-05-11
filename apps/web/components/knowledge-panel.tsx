@@ -18,7 +18,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
+import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { useApi } from '@/lib/use-api';
 import { BookOpen, Search, Trash2, Upload, Link, FileText } from 'lucide-react';
 
@@ -197,12 +197,12 @@ export function KnowledgePanel({
             {sourceType === 'text' ? (
               <div className="col-span-2">
                 <Label>Content</Label>
-                <Textarea
-                  className="mt-1.5"
-                  rows={4}
+                <RichTextEditor
                   value={content}
-                  onChange={(e) => setContent(e.target.value)}
+                  onChange={setContent}
                   placeholder="Paste FAQ, policies, hours, pricing..."
+                  className="mt-1.5 rich-text-editor"
+                  minHeight="120px"
                 />
               </div>
             ) : sourceType === 'file' ? (

@@ -146,3 +146,22 @@ export const ImprovementSuggestionsResponseSchema = z.object({
 export type ImprovementSuggestionsResponse = z.infer<
   typeof ImprovementSuggestionsResponseSchema
 >;
+
+// --- timeseries ---------------------------------------------------------
+
+export const TimeseriesDataPointSchema = z.object({
+  date: z.string(),
+  calls: z.number().int().min(0),
+  completed: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  success: z.number().int().min(0),
+  total_duration_seconds: z.number().int().min(0),
+});
+export type TimeseriesDataPoint = z.infer<typeof TimeseriesDataPointSchema>;
+
+export const TimeseriesResponseSchema = z.object({
+  range: z.object({ from: z.string(), to: z.string() }),
+  granularity: z.enum(['daily', 'weekly']),
+  data: z.array(TimeseriesDataPointSchema),
+});
+export type TimeseriesResponse = z.infer<typeof TimeseriesResponseSchema>;

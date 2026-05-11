@@ -30,6 +30,8 @@ import { CurrentUser } from '../common/current-user.decorator';
 import { KnowledgeFileInvalidError } from '../common/errors';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import { QueueService } from '../queue/queue.service';
+import { EMBEDDINGS_QUEUE } from '../workers/embeddings.worker';
 import { KnowledgeService } from './knowledge.service';
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -37,7 +39,10 @@ const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId')
 export class KnowledgeController {
-  constructor(private readonly knowledge: KnowledgeService) {}
+  constructor(
+    private readonly knowledge: KnowledgeService,
+    private readonly queue: QueueService,
+  ) {}
 
   @Get('knowledge-sources')
   async list(
@@ -139,5 +144,49 @@ export class KnowledgeController {
     @Param('agentId') agentId: string,
   ) {
     return { items: await this.knowledge.listForAgent(workspaceId, agentId) };
+  }
+
+  /**
+   * Enqueue a background job to regenerate embeddings for all chunks under
+   * this source. Falls back to reindexing the full source if embedding vector
+   * is null. Idempotent — safe to call multiple times.
+   */
+  @Post('knowledge-sources/:sourceId/reindex')
+  @HttpCode(202)
+  async reindex(
+    @Param('workspaceId') _workspaceId: string,
+    @Param('sourceId') sourceId: string,
+    @CurrentUser() _user: SessionUser,
+  ): Promise<{ jobId: string; message: string }> {
+    await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
+      sourceId,
+      force: false,
+    });
+    return {
+      jobId: sourceId,
+      message: `Reindex job queued for source ${sourceId}. Embeddings will be regenerated for any chunk with a null vector.`,
+    };
+  }
+
+  /**
+   * Enqueue a full backfill: regenerate embeddings for ALL chunks across the
+   * entire workspace, including chunks that already have a vector.
+   * Admin use only.
+   */
+  @Post('knowledge-sources/backfill')
+  @HttpCode(202)
+  async backfill(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() _user: SessionUser,
+  ): Promise<{ jobId: string; message: string }> {
+    // Mark all existing embeddings as null so the worker processes everything.
+    await this.knowledge.clearEmbeddings(workspaceId);
+    await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
+      force: false,
+    });
+    return {
+      jobId: `backfill-${workspaceId}`,
+      message: `Backfill job queued. All chunks in workspace ${workspaceId} will have their embeddings regenerated where null.`,
+    };
   }
 }

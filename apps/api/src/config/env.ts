@@ -18,7 +18,7 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
-  VOICE_PROVIDER: z.enum(['vapi', 'retell']).optional(),
+  VOICE_PROVIDER: z.enum(['vapi', 'twilio']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
@@ -26,9 +26,17 @@ const EnvSchema = z.object({
   VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
-  RETELL_API_KEY: z.string().optional(),
-  RETELL_BASE_URL: z.string().default('https://api.retellai.com'),
-  RETELL_WEBHOOK_SECRET: z.string().optional(),
+
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_PHONE_NUMBER_PREFIX: z.string().default('+1'),
+  TWILIO_SIP_DOMAIN: z.string().optional(),
+  TWILIO_TWIML_WEBHOOK_URL: z.string().optional(),
+  TWILIO_STATUS_WEBHOOK_URL: z.string().optional(),
+
+  DEEPGRAM_API_KEY: z.string().optional(),
+  DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
+  DEEPGRAM_TTS_VOICE: z.string().default('aura-2-en-us'),
 
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),

@@ -1,0 +1,147 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - complementary [ref=e13]:
+        - generic [ref=e14]:
+          - paragraph [ref=e15]: Platform
+          - navigation [ref=e16]:
+            - link "Overview" [ref=e17] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e18]
+              - text: Overview
+            - link "Agents" [ref=e23] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e24]
+              - text: Agents
+            - link "Calls" [ref=e27] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e28]
+              - text: Calls
+            - link "Templates" [ref=e30] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e31]
+              - text: Templates
+            - link "Knowledge" [ref=e35] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e36]
+              - text: Knowledge
+            - link "Integrations" [ref=e38] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e39]
+              - text: Integrations
+            - link "Clients" [ref=e41] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e42]
+              - text: Clients
+            - link "Compliance" [ref=e47] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e48]
+              - text: Compliance
+            - link "Analytics" [ref=e51] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e52]
+              - text: Analytics
+            - link "White label" [ref=e54] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e55]
+              - text: White label
+            - link "Billing" [ref=e61] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e62]
+              - text: Billing
+            - link "Settings" [ref=e64] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e65]
+              - text: Settings
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - generic [ref=e72]:
+            - heading "Welcome back" [level=1] [ref=e73]
+            - paragraph [ref=e74]:
+              - generic [ref=e75]: "Workspace:"
+            - generic [ref=e76]: Demo Workspace
+            - paragraph
+          - link "New agent" [ref=e77] [cursor=pointer]:
+            - /url: /dashboard/agents/new
+            - button "New agent" [ref=e78]:
+              - img
+              - text: New agent
+        - generic [ref=e79]:
+          - generic [ref=e80]:
+            - img [ref=e82]
+            - generic [ref=e85]:
+              - paragraph [ref=e86]: Total agents
+              - heading "0" [level=3] [ref=e87]
+            - paragraph [ref=e89]: In this workspace
+          - generic [ref=e90]:
+            - img [ref=e92]
+            - generic [ref=e98]:
+              - paragraph [ref=e99]: Published
+              - heading "0" [level=3] [ref=e100]
+            - paragraph [ref=e102]: Currently accepting calls
+          - generic [ref=e103]:
+            - img [ref=e105]
+            - generic [ref=e109]:
+              - paragraph [ref=e110]: Drafts
+              - heading "0" [level=3] [ref=e111]
+            - paragraph [ref=e113]: Work in progress
+        - generic [ref=e114]:
+          - generic [ref=e115]:
+            - heading "Quick actions" [level=3] [ref=e117]
+            - generic [ref=e119]:
+              - link "Create new agent Start from a prompt or template" [ref=e120] [cursor=pointer]:
+                - /url: /dashboard/agents/new
+                - img [ref=e122]
+                - generic [ref=e125]:
+                  - paragraph [ref=e126]: Create new agent
+                  - paragraph [ref=e127]: Start from a prompt or template
+                - img [ref=e128]
+              - link "Review calls Listen to transcripts and outcomes" [ref=e130] [cursor=pointer]:
+                - /url: /dashboard/calls
+                - img [ref=e132]
+                - generic [ref=e134]:
+                  - paragraph [ref=e135]: Review calls
+                  - paragraph [ref=e136]: Listen to transcripts and outcomes
+                - img [ref=e137]
+              - link "Browse templates Use pre-built agent configurations" [ref=e139] [cursor=pointer]:
+                - /url: /dashboard/templates
+                - img [ref=e141]
+                - generic [ref=e145]:
+                  - paragraph [ref=e146]: Browse templates
+                  - paragraph [ref=e147]: Use pre-built agent configurations
+                - img [ref=e148]
+              - link "View analytics Performance and compliance metrics" [ref=e150] [cursor=pointer]:
+                - /url: /dashboard/analytics
+                - img [ref=e152]
+                - generic [ref=e158]:
+                  - paragraph [ref=e159]: View analytics
+                  - paragraph [ref=e160]: Performance and compliance metrics
+                - img [ref=e161]
+          - generic [ref=e163]:
+            - heading "Setup checklist" [level=3] [ref=e165]
+            - list [ref=e167]:
+              - listitem [ref=e168]:
+                - img [ref=e169]
+                - generic [ref=e171]: Create your first agent from a template or prompt
+              - listitem [ref=e172]:
+                - img [ref=e173]
+                - generic [ref=e175]: Upload FAQs or a PDF knowledge base
+              - listitem [ref=e176]:
+                - img [ref=e177]
+                - generic [ref=e179]: Connect Google Calendar for booking tools
+              - listitem [ref=e180]:
+                - img [ref=e181]
+                - generic [ref=e183]: Test a call and review the transcript
+              - listitem [ref=e184]:
+                - img [ref=e185]
+                - generic [ref=e187]: "Configure compliance: consent, DNC, opt-out"
+              - listitem [ref=e188]:
+                - img [ref=e189]
+                - generic [ref=e191]: Brand your client dashboard
+  - region "Notifications alt+T"

@@ -1,0 +1,84 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - complementary [ref=e13]:
+        - generic [ref=e14]:
+          - paragraph [ref=e15]: Platform
+          - navigation [ref=e16]:
+            - link "Overview" [ref=e17] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e18]
+              - text: Overview
+            - link "Agents" [ref=e23] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e24]
+              - text: Agents
+            - link "Calls" [ref=e27] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e28]
+              - text: Calls
+            - link "Templates" [ref=e30] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e31]
+              - text: Templates
+            - link "Knowledge" [ref=e35] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e36]
+              - text: Knowledge
+            - link "Integrations" [ref=e38] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e39]
+              - text: Integrations
+            - link "Clients" [ref=e41] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e42]
+              - text: Clients
+            - link "Compliance" [ref=e47] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e48]
+              - text: Compliance
+            - link "Analytics" [ref=e51] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e52]
+              - text: Analytics
+            - link "White label" [ref=e54] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e55]
+              - text: White label
+            - link "Billing" [ref=e61] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e62]
+              - text: Billing
+            - link "Settings" [ref=e64] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e65]
+              - text: Settings
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - heading "Analytics" [level=1] [ref=e72]
+          - paragraph [ref=e73]: Workspace + per-agent performance over the last 30 days. Compliance blocks, opt-outs, and call outcomes are tracked here.
+        - generic [ref=e74]:
+          - generic [ref=e75]:
+            - heading "Last 30 days" [level=2] [ref=e76]
+            - paragraph [ref=e77]: Loading…
+          - generic [ref=e78]:
+            - generic [ref=e79]:
+              - generic [ref=e80]:
+                - heading "Per-agent performance" [level=3] [ref=e81]:
+                  - img [ref=e82]
+                  - text: Per-agent performance
+                - generic [ref=e85]: "0"
+              - paragraph [ref=e87]: Loading…
+            - generic [ref=e88]:
+              - heading "Compliance" [level=3] [ref=e90]:
+                - img [ref=e91]
+                - text: Compliance
+              - paragraph [ref=e95]: Loading…
+  - region "Notifications alt+T"
+  - alert [ref=e96]

@@ -20,22 +20,22 @@ datasource db {
 // --------------------------------------------------------------------------
 
 model User {
-  id              String       @id @default(uuid()) @db.Uuid
-  authUserId      String?      @unique @map("auth_user_id") @db.Uuid
-  email           String       @unique
-  name            String?
-  createdAt       DateTime     @default(now()) @map("created_at")
-  updatedAt       DateTime     @updatedAt @map("updated_at")
+  id         String   @id @default(uuid()) @db.Uuid
+  authUserId String?  @unique @map("auth_user_id") @db.Uuid
+  email      String   @unique
+  name       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
-  ownedOrganizations  Organization[]        @relation("OrganizationOwner")
-  createdOrganizations Organization[]       @relation("OrganizationCreatedBy")
-  memberships         Membership[]
+  ownedOrganizations   Organization[]        @relation("OrganizationOwner")
+  createdOrganizations Organization[]        @relation("OrganizationCreatedBy")
+  memberships          Membership[]
   workspaceMemberships WorkspaceMembership[]
-  invitesSent         OrgInvite[]           @relation("OrgInviteCreatedBy")
-  auditLogs           AuditLog[]
-  createdAgents       Agent[]               @relation("AgentCreatedBy")
-  createdVersions     AgentVersion[]        @relation("AgentVersionCreatedBy")
-  createdKnowledge    KnowledgeSource[]     @relation("KnowledgeSourceCreatedBy")
+  invitesSent          OrgInvite[]           @relation("OrgInviteCreatedBy")
+  auditLogs            AuditLog[]
+  createdAgents        Agent[]               @relation("AgentCreatedBy")
+  createdVersions      AgentVersion[]        @relation("AgentVersionCreatedBy")
+  createdKnowledge     KnowledgeSource[]     @relation("KnowledgeSourceCreatedBy")
 
   @@map("users")
 }
@@ -64,41 +64,45 @@ model Organization {
 }
 
 model Workspace {
-  id                 String     @id @default(uuid()) @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
-  parentWorkspaceId  String?    @map("parent_workspace_id") @db.Uuid
-  type               String     @default("direct") // agency | client | direct
-  name               String
-  slug               String
-  status             String     @default("active")
-  createdAt          DateTime   @default(now()) @map("created_at")
-  updatedAt          DateTime   @updatedAt @map("updated_at")
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  parentWorkspaceId String?  @map("parent_workspace_id") @db.Uuid
+  type              String   @default("direct") // agency | client | direct
+  name              String
+  slug              String
+  status            String   @default("active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  organization  Organization  @relation(fields: [organizationId], references: [id])
-  parent        Workspace?    @relation("WorkspaceParent", fields: [parentWorkspaceId], references: [id])
-  children      Workspace[]   @relation("WorkspaceParent")
-  memberships   Membership[]
+  organization         Organization             @relation(fields: [organizationId], references: [id])
+  parent               Workspace?               @relation("WorkspaceParent", fields: [parentWorkspaceId], references: [id])
+  children             Workspace[]              @relation("WorkspaceParent")
+  memberships          Membership[]
   workspaceMemberships WorkspaceMembership[]
-  agents        Agent[]
-  templates     AgentTemplate[]
-  auditLogs     AuditLog[]
-  knowledgeSources KnowledgeSource[]
-  knowledgeChunks  KnowledgeChunk[]
-  calls            Call[]
-  callEvents       CallEvent[]
-  callEvaluations  CallEvaluation[]
-  tools            IntegrationTool[]
-  toolInvocations  ToolInvocation[]
-  contacts         Contact[]
-  consentRecords   ConsentRecord[]
-  dncEntries       DncEntry[]
-  complianceChecks ComplianceCheck[]
-  analyticsEvents  AnalyticsEvent[]
-  whiteLabel       WhiteLabelSettings?
-  clientInvites    ClientInvite[]    @relation("InviteAgency")
-  invitesAccepted  ClientInvite[]    @relation("InviteClient")
-  usageRecords     UsageRecord[]
+  agents               Agent[]
+  templates            AgentTemplate[]
+  auditLogs            AuditLog[]
+  knowledgeSources     KnowledgeSource[]
+  knowledgeChunks      KnowledgeChunk[]
+  calls                Call[]
+  callEvents           CallEvent[]
+  callEvaluations      CallEvaluation[]
+  tools                IntegrationTool[]
+  toolInvocations      ToolInvocation[]
+  contacts             Contact[]
+  consentRecords       ConsentRecord[]
+  dncEntries           DncEntry[]
+  complianceChecks     ComplianceCheck[]
+  analyticsEvents      AnalyticsEvent[]
+  whiteLabel           WhiteLabelSettings?
+  clientInvites        ClientInvite[]           @relation("InviteAgency")
+  invitesAccepted      ClientInvite[]           @relation("InviteClient")
+  usageRecords         UsageRecord[]
   googleCalendarConfig GoogleCalendarConfig?
+  crmCredentials       WorkspaceCrmCredential[]
+  crmRoutingRules      CrmRoutingRule[]
+  twilioPhoneNumbers   TwilioPhoneNumber[]
+  outboundCampaigns    OutboundCampaign[]
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -106,14 +110,14 @@ model Workspace {
 }
 
 model Membership {
-  id           String    @id @default(uuid()) @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
-  workspaceId  String    @map("workspace_id") @db.Uuid
-  role         String    @default("owner") // owner | admin | editor | viewer
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  role        String   @default("owner") // owner | admin | editor | viewer
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  user       User       @relation(fields: [userId], references: [id])
-  workspace  Workspace  @relation(fields: [workspaceId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@unique([userId, workspaceId])
   @@index([workspaceId])
@@ -122,11 +126,11 @@ model Membership {
 
 // Workspace-level access for client users (agency model)
 model WorkspaceMembership {
-  id          String    @id @default(uuid()) @db.Uuid
-  workspaceId String    @map("workspace_id") @db.Uuid
-  userId      String    @map("user_id") @db.Uuid
-  role        String    // owner | admin | member | viewer
-  createdAt   DateTime  @default(now()) @map("created_at")
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  role        String // owner | admin | member | viewer
+  createdAt   DateTime @default(now()) @map("created_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -137,15 +141,15 @@ model WorkspaceMembership {
 
 // Email-based invites into an organization (replaces Clerk invitations)
 model OrgInvite {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  email          String
-  role           String    // owner | admin | member | viewer
-  token          String    @unique
-  expiresAt      DateTime  @default(dbgenerated("(now() + interval '7 days')")) @map("expires_at")
-  acceptedAt     DateTime? @map("accepted_at")
-  invitedByUserId String?  @map("invited_by_user_id") @db.Uuid
-  createdAt      DateTime  @default(now()) @map("created_at")
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  email           String
+  role            String // owner | admin | member | viewer
+  token           String    @unique
+  expiresAt       DateTime  @default(dbgenerated("(now() + interval '7 days')")) @map("expires_at")
+  acceptedAt      DateTime? @map("accepted_at")
+  invitedByUserId String?   @map("invited_by_user_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   invitedBy    User?        @relation("OrgInviteCreatedBy", fields: [invitedByUserId], references: [id])
@@ -160,32 +164,36 @@ model OrgInvite {
 // --------------------------------------------------------------------------
 
 model Agent {
-  id              String    @id @default(uuid()) @db.Uuid
-  workspaceId     String    @map("workspace_id") @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  organizationId  String   @map("organization_id") @db.Uuid
   name            String
   description     String?
   industry        String
-  agentType       String    @map("agent_type")
-  status          String    @default("draft") // draft | published | paused | archived
-  specJson        Json?     @map("spec_json")
-  activeVersionId String?   @map("active_version_id") @db.Uuid
-  createdBy       String?   @map("created_by") @db.Uuid
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  agentType       String   @map("agent_type")
+  status          String   @default("draft") // draft | published | paused | archived
+  specJson        Json?    @map("spec_json")
+  activeVersionId String?  @map("active_version_id") @db.Uuid
+  createdBy       String?  @map("created_by") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  workspace         Workspace       @relation(fields: [workspaceId], references: [id])
-  organization      Organization?   @relation(fields: [organizationId], references: [id])
-  creator           User?           @relation("AgentCreatedBy", fields: [createdBy], references: [id])
-  versions          AgentVersion[]
-  knowledgeSources  KnowledgeSource[]
-  knowledgeChunks   KnowledgeChunk[]
-  calls             Call[]
-  evaluations       CallEvaluation[]
-  tools             IntegrationTool[]
-  toolInvocations   ToolInvocation[]
-  complianceChecks  ComplianceCheck[]
-  analyticsEvents   AnalyticsEvent[]
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id])
+  organization       Organization?       @relation(fields: [organizationId], references: [id])
+  creator            User?               @relation("AgentCreatedBy", fields: [createdBy], references: [id])
+  versions           AgentVersion[]
+  knowledgeSources   KnowledgeSource[]
+  knowledgeChunks    KnowledgeChunk[]
+  calls              Call[]
+  evaluations        CallEvaluation[]
+  tools              IntegrationTool[]
+  toolInvocations    ToolInvocation[]
+  complianceChecks   ComplianceCheck[]
+  analyticsEvents    AnalyticsEvent[]
+  crmRoutingRules    CrmRoutingRule[]
+  crmFanoutLogs      CrmFanoutLog[]
+  twilioPhoneNumbers TwilioPhoneNumber[]
+  outboundCampaigns  OutboundCampaign[]
 
   @@index([workspaceId])
   @@index([organizationId])
@@ -194,20 +202,20 @@ model Agent {
 }
 
 model AgentVersion {
-  id                  String   @id @default(uuid()) @db.Uuid
-  agentId             String   @map("agent_id") @db.Uuid
-  organizationId      String?   @map("organization_id") @db.Uuid
-  versionNumber       Int      @map("version_number")
-  specJson            Json     @map("spec_json")
-  provider            String?
-  providerRuntimeId   String?  @map("provider_runtime_id")
-  deploymentStatus    String   @default("not_deployed") @map("deployment_status")
-  note                String?
-  createdBy           String?  @map("created_by") @db.Uuid
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                String   @id @default(uuid()) @db.Uuid
+  agentId           String   @map("agent_id") @db.Uuid
+  organizationId    String?  @map("organization_id") @db.Uuid
+  versionNumber     Int      @map("version_number")
+  specJson          Json     @map("spec_json")
+  provider          String?
+  providerRuntimeId String?  @map("provider_runtime_id")
+  deploymentStatus  String   @default("not_deployed") @map("deployment_status")
+  note              String?
+  createdBy         String?  @map("created_by") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
 
-  agent       Agent   @relation(fields: [agentId], references: [id])
-  creator     User?   @relation("AgentVersionCreatedBy", fields: [createdBy], references: [id])
+  agent   Agent @relation(fields: [agentId], references: [id])
+  creator User? @relation("AgentVersionCreatedBy", fields: [createdBy], references: [id])
 
   @@unique([agentId, versionNumber])
   @@index([organizationId])
@@ -216,20 +224,20 @@ model AgentVersion {
 }
 
 model AgentTemplate {
-  id              String   @id @default(uuid()) @db.Uuid
-  workspaceId     String?  @map("workspace_id") @db.Uuid
-  organizationId  String?  @map("organization_id") @db.Uuid
-  name            String
-  slug            String   @unique
-  industry        String
-  agentType       String   @map("agent_type")
-  description     String
-  templateSpec    Json     @map("template_spec")
-  isPublic        Boolean  @default(true) @map("is_public")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String?  @map("workspace_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  name           String
+  slug           String   @unique
+  industry       String
+  agentType      String   @map("agent_type")
+  description    String
+  templateSpec   Json     @map("template_spec")
+  isPublic       Boolean  @default(true) @map("is_public")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  workspace  Workspace? @relation(fields: [workspaceId], references: [id])
+  workspace Workspace? @relation(fields: [workspaceId], references: [id])
 
   @@index([workspaceId])
   @@index([organizationId])
@@ -241,24 +249,24 @@ model AgentTemplate {
 // --------------------------------------------------------------------------
 
 model KnowledgeSource {
-  id              String   @id @default(uuid()) @db.Uuid
-  workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
-  agentId         String?  @map("agent_id") @db.Uuid
-  sourceType      String   @map("source_type") // url | text | file
-  title           String
-  fileUrl         String?  @map("file_url")
-  content         String?  // raw text for inline source; nullable for url/file
-  status          String   @default("pending") // pending | processing | ready | failed
-  metadata        Json?
-  createdBy       String?  @map("created_by") @db.Uuid
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  agentId        String?  @map("agent_id") @db.Uuid
+  sourceType     String   @map("source_type") // url | text | file
+  title          String
+  fileUrl        String?  @map("file_url")
+  content        String? // raw text for inline source; nullable for url/file
+  status         String   @default("pending") // pending | processing | ready | failed
+  metadata       Json?
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  workspace  Workspace        @relation(fields: [workspaceId], references: [id])
-  agent      Agent?           @relation(fields: [agentId], references: [id])
-  creator    User?            @relation("KnowledgeSourceCreatedBy", fields: [createdBy], references: [id])
-  chunks     KnowledgeChunk[]
+  workspace Workspace        @relation(fields: [workspaceId], references: [id])
+  agent     Agent?           @relation(fields: [agentId], references: [id])
+  creator   User?            @relation("KnowledgeSourceCreatedBy", fields: [createdBy], references: [id])
+  chunks    KnowledgeChunk[]
 
   @@index([workspaceId, agentId])
   @@index([organizationId])
@@ -268,20 +276,20 @@ model KnowledgeSource {
 }
 
 model KnowledgeChunk {
-  id              String   @id @default(uuid()) @db.Uuid
-  sourceId        String   @map("source_id") @db.Uuid
-  workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
-  agentId         String?  @map("agent_id") @db.Uuid
-  chunkIndex      Int      @map("chunk_index")
-  content         String
-  embedding       Unsupported("vector(1536)")? // pgvector for semantic search
-  metadata        Json?
-  createdAt       DateTime @default(now()) @map("created_at")
+  id             String                       @id @default(uuid()) @db.Uuid
+  sourceId       String                       @map("source_id") @db.Uuid
+  workspaceId    String                       @map("workspace_id") @db.Uuid
+  organizationId String                       @map("organization_id") @db.Uuid
+  agentId        String?                      @map("agent_id") @db.Uuid
+  chunkIndex     Int                          @map("chunk_index")
+  content        String
+  embedding      Unsupported("vector(1536)")? // pgvector for semantic search
+  metadata       Json?
+  createdAt      DateTime                     @default(now()) @map("created_at")
 
-  source     KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  workspace  Workspace       @relation(fields: [workspaceId], references: [id])
-  agent      Agent?          @relation(fields: [agentId], references: [id])
+  source    KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  workspace Workspace       @relation(fields: [workspaceId], references: [id])
+  agent     Agent?          @relation(fields: [agentId], references: [id])
 
   @@index([sourceId, chunkIndex])
   @@index([workspaceId, agentId])
@@ -295,37 +303,38 @@ model KnowledgeChunk {
 // --------------------------------------------------------------------------
 
 model Call {
-  id                String   @id @default(uuid()) @db.Uuid
-  workspaceId       String   @map("workspace_id") @db.Uuid
-  organizationId    String?   @map("organization_id") @db.Uuid
-  agentId           String   @map("agent_id") @db.Uuid
-  agentVersionId    String?  @map("agent_version_id") @db.Uuid
-  contactId         String?  @map("contact_id") @db.Uuid
-  direction         String   // inbound | outbound | browser_test
-  status            String   @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
-  provider          String   @default("")
-  providerCallId    String?  @map("provider_call_id")
-  fromNumber        String?  @map("from_number")
-  toNumber          String?  @map("to_number")
-  contactName       String?  @map("contact_name")
-  startedAt         DateTime? @map("started_at")
-  endedAt           DateTime? @map("ended_at")
-  durationSeconds   Int?     @map("duration_seconds")
-  recordingUrl      String?  @map("recording_url")
-  transcriptText    String?  @map("transcript_text")
-  outcome           String?
-  metadata          Json?
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  organizationId  String?   @map("organization_id") @db.Uuid
+  agentId         String    @map("agent_id") @db.Uuid
+  agentVersionId  String?   @map("agent_version_id") @db.Uuid
+  contactId       String?   @map("contact_id") @db.Uuid
+  direction       String // inbound | outbound | browser_test
+  status          String    @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
+  provider        String    @default("")
+  providerCallId  String?   @map("provider_call_id")
+  fromNumber      String?   @map("from_number")
+  toNumber        String?   @map("to_number")
+  contactName     String?   @map("contact_name")
+  startedAt       DateTime? @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  durationSeconds Int?      @map("duration_seconds")
+  recordingUrl    String?   @map("recording_url")
+  transcriptText  String?   @map("transcript_text")
+  outcome         String?
+  metadata        Json?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  workspace        Workspace        @relation(fields: [workspaceId], references: [id])
-  agent            Agent            @relation(fields: [agentId], references: [id])
-  contact          Contact?         @relation(fields: [contactId], references: [id])
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id])
+  agent            Agent             @relation(fields: [agentId], references: [id])
+  contact          Contact?          @relation(fields: [contactId], references: [id])
   events           CallEvent[]
   evaluation       CallEvaluation?
   toolInvocations  ToolInvocation[]
   complianceChecks ComplianceCheck[]
   analyticsEvents  AnalyticsEvent[]
+  crmFanoutLogs    CrmFanoutLog[]
 
   @@index([workspaceId, createdAt])
   @@index([organizationId])
@@ -338,13 +347,13 @@ model CallEvent {
   id             String   @id @default(uuid()) @db.Uuid
   callId         String   @map("call_id") @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String?   @map("organization_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
   eventType      String   @map("event_type")
   eventTime      DateTime @default(now()) @map("event_time")
   payload        Json?
 
-  call       Call       @relation(fields: [callId], references: [id], onDelete: Cascade)
-  workspace  Workspace  @relation(fields: [workspaceId], references: [id])
+  call      Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@index([callId, eventTime])
   @@index([workspaceId])
@@ -356,7 +365,7 @@ model CallEvaluation {
   id             String   @id @default(uuid()) @db.Uuid
   callId         String   @unique @map("call_id") @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String?   @map("organization_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
   agentId        String   @map("agent_id") @db.Uuid
   agentVersionId String?  @map("agent_version_id") @db.Uuid
   overallScore   Float    @map("overall_score")
@@ -365,9 +374,9 @@ model CallEvaluation {
   evaluatedBy    String   @default("rule_based") @map("evaluated_by") // rule_based | llm | manual
   createdAt      DateTime @default(now()) @map("created_at")
 
-  call       Call       @relation(fields: [callId], references: [id], onDelete: Cascade)
-  workspace  Workspace  @relation(fields: [workspaceId], references: [id])
-  agent      Agent      @relation(fields: [agentId], references: [id])
+  call      Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  agent     Agent     @relation(fields: [agentId], references: [id])
 
   @@index([workspaceId, createdAt])
   @@index([organizationId])
@@ -392,8 +401,8 @@ model AuditLog {
   userAgent      String?  @map("user_agent")
   createdAt      DateTime @default(now()) @map("created_at")
 
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
-  actor       User?      @relation(fields: [actorUserId], references: [id])
+  workspace Workspace? @relation(fields: [workspaceId], references: [id])
+  actor     User?      @relation(fields: [actorUserId], references: [id])
 
   @@index([workspaceId, createdAt])
   @@index([organizationId])
@@ -413,16 +422,16 @@ model IntegrationTool {
   name           String
   description    String
   toolType       String   @map("tool_type") // webhook | google_calendar | http_get | http_post
-  config         Json     // { url, method, headers, hmac_secret_ref, ... }
+  config         Json // { url, method, headers, hmac_secret_ref, ... }
   inputSchema    Json     @map("input_schema") // JSON Schema for expected args
   enabled        Boolean  @default(true)
   createdBy      String?  @map("created_by") @db.Uuid
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
-  workspace    Workspace        @relation(fields: [workspaceId], references: [id])
-  agent        Agent?           @relation(fields: [agentId], references: [id])
-  invocations  ToolInvocation[]
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id])
+  agent       Agent?           @relation(fields: [agentId], references: [id])
+  invocations ToolInvocation[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId, agentId])
@@ -432,25 +441,25 @@ model IntegrationTool {
 }
 
 model ToolInvocation {
-  id              String   @id @default(uuid()) @db.Uuid
-  workspaceId     String   @map("workspace_id") @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
-  toolId          String   @map("tool_id") @db.Uuid
-  agentId         String?  @map("agent_id") @db.Uuid
-  callId          String?  @map("call_id") @db.Uuid
-  status          String   @default("pending") // pending | success | failed
-  requestPayload  Json     @map("request_payload")
-  responseStatus  Int?     @map("response_status")
-  responseBody    Json?    @map("response_body")
-  errorMessage    String?  @map("error_message")
-  durationMs      Int?     @map("duration_ms")
-  startedAt       DateTime @default(now()) @map("started_at")
-  finishedAt      DateTime? @map("finished_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  toolId         String    @map("tool_id") @db.Uuid
+  agentId        String?   @map("agent_id") @db.Uuid
+  callId         String?   @map("call_id") @db.Uuid
+  status         String    @default("pending") // pending | success | failed
+  requestPayload Json      @map("request_payload")
+  responseStatus Int?      @map("response_status")
+  responseBody   Json?     @map("response_body")
+  errorMessage   String?   @map("error_message")
+  durationMs     Int?      @map("duration_ms")
+  startedAt      DateTime  @default(now()) @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
 
-  workspace  Workspace       @relation(fields: [workspaceId], references: [id])
-  tool       IntegrationTool @relation(fields: [toolId], references: [id], onDelete: Cascade)
-  agent      Agent?          @relation(fields: [agentId], references: [id])
-  call       Call?           @relation(fields: [callId], references: [id], onDelete: SetNull)
+  workspace Workspace       @relation(fields: [workspaceId], references: [id])
+  tool      IntegrationTool @relation(fields: [toolId], references: [id], onDelete: Cascade)
+  agent     Agent?          @relation(fields: [agentId], references: [id])
+  call      Call?           @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, startedAt])
   @@index([organizationId])
@@ -465,20 +474,20 @@ model ToolInvocation {
 // --------------------------------------------------------------------------
 
 model Contact {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
   phone          String
   email          String?
-  fullName       String?  @map("full_name")
+  fullName       String?   @map("full_name")
   metadata       Json?
-  optOut         Boolean  @default(false) @map("opt_out")
-  optOutReason   String?  @map("opt_out_reason")
+  optOut         Boolean   @default(false) @map("opt_out")
+  optOutReason   String?   @map("opt_out_reason")
   optOutAt       DateTime? @map("opt_out_at")
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  workspace      Workspace        @relation(fields: [workspaceId], references: [id])
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id])
   consentRecords ConsentRecord[]
   calls          Call[]
 
@@ -494,7 +503,7 @@ model ConsentRecord {
   organizationId String    @map("organization_id") @db.Uuid
   contactId      String    @map("contact_id") @db.Uuid
   consentType    String    @map("consent_type") // outbound_marketing | outbound_transactional | recording | ai_disclosure
-  source         String    // web_form | imported | verbal | api | other
+  source         String // web_form | imported | verbal | api | other
   proofUrl       String?   @map("proof_url")
   consentedAt    DateTime  @default(now()) @map("consented_at")
   expiresAt      DateTime? @map("expires_at")
@@ -502,8 +511,8 @@ model ConsentRecord {
   metadata       Json?
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id])
-  contact    Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, contactId])
   @@index([organizationId])
@@ -520,7 +529,7 @@ model DncEntry {
   reason         String?
   createdAt      DateTime @default(now()) @map("created_at")
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id])
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
 
   @@unique([workspaceId, phone])
   @@index([organizationId])
@@ -535,15 +544,15 @@ model ComplianceCheck {
   agentId        String   @map("agent_id") @db.Uuid
   contactId      String?  @map("contact_id") @db.Uuid
   callId         String?  @map("call_id") @db.Uuid
-  direction      String   // inbound | outbound | browser_test
-  status         String   // passed | blocked
-  reasons        Json     // ComplianceReason[]: [{ code, message, severity }]
+  direction      String // inbound | outbound | browser_test
+  status         String // passed | blocked
+  reasons        Json // ComplianceReason[]: [{ code, message, severity }]
   metadata       Json?
   checkedAt      DateTime @default(now()) @map("checked_at")
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id])
-  agent      Agent     @relation(fields: [agentId], references: [id])
-  call       Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  agent     Agent     @relation(fields: [agentId], references: [id])
+  call      Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, checkedAt])
   @@index([organizationId])
@@ -566,9 +575,9 @@ model AnalyticsEvent {
   payload        Json?
   occurredAt     DateTime @default(now()) @map("occurred_at")
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id])
-  agent      Agent?    @relation(fields: [agentId], references: [id])
-  call       Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  agent     Agent?    @relation(fields: [agentId], references: [id])
+  call      Call?     @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, occurredAt])
   @@index([workspaceId, eventType, occurredAt])
@@ -583,37 +592,37 @@ model AnalyticsEvent {
 // --------------------------------------------------------------------------
 
 model WhiteLabelSettings {
-  id                    String   @id @default(uuid()) @db.Uuid
-  workspaceId           String   @unique @map("workspace_id") @db.Uuid
-  brandName             String?  @map("brand_name")
-  logoUrl               String?  @map("logo_url")
-  primaryColor          String?  @map("primary_color")
-  customDomain          String?  @unique @map("custom_domain")
-  supportEmail          String?  @map("support_email")
-  hidePlatformBranding  Boolean  @default(false) @map("hide_platform_branding")
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @unique @map("workspace_id") @db.Uuid
+  brandName            String?  @map("brand_name")
+  logoUrl              String?  @map("logo_url")
+  primaryColor         String?  @map("primary_color")
+  customDomain         String?  @unique @map("custom_domain")
+  supportEmail         String?  @map("support_email")
+  hidePlatformBranding Boolean  @default(false) @map("hide_platform_branding")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
 
-  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("white_label_settings")
 }
 
 model ClientInvite {
-  id                String   @id @default(uuid()) @db.Uuid
-  agencyWorkspaceId String   @map("agency_workspace_id") @db.Uuid
-  clientWorkspaceId String?  @map("client_workspace_id") @db.Uuid
+  id                String    @id @default(uuid()) @db.Uuid
+  agencyWorkspaceId String    @map("agency_workspace_id") @db.Uuid
+  clientWorkspaceId String?   @map("client_workspace_id") @db.Uuid
   email             String
-  role              String   @default("admin") // admin | viewer
-  token             String   @unique
-  status            String   @default("pending") // pending | accepted | revoked | expired
-  expiresAt         DateTime @map("expires_at")
-  invitedBy         String?  @map("invited_by") @db.Uuid
+  role              String    @default("admin") // admin | viewer
+  token             String    @unique
+  status            String    @default("pending") // pending | accepted | revoked | expired
+  expiresAt         DateTime  @map("expires_at")
+  invitedBy         String?   @map("invited_by") @db.Uuid
   acceptedAt        DateTime? @map("accepted_at")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
 
-  agencyWorkspace  Workspace  @relation("InviteAgency", fields: [agencyWorkspaceId], references: [id], onDelete: Cascade)
-  clientWorkspace  Workspace? @relation("InviteClient", fields: [clientWorkspaceId], references: [id], onDelete: SetNull)
+  agencyWorkspace Workspace  @relation("InviteAgency", fields: [agencyWorkspaceId], references: [id], onDelete: Cascade)
+  clientWorkspace Workspace? @relation("InviteClient", fields: [clientWorkspaceId], references: [id], onDelete: SetNull)
 
   @@index([agencyWorkspaceId, status])
   @@index([email])
@@ -625,12 +634,12 @@ model ClientInvite {
 // --------------------------------------------------------------------------
 
 model Subscription {
-  id                    String    @id @default(uuid()) @db.Uuid
-  organizationId        String    @unique @map("organization_id") @db.Uuid
-  stripeSubscriptionId  String?   @unique @map("stripe_subscription_id")
+  id                   String    @id @default(uuid()) @db.Uuid
+  organizationId       String    @unique @map("organization_id") @db.Uuid
+  stripeSubscriptionId String?   @unique @map("stripe_subscription_id")
   stripeCustomerId     String?   @map("stripe_customer_id")
-  plan                  String    @default("free") // free | starter | growth | enterprise
-  status                String    @default("active") // active | trialing | past_due | canceled
+  plan                 String    @default("free") // free | starter | growth | enterprise
+  status               String    @default("active") // active | trialing | past_due | canceled
   currentPeriodStart   DateTime? @map("current_period_start")
   currentPeriodEnd     DateTime? @map("current_period_end")
   cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
@@ -639,7 +648,7 @@ model Subscription {
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@index([stripeCustomerId])
@@ -647,17 +656,17 @@ model Subscription {
 }
 
 model UsageRecord {
-  id              String   @id @default(uuid()) @db.Uuid
-  organizationId  String    @map("organization_id") @db.Uuid
-  workspaceId     String   @map("workspace_id") @db.Uuid
-  billableMetric  String   @map("billable_metric") // calls | minutes | tools | agents
-  quantity        Int      @map("quantity")
-  periodStart     DateTime @map("period_start")
-  periodEnd       DateTime @map("period_end")
-  recordedAt      DateTime @default(now()) @map("recorded_at")
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  billableMetric String   @map("billable_metric") // calls | minutes | tools | agents
+  quantity       Int      @map("quantity")
+  periodStart    DateTime @map("period_start")
+  periodEnd      DateTime @map("period_end")
+  recordedAt     DateTime @default(now()) @map("recorded_at")
 
-  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, billableMetric, periodStart])
   @@index([workspaceId, billableMetric, periodStart])
@@ -665,18 +674,18 @@ model UsageRecord {
 }
 
 model StripeEvent {
-  id                String    @id @default(uuid()) @db.Uuid
-  stripeEventId     String    @unique @map("stripe_event_id")
-  type              String
-  apiVersion        String?   @map("api_version")
-  created           DateTime
-  data              Json      @map("data")
-  livemode          Boolean   @default(false) @map("livemode")
-  pendingWebhooks   Int       @default(0) @map("pending_webhooks")
-  requestContext    Json?     @map("request_context")
-  processedAt       DateTime? @map("processed_at")
-  errorMessage      String?   @map("error_message")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  id              String    @id @default(uuid()) @db.Uuid
+  stripeEventId   String    @unique @map("stripe_event_id")
+  type            String
+  apiVersion      String?   @map("api_version")
+  created         DateTime
+  data            Json      @map("data")
+  livemode        Boolean   @default(false) @map("livemode")
+  pendingWebhooks Int       @default(0) @map("pending_webhooks")
+  requestContext  Json?     @map("request_context")
+  processedAt     DateTime? @map("processed_at")
+  errorMessage    String?   @map("error_message")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
   @@index([stripeEventId])
   @@index([type, created])
@@ -699,16 +708,113 @@ model WebhookEvent {
 }
 
 model GoogleCalendarConfig {
-  id            String   @id @default(uuid()) @db.Uuid
-  workspaceId   String   @unique @map("workspace_id") @db.Uuid
-  accessToken   String   @map("access_token")
-  refreshToken  String   @map("refresh_token")
-  tokenExpiry   DateTime @map("token_expiry")
-  calendarId    String   @default("primary") @map("calendar_id")
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @unique @map("workspace_id") @db.Uuid
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  tokenExpiry  DateTime @map("token_expiry")
+  calendarId   String   @default("primary") @map("calendar_id")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("google_calendar_configs")
+}
+
+// CRM Connections (workspace-level, encrypted credentials)
+model WorkspaceCrmCredential {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspaceId  String    @map("workspace_id") @db.Uuid
+  provider     String // pipedrive | hubspot | salesforce | generic_webhook
+  credentials  Json // encrypted API keys
+  config       Json?
+  status       String    @default("pending") // active | invalid | pending
+  lastTestedAt DateTime? @map("last_tested_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@map("workspace_crm_credentials")
+}
+
+// CRM Routing Rules (keyword-based multi-CRM fan-out)
+model CrmRoutingRule {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  agentId        String?  @map("agent_id") @db.Uuid
+  keyword        String
+  provider       String
+  action         String // primary | secondary
+  priority       Int      @default(100)
+  contactMapping Json     @default("{}") @map("contact_mapping")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([agentId])
+  @@map("crm_routing_rules")
+}
+
+// CRM Fan-out Audit Log
+model CrmFanoutLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  callId        String?  @map("call_id") @db.Uuid
+  agentId       String?  @map("agent_id") @db.Uuid
+  contactData   Json     @map("contact_data")
+  fanoutResults Json     @map("fanout_results")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  call  Call?  @relation(fields: [callId], references: [id], onDelete: SetNull)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([callId])
+  @@map("crm_fanout_log")
+}
+
+// Twilio Phone Numbers
+model TwilioPhoneNumber {
+  id                String    @id @default(uuid()) @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  agentId           String?   @map("agent_id") @db.Uuid
+  phoneNumber       String    @unique @map("phone_number")
+  type              String    @default("local") // local | tollfree | byo
+  twilioSid         String?   @map("twilio_sid")
+  inboundWebhookUrl String?   @map("inbound_webhook_url")
+  status            String    @default("active")
+  costPerMonth      Decimal   @default(1.15) @map("cost_per_month") @db.Decimal(6, 2)
+  provisionedAt     DateTime? @map("provisioned_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent     Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([agentId])
+  @@map("twilio_phone_numbers")
+}
+
+// Outbound Campaigns
+model OutboundCampaign {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  agentId     String   @map("agent_id") @db.Uuid
+  name        String
+  contacts    Json     @default("[]")
+  schedule    Json     @default("{\"max_calls_per_hour\": 10, \"max_concurrent\": 3}")
+  status      String   @default("draft") // draft | running | paused | completed | failed
+  stats       Json     @default("{\"total\": 0, \"completed\": 0, \"failed\": 0, \"in_progress\": 0}")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agent     Agent     @relation(fields: [agentId], references: [id])
+
+  @@index([workspaceId])
+  @@index([agentId])
+  @@map("outbound_campaigns")
 }

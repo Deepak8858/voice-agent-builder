@@ -1,0 +1,3 @@
+[   21478ms] [ERROR] Failed to load resource: the server responded with a status of 500 () @ https://nsgshzxxhytjmiiasobc.supabase.co/auth/v1/signup?redirect_to=https%3A%2F%2Fvocal.devdeepak.me%2Fauth%2Fcallback:0
+[   30985ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://nsgshzxxhytjmiiasobc.supabase.co/auth/v1/authorize?provider=google&redirect_to=https%3A%2F%2Fvocal.devdeepak.me%2Fauth%2Fcallback&code_challenge=O1Qoq8uyLE9MsLhRP1lE71EEIS7b3diqT4TIkM2rtXE&code_challenge_method=s256:0
+[   31181ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://nsgshzxxhytjmiiasobc.supabase.co/favicon.ico:0

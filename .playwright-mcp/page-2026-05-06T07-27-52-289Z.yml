@@ -1,0 +1,78 @@
+- generic [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Dashboard" [ref=e10] [cursor=pointer]:
+        - /url: /dashboard
+      - button "Open user menu" [ref=e117] [cursor=pointer]:
+        - img "'s logo" [ref=e120]
+  - main [ref=e11]:
+    - generic [ref=e122]:
+      - complementary [ref=e123]:
+        - generic [ref=e124]:
+          - paragraph [ref=e125]: Platform
+          - navigation [ref=e126]:
+            - link "Overview" [ref=e127] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e128]
+              - text: Overview
+            - link "Agents" [active] [ref=e133] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e134]
+              - text: Agents
+            - link "Calls" [ref=e137] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e138]
+              - text: Calls
+            - link "Templates" [ref=e140] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e141]
+              - text: Templates
+            - link "Knowledge" [ref=e145] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e146]
+              - text: Knowledge
+            - link "Integrations" [ref=e148] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e149]
+              - text: Integrations
+            - link "Clients" [ref=e151] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e152]
+              - text: Clients
+            - link "Compliance" [ref=e157] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e158]
+              - text: Compliance
+            - link "Analytics" [ref=e161] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e162]
+              - text: Analytics
+            - link "White label" [ref=e164] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e165]
+              - text: White label
+            - link "Billing" [ref=e171] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e172]
+              - text: Billing
+            - link "Settings" [ref=e174] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e175]
+              - text: Settings
+      - generic [ref=e199]:
+        - generic [ref=e200]:
+          - heading "Agents" [level=1] [ref=e201]
+          - paragraph [ref=e202]:
+            - text: "Could not load agents:"
+            - code [ref=e203]: Cannot read properties of undefined (reading 'items')
+        - link "New agent" [ref=e204] [cursor=pointer]:
+          - /url: /dashboard/agents/new
+          - button "New agent" [ref=e205]:
+            - img
+            - text: New agent
+  - region "Notifications alt+T"
+  - alert [ref=e115]

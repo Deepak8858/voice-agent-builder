@@ -1,0 +1,45 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Sign in" [ref=e117] [cursor=pointer]:
+        - /url: /sign-in
+        - button "Sign in" [ref=e118]
+      - link "Sign up" [ref=e119] [cursor=pointer]:
+        - /url: /sign-up
+        - button "Sign up" [ref=e120]
+  - main [ref=e11]:
+    - generic [ref=e123]:
+      - generic [ref=e124]:
+        - link "VoiceForge" [ref=e125] [cursor=pointer]:
+          - /url: /
+          - img [ref=e126]
+          - generic [ref=e130]: VoiceForge
+        - heading "Create an account" [level=1] [ref=e131]
+        - paragraph [ref=e132]: Get started with VoiceForge
+      - generic [ref=e147]: Database error saving new user
+      - generic [ref=e133]:
+        - generic [ref=e134]:
+          - text: Email
+          - textbox "Email" [ref=e135]:
+            - /placeholder: you@example.com
+            - text: caveman-test@claude.dev
+        - generic [ref=e136]:
+          - text: Password
+          - textbox "Password" [ref=e137]:
+            - /placeholder: ••••••••
+            - text: TestPassword123!
+        - button "Create account" [ref=e138]
+      - generic [ref=e143]: or continue with
+      - button "Continue with Google" [ref=e144]:
+        - img
+        - text: Continue with Google
+      - paragraph [ref=e145]:
+        - text: Already have an account?
+        - link "Sign in" [ref=e146] [cursor=pointer]:
+          - /url: /sign-in
+  - region "Notifications alt+T"
+  - alert [ref=e121]

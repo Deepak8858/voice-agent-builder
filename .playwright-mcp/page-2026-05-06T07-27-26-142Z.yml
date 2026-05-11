@@ -1,0 +1,78 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Dashboard" [ref=e10] [cursor=pointer]:
+        - /url: /dashboard
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - img [ref=e18]
+          - text: Now with real-time call testing
+        - heading "Build voice agents that answer back." [level=1] [ref=e24]:
+          - text: Build voice agents
+          - text: that answer back.
+        - paragraph [ref=e25]: Describe what your agent should do. VoiceForge generates the voice persona, call flow, knowledge base, tools, compliance settings, and a white-label dashboard for your clients.
+        - link "Open dashboard" [ref=e27] [cursor=pointer]:
+          - /url: /dashboard
+          - button "Open dashboard" [ref=e28]:
+            - text: Open dashboard
+            - img
+      - generic [ref=e30]:
+        - generic [ref=e31]:
+          - heading "Everything you need to ship voice AI" [level=2] [ref=e32]
+          - paragraph [ref=e33]: From prompt to production in minutes, not months.
+        - generic [ref=e34]:
+          - generic [ref=e35]:
+            - img [ref=e37]
+            - heading "Prompt to agent" [level=3] [ref=e41]
+            - paragraph [ref=e42]: Describe your agent in plain English. We generate the full Agent Spec JSON — voice, flow, tools, and compliance.
+          - generic [ref=e43]:
+            - img [ref=e45]
+            - heading "Visual flow builder" [level=3] [ref=e49]
+            - paragraph [ref=e50]: Design call flows with a node-based canvas. Conditions, transfers, tool calls, and handoffs — all visual.
+          - generic [ref=e51]:
+            - img [ref=e53]
+            - heading "Compliance-first" [level=3] [ref=e55]
+            - paragraph [ref=e56]: Consent, DNC/DND, opt-out, call windows, and AI disclosure enforced by default on every outbound call.
+          - generic [ref=e57]:
+            - img [ref=e59]
+            - heading "White-label ready" [level=3] [ref=e63]
+            - paragraph [ref=e64]: Spin up agency + client workspaces, brand the dashboard, customize domains, and sell voice agents.
+      - generic [ref=e66]:
+        - heading "Three steps to your first call" [level=2] [ref=e68]
+        - generic [ref=e69]:
+          - generic [ref=e70]:
+            - img [ref=e72]
+            - generic [ref=e76]: Step 01
+            - heading "Describe your agent" [level=3] [ref=e77]
+            - paragraph [ref=e78]: Write a few sentences about what your agent does, who it speaks to, and what tools it needs.
+          - generic [ref=e79]:
+            - img [ref=e81]
+            - generic [ref=e85]: Step 02
+            - heading "Review the spec" [level=3] [ref=e86]
+            - paragraph [ref=e87]: VoiceForge generates a complete Agent Spec JSON. Edit personas, prompts, and flows in the visual builder.
+          - generic [ref=e88]:
+            - img [ref=e90]
+            - generic [ref=e94]: Step 03
+            - heading "Test and deploy" [level=3] [ref=e95]
+            - paragraph [ref=e96]: Run a browser test call, review transcripts, adjust. Hit publish and your agent starts answering.
+      - generic [ref=e99]:
+        - heading "Ready to build your first voice agent?" [level=2] [ref=e100]
+        - paragraph [ref=e101]: Start free. No credit card required. Get a working agent in under five minutes.
+        - link "Open dashboard" [ref=e103] [cursor=pointer]:
+          - /url: /dashboard
+          - button "Open dashboard" [ref=e104]:
+            - text: Open dashboard
+            - img
+      - generic [ref=e106]:
+        - generic [ref=e107]:
+          - img [ref=e109]
+          - generic [ref=e113]: VoiceForge AI
+        - paragraph [ref=e114]: © 2026 VoiceForge AI. All rights reserved.
+  - region "Notifications alt+T"
+  - alert [ref=e115]

@@ -29,7 +29,7 @@
     "@supabase/supabase-js": "^2.47.0",
     "@types/cors": "^2.8.19",
     "@types/helmet": "^0.0.48",
-    "@voiceforge/shared": "*",
+    "@voiceforge/shared": "workspace:*",
     "bullmq": "^5.12.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",

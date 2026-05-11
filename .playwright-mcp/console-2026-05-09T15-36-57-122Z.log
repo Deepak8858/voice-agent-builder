@@ -1,0 +1,2 @@
+[   16303ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost/grafana/?forceRefresh=true:0
+[   16483ms] [ERROR] Failed to load resource: the server responded with a status of 503 (Service Unavailable) @ http://localhost/favicon.ico:0

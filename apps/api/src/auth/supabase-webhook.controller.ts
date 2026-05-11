@@ -63,32 +63,9 @@ export class SupabaseWebhookController {
   private async handleUpsert(record: SupabaseUserRecord): Promise<void> {
     if (!record.id) return;
 
-    const authUserId = record.id;
-    const email = record.email ?? `${record.id}@supabase.invalid`;
-    const name = record.user_metadata?.full_name ?? record.user_metadata?.name ?? null;
-
-    try {
-      await this.prisma.user.upsert({
-        where: { authUserId },
-        create: { authUserId, email, name },
-        update: { email, name },
-      });
-    } catch (err: unknown) {
-      const prismaErr = err as { code?: string };
-      if (prismaErr.code === 'P2002') {
-        const raced = await this.prisma.user.findUnique({ where: { email } });
-        if (raced) {
-          await this.prisma.user.update({
-            where: { id: raced.id },
-            data: { authUserId, name },
-          });
-        }
-      } else {
-        throw err;
-      }
-    }
-
-    await this.cache.del(`session:user:${authUserId}`);
+    // User provisioning is handled by the DB trigger in migration 006.
+    // This webhook only handles cache invalidation to keep sessions fresh.
+    await this.cache.del(`session:user:${record.id}`);
   }
 
   private async handleDelete(record: SupabaseUserRecord): Promise<void> {

@@ -36,6 +36,9 @@ export async function apiFetch<T>(
     if (user.app_metadata?.active_org_role) {
       headers.set('x-org-role', user.app_metadata.active_org_role as string);
     }
+    if (user.app_metadata?.active_workspace_id) {
+      headers.set('x-workspace-id', user.app_metadata.active_workspace_id as string);
+    }
   }
 
   const res = await fetch(`${API_BASE}${path}`, {

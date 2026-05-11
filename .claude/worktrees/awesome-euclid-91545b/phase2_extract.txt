@@ -1,0 +1,327 @@
+Phase 2: Add Direct OpenAI Realtime Support
+
+Use OpenAI Realtime for:
+
+- Low-latency voice conversations
+- Speech-to-speech agents
+- Function/tool calling
+- Real-time interruption handling
+- More runtime control
+
+---
+
+## Phase 3: Build Your Own Runtime
+
+Use:
+
+- LiveKit Agents
+- OpenAI Realtime
+- Twilio/Telnyx SIP
+- Deepgram / ElevenLabs / Cartesia / OpenAI voice stack
+- Your own orchestration layer
+
+This improves margin, control, and reliability at scale.
+
+---
+
+# 12. Voice Runtime Adapter Layer
+
+Do not hard-code to one provider.
+
+Create an internal interface:
+
+```ts
+interface VoiceRuntimeProvider {
+  createAgent(config: AgentSpec): Promise<RuntimeAgent>;
+  startInboundCall(payload: InboundCallPayload): Promise<void>;
+  startOutboundCall(payload: OutboundCallPayload): Promise<void>;
+  transferCall(callId: string, target: string): Promise<void>;
+  endCall(callId: string): Promise<void>;
+  getTranscript(callId: string): Promise<Transcript>;
+}
+```
+
+Then implement:
+
+```text
+VapiAdapter
+RetellAdapter
+OpenAIRealtimeAdapter
+LiveKitAdapter
+TwilioAdapter
+TelnyxAdapter
+```
+
+This avoids vendor lock-in.
+
+---
+
+# 13. Core Architecture
+
+```text
+User Prompt
+   ↓
+Agent Generator
+   ↓
+Agent Spec JSON
+   ↓
+Visual Flow Builder
+   ↓
+Prompt Compiler + Tool Compiler
+   ↓
+Voice Runtime Adapter
+   ↓
+Telephony / SIP / Web Widget
+   ↓
+CRM / Calendar / Database / Webhooks
+   ↓
+Analytics + Billing + Compliance + Evaluation
+```
+
+---
+
+# 14. Agent Spec JSON
+
+The most important internal asset is your **Agent Spec JSON**.
+
+Example:
+
+```json
+{
+  "agent_type": "inbound_receptionist",
+  "industry": "dental_clinic",
+  "voice": {
+    "tone": "warm, professional, concise",
+    "language": "English"
+  },
+  "goals": [
+    "answer common questions",
+    "collect patient details",
+    "book appointments",
+    "transfer emergencies"
+  ],
+  "required_fields": [
+    "name",
+    "phone",
+    "preferred_date",
+    "treatment_needed"
+  ],
+  "tools": [
+    "google_calendar",
+    "crm_create_lead",
+    "sms_confirmation"
+  ],
+  "compliance": {
+    "disclose_ai": true,
+    "recording_notice": true,
+    "opt_out_enabled": true
+  }
+}
+```
+
+Your “magic” is converting vague business descriptions into this structured spec.
+
+---
+
+# 15. Core Backend Services
+
+## 15.1 Tenant Service
+
+Handles:
+
+- Organizations
+- Agencies
+- Clients
+- Workspaces
+- Roles
+- Permissions
+- White-label domains
+- API keys
+- Usage limits
+
+Database structure:
+
+```text
+organizations
+workspaces
+users
+memberships
+roles
+white_label_settings
+api_keys
+billing_accounts
+```
+
+---
+
+## 15.2 Agent Builder Service
+
+Converts user prompt into structured agent configuration.
+
+Input:
+
+```text
+“I need an AI receptionist for my dental clinic.”
+```
+
+Output:
+
+- Persona
+- Greeting
+- Questions
+- Call flow
+- Knowledge setup
+- Calendar action
+- Transfer rules
+- Compliance settings
+- Success criteria
+
+---
+
+## 15.3 Template Engine
+
+Vertical templates should include:
+
+```text
+Industry
+Default greeting
+Questions to ask
+Fields to collect
+Tool integrations
+Compliance rules
+Success criteria
+Fallback behavior
+Human transfer rules
+Analytics goals
+```
+
+Recommended first templates:
+
+1. Dental receptionist
+2. Real estate lead qualifier
+3. Clinic appointment booking
+4. Salon booking agent
+5. Gym membership follow-up
+6. D2C order confirmation
+7. Event planner inquiry agent
+8. Recruitment screening agent
+9. Restaurant reservation agent
+10. Education admission counselor
+
+---
+
+## 15.4 Compliance Engine
+
+Before every outbound call, check:
+
+```text
+1. Is the user allowed to call this contact?
+2. Is consent recorded?
+3. Is the number on DNC/DND list?
+4. Is local time allowed?
+5. Is the campaign type permitted?
+6. Is opt-out status false?
+7. Is required disclosure enabled?
+8. Is call recording notice required?
+9. Is the caller identity correct?
+10. Is the campaign suspicious or abusive?
+```
+
+If any check fails, block the call.
+
+---
+
+## 15.5 Analytics Service
+
+Use ClickHouse for high-volume event analytics.
+
+Track events:
+
+```text
+call.started
+call.answered
+call.voicemail_detected
+agent.interrupted
+agent.tool_called
+agent.tool_failed
+lead.qualified
+appointment.booked
+human.transfer_requested
+human.transfer_completed
+call.ended
+call.failed
+compliance.blocked
+billing.minute_recorded
+```
+
+---
+
+## 15.6 Tool Registry
+
+Every external action should be a controlled tool.
+
+Examples:
+
+```text
+create_lead()
+book_calendar_slot()
+send_sms()
+transfer_call()
+create_ticket()
+update_crm()
+end_call()
+```
+
+Each tool should have:
+
+```text
+Input schema
+Permission check
+Rate limit
+Audit log
+Retry policy
+Failure fallback
+Human override
+```
+
+---
+
+# 16. Database Design
+
+## PostgreSQL Tables
+
+```text
+users
+organizations
+workspaces
+memberships
+roles
+agents
+agent_versions
+agent_templates
+knowledge_sources
+knowledge_chunks
+integrations
+contacts
+consent_records
+dnc_lists
+call_campaigns
+calls
+call_transcripts
+call_recordings
+call_events
+compliance_rules
+tool_calls
+billing_usage
+white_label_settings
+api_keys
+webhook_logs
+audit_logs
+```
+
+---
+
+## ClickHouse Tables
+
+```text
+ca

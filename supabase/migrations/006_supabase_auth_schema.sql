@@ -61,8 +61,12 @@ create index if not exists org_invites_email_idx on public.org_invites(email);
 
 -- ============================================================================
 -- Trigger: when a row is inserted into auth.users, create the matching
--- public.users profile row.  Org/workspace creation is handled in app code
+-- public.users profile row. Org/workspace creation is handled in app code
 -- (the onboarding flow), not here.
+--
+-- on conflict condition: only update if the existing user has no auth_user_id
+-- linked OR if the email matches (handles re-signup with same email after
+-- a deleted account). Never overwrites a different user's auth link.
 -- ============================================================================
 
 create or replace function public.handle_new_auth_user()
@@ -79,8 +83,11 @@ begin
     coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name')
   )
   on conflict (email) do update
-    set auth_user_id = excluded.auth_user_id
-    where public.users.auth_user_id is null;
+    set
+      auth_user_id = excluded.auth_user_id,
+      name         = coalesce(excluded.name, public.users.name)
+    where public.users.auth_user_id is null
+       or public.users.email = excluded.email;
   return new;
 end;
 $$;

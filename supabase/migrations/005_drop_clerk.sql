@@ -2,7 +2,7 @@
 -- Removes Clerk-specific RLS helpers, policies, columns, and the
 -- app_org_memberships cache table. Migrations 003 + 004 created policies
 -- against `external_auth_id`/`clerk_org_id` — those policies are dropped
--- here. Migration 008 recreates them against Supabase Auth.
+-- here. Migration 007 recreates helpers; Migration 008 recreates policies.
 --
 -- Run on a wiped DB. Existing rows referencing Clerk IDs will lose those
 -- links (we are starting from scratch with Supabase Auth).
@@ -64,12 +64,14 @@ drop function if exists public.provision_user_with_lock(text, text, text) cascad
 
 -- ============================================================================
 -- Drop Clerk identity columns and the app_org_memberships cache
+-- NOTE: We skip the column renames in the old 005_rename migration since we
+-- are dropping these tables/columns anyway. No need to rename before drop.
 -- ============================================================================
 
 -- AppOrgMembership table is replaced by `memberships` joined to `workspaces.organization_id`
 drop table if exists public.app_org_memberships cascade;
 
--- Drop Clerk columns from organizations
+-- Drop Clerk columns from organizations (rename skipped — table is being dropped)
 alter table public.organizations
   drop column if exists clerk_org_id;
 

@@ -9,8 +9,9 @@ const webEnvLocal = path.join(root, 'apps', 'web', '.env.local');
 const REQUIRED_VARS = [
   'DATABASE_URL',
   'DIRECT_URL',
-  'CLERK_SECRET_KEY',
-  'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY',
+  'SUPABASE_JWT_SECRET',
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'NEXT_PUBLIC_API_URL',
   'NEXT_PUBLIC_APP_URL',
   'REDIS_URL',
@@ -70,7 +71,7 @@ for (const key of REQUIRED_VARS) {
 
 // Check web .env.local
 console.log('\n📄 apps/web/.env.local');
-const WEB_KEYS = ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_APP_URL', 'NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'];
+const WEB_KEYS = ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_APP_URL', 'NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'];
 for (const key of WEB_KEYS) {
   const ok = hasRealValue(webVars[key]);
   console.log(`   ${ok ? '✅' : '❌'} ${key}: ${ok ? 'set' : 'MISSING or placeholder'}`);
@@ -119,7 +120,7 @@ if (process.argv.includes('--fix')) {
   console.log('✅ Wrote apps/api/.env');
 
   // Fix apps/web/.env.local
-  const webContent = buildEnvContent(rootVars, WEB_KEYS, ['NEXT_PUBLIC_CLERK_SIGN_IN_URL', 'NEXT_PUBLIC_CLERK_SIGN_UP_URL', 'NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL', 'NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL']);
+  const webContent = buildEnvContent(rootVars, WEB_KEYS, ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY']);
   fs.writeFileSync(webEnvLocal, webContent);
   console.log('✅ Wrote apps/web/.env.local');
 

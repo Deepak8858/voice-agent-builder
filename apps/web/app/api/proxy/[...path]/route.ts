@@ -44,6 +44,10 @@ export async function POST(
     headers['x-org-role'] = user.app_metadata.active_org_role as string;
   }
 
+  if (user.app_metadata?.active_workspace_id) {
+    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
+  }
+
   const body = await req.text();
 
   const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
@@ -145,6 +149,10 @@ export async function PATCH(
 
   if (user.app_metadata?.active_org_role) {
     headers['x-org-role'] = user.app_metadata.active_org_role as string;
+  }
+
+  if (user.app_metadata?.active_workspace_id) {
+    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
   }
 
   const body = await req.text();

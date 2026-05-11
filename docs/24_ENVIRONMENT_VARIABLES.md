@@ -4,7 +4,8 @@
 ```env
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 NEXT_PUBLIC_API_URL=http://localhost:4000
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
 NEXT_PUBLIC_SENTRY_DSN=
 ```
 
@@ -13,9 +14,13 @@ NEXT_PUBLIC_SENTRY_DSN=
 NODE_ENV=development
 PORT=4000
 DATABASE_URL=postgresql://user:password@localhost:5432/voiceforge
+DIRECT_URL=postgresql://user:password@localhost:5432/voiceforge
 REDIS_URL=redis://localhost:6379
 ENCRYPTION_KEY=
 JWT_SECRET=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_JWT_SECRET=
+AUTH_PROVIDER=supabase
 ```
 
 ## Auth

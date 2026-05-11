@@ -1,0 +1,1 @@
+- generic [ref=e2]: "{\"success\":true,\"data\":{\"status\":\"healthy\",\"checks\":{\"db\":\"ok\",\"redis\":\"ok\",\"llm\":{\"provider\":\"openai\",\"status\":\"ok\"}},\"time\":\"2026-05-09T14:59:37.948Z\",\"uptime\":473.384983802},\"error\":null}"

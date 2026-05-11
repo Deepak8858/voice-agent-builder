@@ -1,10 +1,26 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from 'recharts';
 import type {
   AgentMetricsResponse,
   ComplianceMetrics,
   WorkspaceMetrics,
+  TimeseriesResponse,
 } from '@voiceforge/shared';
 import {
   Card,
@@ -14,41 +30,141 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useApi } from '@/lib/use-api';
-import { BarChart3, TrendingUp, ShieldCheck } from 'lucide-react';
+import { BarChart3, TrendingUp, ShieldCheck, Calendar } from 'lucide-react';
+import { useState } from 'react';
 
 interface AnalyticsPanelProps {
   workspaceId: string;
 }
 
+// --- date range --------------------------------------------------------
+
+type RangeOption = '7d' | '30d' | '90d';
+
+const RANGE_DAYS: Record<RangeOption, number> = {
+  '7d': 7,
+  '30d': 30,
+  '90d': 90,
+};
+
+function buildRangeDays(days: number) {
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+function appendQuery(
+  path: string,
+  query: { from: string; to: string },
+): string {
+  const params = new URLSearchParams({
+    from: query.from,
+    to: query.to,
+  });
+  return `${path}?${params.toString()}`;
+}
+
+// --- helpers -----------------------------------------------------------
+
 function pct(n: number): string {
   return `${(n * 100).toFixed(0)}%`;
 }
 
+// pie slice colours — order matches outcome categories
+const OUTCOME_COLORS = [
+  '#6366f1', // indigo (completed/success)
+  '#22c55e', // green (callback)
+  '#f59e0b', // amber (no-answer)
+  '#ef4444', // red (failed)
+  '#94a3b8', // slate (other)
+];
+
+const PIE_AGENTS = [
+  '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#14b8a6', '#f97316', '#ec4899', '#06b6d4', '#84cc16',
+];
+
 export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
   const { call } = useApi();
+  const [range, setRange] = useState<RangeOption>('30d');
+
+  const queryRange = buildRangeDays(RANGE_DAYS[range]);
 
   const overview = useQuery({
-    queryKey: ['analytics', 'workspace', workspaceId],
+    queryKey: ['analytics', 'workspace', workspaceId, range],
     queryFn: () =>
-      call<WorkspaceMetrics>(`/workspaces/${workspaceId}/analytics/workspace`),
+      call<WorkspaceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/workspace`, queryRange)),
   });
 
   const agents = useQuery({
-    queryKey: ['analytics', 'agents', workspaceId],
+    queryKey: ['analytics', 'agents', workspaceId, range],
     queryFn: () =>
-      call<AgentMetricsResponse>(`/workspaces/${workspaceId}/analytics/agents`),
+      call<AgentMetricsResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/agents`, queryRange)),
   });
 
   const compliance = useQuery({
-    queryKey: ['analytics', 'compliance', workspaceId],
+    queryKey: ['analytics', 'compliance', workspaceId, range],
     queryFn: () =>
-      call<ComplianceMetrics>(`/workspaces/${workspaceId}/analytics/compliance`),
+      call<ComplianceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/compliance`, queryRange)),
   });
+
+  const timeseries = useQuery({
+    queryKey: ['analytics', 'timeseries', workspaceId, range],
+    queryFn: () =>
+      call<TimeseriesResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange)),
+  });
+
+  // derive chart data
+  const outcomeData = overview.data?.outcomes.map((o) => ({
+    name: o.outcome.replace(/_/g, ' '),
+    value: o.count,
+  })) ?? [];
+
+  const agentPerfData = (agents.data?.agents ?? []).slice(0, 10).map((a) => ({
+    name: a.agent_name.length > 20 ? a.agent_name.slice(0, 18) + '…' : a.agent_name,
+    calls: a.total_calls,
+    successRate: Math.round(a.success_rate * 100),
+    avgDuration: a.average_duration_seconds,
+  }));
+
+  const tsData = (timeseries.data?.data ?? []).map((d) => ({
+    date: d.date,
+    label:
+      timeseries.data?.granularity === 'weekly'
+        ? d.date
+        : d.date.slice(5), // MM-DD for daily
+    calls: d.calls,
+    success: d.success,
+    failed: d.failed,
+  }));
 
   return (
     <div className="flex flex-col gap-8">
+      {/* date range selector */}
+      <div className="flex items-center gap-3">
+        <Calendar className="h-4 w-4 text-muted-foreground" />
+        <div className="flex gap-1">
+          {(['7d', '30d', '90d'] as RangeOption[]).map((opt) => (
+            <button
+              key={opt}
+              onClick={() => setRange(opt)}
+              className={`rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
+                range === opt
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border bg-transparent text-muted-foreground hover:border-primary/50 hover:text-foreground'
+              }`}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* KPI row */}
       <section>
-        <h2 className="mb-4 text-sm font-medium text-muted-foreground uppercase tracking-wider">Last 30 days</h2>
+        <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-muted-foreground">
+          Last {RANGE_DAYS[range]} days
+        </h2>
         {overview.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : overview.data ? (
@@ -58,6 +174,193 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
         )}
       </section>
 
+      {/* call volume over time */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 text-primary" />
+            Call volume over time
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {timeseries.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : tsData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No call data for this period.</p>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={tsData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorCalls" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="colorSuccess" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: 'var(--card)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                  }}
+                />
+                <Legend wrapperStyle={{ fontSize: '12px' }} />
+                <Area
+                  type="monotone"
+                  dataKey="calls"
+                  name="Total calls"
+                  stroke="#6366f1"
+                  strokeWidth={2}
+                  fill="url(#colorCalls)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="success"
+                  name="Successful"
+                  stroke="#22c55e"
+                  strokeWidth={2}
+                  fill="url(#colorSuccess)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* outcome distribution + agent performance side by side */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        {/* outcome pie */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-primary" />
+              Call outcome distribution
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {overview.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : outcomeData.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No outcome data yet.</p>
+            ) : (
+              <div className="flex flex-col items-center gap-3">
+                <ResponsiveContainer width="100%" height={200}>
+                  <PieChart>
+                    <Pie
+                      data={outcomeData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={55}
+                      outerRadius={85}
+                      paddingAngle={3}
+                      dataKey="value"
+                    >
+                      {outcomeData.map((_, i) => (
+                        <Cell
+                          key={`cell-${i}`}
+                          fill={OUTCOME_COLORS[i % OUTCOME_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--card)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '8px',
+                        fontSize: '12px',
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex flex-wrap justify-center gap-x-4 gap-y-1">
+                  {outcomeData.map((entry, i) => (
+                    <div key={entry.name} className="flex items-center gap-1.5 text-xs">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: OUTCOME_COLORS[i % OUTCOME_COLORS.length] }}
+                      />
+                      <span className="text-muted-foreground">{entry.name}</span>
+                      <span className="font-mono font-medium text-foreground">{entry.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* agent performance bar chart */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              Agent performance
+            </CardTitle>
+            <Badge variant="secondary">{agents.data?.agents.length ?? 0} agents</Badge>
+          </CardHeader>
+          <CardContent>
+            {agents.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : agentPerfData.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No call activity yet.</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart
+                  data={agentPerfData}
+                  layout="vertical"
+                  margin={{ top: 0, right: 30, left: 0, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+                    tickLine={false}
+                    axisLine={false}
+                    width={90}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: 'var(--card)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: '12px' }} />
+                  <Bar dataKey="calls" name="Calls" fill="#6366f1" radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="successRate" name="Success %" fill="#22c55e" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* per-agent table (existing, below charts) */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -76,7 +379,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead>
-                    <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b border-border">
+                    <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                       <th className="py-2 pr-4">Agent</th>
                       <th className="py-2 pr-4">Calls</th>
                       <th className="py-2 pr-4">Success</th>
@@ -130,6 +433,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
         </Card>
       </section>
 
+      {/* call outcomes list */}
       {overview.data && overview.data.outcomes.length > 0 ? (
         <Card>
           <CardHeader>
@@ -191,7 +495,9 @@ function ComplianceSummary({ m }: { m: ComplianceMetrics }) {
       </div>
       {m.block_reasons.length > 0 ? (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">Top block reasons</div>
+          <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Top block reasons
+          </div>
           <ul className="flex flex-col gap-1">
             {m.block_reasons.slice(0, 5).map((r) => (
               <li

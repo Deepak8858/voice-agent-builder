@@ -1,0 +1,91 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Sign in" [ref=e10] [cursor=pointer]:
+        - /url: /sign-in
+        - button "Sign in" [ref=e11]
+      - link "Sign up" [ref=e12] [cursor=pointer]:
+        - /url: /sign-up
+        - button "Sign up" [ref=e13]
+  - main [ref=e14]:
+    - generic [ref=e67]:
+      - complementary [ref=e68]:
+        - generic [ref=e69]:
+          - paragraph [ref=e70]: Platform
+          - navigation [ref=e71]:
+            - link "Overview" [ref=e72] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e73]
+              - text: Overview
+            - link "Agents" [ref=e78] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e79]
+              - text: Agents
+            - link "Calls" [ref=e82] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e83]
+              - text: Calls
+            - link "Templates" [ref=e85] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e86]
+              - text: Templates
+            - link "Knowledge" [ref=e90] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e91]
+              - text: Knowledge
+            - link "Integrations" [ref=e93] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e94]
+              - text: Integrations
+            - link "Clients" [ref=e96] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e97]
+              - text: Clients
+            - link "Compliance" [ref=e102] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e103]
+              - text: Compliance
+            - link "Analytics" [ref=e106] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e107]
+              - text: Analytics
+            - link "White label" [ref=e109] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e110]
+              - text: White label
+            - link "Billing" [ref=e116] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e117]
+              - text: Billing
+            - link "Settings" [ref=e119] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e120]
+              - text: Settings
+      - generic [ref=e125]:
+        - generic [ref=e126]:
+          - generic [ref=e127]:
+            - heading "Welcome to VoiceForge" [level=1] [ref=e128]
+            - paragraph [ref=e129]: Set up your first agent to start answering calls.
+          - link "New agent" [ref=e130] [cursor=pointer]:
+            - /url: /dashboard/agents/new
+            - button "New agent" [ref=e131]:
+              - img
+              - text: New agent
+        - generic [ref=e132]:
+          - generic [ref=e133]:
+            - heading "API not reachable" [level=3] [ref=e134]
+            - paragraph [ref=e135]:
+              - text: "The backend returned:"
+              - code [ref=e136]: Unexpected server error.
+          - paragraph [ref=e138]:
+            - text: Start the API with
+            - code [ref=e139]: npm run dev
+            - text: after setting DATABASE_URL in
+            - code [ref=e140]: .env
+            - text: .
+  - region "Notifications alt+T"
+  - alert [ref=e40]

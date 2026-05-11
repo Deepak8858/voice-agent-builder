@@ -75,4 +75,12 @@ export interface VoiceRuntimeProvider {
   endCall(input: EndCallInput): Promise<void>;
   getTranscript(input: GetTranscriptInput): Promise<TranscriptResult>;
   getRecording(input: GetRecordingInput): Promise<RecordingResult>;
+  /**
+   * Process incoming webhook events from the voice provider.
+   * Returns the event name, call ID, and whether the event was processed.
+   */
+  handleWebhook(
+    payload: Record<string, unknown>,
+    signature?: string,
+  ): Promise<{ event: string; callId: string; processed: boolean }>;
 }

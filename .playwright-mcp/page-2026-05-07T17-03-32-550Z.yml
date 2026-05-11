@@ -1,0 +1,42 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]:
+      - link "Sign in" [ref=e10] [cursor=pointer]:
+        - /url: /sign-in
+        - button "Sign in" [ref=e11]
+      - link "Sign up" [ref=e12] [cursor=pointer]:
+        - /url: /sign-up
+        - button "Sign up" [ref=e13]
+  - main [ref=e14]:
+    - generic [ref=e43]:
+      - generic [ref=e44]:
+        - link "VoiceForge" [ref=e45] [cursor=pointer]:
+          - /url: /
+          - img [ref=e46]
+          - generic [ref=e50]: VoiceForge
+        - heading "Welcome back" [level=1] [ref=e51]
+        - paragraph [ref=e52]: Sign in to your account
+      - generic [ref=e53]:
+        - generic [ref=e54]:
+          - text: Email
+          - textbox "Email" [ref=e55]:
+            - /placeholder: you@example.com
+        - generic [ref=e56]:
+          - text: Password
+          - textbox "Password" [ref=e57]:
+            - /placeholder: ••••••••
+        - button "Sign in" [ref=e58]
+      - generic [ref=e63]: or continue with
+      - button "Continue with Google" [ref=e64]:
+        - img
+        - text: Continue with Google
+      - paragraph [ref=e65]:
+        - text: Don't have an account?
+        - link "Sign up" [ref=e66] [cursor=pointer]:
+          - /url: /sign-up
+  - region "Notifications alt+T"
+  - alert [ref=e40]

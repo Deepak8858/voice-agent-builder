@@ -23,8 +23,8 @@
 4. Scale VM if CPU > 80% sustained: `az vm resize -g voiceforge-rg -n voiceforge-staging-vm --size Standard_D4s_v3`
 
 ### P2 — Security incident
-1. Rotate `CLERK_SECRET_KEY` and `JWT_SECRET` immediately
-2. Revoke all active Clerk sessions via Dashboard
+1. Rotate `SUPABASE_JWT_SECRET` and `JWT_SECRET` immediately
+2. Revoke active sessions via Supabase Dashboard → Authentication → Sessions
 3. Check `audit_logs` for suspicious `action` patterns in last 1h
 4. If metric endpoint exposed, rotate `METRICS_SCRAPE_TOKEN`
 5. Preserve logs: `docker logs vf-api > /var/log/vf/incident-$(date +%s).log`

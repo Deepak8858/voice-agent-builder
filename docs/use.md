@@ -266,8 +266,9 @@ Standard pagination with `skip`/`take` query params.
 | `DATABASE_URL` | Supabase pooler connection | Yes |
 | `DIRECT_URL` | Supabase direct connection | Yes |
 | `REDIS_URL` | Redis for BullMQ queues | No |
-| `CLERK_PUBLISHABLE_KEY` | Clerk auth | Yes |
-| `CLERK_SECRET_KEY` | Clerk auth | Yes |
+| `SUPABASE_URL` | Supabase project URL | Yes |
+| `SUPABASE_ANON_KEY` | Supabase anon key | Yes |
+| `SUPABASE_JWT_SECRET` | Supabase JWT secret | Yes |
 | `STRIPE_SECRET_KEY` | Stripe billing | No |
 | `VAPI_API_KEY` | Vapi voice provider | No |
 | `RETELL_API_KEY` | Retell voice provider | No |

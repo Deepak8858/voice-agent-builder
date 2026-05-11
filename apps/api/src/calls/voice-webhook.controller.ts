@@ -18,12 +18,11 @@ export class VoiceWebhookController {
   async receive(
     @Param('provider') provider: string,
     @Headers('x-vapi-signature') vapiSig: string | undefined,
-    @Headers('x-retell-signature') retellSig: string | undefined,
     @Body() body: unknown,
   ): Promise<{ received: boolean }> {
     const raw = JSON.stringify(body);
-    const secret = provider === 'vapi' ? env.VAPI_WEBHOOK_SECRET : provider === 'retell' ? env.RETELL_WEBHOOK_SECRET : env.VOICE_WEBHOOK_SECRET;
-    const sig = provider === 'vapi' ? vapiSig : provider === 'retell' ? retellSig : undefined;
+    const secret = env.VOICE_WEBHOOK_SECRET;
+    const sig = provider === 'vapi' ? vapiSig : undefined;
 
     if (secret && sig) {
       const expected = createHmac('sha256', secret).update(raw).digest('hex');

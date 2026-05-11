@@ -2,7 +2,7 @@
   "name": "@voiceforge/ui",
   "version": "0.1.0",
   "private": true,
-  "description": "Shared UI primitives for VoiceForge AI (placeholder \u2014 populated in Phase 2+).",
+  "description": "Shared UI primitives for VoiceForge AI (placeholder — populated in Phase 2+).",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
@@ -12,7 +12,26 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
-    "react": ">=18.0.0"
+    "react": ">=18.0.0",
+    "@radix-ui/react-avatar": "*",
+    "@radix-ui/react-collapsible": "*",
+    "@radix-ui/react-dialog": "*",
+    "@radix-ui/react-dropdown-menu": "*",
+    "@radix-ui/react-label": "*",
+    "@radix-ui/react-scroll-area": "*",
+    "@radix-ui/react-select": "*",
+    "@radix-ui/react-separator": "*",
+    "@radix-ui/react-slot": "*",
+    "@radix-ui/react-switch": "*",
+    "@radix-ui/react-tabs": "*",
+    "@radix-ui/react-tooltip": "*",
+    "class-variance-authority": "*",
+    "clsx": "*",
+    "lucide-react": "*",
+    "tailwind-merge": "*",
+    "@tiptap/react": "*",
+    "@tiptap/starter-kit": "*",
+    "@tiptap/extension-placeholder": "*"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

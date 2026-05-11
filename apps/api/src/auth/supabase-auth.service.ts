@@ -58,8 +58,17 @@ export class SupabaseAuthService extends AuthService {
     );
   }
 
-  async logout(_req: Request, _res: Response): Promise<void> {
-    // Supabase handles token invalidation via JWT expiration.
+  async logout(req: Request, _res: Response): Promise<void> {
+    const token = this.extractBearerToken(req);
+    if (!token || !this.supabase) return;
+    try {
+      const claims = jwt.decode(token) as SupabaseJWTPayload | null;
+      if (claims?.sub) {
+        await this.supabase.auth.signOut();
+      }
+    } catch {
+      // If decode fails, there's nothing to invalidate
+    }
   }
 
   async getSessionUser(req: Request): Promise<SessionUser | null> {

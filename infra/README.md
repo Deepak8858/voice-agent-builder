@@ -47,14 +47,5 @@ Required secrets:
 - `AWS_EC2_USER` → `ubuntu`
 - `AWS_EC2_SSH_KEY` → SSH private key
 - `AWS_ROLE_ARN` → IAM role ARN for OIDC
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` → Clerk publishable key
-
-Required variables:
-- `AWS_ACCOUNT_ID` → AWS account ID
-- `AWS_REGION` → `ap-south-1`
-- `NEXT_PUBLIC_API_URL` → API URL
-- `NEXT_PUBLIC_APP_URL` → App URL
-- `NEXT_PUBLIC_CLERK_SIGN_IN_URL` → `/sign-in`
-- `NEXT_PUBLIC_CLERK_SIGN_UP_URL` → `/sign-up`
-- `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` → `/dashboard`
-- `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` → `/dashboard`
+- `NEXT_PUBLIC_SUPABASE_URL` → Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` → Supabase anon key

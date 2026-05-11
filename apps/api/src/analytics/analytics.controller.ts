@@ -73,4 +73,12 @@ export class AnalyticsController {
   ) {
     return this.analytics.improvementSuggestions(workspaceId, agentId, query);
   }
+
+  @Get('timeseries')
+  async timeseries(
+    @Param('workspaceId') workspaceId: string,
+    @Query(new ZodValidationPipe(MetricsRangeQuerySchema)) query: MetricsRangeQuery,
+  ) {
+    return this.analytics.timeseriesMetrics(workspaceId, query);
+  }
 }

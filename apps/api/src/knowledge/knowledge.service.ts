@@ -256,6 +256,19 @@ export class KnowledgeService {
   }
 
   /**
+   * Reset embedding vectors to null for all chunks in a workspace.
+   * Used by the backfill endpoint before enqueueing the embeddings worker.
+   */
+  async clearEmbeddings(workspaceId: string): Promise<number> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await (this.prisma.knowledgeChunk as any).updateMany({
+      where: { workspaceId },
+      data: { embedding: null },
+    });
+    return result.count;
+  }
+
+  /**
    * Validates that every id belongs to the workspace (and optionally the agent
    * or is workspace-scoped). Used by the agent generator / spec save paths.
    */

@@ -19,6 +19,21 @@ interface ResolvedRange {
   to: Date;
 }
 
+export interface TimeseriesDataPoint {
+  date: string;
+  calls: number;
+  completed: number;
+  failed: number;
+  success: number;
+  total_duration_seconds: number;
+}
+
+export interface TimeseriesResponse {
+  range: { from: string; to: string };
+  granularity: 'daily' | 'weekly';
+  data: TimeseriesDataPoint[];
+}
+
 const DEFAULT_WINDOW_DAYS = 30;
 
 @Injectable()
@@ -286,6 +301,87 @@ export class AnalyticsService {
     };
   }
 
+  // --- timeseries metrics -------------------------------------------------
+
+  async timeseriesMetrics(
+    workspaceId: string,
+    query: MetricsRangeQuery,
+  ): Promise<TimeseriesResponse> {
+    const range = this.resolveRange(query);
+    const totalDays = Math.ceil(
+      (range.to.getTime() - range.from.getTime()) / (24 * 60 * 60 * 1000),
+    );
+
+    const granularity: 'daily' | 'weekly' = totalDays <= 62 ? 'daily' : 'weekly';
+
+    const calls = await this.prisma.call.findMany({
+      where: {
+        workspaceId,
+        createdAt: { gte: range.from, lte: range.to },
+        ...(query.agent_id ? { agentId: query.agent_id } : {}),
+      },
+      select: {
+        id: true,
+        status: true,
+        outcome: true,
+        createdAt: true,
+        durationSeconds: true,
+      },
+    });
+
+    // Build a map keyed by date string
+    const buckets = new Map<string, TimeseriesDataPoint>();
+
+    for (const call of calls) {
+      const d = call.createdAt;
+      const key =
+        granularity === 'daily'
+          ? d.toISOString().slice(0, 10)
+          : getWeekKey(d);
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          date: key,
+          calls: 0,
+          completed: 0,
+          failed: 0,
+          success: 0,
+          total_duration_seconds: 0,
+        });
+      }
+      const b = buckets.get(key)!;
+      b.calls += 1;
+      if (call.status === 'completed') b.completed += 1;
+      if (call.status === 'failed') b.failed += 1;
+      if (call.outcome && SUCCESS_OUTCOMES.includes(call.outcome as never)) b.success += 1;
+      b.total_duration_seconds += call.durationSeconds ?? 0;
+    }
+
+    // Fill in empty buckets so the chart renders a continuous line
+    const result: TimeseriesDataPoint[] = [];
+    const cursor = new Date(range.from);
+    while (cursor <= range.to) {
+      const key =
+        granularity === 'daily'
+          ? cursor.toISOString().slice(0, 10)
+          : getWeekKey(cursor);
+      result.push(buckets.get(key) ?? {
+        date: key,
+        calls: 0,
+        completed: 0,
+        failed: 0,
+        success: 0,
+        total_duration_seconds: 0,
+      });
+      cursor.setDate(cursor.getDate() + (granularity === 'daily' ? 1 : 7));
+    }
+
+    return {
+      range: { from: range.from.toISOString(), to: range.to.toISOString() },
+      granularity,
+      data: result,
+    };
+  }
+
   // --- improvement suggestions -----------------------------------------
 
   async improvementSuggestions(
@@ -432,4 +528,13 @@ export class AnalyticsService {
       occurred_at: row.occurredAt.toISOString(),
     };
   }
+}
+
+function getWeekKey(d: Date): string {
+  // ISO week: returns "2025-W01" style string
+  const clone = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  clone.setUTCDate(clone.getUTCDate() + 4 - (clone.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(clone.getUTCFullYear(), 0, 1));
+  const weekNum = Math.ceil(((clone.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return `${clone.getUTCFullYear()}-W${String(weekNum).padStart(2, '0')}`;
 }

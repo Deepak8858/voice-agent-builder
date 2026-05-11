@@ -27,7 +27,7 @@ export function SupabaseProvider({ children }: { children: React.ReactNode }) {
     createClient(url, key, {
       auth: {
         autoRefreshToken: true,
-        persistSession: true,
+        persistSession: false,
         detectSessionInUrl: true,
       },
     }),

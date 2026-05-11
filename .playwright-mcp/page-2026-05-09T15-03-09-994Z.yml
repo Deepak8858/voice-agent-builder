@@ -1,0 +1,84 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - complementary [ref=e13]:
+        - generic [ref=e14]:
+          - paragraph [ref=e15]: Platform
+          - navigation [ref=e16]:
+            - link "Overview" [ref=e17] [cursor=pointer]:
+              - /url: /dashboard
+              - img [ref=e18]
+              - text: Overview
+            - link "Agents" [ref=e23] [cursor=pointer]:
+              - /url: /dashboard/agents
+              - img [ref=e24]
+              - text: Agents
+            - link "Calls" [ref=e27] [cursor=pointer]:
+              - /url: /dashboard/calls
+              - img [ref=e28]
+              - text: Calls
+            - link "Templates" [ref=e30] [cursor=pointer]:
+              - /url: /dashboard/templates
+              - img [ref=e31]
+              - text: Templates
+            - link "Knowledge" [ref=e35] [cursor=pointer]:
+              - /url: /dashboard/knowledge
+              - img [ref=e36]
+              - text: Knowledge
+            - link "Integrations" [ref=e38] [cursor=pointer]:
+              - /url: /dashboard/integrations
+              - img [ref=e39]
+              - text: Integrations
+            - link "Clients" [ref=e41] [cursor=pointer]:
+              - /url: /dashboard/clients
+              - img [ref=e42]
+              - text: Clients
+            - link "Compliance" [ref=e47] [cursor=pointer]:
+              - /url: /dashboard/compliance
+              - img [ref=e48]
+              - text: Compliance
+            - link "Analytics" [ref=e51] [cursor=pointer]:
+              - /url: /dashboard/analytics
+              - img [ref=e52]
+              - text: Analytics
+            - link "White label" [ref=e54] [cursor=pointer]:
+              - /url: /dashboard/white-label
+              - img [ref=e55]
+              - text: White label
+            - link "Billing" [ref=e61] [cursor=pointer]:
+              - /url: /dashboard/billing
+              - img [ref=e62]
+              - text: Billing
+            - link "Settings" [ref=e64] [cursor=pointer]:
+              - /url: /dashboard/settings
+              - img [ref=e65]
+              - text: Settings
+      - generic [ref=e70]:
+        - generic [ref=e71]:
+          - heading "Billing" [level=1] [ref=e72]
+          - paragraph [ref=e73]: Subscription plans, voice minute usage, and invoice history.
+        - generic [ref=e74]:
+          - generic [ref=e75]:
+            - generic [ref=e76]:
+              - generic [ref=e77]:
+                - heading "Current plan" [level=3] [ref=e78]:
+                  - img [ref=e79]
+                  - text: Current plan
+                - paragraph [ref=e81]: Manage your subscription and billing details.
+              - generic [ref=e82]: Free
+            - generic [ref=e83]:
+              - generic [ref=e84]:
+                - generic [ref=e85]: "Status:"
+                - generic [ref=e86]: active
+              - button "Upgrade plan" [ref=e88]
+          - generic [ref=e89]:
+            - heading "Usage this period" [level=2] [ref=e90]
+            - paragraph [ref=e91]: Loading…
+  - region "Notifications alt+T"
+  - alert [ref=e92]
