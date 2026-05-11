@@ -100,4 +100,12 @@ export class BillingController {
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createPortalSession(orgId, dto);
   }
+
+  @Get('invoices')
+  async getInvoices(@Param('workspaceId') workspaceId: string): Promise<{ items: unknown[] }> {
+    const orgId = await this.getOrgId(workspaceId);
+    const sub = await this.billing.getSubscription(orgId);
+    if (!sub?.stripeCustomerId) return { items: [] };
+    return this.billing.getInvoices(sub.stripeCustomerId);
+  }
 }

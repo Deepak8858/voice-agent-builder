@@ -10,6 +10,7 @@ import type {
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
   FeatureGate,
+  InvoiceDto,
   PLAN_LIMITS,
   PlanType,
   SubscriptionDto,
@@ -297,6 +298,29 @@ export class BillingService {
       };
     }
     return { warning: null, current, limit };
+  }
+
+  async getInvoices(stripeCustomerId: string): Promise<{ items: InvoiceDto[] }> {
+    if (!this.stripe) return { items: [] };
+    const invoices = await this.stripe.invoices.list({
+      customer: stripeCustomerId,
+      limit: 12,
+    });
+    return {
+      items: invoices.data.map((inv) => ({
+        id: inv.id,
+        number: inv.number ?? null,
+        status: inv.status ?? null,
+        amountDue: inv.amount_due,
+        amountPaid: inv.amount_paid,
+        currency: inv.currency,
+        created: inv.created,
+        periodStart: inv.period_start ?? inv.created,
+        periodEnd: inv.period_end ?? inv.created,
+        invoicePdf: inv.invoice_pdf ?? null,
+        hostedInvoiceUrl: inv.hosted_invoice_url ?? null,
+      })),
+    };
   }
 }
 

@@ -127,6 +127,21 @@ export const StripeEventDtoSchema = z.object({
 });
 export type StripeEventDto = z.infer<typeof StripeEventDtoSchema>;
 
+export const InvoiceDtoSchema = z.object({
+  id: z.string(),
+  number: z.string().nullable(),
+  status: z.string().nullable(),
+  amountDue: z.number().int(),
+  amountPaid: z.number().int(),
+  currency: z.string(),
+  created: z.number().int(),
+  periodStart: z.number().int(),
+  periodEnd: z.number().int(),
+  invoicePdf: z.string().nullable(),
+  hostedInvoiceUrl: z.string().nullable(),
+});
+export type InvoiceDto = z.infer<typeof InvoiceDtoSchema>;
+
 // --------------------------------------------------------------------------
 // Feature gate
 // --------------------------------------------------------------------------
