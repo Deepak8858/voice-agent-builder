@@ -1,6 +1,7 @@
 import { apiFetch } from '@/lib/api';
 import { BillingPanel } from '@/components/billing-panel';
-import type { SessionUser } from '@voiceforge/shared';
+import { InvoiceHistory } from '@/components/invoice-history';
+import type { SessionUser, InvoiceDto } from '@voiceforge/shared';
 
 export default async function BillingPage() {
   let me: SessionUser | null = null;
@@ -41,6 +42,8 @@ export default async function BillingPage() {
       </div>
 
       <BillingPanel workspaceId={me.active_workspace_id ?? ''} priceIds={priceIds} />
+
+      <InvoiceHistory workspaceId={me.active_workspace_id ?? ''} />
     </div>
   );
 }
