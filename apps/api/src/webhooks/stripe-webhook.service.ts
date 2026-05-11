@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
+import { QueueService } from '../queue/queue.service';
 import { BillingService } from '../billing/billing.service';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class StripeWebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly billing: BillingService,
+    private readonly queueService: QueueService,
   ) {
     this.stripe = env.STRIPE_SECRET_KEY
       ? new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
@@ -202,6 +204,23 @@ export class StripeWebhookService {
       where: { stripeCustomerId: customerId },
       data: { status: 'past_due' },
     });
+    // Queue dunning email notification (best-effort)
+    try {
+      const sub = await this.prisma.subscription.findFirst({
+        where: { stripeCustomerId: customerId },
+        include: { organization: { select: { id: true, name: true } } },
+      });
+      if (sub?.organization) {
+        await this.queueService.enqueue('notifications', 'dunning_email', {
+          organizationId: sub.organization.id,
+          organizationName: sub.organization.name,
+          customerId,
+        });
+        this.logger.log(`Dunning email queued for org ${sub.organization.id}`);
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to queue dunning email: ${err}`);
+    }
   }
 
   private inferPlan(data: Record<string, unknown>): string {
