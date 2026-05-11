@@ -167,6 +167,27 @@ export function BillingPanel({ workspaceId, priceIds }: BillingPanelProps) {
         </CardContent>
       </Card>
 
+      {/* Free trial callout for free plan */}
+      {plan === 'free' && status === 'active' ? (
+        <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/50">
+          <CardContent className="flex items-center justify-between py-4">
+            <div className="flex items-center gap-3">
+              <Badge variant="outline" className="bg-amber-100 text-amber-700 border-amber-300">
+                Free trial
+              </Badge>
+              <p className="text-sm text-foreground">Try 14 days free. No credit card required.</p>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => checkout.mutate()}
+              disabled={checkout.isPending || !getPriceIdForPlan('starter')}
+            >
+              {checkout.isPending ? 'Redirecting…' : 'Start free trial'}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {/* Usage meters */}
       <div>
         <h2 className="mb-4 text-sm font-medium text-muted-foreground uppercase tracking-wider">Usage this period</h2>
