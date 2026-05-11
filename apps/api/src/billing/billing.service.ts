@@ -250,7 +250,7 @@ export class BillingService {
     const sub = await this.getSubscription(organizationId);
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
     const limit = SHARED_PLAN_LIMITS[plan].agents;
-    return limit === -1 || currentAgentCount <= limit;
+    return limit === -1 || currentAgentCount < limit;
   }
 
   async canOutboundCall(organizationId: string, currentCallCount: number): Promise<boolean> {
