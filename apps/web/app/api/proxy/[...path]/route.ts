@@ -103,6 +103,10 @@ export async function GET(
     headers['x-org-role'] = user.app_metadata.active_org_role as string;
   }
 
+  if (user.app_metadata?.active_workspace_id) {
+    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
+  }
+
   const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'GET',
     headers,
