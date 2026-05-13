@@ -36,8 +36,8 @@ export class AlertsService {
 
     const usedCalls = Number(records.find(r => r.billableMetric === 'calls')?._sum.quantity ?? 0);
     const usedMinutes = Number(records.find(r => r.billableMetric === 'minutes')?._sum.quantity ?? 0);
-    const limitCalls = limits.outboundCalls === -1 ? Infinity : limits.outboundCalls;
-    const limitMinutes = limits.minutes === -1 ? Infinity : limits.minutes;
+    const limitCalls = limits.outboundCalls <= 0 ? Infinity : limits.outboundCalls;
+    const limitMinutes = limits.minutes <= 0 ? Infinity : limits.minutes;
 
     const callsPct = limitCalls === Infinity ? 0 : usedCalls / limitCalls;
     const minutesPct = limitMinutes === Infinity ? 0 : usedMinutes / limitMinutes;
@@ -46,7 +46,7 @@ export class AlertsService {
     return {
       atLimit: maxPct >= 1,
       warningThreshold: maxPct >= 0.8 && maxPct < 1,
-      percentage: Math.round(maxPct * 100),
+      percentage: Number.isFinite(maxPct) ? Math.round(maxPct * 100) : 0,
       calls: { used: usedCalls, limit: limitCalls === Infinity ? -1 : limitCalls },
       minutes: { used: usedMinutes, limit: limitMinutes === Infinity ? -1 : limitMinutes },
     };
@@ -70,14 +70,18 @@ export class AlertsService {
       if (existing) continue;
 
       if (org.owner?.email) {
-        await this.email.sendOverageAlert({
+        const result = await this.email.sendOverageAlert({
           to: org.owner.email,
           orgName: org.name,
           type,
           percentage: check.percentage,
           calls: check.calls,
           minutes: check.minutes,
-        }).catch(err => this.logger.error('Failed to send alert email', err));
+        }).catch(err => {
+          this.logger.error('Failed to send alert email', err);
+          return { delivered: false };
+        });
+        if (!result.delivered) continue;
       }
 
       await this.prisma.alert.create({
