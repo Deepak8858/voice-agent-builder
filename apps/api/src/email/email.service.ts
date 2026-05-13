@@ -40,4 +40,54 @@ export class EmailService {
       return { delivered: false };
     }
   }
+
+  async sendOverageAlert(params: {
+    to: string;
+    orgName: string;
+    type: 'warning' | 'at_limit';
+    percentage: number;
+    calls: { used: number; limit: number };
+    minutes: { used: number; limit: number };
+  }): Promise<{ delivered: boolean }> {
+    const { to, orgName, type, percentage, calls, minutes } = params;
+    const subject = type === 'at_limit'
+      ? `⚠️ ${orgName}: Voice minute limit reached`
+      : `⚠️ ${orgName}: ${percentage}% of voice minutes used`;
+
+    const html = `
+    <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2>${type === 'at_limit' ? 'Limit Reached' : 'Usage Warning'}</h2>
+      <p>Hi,</p>
+      <p>Your VoiceForge organization <strong>${orgName}</strong> has used <strong>${percentage}%</strong> of its ${type === 'at_limit' ? 'monthly voice minute limit' : 'plan allowance'}.</p>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr><td style="padding: 8px;">Calls</td><td style="padding: 8px;">${calls.used} / ${calls.limit === -1 ? '∞' : calls.limit}</td></tr>
+        <tr><td style="padding: 8px;">Minutes</td><td style="padding: 8px;">${minutes.used} / ${minutes.limit === -1 ? '∞' : minutes.limit}</td></tr>
+      </table>
+      ${type === 'warning' ? '<p>Consider upgrading to avoid service interruption.</p>' : '<p>Your account has been temporarily restricted. Upgrade to restore service.</p>'}
+    </div>
+  `;
+
+    const apiKey = env.RESEND_API_KEY;
+    if (!apiKey) {
+      console.warn('[EmailService] RESEND_API_KEY not set — skipping overage alert');
+      return { delivered: false };
+    }
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: env.EMAIL_FROM ?? 'VoiceForge <noreply@voiceforge.ai>',
+          to,
+          subject,
+          html,
+          text: `Usage update for ${orgName}: ${percentage}% used`,
+        }),
+      });
+      return { delivered: res.ok };
+    } catch (e) {
+      console.error('[EmailService] sendOverageAlert failed', e);
+      return { delivered: false };
+    }
+  }
 }
