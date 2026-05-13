@@ -7,6 +7,16 @@ import { AppModule } from './app.module';
 import { env, isProduction } from './config/env';
 import { logger } from './logging';
 
+// HIPAA/SOC2: refuse to boot without ENCRYPTION_KEY in production
+if (isProduction() && !env.ENCRYPTION_KEY) {
+  logger.fatal('ENCRYPTION_KEY must be set in production — refusing to boot');
+  process.exit(1);
+}
+
+if (!isProduction() && !env.ENCRYPTION_KEY) {
+  logger.warn('ENCRYPTION_KEY not set. Encryption disabled in dev mode.');
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
