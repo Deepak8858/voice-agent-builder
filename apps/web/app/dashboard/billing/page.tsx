@@ -1,6 +1,7 @@
 import { apiFetch } from '@/lib/api';
 import { BillingPanel } from '@/components/billing-panel';
 import { InvoiceHistory } from '@/components/invoice-history';
+import { BillingUsageWidget } from './billing-usage-widget';
 import type { SessionUser, InvoiceDto } from '@voiceforge/shared';
 
 export default async function BillingPage() {
@@ -40,6 +41,8 @@ export default async function BillingPage() {
           Subscription plans, voice minute usage, and invoice history.
         </p>
       </div>
+
+      <BillingUsageWidget orgId={me.active_workspace_id ?? ''} />
 
       <BillingPanel workspaceId={me.active_workspace_id ?? ''} priceIds={priceIds} />
 

@@ -58,6 +58,7 @@ model Organization {
   usageRecords  UsageRecord[]
   invites       OrgInvite[]
   agents        Agent[]
+  alerts        Alert[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -671,6 +672,32 @@ model UsageRecord {
   @@index([organizationId, billableMetric, periodStart])
   @@index([workspaceId, billableMetric, periodStart])
   @@map("usage_records")
+}
+
+model PlanPricing {
+  id           String   @id @default(uuid()) @db.Uuid
+  plan         String   // free | starter | growth | enterprise
+  metric       String   // calls | minutes | tools | agents
+  pricePerUnit Decimal  @default(0) @map("price_per_unit") @db.Decimal(10, 4)
+  monthlyLimit Int      @map("monthly_limit") // -1 = unlimited
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([plan, metric])
+  @@map("plan_pricing")
+}
+
+model Alert {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  type           String    // warning | at_limit
+  percentage     Int
+  sentAt         DateTime  @default(now()) @map("sent_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, type, sentAt])
+  @@map("alerts")
 }
 
 model StripeEvent {
