@@ -80,10 +80,10 @@ describe('AlertsService', () => {
 
   it('should flag atLimit when usage reaches 100%', async () => {
     mockPrisma = makePrisma({
-      subscription: { plan: 'free', status: 'active' },
+      subscription: { plan: 'starter', status: 'active' },
       usageRecords: [
         { billableMetric: 'calls', _sum: { quantity: BigInt(100) } },
-        { billableMetric: 'minutes', _sum: { quantity: BigInt(100) } },
+        { billableMetric: 'minutes', _sum: { quantity: BigInt(300) } },
       ],
     });
     const svc = makeService(mockPrisma);
