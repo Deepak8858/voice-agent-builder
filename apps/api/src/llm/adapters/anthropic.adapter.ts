@@ -54,6 +54,85 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
     };
   }
 
+  async *generateStream(input: GenerateAgentDto): AsyncGenerator<string> {
+    if (!env.ANTHROPIC_API_KEY) {
+      throw new Error('ANTHROPIC_API_KEY not set');
+    }
+
+    const baseTemplate = this.pickTemplate(input);
+    const { apiKey, baseUrl } = this.client;
+    const baseSpec: AgentSpec = baseTemplate.spec as AgentSpec;
+
+    const response = await fetch(`${baseUrl}/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        max_tokens: 4096,
+        stream: true,
+        system: [
+          {
+            type: 'text',
+            text: this.buildSystemPrompt(),
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: this.buildUserPrompt(input, baseSpec),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Anthropic streaming error ${response.status}: ${text.slice(0, 300)}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body for streaming');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6);
+          if (data === '[DONE]') break;
+
+          try {
+            const event = JSON.parse(data) as { type: string; delta?: { text: string } };
+            if (event.type === 'content_block_delta' && event.delta?.text) {
+              yield event.delta.text;
+            }
+          } catch {
+            // Skip malformed JSON
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   async healthCheck(): Promise<'ok' | 'unavailable'> {
     try {
       const { apiKey, baseUrl } = this.client;

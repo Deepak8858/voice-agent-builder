@@ -1,8 +1,26 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { env } from '../config/env';
+import { PrismaService } from '../prisma/prisma.service';
+
+interface WeeklyDigest {
+  workspaceId: string;
+  period: { start: string; end: string };
+  stats: {
+    totalCalls: number;
+    totalMinutes: number;
+    avgDuration: number;
+    blockedRate: number;
+  };
+  complianceAlerts: Array<{ reason: string; count: number }>;
+  upcomingCampaigns: Array<{ name: string; scheduledCalls: number }>;
+}
 
 @Injectable()
 export class EmailService {
+  private readonly logger = new Logger(EmailService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
   async sendInvite(params: {
     to: string;
     inviterName: string;
@@ -39,5 +57,76 @@ export class EmailService {
       console.error('[EmailService] sendInvite failed', e);
       return { delivered: false };
     }
+  }
+
+  async buildWeeklyDigest(workspaceId: string): Promise<WeeklyDigest> {
+    const periodStart = this.getWeekStart();
+    const periodEnd = new Date(periodStart);
+    periodEnd.setDate(periodEnd.getDate() + 7);
+
+    const [calls, complianceBlocked, campaigns] = await Promise.all([
+      this.prisma.call.findMany({
+        where: { workspaceId, createdAt: { gte: periodStart, lt: periodEnd } },
+        select: { durationSeconds: true },
+      }),
+      this.prisma.complianceCheck.findMany({
+        where: { workspaceId, checkedAt: { gte: periodStart, lt: periodEnd }, status: 'blocked' },
+        select: { reasons: true },
+      }),
+      this.prisma.outboundCampaign.findMany({
+        where: { workspaceId, status: { in: ['draft', 'running'] }, createdAt: { lt: periodEnd } },
+        select: { name: true, contacts: true },
+      }),
+    ]);
+
+    const totalCalls = calls.length;
+    const totalMinutes = calls.reduce((s, c) => s + (c.durationSeconds ?? 0), 0) / 60;
+    const avgDuration = totalCalls > 0 ? totalMinutes / totalCalls : 0;
+    const blockedCount = complianceBlocked.length;
+    const blockedRate = totalCalls + blockedCount > 0 ? blockedCount / (totalCalls + blockedCount) : 0;
+
+    const reasonCounts = new Map<string, number>();
+    for (const check of complianceBlocked) {
+      const reasons = (check.reasons as Array<{ code: string }>) ?? [];
+      for (const reason of reasons) {
+        reasonCounts.set(reason.code, (reasonCounts.get(reason.code) ?? 0) + 1);
+      }
+    }
+    const complianceAlerts = Array.from(reasonCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([reason, count]) => ({ reason, count }));
+
+    const upcomingCampaigns = campaigns.map((c) => ({
+      name: c.name,
+      scheduledCalls: ((c.contacts as unknown as Array<unknown>) ?? []).length,
+    }));
+
+    return {
+      workspaceId,
+      period: { start: periodStart.toISOString(), end: periodEnd.toISOString() },
+      stats: { totalCalls, totalMinutes, avgDuration, blockedRate },
+      complianceAlerts,
+      upcomingCampaigns,
+    };
+  }
+
+  async sendWeeklyDigest(workspaceId: string): Promise<void> {
+    const digest = await this.buildWeeklyDigest(workspaceId);
+    this.logger.log(
+      `[WeeklyDigest] Workspace ${workspaceId}: ${digest.stats.totalCalls} calls, ` +
+      `${digest.stats.totalMinutes.toFixed(1)} min, blocked ${(digest.stats.blockedRate * 100).toFixed(1)}%`,
+    );
+    // TODO: integrate Resend/SendGrid for full email delivery.
+  }
+
+  private getWeekStart(): Date {
+    const now = new Date();
+    const day = now.getUTCDay();
+    const diff = day === 0 ? 6 : day - 1;
+    const monday = new Date(now);
+    monday.setUTCDate(now.getUTCDate() - diff);
+    monday.setUTCHours(0, 0, 0, 0);
+    return monday;
   }
 }

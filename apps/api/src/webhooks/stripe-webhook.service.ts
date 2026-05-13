@@ -42,38 +42,47 @@ export class StripeWebhookService {
       return { handled: false, message: 'Invalid signature' };
     }
 
-    // Idempotency: skip already-processed events
-    const existing = await this.prisma.stripeEvent.findUnique({
-      where: { stripeEventId: event.id },
-    });
-    if (existing?.processedAt) {
-      return { handled: true, message: `Event ${event.id} already processed` };
-    }
+    // Idempotency check moved into transaction below
 
     try {
+      // Atomic idempotency: insert or skip, then dispatch
+      await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.stripeEvent.findUnique({
+          where: { stripeEventId: event.id },
+        });
+        if (existing?.processedAt) {
+          throw new Error(`Event ${event.id} already processed`);
+        }
+        await tx.stripeEvent.upsert({
+          where: { stripeEventId: event.id },
+          create: {
+            stripeEventId: event.id,
+            type: event.type,
+            apiVersion: event.api_version ?? null,
+            created: new Date(event.created * 1000),
+            data: event.data.object as unknown as Prisma.InputJsonValue,
+            livemode: event.livemode,
+            pendingWebhooks: event.pending_webhooks,
+          },
+          update: {},
+        });
+      });
       await this.dispatch(event);
       await this.markProcessed(event);
       return { handled: true, message: `Event ${event.id} processed` };
     } catch (err) {
+      if (String(err).includes('already processed')) {
+        return { handled: true, message: String(err) };
+      }
       await this.markError(event, String(err));
       return { handled: false, message: String(err) };
     }
   }
 
   private async markProcessed(event: Stripe.Event): Promise<void> {
-    await this.prisma.stripeEvent.upsert({
+    await this.prisma.stripeEvent.update({
       where: { stripeEventId: event.id },
-      create: {
-        stripeEventId: event.id,
-        type: event.type,
-        apiVersion: event.api_version ?? null,
-        created: new Date(event.created * 1000),
-        data: event.data.object as unknown as Prisma.InputJsonValue,
-        livemode: event.livemode,
-        pendingWebhooks: event.pending_webhooks,
-        processedAt: new Date(),
-      },
-      update: { processedAt: new Date(), errorMessage: null },
+      data: { processedAt: new Date(), errorMessage: null },
     });
   }
 

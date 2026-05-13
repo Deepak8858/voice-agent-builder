@@ -35,6 +35,8 @@ import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
 import { WorkspaceCrmModule } from './workspace-crm/workspace-crm.module';
 import { CrmRoutingModule } from './crm-routing/crm-routing.module';
 import { TwilioModule } from './twilio-adapter/twilio.module';
+import { ReferralModule } from './referral/referral.module';
+import { CalendarModule } from './calendar/calendar.module';
 
 @Module({
   imports: [
@@ -68,6 +70,8 @@ import { TwilioModule } from './twilio-adapter/twilio.module';
     PhoneNumbersModule,
     WorkspaceCrmModule,
     CrmRoutingModule,
+    ReferralModule,
+    CalendarModule,
   ],
   providers: [
     {

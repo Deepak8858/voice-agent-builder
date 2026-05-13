@@ -227,7 +227,7 @@ export class BillingService {
 
     switch (gate) {
       case 'outbound':
-        return limits.outboundCalls !== 0;
+        return limits.outboundCalls > 0 || limits.outboundCalls === -1;
       case 'ai_insights':
         return plan !== 'free';
       case 'compliance_blocks':

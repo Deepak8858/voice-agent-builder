@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -20,7 +20,7 @@ import { useApi } from '@/lib/use-api';
 import { useAgentDraftStore } from '@/lib/stores/agent-draft';
 import { AgentBuilderForm } from '@/components/agent-builder-form';
 import { AgentPreviewPanel } from '@/components/agent-preview-panel';
-import { RotateCcw, Save, PhoneIncoming, PhoneOutgoing, Phone } from 'lucide-react';
+import { RotateCcw, Save, PhoneIncoming, PhoneOutgoing, Phone, Loader2, Sparkles } from 'lucide-react';
 
 interface TemplateSummary {
   slug: string;
@@ -67,6 +67,10 @@ export default function AiGenerateAgentPage() {
   const { call } = useApi();
   const draft = useAgentDraftStore();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingToken, setStreamingToken] = useState('');
+  const [streamingError, setStreamingError] = useState<string | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
@@ -112,6 +116,61 @@ export default function AiGenerateAgentPage() {
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  // Streaming generation with SSE
+  const startStreamingGeneration = () => {
+    if (!workspaceId || draft.prompt.length < 10) return;
+
+    setIsStreaming(true);
+    setStreamingToken('');
+    setStreamingError(null);
+
+    // Build SSE URL
+    const params = new URLSearchParams({
+      prompt: draft.prompt,
+      ...(draft.templateSlug ? { template_slug: draft.templateSlug } : {}),
+    });
+    const url = `/api/proxy/workspaces/${workspaceId}/agents/generate/stream?${params}`;
+
+    const es = new EventSource(url);
+    eventSourceRef.current = es;
+
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.error) {
+          setStreamingError(data.error);
+          es.close();
+          setIsStreaming(false);
+          return;
+        }
+        if (data.done) {
+          es.close();
+          setIsStreaming(false);
+          toast.success('Generation complete! Review the spec below.');
+          return;
+        }
+        if (data.token) {
+          setStreamingToken((prev) => prev + data.token);
+        }
+      } catch {
+        // Skip malformed messages
+      }
+    };
+
+    es.onerror = () => {
+      setStreamingError('Connection lost. Try again.');
+      es.close();
+      setIsStreaming(false);
+    };
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close();
+    };
+  }, []);
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -342,16 +401,44 @@ export default function AiGenerateAgentPage() {
             )}
           </div>
 
-          <Button
-            onClick={() => generateMutation.mutate()}
-            disabled={draft.prompt.length < 10 || generateMutation.isPending}
-            className="gap-2 self-start"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-            </svg>
-            {generateMutation.isPending ? 'Starting generation…' : 'Generate Agent'}
-          </Button>
+          {/* Streaming preview */}
+          {isStreaming && (
+            <Card className="border-primary/30 bg-primary/5">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Generating...
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-32 overflow-y-auto rounded-md bg-muted/50 p-3 font-mono text-xs">
+                  {streamingToken || <span className="text-muted-foreground">Waiting for first token...</span>}
+                </div>
+                {streamingError && (
+                  <p className="mt-2 text-xs text-destructive">{streamingError}</p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => startStreamingGeneration()}
+              disabled={draft.prompt.length < 10 || isStreaming}
+              className="gap-2"
+            >
+              <Sparkles className="h-4 w-4" />
+              {isStreaming ? 'Generating...' : 'Stream generation'}
+            </Button>
+            <Button
+              onClick={() => generateMutation.mutate()}
+              disabled={draft.prompt.length < 10 || generateMutation.isPending || isStreaming}
+              variant="outline"
+              className="gap-2"
+            >
+              {generateMutation.isPending ? 'Starting...' : 'Generate (background)'}
+            </Button>
+          </div>
         </div>
 
         {/* Right: Preview */}

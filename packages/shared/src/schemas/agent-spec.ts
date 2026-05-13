@@ -31,6 +31,20 @@ export const AgentVoiceSchema = z.object({
   voice_id: z.string().optional(),
   allow_interruptions: z.boolean().default(true),
   speaking_rate: z.number().min(0.5).max(2.0).optional(),
+  /**
+   * Per-language voice overrides. Key = ISO 639-1 language code (en, hi, es, etc.).
+   * When set, the voice provider uses the matching language config instead of the
+   * flat voice_id/speaking_rate fields above.
+   */
+  language_configs: z
+    .record(
+      z.string().min(2),
+      z.object({
+        voice_id: z.string().optional(),
+        speaking_rate: z.number().min(0.5).max(2.0).optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const AgentIdentitySchema = z.object({

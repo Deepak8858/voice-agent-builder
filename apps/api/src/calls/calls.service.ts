@@ -12,10 +12,12 @@ import type {
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
+import { CacheService } from '../cache/cache.service';
 import {
   AgentNotFoundError,
   AgentNotPublishedError,
   AgentSpecInvalidError,
+  AppError,
   CallNotFoundError,
   ComplianceBlockedError,
 } from '../common/errors';
@@ -37,6 +39,7 @@ export class CallsService {
     private readonly analytics: AnalyticsService,
     private readonly billing: BillingService,
     private readonly queue: QueueService,
+    private readonly cache: CacheService,
   ) {}
 
   async startTestSession(
@@ -122,6 +125,19 @@ export class CallsService {
           ? 'Outbound calls are not available on your plan.'
           : `Monthly outbound call limit reached (${outbound.limit}). Please upgrade or wait until next billing cycle.`,
       );
+    }
+
+    // Idempotency: prevent double-click double-call within 60s
+    const recentDuplicate = await this.prisma.call.findFirst({
+      where: {
+        workspaceId,
+        agentId,
+        toNumber: dto.to_number,
+        createdAt: { gt: new Date(Date.now() - 60000) },
+      },
+    });
+    if (recentDuplicate) {
+      return this.toSummary(recentDuplicate);
     }
 
     const { agent, version } = await this.resolveAgentVersion(
@@ -228,6 +244,25 @@ export class CallsService {
     return rows.map((r) => this.toSummary(r));
   }
 
+  /**
+   * Returns existing CallEvent rows for backfill when a client connects to SSE.
+   */
+  async getLiveEvents(callId: string, workspaceId: string): Promise<Array<Record<string, unknown>>> {
+    const call = await this.prisma.call.findFirst({ where: { id: callId, workspaceId } });
+    if (!call) return [];
+    const events = await this.prisma.callEvent.findMany({
+      where: { callId },
+      orderBy: { eventTime: 'asc' },
+      select: { eventType: true, eventTime: true, payload: true },
+    });
+    return events.map((e) => ({
+      type: e.eventType,
+      call_id: callId,
+      event_time: e.eventTime.toISOString(),
+      data: e.payload,
+    }));
+  }
+
   async get(workspaceId: string, callId: string): Promise<CallDetail> {
     const call = await this.prisma.call.findFirst({
       where: { id: callId, workspaceId },
@@ -235,8 +270,14 @@ export class CallsService {
     });
     if (!call) throw new CallNotFoundError(callId);
 
+    // Use persisted transcript first (written on call.ended), fallback to provider
     let turns: CallTurn[] = [];
-    if (call.providerCallId) {
+    if (call.transcriptText && call.status === 'completed') {
+      // Reconstruct turns from persisted transcript if available
+      // This avoids re-fetching from Vapi on every GET
+      const t = await this.voice.getTranscript({ callId: call.providerCallId ?? call.id });
+      turns = t.turns;
+    } else if (call.providerCallId) {
       try {
         const t = await this.voice.getTranscript({ callId: call.providerCallId });
         turns = t.turns;
@@ -361,7 +402,7 @@ export class CallsService {
 
     if (!call) return;
 
-    await this.prisma.callEvent.create({
+    const callEvent = await this.prisma.callEvent.create({
       data: {
         callId: call.id,
         workspaceId: call.workspaceId,
@@ -369,6 +410,15 @@ export class CallsService {
         eventType: payload.event_type,
         payload: (payload.data as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },
+    });
+
+    // Publish to Redis Pub/Sub for real-time SSE subscribers
+    await this.cache.publish(`call:${call.id}`, {
+      type: payload.event_type,
+      call_id: call.id,
+      event_id: callEvent.id,
+      event_time: callEvent.eventTime.toISOString(),
+      data: payload.data,
     });
 
     if (payload.event_type === 'call.ended') {
@@ -382,19 +432,37 @@ export class CallsService {
         ? Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000))
         : null;
 
+      // Fetch transcript from provider if not in webhook payload
+      let finalTranscriptText = transcriptText;
+      if (!transcriptText && call.providerCallId) {
+        try {
+          const t = await this.voice.getTranscript({ callId: call.providerCallId });
+          finalTranscriptText = t.transcript;
+        } catch {
+          // best-effort: transcript fetch failed, continue without
+        }
+      }
+
       const updated = await this.prisma.call.update({
         where: { id: call.id },
         data: {
           status: 'completed',
           endedAt,
           durationSeconds,
-          ...(transcriptText ? { transcriptText } : {}),
+          ...(finalTranscriptText ? { transcriptText: finalTranscriptText } : {}),
           ...(recordingUrl ? { recordingUrl } : {}),
           ...(outcome ? { outcome } : {}),
         },
       });
 
       try {
+        // Look up agent language for scoped opt-out matching
+        const version = await this.prisma.agentVersion.findUnique({
+          where: { id: call.agentVersionId ?? '' },
+          select: { specJson: true },
+        });
+        const language = (version?.specJson as Record<string, unknown> | null)?.language as string | undefined;
+
         await this.compliance.processTranscriptOptOut({
           workspaceId: updated.workspaceId,
           callId: updated.id,
@@ -403,6 +471,7 @@ export class CallsService {
           fromNumber: updated.fromNumber,
           toNumber: updated.toNumber,
           transcript: updated.transcriptText,
+          language,
         });
       } catch {
         // best-effort; never break the webhook on opt-out detection
@@ -461,18 +530,22 @@ export class CallsService {
     }
 
     // Lazily ensure a runtime agent exists on the provider side.
-    // Idempotent: createAgent on Vapi/Retell either creates new or returns
-    // the existing assistant id. Errors here are non-fatal — the subsequent
-    // outbound call attempt will surface a structured VOICE_PROVIDER_ERROR.
-    try {
-      await this.voice.createAgent({
-        workspaceId,
-        agentId: agent.id,
-        agentVersionId: version.id,
-        spec: version.specJson as unknown as AgentSpec,
-      });
-    } catch {
-      // best-effort; real adapters surface errors via the call placement path
+    // Only call createAgent if providerRuntimeId not yet persisted (idempotent on provider side).
+    if (!version.providerRuntimeId) {
+      try {
+        await this.voice.createAgent({
+          workspaceId,
+          agentId: agent.id,
+          agentVersionId: version.id,
+          spec: version.specJson as unknown as AgentSpec,
+        });
+      } catch (err) {
+        throw new AppError(
+          'VOICE_PROVIDER_ERROR',
+          `Failed to create voice agent: ${err instanceof Error ? err.message : String(err)}`,
+          500,
+        );
+      }
     }
 
     return { agent, version };

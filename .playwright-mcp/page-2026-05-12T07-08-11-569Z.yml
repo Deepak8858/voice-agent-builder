@@ -1,0 +1,80 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "VoiceForge" [ref=e3] [cursor=pointer]:
+      - /url: /
+      - img [ref=e4]
+      - generic [ref=e8]: VoiceForge
+    - navigation [ref=e9]
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e16]:
+        - generic [ref=e17]:
+          - img [ref=e18]
+          - text: Now with real-time call testing
+        - heading "Build voice agents that answer back." [level=1] [ref=e24]:
+          - text: Build voice agents
+          - text: that answer back.
+        - paragraph [ref=e25]: Describe what your agent should do. VoiceForge generates the voice persona, call flow, knowledge base, tools, compliance settings, and a white-label dashboard for your clients.
+        - generic [ref=e26]:
+          - link "Get started free" [ref=e27] [cursor=pointer]:
+            - /url: /sign-up
+            - button "Get started free" [ref=e28]:
+              - text: Get started free
+              - img
+          - link "Sign in" [ref=e29] [cursor=pointer]:
+            - /url: /sign-in
+            - button "Sign in" [ref=e30]
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - heading "Everything you need to ship voice AI" [level=2] [ref=e34]
+          - paragraph [ref=e35]: From prompt to production in minutes, not months.
+        - generic [ref=e36]:
+          - generic [ref=e37]:
+            - img [ref=e39]
+            - heading "Prompt to agent" [level=3] [ref=e43]
+            - paragraph [ref=e44]: Describe your agent in plain English. We generate the full Agent Spec JSON — voice, flow, tools, and compliance.
+          - generic [ref=e45]:
+            - img [ref=e47]
+            - heading "Visual flow builder" [level=3] [ref=e51]
+            - paragraph [ref=e52]: Design call flows with a node-based canvas. Conditions, transfers, tool calls, and handoffs — all visual.
+          - generic [ref=e53]:
+            - img [ref=e55]
+            - heading "Compliance-first" [level=3] [ref=e57]
+            - paragraph [ref=e58]: Consent, DNC/DND, opt-out, call windows, and AI disclosure enforced by default on every outbound call.
+          - generic [ref=e59]:
+            - img [ref=e61]
+            - heading "White-label ready" [level=3] [ref=e65]
+            - paragraph [ref=e66]: Spin up agency + client workspaces, brand the dashboard, customize domains, and sell voice agents.
+      - generic [ref=e68]:
+        - heading "Three steps to your first call" [level=2] [ref=e70]
+        - generic [ref=e71]:
+          - generic [ref=e72]:
+            - img [ref=e74]
+            - generic [ref=e78]: Step 01
+            - heading "Describe your agent" [level=3] [ref=e79]
+            - paragraph [ref=e80]: Write a few sentences about what your agent does, who it speaks to, and what tools it needs.
+          - generic [ref=e81]:
+            - img [ref=e83]
+            - generic [ref=e87]: Step 02
+            - heading "Review the spec" [level=3] [ref=e88]
+            - paragraph [ref=e89]: VoiceForge generates a complete Agent Spec JSON. Edit personas, prompts, and flows in the visual builder.
+          - generic [ref=e90]:
+            - img [ref=e92]
+            - generic [ref=e96]: Step 03
+            - heading "Test and deploy" [level=3] [ref=e97]
+            - paragraph [ref=e98]: Run a browser test call, review transcripts, adjust. Hit publish and your agent starts answering.
+      - generic [ref=e101]:
+        - heading "Ready to build your first voice agent?" [level=2] [ref=e102]
+        - paragraph [ref=e103]: Start free. No credit card required. Get a working agent in under five minutes.
+        - link "Get started free" [ref=e105] [cursor=pointer]:
+          - /url: /sign-up
+          - button "Get started free" [ref=e106]:
+            - text: Get started free
+            - img
+      - generic [ref=e108]:
+        - generic [ref=e109]:
+          - img [ref=e111]
+          - generic [ref=e115]: VoiceForge AI
+        - paragraph [ref=e116]: © 2026 VoiceForge AI. All rights reserved.
+  - region "Notifications alt+T"
+  - alert [ref=e117]

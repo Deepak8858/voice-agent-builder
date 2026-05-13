@@ -1,6 +1,8 @@
-import { Body, Controller, Headers, HttpCode, Logger, Param, Post, UnauthorizedException } from '@nestjs/common';
+import { Body, Controller, Headers, HttpCode, Logger, Param, Post, Req, UnauthorizedException } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { env } from '../config/env';
+import type { RawBodyRequest } from '@nestjs/common';
+import { Request } from 'express';
+import { env, isProduction } from '../config/env';
 import { Public } from '../common/decorators/public.decorator';
 import { SkipRateLimit } from '../common/rate-limit.guard';
 import { CallsService } from './calls.service';
@@ -18,21 +20,20 @@ export class VoiceWebhookController {
   async receive(
     @Param('provider') provider: string,
     @Headers('x-vapi-signature') vapiSig: string | undefined,
+    @Req() req: RawBodyRequest<Request>,
     @Body() body: unknown,
   ): Promise<{ received: boolean }> {
-    const raw = JSON.stringify(body);
     const secret = env.VOICE_WEBHOOK_SECRET;
     const sig = provider === 'vapi' ? vapiSig : undefined;
 
     if (secret && sig) {
-      const expected = createHmac('sha256', secret).update(raw).digest('hex');
+      // Use raw body Buffer for deterministic HMAC — key order/whitespace stable
+      const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body), 'utf8');
+      const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
       if (expected.length !== sig.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
-        if (env.NODE_ENV === 'production') {
-          throw new UnauthorizedException('Invalid webhook signature');
-        }
-        this.logger.warn(`Voice webhook HMAC skipped in non-production (${provider})`);
+        throw new UnauthorizedException('Invalid webhook signature');
       }
-    } else if (env.NODE_ENV === 'production') {
+    } else if (isProduction() || !secret) {
       throw new UnauthorizedException('Missing webhook secret');
     }
 

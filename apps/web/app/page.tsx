@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { DemoAudioPlayer } from '@/components/demo-audio-player';
 import {
   Mic2,
   Shield,
@@ -9,6 +10,7 @@ import {
   Waves,
   GitBranch,
   PhoneCall,
+  Banknote,
 } from 'lucide-react';
 
 export default function Home() {
@@ -54,6 +56,11 @@ export default function Home() {
               </Button>
             </Link>
           </div>
+
+          <DemoAudioPlayer
+            src="/demo/dental-receptionist-30s.mp3"
+            label="Dental receptionist — 30 sec call"
+          />
         </div>
       </section>
 
@@ -78,8 +85,8 @@ export default function Home() {
               },
               {
                 icon: GitBranch,
-                title: 'Visual flow builder',
-                body: 'Design call flows with a node-based canvas. Conditions, transfers, tool calls, and handoffs — all visual.',
+                title: 'Prompt to agent',
+                body: 'Describe your agent in plain English. We generate the full Agent Spec — voice, flow, tools, and compliance settings.',
               },
               {
                 icon: Shield,
@@ -195,6 +202,11 @@ export default function Home() {
               VoiceForge AI
             </span>
           </div>
+          <nav className="flex items-center gap-6 text-xs text-muted-foreground">
+            <Link href="/pricing" className="hover:text-foreground transition-colors">Pricing</Link>
+            <Link href="/sign-up" className="hover:text-foreground transition-colors">Sign up</Link>
+            <Link href="/sign-in" className="hover:text-foreground transition-colors">Sign in</Link>
+          </nav>
           <p className="text-xs text-muted-foreground">
             &copy; {new Date().getFullYear()} VoiceForge AI. All rights reserved.
           </p>

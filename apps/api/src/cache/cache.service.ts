@@ -90,4 +90,71 @@ export class CacheService {
       return 1;
     }
   }
+
+  /**
+   * Publish a message to a Redis Pub/Sub channel.
+   * Used for real-time SSE — subscribers to `call:{callId}` receive live events.
+   */
+  async publish(channel: string, message: unknown): Promise<void> {
+    try {
+      const payload = typeof message === 'string' ? message : JSON.stringify(message);
+      await this.queue.getConnection().publish(channel, payload);
+    } catch (err) {
+      this.logger.debug(`[cache.publish:${channel}] ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Subscribe to a Redis Pub/Sub channel and yield messages as they arrive.
+   * Returns a ReadableStream of parsed JSON messages. Caller is responsible for cleanup.
+   *
+   * Usage:
+   *   const stream = cache.subscribe('call:abc');
+   *   const reader = stream.getReader();
+   *   while (true) { const { value } = await reader.read(); ... }
+   */
+  subscribe(channel: string): ReadableStream<string> {
+    const queue = this.queue;
+    let cleanup: (() => void) | null = null;
+
+    return new ReadableStream<string>({
+      start(controller) {
+        const conn = queue.getConnection().duplicate() as import('ioredis').Redis;
+        conn.connect().catch(() => {});
+        const msgQueue: string[] = [];
+        let flushing = false;
+
+        const flush = () => {
+          if (flushing || msgQueue.length === 0) return;
+          flushing = true;
+          while (msgQueue.length > 0) {
+            try {
+              controller.enqueue(msgQueue.shift()!);
+            } catch {
+              flushing = false;
+              return;
+            }
+          }
+          flushing = false;
+        };
+
+        const handler = (_ch: string, msg: string) => {
+          msgQueue.push(msg);
+          flush();
+        };
+
+        conn.on('message', handler);
+        conn.subscribe(channel).catch(() => {});
+
+        cleanup = () => {
+          conn.off('message', handler);
+          conn.unsubscribe(channel).catch(() => {});
+          conn.disconnect();
+        };
+      },
+      cancel() {
+        cleanup?.();
+      },
+    });
+  }
 }
