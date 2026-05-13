@@ -144,34 +144,38 @@ export class UsageService {
     const minutePrice =
       prices.find((p) => p.metric === 'minutes')?.pricePerUnit ?? new Prisma.Decimal(0);
 
-    const results: AgentUsageBreakdown[] = [];
-    for (const agent of agents) {
-      const agg = await this.prisma.call.aggregate({
-        where: {
-          agentId: agent.id,
-          createdAt: { gte: start, lte: end },
-        },
-        _count: { _all: true },
-        _sum: { durationSeconds: true },
-      });
+    if (agents.length === 0) return [];
 
-      const total_calls = agg._count._all;
-      const total_seconds = agg._sum.durationSeconds ?? 0;
+    // Single query to get all agent call stats (avoids N+1)
+    const agentStats = await this.prisma.call.groupBy({
+      by: ['agentId'],
+      where: {
+        agentId: { in: agents.map((a) => a.id) },
+        createdAt: { gte: start, lte: end },
+      },
+      _count: { _all: true },
+      _sum: { durationSeconds: true },
+    });
+
+    const statsMap = new Map(agentStats.map((s) => [s.agentId, s]));
+
+    return agents.map((agent) => {
+      const stats = statsMap.get(agent.id);
+      const total_calls = stats?._count._all ?? 0;
+      const total_seconds = Number(stats?._sum.durationSeconds ?? 0);
       const total_minutes = Math.round((total_seconds / 60) * 100) / 100;
       const estimated_cost =
         Math.round(
           (Number(callPrice) * total_calls + Number(minutePrice) * total_minutes) * 100,
         ) / 100;
 
-      results.push({
+      return {
         agent_id: agent.id,
         agent_name: agent.name,
         total_calls,
         total_minutes,
         estimated_cost,
-      });
-    }
-
-    return results;
+      };
+    });
   }
 }

@@ -1,12 +1,18 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
 import { UsageService } from './usage.service';
 
 @Controller('v1/orgs')
 export class UsageController {
-  constructor(private readonly usage: UsageService) {}
+  constructor(
+    private readonly usage: UsageService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Get(':id/usage')
   async getCurrentMonthUsage(@Param('id') orgId: string) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId } });
+    if (!org) throw new NotFoundException('Organization not found');
     return this.usage.getCurrentMonthUsage(orgId);
   }
 
@@ -16,6 +22,9 @@ export class UsageController {
     @Query('from') from: string,
     @Query('to') to: string,
   ) {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId } });
+    if (!org) throw new NotFoundException('Organization not found');
+
     const now = new Date();
     const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);

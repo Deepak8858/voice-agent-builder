@@ -7,14 +7,14 @@ function makePrisma(overrides?: {
   organization?: { id: string; plan: string } | null;
   planPrices?: Array<{ metric: string; pricePerUnit: Prisma.Decimal }>;
   agents?: Array<{ id: string; name: string }>;
-  callAggregates?: Record<string, { _count: { _all: number }; _sum: { durationSeconds: number | null } }>;
+  callGroupBy?: Array<{ agentId: string; _count: { _all: number }; _sum: { durationSeconds: number | bigint | null } }>;
 }) {
   const state = {
     usageRecords: overrides?.usageRecords ?? [],
     organization: overrides?.organization ?? { id: 'org-1', plan: 'free' },
     planPrices: overrides?.planPrices ?? [],
     agents: overrides?.agents ?? [],
-    callAggregates: overrides?.callAggregates ?? {},
+    callGroupBy: overrides?.callGroupBy ?? [],
   };
 
   return {
@@ -31,8 +31,8 @@ function makePrisma(overrides?: {
       findMany: vi.fn(async () => state.agents),
     },
     call: {
-      aggregate: vi.fn(async ({ where }: { where: { agentId: string } }) => {
-        return state.callAggregates[where.agentId] ?? { _count: { _all: 0 }, _sum: { durationSeconds: null } };
+      groupBy: vi.fn(async ({ where }: { where: { agentId: { in: string[] } } }) => {
+        return state.callGroupBy.filter((s) => where.agentId.in.includes(s.agentId));
       }),
     },
   };
@@ -118,7 +118,7 @@ describe('UsageService', () => {
           org_id: 'org-1',
           period: '2026-05',
           total_calls: BigInt(60),
-          total_minutes: BigInt,
+          total_minutes: BigInt(500),
           estimated_cost: new Prisma.Decimal('30.00'),
           active_workspaces: BigInt(2),
         },
@@ -159,10 +159,10 @@ describe('UsageService', () => {
           { metric: 'calls', pricePerUnit: new Prisma.Decimal('0.05') },
           { metric: 'minutes', pricePerUnit: new Prisma.Decimal('0.02') },
         ],
-        callAggregates: {
-          'agent-1': { _count: { _all: 10 }, _sum: { durationSeconds: 600 } },
-          'agent-2': { _count: { _all: 5 }, _sum: { durationSeconds: 300 } },
-        },
+        callGroupBy: [
+          { agentId: 'agent-1', _count: { _all: 10 }, _sum: { durationSeconds: 600 } },
+          { agentId: 'agent-2', _count: { _all: 5 }, _sum: { durationSeconds: 300 } },
+        ],
       });
       const svc = makeService(prisma);
       const result = await svc.getAgentUsageBreakdown('org-1', '2026-05');
@@ -194,9 +194,9 @@ describe('UsageService', () => {
         agents: [{ id: 'agent-1', name: 'Test Agent' }],
         organization: { id: 'org-1', plan: 'free' },
         planPrices: [],
-        callAggregates: {
-          'agent-1': { _count: { _all: 3 }, _sum: { durationSeconds: 180 } },
-        },
+        callGroupBy: [
+          { agentId: 'agent-1', _count: { _all: 3 }, _sum: { durationSeconds: 180 } },
+        ],
       });
       const svc = makeService(prisma);
       const result = await svc.getAgentUsageBreakdown('org-1', '2026-05');
