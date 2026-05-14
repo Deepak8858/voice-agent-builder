@@ -430,6 +430,8 @@ model AuditReport {
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([token])
+  @@index([organizationId])
+  @@index([expiresAt])
   @@map("audit_reports")
 }
 

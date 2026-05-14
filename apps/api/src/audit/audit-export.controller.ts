@@ -31,12 +31,14 @@ export class AuditExportController {
     @Query('org_id') orgId?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('action') action?: string,
     @Query('format') format?: 'csv' | 'json',
   ) {
     return this.exportSvc.getAuditLogs({
       orgId,
       from: from ? new Date(from) : undefined,
       to: to ? new Date(to) : undefined,
+      action,
       format: format ?? 'json',
     });
   }
