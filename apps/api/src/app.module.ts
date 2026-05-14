@@ -9,6 +9,7 @@ import { MetricsModule } from './common/metrics.module';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditModule } from './audit/audit.module';
+import { AuditExportModule } from './audit/audit-export.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CacheModule } from './cache/cache.module';
@@ -68,6 +69,7 @@ import { TwilioModule } from './twilio-adapter/twilio.module';
     PhoneNumbersModule,
     WorkspaceCrmModule,
     CrmRoutingModule,
+    AuditExportModule,
   ],
   providers: [
     {

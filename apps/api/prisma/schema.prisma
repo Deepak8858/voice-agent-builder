@@ -414,6 +414,26 @@ model AuditLog {
 }
 
 // --------------------------------------------------------------------------
+// Audit Export (HIPAA/SOC2 — signed report with 72h expiry)
+// --------------------------------------------------------------------------
+
+model AuditReport {
+  id             String   @id @default(uuid()) @db.Uuid
+  token          String   @unique
+  organizationId String   @map("organization_id") @db.Uuid
+  fromDate       DateTime @map("from_date")       @db.Timestamptz(6)
+  toDate         DateTime @map("to_date")         @db.Timestamptz(6)
+  auditorEmail   String   @map("auditor_email")
+  contentHash    String   @map("content_hash")
+  content        String   // truncated JSON, max 10000 chars
+  expiresAt      DateTime @map("expires_at")       @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@map("audit_reports")
+}
+
+// --------------------------------------------------------------------------
 // Integrations / tools (Phase 5)
 // --------------------------------------------------------------------------
 
