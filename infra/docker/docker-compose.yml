@@ -44,6 +44,24 @@ services:
       timeout: 5s
       retries: 3
 
+  voice-edge:
+    build:
+      context: ../..
+      dockerfile: apps/voice-edge/Dockerfile
+    container_name: vf-voice-edge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CARTESIA_API_KEY: ${CARTESIA_API_KEY}
+      LOG_LEVEL: info
+    depends_on:
+      redis:
+        condition: service_healthy
+
   web:
     build:
       context: ../..

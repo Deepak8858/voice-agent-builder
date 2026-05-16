@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { parsePhoneNumber, type CountryCode } from 'libphonenumber-js';
 import {
   ALLOWED_OUTBOUND_PURPOSES,
   BLOCKED_OUTBOUND_PURPOSES,
@@ -22,6 +23,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import {
   AgentNotFoundError,
+  AppError,
   ConsentNotFoundError,
   ContactNotFoundError,
 } from '../common/errors';
@@ -72,6 +74,7 @@ export class ComplianceService {
     dto: CreateContactDto,
   ): Promise<ContactDetail> {
     const phone = normalizePhone(dto.phone);
+    if (!phone) throw new AppError('INVALID_PHONE', `Invalid phone number: ${dto.phone}`, 400);
     const existing = await this.prisma.contact.findUnique({
       where: { workspaceId_phone: { workspaceId, phone } },
     });
@@ -269,6 +272,7 @@ export class ComplianceService {
     dto: AddDncDto,
   ): Promise<DncEntry> {
     const phone = normalizePhone(dto.phone);
+    if (!phone) throw new AppError('INVALID_PHONE', `Invalid phone number: ${dto.phone}`, 400);
     const row = await this.prisma.dncEntry.upsert({
       where: { workspaceId_phone: { workspaceId, phone } },
       create: {
@@ -296,6 +300,7 @@ export class ComplianceService {
 
   async removeDnc(workspaceId: string, phoneRaw: string, actorUserId: string): Promise<void> {
     const phone = normalizePhone(phoneRaw);
+    if (!phone) return; // Already invalid, nothing to remove
     const existing = await this.prisma.dncEntry.findUnique({
       where: { workspaceId_phone: { workspaceId, phone } },
     });
@@ -334,14 +339,16 @@ export class ComplianceService {
     let contactId: string | null = args.contactId ?? null;
     if (direction === 'outbound' && args.toNumber) {
       const phone = normalizePhone(args.toNumber);
-      const contact = contactId
-        ? await this.prisma.contact.findFirst({
-            where: { id: contactId, workspaceId: args.workspaceId },
-          })
-        : await this.prisma.contact.findUnique({
-            where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
-          });
-      if (contact) contactId = contact.id;
+      if (phone) {
+        const contact = contactId
+          ? await this.prisma.contact.findFirst({
+              where: { id: contactId, workspaceId: args.workspaceId },
+            })
+          : await this.prisma.contact.findUnique({
+              where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+            });
+        if (contact) contactId = contact.id;
+      }
     }
 
     // 1. Agent must be published for outbound.
@@ -381,17 +388,24 @@ export class ComplianceService {
         });
       } else {
         const phone = normalizePhone(args.toNumber);
-
-        // 4. DNC list check.
-        const dnc = await this.prisma.dncEntry.findUnique({
-          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
-        });
-        if (dnc) {
+        if (!phone) {
           reasons.push({
-            code: 'dnc_listed',
-            message: `Phone ${phone} is on the workspace DNC list (source=${dnc.source}).`,
+            code: 'invalid_phone',
+            message: `to_number ${args.toNumber} is not a valid phone number.`,
             severity: 'blocking',
           });
+        } else {
+          // 4. DNC list check.
+          const dnc = await this.prisma.dncEntry.findUnique({
+            where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+          });
+          if (dnc) {
+            reasons.push({
+              code: 'dnc_listed',
+              message: `Phone ${phone} is on the workspace DNC list (source=${dnc.source}).`,
+              severity: 'blocking',
+            });
+          }
         }
 
         // 5. Opt-out check on the linked contact.
@@ -466,16 +480,11 @@ export class ComplianceService {
       });
     }
     if (spec?.compliance?.recording_notice_required && direction === 'outbound') {
-      const hasNotice = (spec.goals ?? []).some((g) =>
-        g.toLowerCase().includes('record'),
-      );
-      if (!hasNotice) {
-        reasons.push({
-          code: 'missing_recording_notice',
-          message: 'Recording notice is required but no recording-related goal is configured.',
-          severity: 'warning',
-        });
-      }
+      reasons.push({
+        code: 'recording_notice_enabled',
+        message: 'Recording notice is enabled - warn callers at call start.',
+        severity: 'warning',
+      });
     }
 
     const blockingReasons = reasons.filter((r) => r.severity === 'blocking');
@@ -512,6 +521,7 @@ export class ComplianceService {
     };
   }
 
+
   /**
    * Convenience used by CallsService after the call row is created so the
    * compliance check is linked to the call audit-trail.
@@ -523,6 +533,7 @@ export class ComplianceService {
         // Best-effort: missing row should not fail the call.
       });
   }
+
 
   /**
    * Scans a finished-call transcript for opt-out phrases (stop/remove/do not
@@ -538,11 +549,15 @@ export class ComplianceService {
     fromNumber: string | null;
     toNumber: string | null;
     transcript: string | null;
+    language?: string;
   }): Promise<{ opted_out: boolean; matched_phrase: string | null }> {
-    const transcript = (args.transcript ?? '').toLowerCase();
-    if (!transcript) return { opted_out: false, matched_phrase: null };
+    const transcriptText = (args.transcript ?? '').toLowerCase();
+    if (!transcriptText) return { opted_out: false, matched_phrase: null };
 
-    const phrase = OPT_OUT_PHRASES.find((p) => transcript.includes(p));
+    // Select phrase list by language (agent's configured language), fall back to English
+    const lang = args.language ?? 'en';
+    const phrases = OPT_OUT_PHRASES[lang] ?? OPT_OUT_PHRASES['en'];
+    const phrase = phrases.find((p) => transcriptText.includes(p.toLowerCase())) ?? null;
     if (!phrase) return { opted_out: false, matched_phrase: null };
 
     // Pick the caller-side number based on direction.
@@ -556,6 +571,7 @@ export class ComplianceService {
       let contactId = args.contactId ?? null;
       if (!contactId && otherNumber) {
         const phone = normalizePhone(otherNumber);
+        if (!phone) return { opted_out: false, matched_phrase: null };
         const existing = await this.prisma.contact.findUnique({
           where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
         });
@@ -582,17 +598,19 @@ export class ComplianceService {
       // blocked on later inbound→outbound flows even without a contact lookup.
       if (otherNumber) {
         const phone = normalizePhone(otherNumber);
-        await this.prisma.dncEntry.upsert({
-          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
-          create: {
-            workspaceId: args.workspaceId,
-            organizationId: await this.prisma.organizationIdFor(args.workspaceId),
-            phone,
-            source: 'request',
-            reason: `auto: caller said "${phrase}"`,
-          },
-          update: { source: 'request' },
-        });
+        if (phone) {
+          await this.prisma.dncEntry.upsert({
+            where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+            create: {
+              workspaceId: args.workspaceId,
+              organizationId: await this.prisma.organizationIdFor(args.workspaceId),
+              phone,
+              source: 'request',
+              reason: `auto: caller said "${phrase}"`,
+            },
+            update: { source: 'request' },
+          });
+        }
       }
 
       await this.audit.log({
@@ -705,28 +723,101 @@ export class ComplianceService {
 // --- helpers ---------------------------------------------------------
 
 /**
- * Phrases that should automatically opt a caller out of further outbound
- * contact. Order matters only for which phrase gets recorded as the trigger;
- * keep the more specific multi-word phrases first.
+ * Multi-language opt-out phrases. Order matters - more specific multi-word
+ * phrases first so they match before shorter sub-phrases.
  */
-export const OPT_OUT_PHRASES = [
-  'do not call',
-  'don’t call me',
-  "don't call me",
-  'remove me',
-  'take me off',
-  'unsubscribe',
-  'opt out',
-  'stop calling',
-  'stop contacting',
-];
+export const OPT_OUT_PHRASES: Record<string, string[]> = {
+  en: [
+    'do not call',
+    "don't call me",
+    'remove me',
+    'take me off your list',
+    'take me off',
+    'unsubscribe',
+    'opt out',
+    'stop calling',
+    'stop contacting me',
+    'stop contacting',
+    'put me on the do not call list',
+    'do not contact me',
+  ],
+  hi: [
+    'मत कॉल करो',
+    'मत फोन करो',
+    'मुझे मत कॉल करो',
+    'dont call me',
+    'remove from list',
+    'unsubscribe',
+    'opt out',
+    'stop calling',
+    'गांव से हटा दो',
+    'contact mat karo',
+    'contact mat kro',
+  ],
+  es: [
+    'no me llames',
+    'no me llamar',
+    'no me llam',
+    'retirar me de la lista',
+    'quitarme de la lista',
+    'darme de baja',
+    'cancelar suscripcion',
+    'no me contactes',
+    'no me contacts',
+  ],
+  fr: [
+    "ne m'appelez pas",
+    'ne m appelez pas',
+    "m'appeler plus",
+    'me retirer de la liste',
+    'retirez-moi de la liste',
+    'desabonner',
+    'me desinscrire',
+    "arretes d'appeler",
+    'arretes d appeler',
+    'ne me contactez plus',
+  ],
+  zh: [
+    '别打电话',
+    '不要打电话',
+    '取消订阅',
+    '不要再打来',
+    '请勿来电',
+    '停止联系',
+  ],
+  pt: [
+    'não me ligue',
+    'não me llam',
+    'não me contacte',
+    'retirar me da lista',
+    'tire-me da lista',
+    'desinscrever',
+    'cancelar inscricao',
+    'pare de me ligar',
+    'pare de me chamar',
+  ],
+};
+
+/** Language-scoped phrase lists used by processTranscriptOptOut */
 
 /**
- * Strip surface formatting so `(415) 555-1212` and `+1 415 555 1212` collide.
- * We do NOT do full E.164 normalization here; that's a future enhancement.
+ * Normalize phone number to E.164 format (+12125551234).
+ * Returns null if the number cannot be parsed as valid.
  */
-export function normalizePhone(input: string): string {
-  return input.replace(/[^+0-9]/g, '');
+export function normalizePhone(input: string, defaultCountry = 'US'): string | null {
+  try {
+    const stripped = input.replace(/[^+0-9]/g, '');
+    // If already E.164-ish (starts with +), parse as international
+    if (stripped.startsWith('+')) {
+      const parsed = parsePhoneNumber(stripped, defaultCountry as CountryCode);
+      if (parsed?.isValid()) return parsed.format('E.164');
+    }
+    const parsed = parsePhoneNumber(stripped, defaultCountry as CountryCode);
+    if (!parsed?.isValid()) return null;
+    return parsed.format('E.164');
+  } catch {
+    return null;
+  }
 }
 
 /**

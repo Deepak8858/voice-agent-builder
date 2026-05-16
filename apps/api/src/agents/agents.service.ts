@@ -51,6 +51,13 @@ export class AgentsService {
     return this.generator.generate({ ...dto, knowledge_source_ids: validIds });
   }
 
+  getStreamingGenerator(): ((input: GenerateAgentDto) => AsyncGenerator<string>) | null {
+    if (typeof this.generator.generateStream === 'function') {
+      return this.generator.generateStream as (input: GenerateAgentDto) => AsyncGenerator<string>;
+    }
+    return null;
+  }
+
   async list(workspaceId: string): Promise<ListAgentsResult> {
     const key = `agents:list:${workspaceId}`;
     const cached = await this.cache.get<AgentSummary[]>(key);

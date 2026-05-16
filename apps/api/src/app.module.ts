@@ -37,6 +37,8 @@ import { WorkspaceCrmModule } from './workspace-crm/workspace-crm.module';
 import { CrmRoutingModule } from './crm-routing/crm-routing.module';
 import { TwilioModule } from './twilio-adapter/twilio.module';
 import { SettingsModule } from './settings/settings.module';
+import { ReferralModule } from './referral/referral.module';
+import { CalendarModule } from './calendar/calendar.module';
 
 @Module({
   imports: [
@@ -72,6 +74,8 @@ import { SettingsModule } from './settings/settings.module';
     CrmRoutingModule,
     AuditExportModule,
     SettingsModule,
+    ReferralModule,
+    CalendarModule,
   ],
   providers: [
     {

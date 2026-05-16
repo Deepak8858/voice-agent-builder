@@ -62,16 +62,11 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().optional(),
 
-  JWT_SECRET: z.string()
-    .refine(
-      (v) => isProduction() ? v && v.length >= 32 : true,
-      'JWT_SECRET must be 32+ characters in production'
-    )
-    .default('change-me-in-development'),
-  ENCRYPTION_KEY: z.string().refine(
-    (v) => isProduction() ? v && v.length >= 32 : true,
-    'ENCRYPTION_KEY must be 32+ characters in production'
+  JWT_SECRET: z.string().min(32).refine(
+    (v) => process.env.NODE_ENV !== 'production' || v !== 'change-me-in-development',
+    'JWT_SECRET must be a secure 32+ character string in production',
   ),
+  ENCRYPTION_KEY: z.string().optional(),
 
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),

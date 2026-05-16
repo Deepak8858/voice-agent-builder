@@ -43,6 +43,7 @@ export const ComplianceReasonCodeSchema = z.enum([
   'unsupported_purpose',
   'missing_ai_disclosure',
   'missing_recording_notice',
+  'recording_notice_enabled',
   'invalid_phone',
 ]);
 export type ComplianceReasonCode = z.infer<typeof ComplianceReasonCodeSchema>;

@@ -28,9 +28,9 @@ export type UsageType = z.infer<typeof UsageTypeSchema>;
 export const PLAN_LIMITS = {
   free: {
     agents: 1,
-    outboundCalls: 0,
-    minutes: 0,
-    tools: 0,
+    outboundCalls: 5,    // 5 trial calls (consumable, not monthly)
+    minutes: 10,          // 10 trial minutes (consumable, not monthly)
+    tools: 2,
     workspaces: 1,
     contacts: 50,
     complianceBlocks: false,

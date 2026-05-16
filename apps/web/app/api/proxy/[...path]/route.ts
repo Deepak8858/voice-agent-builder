@@ -67,7 +67,7 @@ export async function POST(
 }
 
 /**
- * GET proxy for fetching data
+ * GET proxy for fetching data or SSE streams
  */
 export async function GET(
   req: NextRequest,
@@ -108,6 +108,20 @@ export async function GET(
     headers,
     cache: 'no-store',
   });
+
+  // SSE stream: pass raw body through as streaming response
+  const contentType = apiRes.headers.get('content-type') ?? '';
+  if (contentType.includes('text/event-stream') || pathString.includes('/live')) {
+    return new Response(apiRes.body, {
+      status: apiRes.status,
+      headers: {
+        'content-type': contentType || 'text/event-stream',
+        'cache-control': 'no-cache',
+        'connection': 'keep-alive',
+        'x-accel-buffering': 'no',
+      },
+    });
+  }
 
   const data = await apiRes.json().catch(() => null);
   return NextResponse.json(data ?? {}, { status: apiRes.status });
@@ -159,6 +173,61 @@ export async function PATCH(
 
   const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
     method: 'PATCH',
+    headers,
+    body,
+    cache: 'no-store',
+  });
+
+  const data = await apiRes.json().catch(() => null);
+  return NextResponse.json(data ?? {}, { status: apiRes.status });
+}
+
+/**
+ * PUT proxy (needed for flow builder saves)
+ */
+export async function PUT(
+  req: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> },
+) {
+  const { path } = await params;
+  const pathString = '/' + (path ?? []).join('/');
+  const supabase = await createServerSupabaseClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
+  }
+
+  const headers: Record<string, string> = {
+    'content-type': req.headers.get('content-type') ?? 'application/json',
+    'x-internal-key': INTERNAL_API_KEY ?? '',
+    'x-user-id': user.id,
+    'x-user-email': user.email ?? '',
+  };
+
+  if (user.user_metadata?.app_user_id) {
+    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
+  }
+
+  if (user.app_metadata?.active_org_id) {
+    headers['x-org-id'] = user.app_metadata.active_org_id as string;
+  }
+
+  if (user.app_metadata?.active_org_role) {
+    headers['x-org-role'] = user.app_metadata.active_org_role as string;
+  }
+
+  if (user.app_metadata?.active_workspace_id) {
+    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
+  }
+
+  const body = await req.text();
+
+  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+    method: 'PUT',
     headers,
     body,
     cache: 'no-store',

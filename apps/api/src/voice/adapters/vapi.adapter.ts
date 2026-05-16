@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
 import type { AgentSpec } from '@voiceforge/shared';
@@ -112,8 +113,7 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   readonly name = 'vapi';
   private readonly logger = new Logger(VapiVoiceAdapter.name);
 
-  // agentVersionId (VoiceForge) -> vapi assistant id
-  private readonly assistantIdMap = new Map<string, string>();
+  constructor(private readonly prisma: PrismaService) {}
 
   // -------------------------------------------------------------------------
   // createAgent
@@ -121,17 +121,21 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   async createAgent(input: CreateRuntimeAgentInput): Promise<CreateRuntimeAgentResult> {
     const { spec } = input;
 
+    const voiceOverrides = spec.voice.language_configs?.[spec.language];
+    const voiceId = voiceOverrides?.voice_id ?? spec.voice.voice_id ?? 'Clara';
+    const speakingRate = voiceOverrides?.speaking_rate ?? spec.voice.speaking_rate;
+
     const assistantPayload: Record<string, unknown> = {
       name: spec.name,
       model: {
         provider: 'openai',
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini', // ~10x cheaper than gpt-4o, sufficient for voice agents
         systemPrompt: buildSystemPrompt(spec),
       },
       voice: {
         provider: 'vapi',
-        voiceId: spec.voice.voice_id || 'Clara',
-        ...(spec.voice.speaking_rate ? { speakingRate: spec.voice.speaking_rate } : {}),
+        voiceId,
+        ...(speakingRate ? { speakingRate } : {}),
       },
       firstMessage: spec.conversation_rules.first_message,
       metadata: {
@@ -145,8 +149,11 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
 
     const assistant = await vapiRequest<{ id: string }>('POST', '/assistant', assistantPayload);
 
-    // Cache so startOutboundCall can look up the vapi assistant id
-    this.assistantIdMap.set(input.agentVersionId, assistant.id);
+    // Persist provider runtime ID to DB — survives restarts, enables horizontal scale
+    await this.prisma.agentVersion.update({
+      where: { id: input.agentVersionId },
+      data: { providerRuntimeId: assistant.id },
+    });
 
     return { provider_runtime_id: assistant.id };
   }
@@ -185,14 +192,16 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   async createBrowserTestSession(
     input: CreateBrowserTestSessionInput,
   ): Promise<BrowserTestSessionResult> {
-    // Vapi web call: POST /call with type=webCall returns a webCallUrl the
-    // browser SDK can connect to. Requires the assistant to already exist
-    // via createAgent (which caches assistantIdMap).
-    const assistantId = this.assistantIdMap.get(input.agentVersionId);
+    // Resolve assistant ID from DB — survives restarts
+    const version = await this.prisma.agentVersion.findUnique({
+      where: { id: input.agentVersionId },
+      select: { providerRuntimeId: true },
+    });
+    const assistantId = version?.providerRuntimeId;
     if (!assistantId) {
       throw new AppError(
         'VOICE_PROVIDER_ERROR',
-        `No vapi assistant found for agent version ${input.agentVersionId}. Call createAgent first.`,
+        `No vapi assistant found for agent version ${input.agentVersionId}. Ensure agent is published.`,
         400,
       );
     }
@@ -220,12 +229,16 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   // startOutboundCall
   // -------------------------------------------------------------------------
   async startOutboundCall(input: StartOutboundCallInput): Promise<StartOutboundCallResult> {
-    // Look up the vapi assistant id for this VoiceForge agent version
-    const assistantId = this.assistantIdMap.get(input.agentVersionId);
+    // Resolve assistant ID from DB — survives restarts, enables horizontal scale
+    const version = await this.prisma.agentVersion.findUnique({
+      where: { id: input.agentVersionId },
+      select: { providerRuntimeId: true },
+    });
+    const assistantId = version?.providerRuntimeId;
     if (!assistantId) {
       throw new AppError(
         'VOICE_PROVIDER_ERROR',
-        `No vapi assistant found for agent version ${input.agentVersionId}. Call createAgent first.`,
+        `No vapi assistant found for agent version ${input.agentVersionId}. Ensure agent is published.`,
         400,
       );
     }

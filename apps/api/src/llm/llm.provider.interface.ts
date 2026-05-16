@@ -3,6 +3,8 @@ import type { GenerateAgentDto, GenerateAgentResult } from '@voiceforge/shared';
 export interface LlmAgentGenerator {
   readonly name: string;
   generate(input: GenerateAgentDto): Promise<GenerateAgentResult>;
+  /** Streams the agent generation token-by-token. Yields JSON strings for each token. */
+  generateStream?(input: GenerateAgentDto): AsyncGenerator<string>;
   /** Returns 'ok' if the LLM provider is reachable, 'unavailable' otherwise. */
   healthCheck?(): Promise<'ok' | 'unavailable'>;
 }

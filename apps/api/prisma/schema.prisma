@@ -36,6 +36,8 @@ model User {
   createdAgents        Agent[]               @relation("AgentCreatedBy")
   createdVersions      AgentVersion[]        @relation("AgentVersionCreatedBy")
   createdKnowledge     KnowledgeSource[]     @relation("KnowledgeSourceCreatedBy")
+  referralsMade        Referral[]            @relation("ReferrerUser")
+  referralsJoined      Referral[]            @relation("ReferredUser")
 
   @@map("users")
 }
@@ -104,6 +106,8 @@ model Workspace {
   crmRoutingRules      CrmRoutingRule[]
   twilioPhoneNumbers   TwilioPhoneNumber[]
   outboundCampaigns    OutboundCampaign[]
+  referralsMade        Referral[]              @relation("ReferrerWorkspace")
+  referralsJoined      Referral[]              @relation("ReferredWorkspace")
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -652,6 +656,36 @@ model ClientInvite {
   @@index([agencyWorkspaceId, status])
   @@index([email])
   @@map("client_invites")
+}
+
+// --------------------------------------------------------------------------
+// Referrals (Phase 6)
+// --------------------------------------------------------------------------
+
+model Referral {
+  id                   String    @id @default(uuid()) @db.Uuid
+  referrerUserId       String    @map("referrer_user_id") @db.Uuid
+  referredUserId       String?   @map("referred_user_id") @db.Uuid
+  referrerWorkspaceId  String    @map("referrer_workspace_id") @db.Uuid
+  referredWorkspaceId  String?   @map("referred_workspace_id") @db.Uuid
+  referrerOrganizationId String  @map("referrer_organization_id") @db.Uuid
+  referredOrganizationId String? @map("referred_organization_id") @db.Uuid
+  status               String    @default("pending") // pending | converted | expired | bonus_awarded
+  bonusMinutes         Int       @default(100) @map("bonus_minutes")
+  bonusAwardedAt       DateTime? @map("bonus_awarded_at")
+  inviteToken          String    @unique @map("invite_token")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  referrerUser       User       @relation("ReferrerUser", fields: [referrerUserId], references: [id])
+  referredUser       User?      @relation("ReferredUser", fields: [referredUserId], references: [id])
+  referrerWorkspace  Workspace  @relation("ReferrerWorkspace", fields: [referrerWorkspaceId], references: [id])
+  referredWorkspace  Workspace? @relation("ReferredWorkspace", fields: [referredWorkspaceId], references: [id])
+
+  @@index([referrerUserId, status])
+  @@index([referredUserId])
+  @@index([inviteToken])
+  @@map("referrals")
 }
 
 // --------------------------------------------------------------------------

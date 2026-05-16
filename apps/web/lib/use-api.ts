@@ -1,15 +1,23 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { ApiEnvelope } from '@voiceforge/shared';
 
 const API_BASE = '/api/proxy';
+
+export interface LimitExceededError extends Error {
+  code: 'LIMIT_EXCEEDED';
+  limitType?: string;
+  currentPlan?: string;
+}
 
 /**
  * Browser hook for API calls. Uses fetch to Next.js proxy which adds
  * session context and internal key before forwarding to NestJS.
  */
 export function useApi() {
+  const [limitExceeded, setLimitExceeded] = useState<{ type?: string; plan?: string } | null>(null);
+
   const call = useCallback(
     async <T>(path: string, init: RequestInit = {}): Promise<T> => {
       const headers = new Headers(init.headers);
@@ -24,6 +32,20 @@ export function useApi() {
         headers,
         credentials: 'include',
       });
+
+      // Handle 403 with limit exceeded
+      if (res.status === 403) {
+        const body = (await res.json().catch(() => null)) as ApiEnvelope<null> | null;
+        if (body?.error?.code === 'PLAN_LIMIT_EXCEEDED') {
+          const err = new Error(body.error.message ?? 'Limit exceeded') as LimitExceededError;
+          err.code = 'LIMIT_EXCEEDED';
+          err.limitType = body.error.details?.limitType as string | undefined;
+          err.currentPlan = body.error.details?.currentPlan as string | undefined;
+          setLimitExceeded({ type: err.limitType, plan: err.currentPlan });
+          throw err;
+        }
+      }
+
       const body = (await res.json().catch(() => null)) as ApiEnvelope<T> | null;
       if (!res.ok || !body || body.success === false) {
         const code = body?.error?.code ?? 'INTERNAL_ERROR';
@@ -38,5 +60,5 @@ export function useApi() {
     [],
   );
 
-  return { call };
+  return { call, limitExceeded, clearLimitExceeded: () => setLimitExceeded(null) };
 }

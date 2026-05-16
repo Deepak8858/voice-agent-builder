@@ -18,6 +18,12 @@ if (!isProduction() && !env.ENCRYPTION_KEY) {
 }
 
 async function bootstrap() {
+  // Fail fast: JWT_SECRET must be secure in production
+  if (isProduction() && env.JWT_SECRET === 'change-me-in-development') {
+    logger.fatal({}, 'FATAL: JWT_SECRET must be set to a secure 32+ character string in production');
+    process.exit(1);
+  }
+
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
   });

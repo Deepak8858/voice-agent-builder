@@ -4,6 +4,7 @@ import { ApiCallError, apiFetch } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { CallLiveMonitor } from '@/components/call-live-monitor';
 import { cn } from '@/lib/cn';
 import type { CallDetail, SessionUser } from '@voiceforge/shared';
 import { Phone, ArrowLeft, Clock, Calendar, User, MapPin } from 'lucide-react';
@@ -53,34 +54,16 @@ export default async function CallDetailPage({ params }: PageProps) {
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Phone className="h-4 w-4 text-primary" />
-              Transcript
+              Live Transcript
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {detail.turns.length > 0 ? (
-              <ul className="flex flex-col gap-3">
-                {detail.turns.map((t, idx) => (
-                  <li
-                    key={idx}
-                    className={cn(
-                      'flex max-w-[85%] flex-col rounded-xl px-4 py-3 text-sm',
-                      t.speaker === 'agent'
-                        ? 'self-start bg-muted border border-border'
-                        : 'self-end bg-primary/10 text-primary-foreground border border-primary/20',
-                    )}
-                  >
-                    <span className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground mb-1">
-                      {t.speaker} · {Math.round(t.at_ms / 1000)}s
-                    </span>
-                    <span className="text-foreground">{t.text}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No transcript yet. Real provider transcripts arrive via webhooks.
-              </p>
-            )}
+            <CallLiveMonitor
+              callId={callId}
+              workspaceId={me.active_workspace_id ?? ''}
+              initialTurns={detail.turns}
+              initialStatus={detail.status}
+            />
           </CardContent>
         </Card>
 

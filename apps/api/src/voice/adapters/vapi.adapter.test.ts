@@ -41,7 +41,9 @@ describe('VapiVoiceAdapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    adapter = new VapiVoiceAdapter();
+    adapter = new VapiVoiceAdapter(
+      {} as Parameters<typeof VapiVoiceAdapter.prototype.createAgent>[0] extends { prisma: infer P } ? P : never,
+    );
   });
 
   describe('createAgent', () => {

@@ -31,6 +31,8 @@ export const API_ERROR_CODES = [
   'TWILIO_PURCHASE_FAILED',
   'TWILIO_CALL_FAILED',
   'INTERNAL_ERROR',
+  'PLAN_LIMIT_EXCEEDED',
+  'INVALID_PHONE',
 ] as const;
 
 export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES);

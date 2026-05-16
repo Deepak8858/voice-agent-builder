@@ -13,14 +13,18 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public files (.*) (e.g. logo.png, pdf files)
-     * - api routes (handled separately by API layer)
-     */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)$)).*',
+    '/dashboard/:path*',
+    '/agents/:path*',
+    '/calls/:path*',
+    '/onboarding/:path*',
+    '/invite/:path*',
+    '/settings/:path*',
+    '/knowledge/:path*',
+    '/integrations/:path*',
+    '/compliance/:path*',
+    '/analytics/:path*',
+    '/white-label/:path*',
+    '/clients/:path*',
+    '/billing/:path*',
   ],
 };

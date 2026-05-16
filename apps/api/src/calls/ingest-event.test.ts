@@ -62,6 +62,7 @@ function makeService(opts: {
   const analytics = { recordEventInternal: vi.fn(async () => undefined) };
   const billing = { checkFeatureGate: vi.fn(async () => true), recordUsage: vi.fn(async () => {}), canOutboundCall: vi.fn(async () => true) };
   const queue = { enqueue: vi.fn(async () => undefined) };
+  const cache = { publish: vi.fn(async () => undefined) };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -71,6 +72,7 @@ function makeService(opts: {
     analytics as never,
     billing as never,
     queue as never,
+    cache as never,
   );
   return { service, prisma, created, updates, events, evals, queue };
 }

@@ -1,0 +1,15 @@
+[   68351ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ https://vocal.devdeepak.me/settings?_rsc=7dz3m:0
+[   72623ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ https://vocal.devdeepak.me/settings?_rsc=18t7j:0
+[  243851ms] TypeError: Cannot read properties of undefined (reading '0')
+    at https://vocal.devdeepak.me/_next/static/chunks/02ixtqhu.vqtc.js:1:9462
+    at ay (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:63845)
+    at oJ (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:84102)
+    at iu (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:95704)
+    at sd (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:138944)
+    at https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:138789
+    at sf (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:138797)
+    at se (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:134718)
+    at s$ (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:160495)
+    at MessagePort.O (https://vocal.devdeepak.me/_next/static/chunks/0n~dq4kpx9xxx.js:1:8660)
+[  257201ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ https://vocal.devdeepak.me/api/proxy/workspaces/a83bae90-82ee-4883-9b63-25cb1d3b209e/billing/checkout:0
+[  297570ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ https://vocal.devdeepak.me/settings?_rsc=1r34m:0
