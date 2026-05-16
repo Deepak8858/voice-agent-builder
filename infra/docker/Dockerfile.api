@@ -17,7 +17,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies
-RUN npm ci --ignore-scripts
+RUN sed -i 's/workspace:\*/\*/g' package*.json */package*.json */*/package*.json || true && npm ci --ignore-scripts
 
 # Copy source
 COPY apps/api ./apps/api
@@ -53,7 +53,7 @@ COPY --chown=1001:1001 package*.json ./
 COPY --chown=1001:1001 apps/api/package*.json ./apps/api/
 COPY --chown=1001:1001 packages/shared/package*.json ./packages/shared/
 COPY --chown=1001:1001 packages/ui/package*.json ./packages/ui/
-RUN npm ci --ignore-scripts --omit=dev
+RUN sed -i 's/workspace:\*/\*/g' package*.json */package*.json */*/package*.json || true && npm ci --ignore-scripts --omit=dev
 
 # Copy built artifacts (owned by nodeuser)
 COPY --chown=1001:1001 --from=builder /app/apps/api/dist ./apps/api/dist
