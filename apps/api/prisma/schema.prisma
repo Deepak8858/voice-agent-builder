@@ -75,6 +75,7 @@ model Workspace {
   status            String   @default("active")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
+  retentionDays   Int      @default(365)         @map("retention_days")
 
   organization         Organization             @relation(fields: [organizationId], references: [id])
   parent               Workspace?               @relation("WorkspaceParent", fields: [parentWorkspaceId], references: [id])
@@ -329,6 +330,8 @@ model Call {
   metadata        Json?
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
+  expiresAt       DateTime? @map("expires_at")       @db.Timestamptz(6)
+  retentionDays   Int       @default(365)            @map("retention_days")
 
   workspace        Workspace         @relation(fields: [workspaceId], references: [id])
   agent            Agent             @relation(fields: [agentId], references: [id])
@@ -412,6 +415,28 @@ model AuditLog {
   @@index([organizationId])
   @@index([actorUserId])
   @@map("audit_logs")
+}
+
+// --------------------------------------------------------------------------
+// Audit Export (HIPAA/SOC2 — signed report with 72h expiry)
+// --------------------------------------------------------------------------
+
+model AuditReport {
+  id             String   @id @default(uuid()) @db.Uuid
+  token          String   @unique
+  organizationId String   @map("organization_id") @db.Uuid
+  fromDate       DateTime @map("from_date")       @db.Timestamptz(6)
+  toDate         DateTime @map("to_date")         @db.Timestamptz(6)
+  auditorEmail   String   @map("auditor_email")
+  contentHash    String   @map("content_hash")
+  content        String   // truncated JSON, max 10000 chars
+  expiresAt      DateTime @map("expires_at")       @db.Timestamptz(6)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([token])
+  @@index([organizationId])
+  @@index([expiresAt])
+  @@map("audit_reports")
 }
 
 // --------------------------------------------------------------------------
