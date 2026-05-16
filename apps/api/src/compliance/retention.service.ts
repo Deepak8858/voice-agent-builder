@@ -31,7 +31,7 @@ export class RetentionService {
   async sweepExpiredCalls(): Promise<SweepResult> {
     const now = new Date();
 
-    // Count remaining before delete
+// Count remaining before delete
     const remaining = await this.prisma.call.count({
       where: { expiresAt: { lt: now } },
     });

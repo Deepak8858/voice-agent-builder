@@ -97,5 +97,5 @@ export type Env = z.infer<typeof EnvSchema>;
 export const env: Env = EnvSchema.parse(process.env);
 
 export function isProduction(): boolean {
-  return env.NODE_ENV === 'production';
+  return (process.env.NODE_ENV ?? 'development') === 'production';
 }

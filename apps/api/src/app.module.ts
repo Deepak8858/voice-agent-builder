@@ -9,6 +9,7 @@ import { MetricsModule } from './common/metrics.module';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditModule } from './audit/audit.module';
+import { AuditExportModule } from './audit/audit-export.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CacheModule } from './cache/cache.module';
@@ -35,6 +36,7 @@ import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
 import { WorkspaceCrmModule } from './workspace-crm/workspace-crm.module';
 import { CrmRoutingModule } from './crm-routing/crm-routing.module';
 import { TwilioModule } from './twilio-adapter/twilio.module';
+import { SettingsModule } from './settings/settings.module';
 import { ReferralModule } from './referral/referral.module';
 import { CalendarModule } from './calendar/calendar.module';
 
@@ -70,6 +72,8 @@ import { CalendarModule } from './calendar/calendar.module';
     PhoneNumbersModule,
     WorkspaceCrmModule,
     CrmRoutingModule,
+    AuditExportModule,
+    SettingsModule,
     ReferralModule,
     CalendarModule,
   ],
