@@ -1,17 +1,18 @@
 'use client';
 import { useState } from 'react';
-import { apiFetch } from '@/lib/use-api';
+import { useApi } from '@/lib/use-api';
 
 export default function RetentionSettingsPage() {
   const [retentionDays, setRetentionDays] = useState(365);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const { call } = useApi();
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     try {
-      await apiFetch('/v1/workspaces/me/retention', {
+      await call('/v1/workspaces/me/retention', {
         method: 'PATCH',
         body: JSON.stringify({ retentionDays }),
       });
