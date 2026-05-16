@@ -6,6 +6,14 @@ vi.mock('../../config/env', () => ({
   env: { VAPI_API_KEY: 'test-key' },
 }));
 
+// Mock PrismaService — needed because adapter now persists providerRuntimeId to DB (Phase 1.2)
+const mockPrisma = {
+  agentVersion: {
+    update: vi.fn().mockResolvedValue(undefined),
+    findUnique: vi.fn().mockResolvedValue({ providerRuntimeId: 'mock-runtime-id' }),
+  },
+};
+
 // Use real Response objects so .json() works properly
 function jsonResponse(data: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(data), { status: 200, ...init });
@@ -41,9 +49,10 @@ describe('VapiVoiceAdapter', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    adapter = new VapiVoiceAdapter(
-      {} as Parameters<typeof VapiVoiceAdapter.prototype.createAgent>[0] extends { prisma: infer P } ? P : never,
-    );
+    // Reset mock returns
+    mockPrisma.agentVersion.update.mockResolvedValue(undefined);
+    mockPrisma.agentVersion.findUnique.mockResolvedValue({ providerRuntimeId: null });
+    adapter = new VapiVoiceAdapter(mockPrisma as unknown as Parameters<typeof VapiVoiceAdapter.prototype.createAgent>[0] extends { prisma: infer P } ? P : never);
   });
 
   describe('createAgent', () => {
@@ -82,14 +91,8 @@ describe('VapiVoiceAdapter', () => {
 
   describe('startOutboundCall', () => {
     it('starts outbound call with phone number', async () => {
-      // First call: createAgent to populate the assistantIdMap
-      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'vapi-asst-outbound' }));
-      await adapter.createAgent({
-        workspaceId: 'ws-1', agentId: 'agent-1', agentVersionId: 'vapi-asst-outbound',
-        spec: makeSpec(),
-      });
-
-      // Second call: startOutboundCall
+      // Mock findUnique to return providerRuntimeId so startOutboundCall can find the assistant
+      mockPrisma.agentVersion.findUnique.mockResolvedValue({ providerRuntimeId: 'vapi-asst-outbound' });
       globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'call-456', status: 'queued' }));
 
       const result = await adapter.startOutboundCall({
@@ -109,12 +112,7 @@ describe('VapiVoiceAdapter', () => {
     });
 
     it('returns ringing status when call status is ringing', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'a1-ringing' }));
-      await adapter.createAgent({
-        workspaceId: 'ws', agentId: 'ag', agentVersionId: 'a1-ringing',
-        spec: makeSpec(),
-      });
-
+      mockPrisma.agentVersion.findUnique.mockResolvedValue({ providerRuntimeId: 'a1-ringing' });
       globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'c1', status: 'ringing' }));
 
       const result = await adapter.startOutboundCall({
@@ -124,7 +122,8 @@ describe('VapiVoiceAdapter', () => {
     });
 
     it('throws when assistant not found', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'orphan' }));
+      // Return null providerRuntimeId so the "not found" path is triggered
+      mockPrisma.agentVersion.findUnique.mockResolvedValue(null);
 
       await expect(adapter.startOutboundCall({
         workspaceId: 'ws', agentId: 'ag', agentVersionId: 'unknown-id', toNumber: '+14155550000',
