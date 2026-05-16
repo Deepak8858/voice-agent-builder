@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
 import { SettingsController } from './settings.controller';
-import { RetentionModule } from '../compliance/retention.module';
+import { ComplianceModule } from '../compliance/compliance.module';
 
 @Module({
-  imports: [RetentionModule],
+  imports: [ComplianceModule],
   controllers: [SettingsController],
 })
 export class SettingsModule {}

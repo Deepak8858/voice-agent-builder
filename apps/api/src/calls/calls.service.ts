@@ -20,6 +20,7 @@ import {
   ComplianceBlockedError,
 } from '../common/errors';
 import { ComplianceService } from '../compliance/compliance.service';
+import { RetentionService } from '../compliance/retention.service';
 import { EvaluationsService } from '../evaluations/evaluations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
@@ -37,6 +38,7 @@ export class CallsService {
     private readonly analytics: AnalyticsService,
     private readonly billing: BillingService,
     private readonly queue: QueueService,
+    private readonly retention: RetentionService,
   ) {}
 
   async startTestSession(
@@ -57,8 +59,10 @@ export class CallsService {
 
     const ws = await this.prisma.workspace.findUniqueOrThrow({
       where: { id: workspaceId },
-      select: { organizationId: true },
+      select: { organizationId: true, retentionDays: true },
     });
+
+    const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
 
     const call = await this.prisma.call.create({
       data: {
@@ -78,6 +82,8 @@ export class CallsService {
         ),
         transcriptText: transcript.transcript,
         outcome: 'test_completed',
+        expiresAt,
+        retentionDays: ws.retentionDays,
         metadata: { test_session_id: session.test_session_id } as Prisma.InputJsonValue,
       },
     });
@@ -108,7 +114,7 @@ export class CallsService {
   ): Promise<CallSummary> {
     const ws = await this.prisma.workspace.findUniqueOrThrow({
       where: { id: workspaceId },
-      select: { organizationId: true },
+      select: { organizationId: true, retentionDays: true },
     });
     const allowed = await this.billing.checkFeatureGate(ws.organizationId, 'outbound');
     if (!allowed) {
@@ -173,6 +179,8 @@ export class CallsService {
       metadata: dto.metadata,
     });
 
+    const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
+
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
@@ -188,6 +196,8 @@ export class CallsService {
         fromNumber: dto.from_number ?? null,
         contactName: dto.contact_name ?? null,
         startedAt: new Date(),
+        expiresAt,
+        retentionDays: ws.retentionDays,
         metadata: (dto.metadata as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },
     });
@@ -337,8 +347,10 @@ export class CallsService {
 
       const ws = await this.prisma.workspace.findUniqueOrThrow({
         where: { id: version.agent.workspaceId },
-        select: { organizationId: true },
+        select: { organizationId: true, retentionDays: true },
       });
+
+      const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
 
       call = await this.prisma.call.create({
         data: {
@@ -354,6 +366,8 @@ export class CallsService {
           toNumber: typeof data.to_number === 'string' ? data.to_number : null,
           contactName: typeof data.contact_name === 'string' ? data.contact_name : null,
           startedAt: typeof data.started_at === 'string' ? new Date(data.started_at) : new Date(),
+          expiresAt,
+          retentionDays: ws.retentionDays,
           metadata: (data as Prisma.InputJsonValue) ?? Prisma.JsonNull,
         },
       });

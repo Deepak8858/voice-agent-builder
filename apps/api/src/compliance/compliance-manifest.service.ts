@@ -30,7 +30,7 @@ interface ComplianceManifest {
 
 @Injectable()
 export class ComplianceManifestService {
-  private readonly SECRET = env.ENCRYPTION_KEY ?? 'manifest-secret';
+  private readonly HMAC_SECRET = env.ENCRYPTION_KEY ?? 'manifest-secret';
 
   async generate(): Promise<ComplianceManifest> {
     const manifest: Omit<ComplianceManifest, 'signature'> = {
@@ -70,7 +70,7 @@ export class ComplianceManifestService {
     };
 
     const content = JSON.stringify(manifest);
-    const signature = createHmac('sha256', this.SECRET).update(content).digest('hex');
+    const signature = createHmac('sha256', this.HMAC_SECRET).update(content).digest('hex');
 
     return { ...manifest, signature };
   }
