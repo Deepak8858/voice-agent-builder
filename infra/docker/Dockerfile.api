@@ -17,7 +17,7 @@ COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
 # Install monorepo dependencies
-RUN sed -i 's/workspace:\*/\*/g' package*.json */package*.json */*/package*.json || true && npm ci --ignore-scripts
+RUN rm -f package-lock.json pnpm-lock.yaml && npm install --ignore-scripts --no-audit --no-fund
 
 # Copy source
 COPY apps/api ./apps/api
@@ -48,20 +48,11 @@ RUN apk add --no-cache tini openssl \
     && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
     && chown -R nodeuser:nodegroup /app
 
-# Copy package manifests and install production deps only
-COPY --chown=1001:1001 package*.json ./
-COPY --chown=1001:1001 apps/api/package*.json ./apps/api/
-COPY --chown=1001:1001 packages/shared/package*.json ./packages/shared/
-COPY --chown=1001:1001 packages/ui/package*.json ./packages/ui/
-RUN sed -i 's/workspace:\*/\*/g' package*.json */package*.json */*/package*.json || true && npm ci --ignore-scripts --omit=dev
-
 # Copy built artifacts (owned by nodeuser)
 COPY --chown=1001:1001 --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --chown=1001:1001 --from=builder /app/apps/api/prisma ./apps/api/prisma
 COPY --chown=1001:1001 --from=builder /app/packages/shared/dist ./packages/shared/dist
-COPY --chown=1001:1001 --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --chown=1001:1001 --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --chown=1001:1001 --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --chown=1001:1001 --from=builder /app/node_modules ./node_modules
 
 # Switch to non-root user
 USER nodeuser

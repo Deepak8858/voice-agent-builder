@@ -9,7 +9,6 @@ FROM --platform=linux/amd64 node:20-alpine AS builder
 WORKDIR /app
 
 # Build arguments for environment injection at build time
-# NOTE: These are passed via GitHub Actions build-args
 ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_APP_URL
 ARG NEXT_PUBLIC_SUPABASE_URL
@@ -28,10 +27,8 @@ COPY apps/web/package*.json ./apps/web/
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
-# Work around npm optional-dependency bug:
-# package-lock.json generated on Windows omits Linux native binaries.
-# Removing it forces fresh resolution inside the Linux container.
-RUN rm -f package-lock.json
+# Remove Windows-generated package-lock and install fresh for Linux
+RUN rm -f package-lock.json pnpm-lock.yaml
 RUN npm install --ignore-scripts --no-audit --no-fund
 
 # Copy source
@@ -52,7 +49,6 @@ FROM --platform=linux/amd64 node:20-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Add tini for proper signal handling (critical for Docker Swarm graceful shutdown)
 RUN apk add --no-cache tini \
     && addgroup -g 1001 nodegroup \
     && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
@@ -61,20 +57,18 @@ RUN apk add --no-cache tini \
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Copy standalone output from builder (owned by nodeuser)
-COPY --chown=1001:1001 --from=builder /app/apps/web/.next/standalone ./
-COPY --chown=1001:1001 --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --chown=1001:1001 --from=builder /app/apps/web/public ./apps/web/public
+# Copy ALL node_modules from builder (includes all monorepo deps, no npm ci needed)
+COPY --chown=1001:1001 --from=builder /app/node_modules ./
 
-# Switch to non-root user
+# Copy standalone output from builder
+COPY --chown=1001:1001 --from=builder /app/apps/web/.next ./
+
 USER nodeuser
 
 EXPOSE 3000
 
-# Health-check endpoint
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.PORT || 3000) + '/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
 
-# Use tini as init system to properly handle SIGTERM and forward to Node.js
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "apps/web/server.js"]
