@@ -59,6 +59,33 @@ export class EmailService {
     }
   }
 
+  async send(params: { to: string; subject: string; html: string; text?: string }): Promise<void> {
+    const apiKey = env.RESEND_API_KEY;
+    if (!apiKey) {
+      this.logger.warn('[EmailService.send] RESEND_API_KEY not set — skipping email');
+      return;
+    }
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM || 'noreply@' + (env.WEB_BASE_URL?.replace('https://', '') || 'localhost'),
+        to: params.to,
+        subject: params.subject,
+        html: params.html,
+        text: params.text,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`[EmailService.send] Resend error: ${err}`);
+      throw new Error(`Failed to send email: ${err}`);
+    }
+  }
+
   async buildWeeklyDigest(workspaceId: string): Promise<WeeklyDigest> {
     const periodStart = this.getWeekStart();
     const periodEnd = new Date(periodStart);
