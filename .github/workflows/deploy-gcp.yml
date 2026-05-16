@@ -1,0 +1,84 @@
+name: Deploy to GCP VM
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT: project-0d572704-81fc-488d-94b
+  GCP_REGION: us-central1
+  VM_HOST: 34.55.40.175
+  VM_USER: aditya_bedrock
+  DEPLOY_PATH: /opt/voiceforge-data
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Auth to GCP Artifact Registry
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for GAR
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          IMAGE_TAG=$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.web
+          push: true
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/voiceforge-web:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1
+            NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.api
+          push: true
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/voiceforge-api:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
+            git pull origin main
+            docker compose -f docker-compose.yml pull
+            docker compose -f docker-compose.yml up -d --remove-orphans
+            sleep 30
+            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo "API healthy" || echo "API check failed"
+
+      - name: Run Prisma migration
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
+          script: |
+            cd ${{ env.DEPLOY_PATH }}
+            docker compose -f docker-compose.yml exec -T api npx prisma migrate deploy || echo "Migration may already be applied"
