@@ -36,6 +36,7 @@ import { PhoneNumbersModule } from './phone-numbers/phone-numbers.module';
 import { WorkspaceCrmModule } from './workspace-crm/workspace-crm.module';
 import { CrmRoutingModule } from './crm-routing/crm-routing.module';
 import { TwilioModule } from './twilio-adapter/twilio.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { TwilioModule } from './twilio-adapter/twilio.module';
     WorkspaceCrmModule,
     CrmRoutingModule,
     AuditExportModule,
+    SettingsModule,
   ],
   providers: [
     {
