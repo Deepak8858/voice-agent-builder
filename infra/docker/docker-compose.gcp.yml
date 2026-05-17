@@ -4,7 +4,7 @@
 
 services:
   web:
-    image: gcr.io/project-0d572704-81fc-488d-94b/voiceforge-web:${IMAGE_TAG:-latest}
+    image: us-central1-docker.pkg.dev/project-0d572704-81fc-488d-94b/voiceforge-containers/voiceforge-web:${IMAGE_TAG:-latest}
     container_name: vf-web
     restart: always
     ports:
@@ -38,7 +38,7 @@ services:
       start_period: 15s
 
   api:
-    image: gcr.io/project-0d572704-81fc-488d-94b/voiceforge-api:${IMAGE_TAG:-latest}
+    image: us-central1-docker.pkg.dev/project-0d572704-81fc-488d-94b/voiceforge-containers/voiceforge-api:${IMAGE_TAG:-latest}
     container_name: vf-api
     restart: always
     ports:
@@ -123,61 +123,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  prometheus:
-    image: prom/prometheus:v2.52.0
-    container_name: vf-prometheus
-    restart: always
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=15d
-    environment:
-      METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN}
-    volumes:
-      - ./infra/docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-    networks:
-      - voiceforge
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-
-  grafana:
-    image: grafana/grafana:11.0.0
-    container_name: vf-grafana
-    restart: always
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s/grafana/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
-      GF_DOMAIN: vocal.devdeepak.me
-    volumes:
-      - ./infra/docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - "127.0.0.1:3001:3000"
-    depends_on:
-      prometheus:
-        condition: service_started
-    networks:
-      - voiceforge
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 256M
-
 networks:
   voiceforge:
     driver: bridge
 
 volumes:
   redis_data:
-  prometheus_data:
-  grafana_data:
