@@ -45,9 +45,9 @@ jobs:
           context: .
           file: infra/docker/Dockerfile.web
           push: true
+          provenance: false
           tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-web:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
-          cache-to: type=inline,mode=max
           build-args: |
             NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1
             NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me
@@ -60,9 +60,9 @@ jobs:
           context: .
           file: infra/docker/Dockerfile.api
           push: true
+          provenance: false
           tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-api:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
-          cache-to: type=inline,mode=max
 
       - name: Deploy to VM
         uses: appleboy/ssh-action@v1
