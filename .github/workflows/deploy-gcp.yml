@@ -45,7 +45,7 @@ jobs:
           context: .
           file: infra/docker/Dockerfile.web
           push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/voiceforge-web:${{ steps.meta.outputs.image_tag }}
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-web:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -58,7 +58,7 @@ jobs:
           context: .
           file: infra/docker/Dockerfile.api
           push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT }}/voiceforge-api:${{ steps.meta.outputs.image_tag }}
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-api:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
