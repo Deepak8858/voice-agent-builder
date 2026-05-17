@@ -74,8 +74,8 @@ jobs:
             cd ${{ env.DEPLOY_PATH }}
             export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
             git pull origin main
-            docker compose -f docker-compose.yml pull
-            docker compose -f docker-compose.yml up -d --remove-orphans
+            docker compose -f docker-compose.gcp.yml pull
+            docker compose -f docker-compose.gcp.yml up -d --remove-orphans
             sleep 30
             curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo "API healthy" || echo "API check failed"
 
@@ -87,4 +87,4 @@ jobs:
           key: ${{ secrets.GCP_VM_SSH_KEY }}
           script: |
             cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.yml exec -T api npx prisma migrate deploy || echo "Migration may already be applied"
+            docker compose -f docker-compose.gcp.yml exec -T api npx prisma migrate deploy || echo "Migration may already be applied"
