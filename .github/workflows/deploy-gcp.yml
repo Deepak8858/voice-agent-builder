@@ -24,8 +24,8 @@ jobs:
       - name: Auth to GCP via Workload Identity
         uses: google-github-actions/auth@v2
         with:
-          workload-identity-provider: projects/51657380046/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service-account: github-actions-deploy@project-0d572704-81fc-488d-94b.iam.gserviceaccount.com
+          workload_identity_provider: projects/51657380046/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-actions-deploy@project-0d572704-81fc-488d-94b.iam.gserviceaccount.com
 
       - name: Configure Docker for GAR
         run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
