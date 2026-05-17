@@ -23,11 +23,20 @@ ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
 
 # Copy workspace manifests first for layer caching
 COPY package*.json ./
+COPY pnpm-workspace.yaml ./
 COPY apps/web/package*.json ./apps/web/
 COPY packages/shared/package*.json ./packages/shared/
 COPY packages/ui/package*.json ./packages/ui/
 
-# Remove Windows-generated package-lock and install fresh for Linux
+# Copy package source so file: references work
+COPY packages/shared ./packages/shared
+COPY packages/ui ./packages/ui
+
+# Replace pnpm workspace:* with npm-compatible file: paths
+RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/web/package.json && \
+    sed -i 's|"workspace:\*"|"file:./packages/ui"|g' apps/web/package.json 2>/dev/null || true
+
+# Remove Windows-generated lock files and install fresh for Linux
 RUN rm -f package-lock.json pnpm-lock.yaml
 RUN npm install --ignore-scripts --no-audit --no-fund
 
