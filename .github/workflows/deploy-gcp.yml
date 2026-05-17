@@ -46,7 +46,7 @@ jobs:
           file: infra/docker/Dockerfile.web
           push: true
           provenance: false
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-web:${{ steps.meta.outputs.image_tag }}
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-web:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           build-args: |
             NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1
@@ -61,7 +61,7 @@ jobs:
           file: infra/docker/Dockerfile.api
           push: true
           provenance: false
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-api:${{ steps.meta.outputs.image_tag }}
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-api:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
 
       - name: Deploy to VM
