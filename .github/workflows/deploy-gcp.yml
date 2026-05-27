@@ -111,8 +111,29 @@ jobs:
             done
 
             docker compose -f "${COMPOSE_FILE}" restart nginx
-            curl -sf --max-time 10 https://vocal.devdeepak.me/api/v1/health >/dev/null
-            curl -sf --max-time 10 https://vocal.devdeepak.me >/dev/null
+            for attempt in $(seq 1 24); do
+              if curl -sf --max-time 10 https://vocal.devdeepak.me/api/v1/health >/dev/null; then
+                echo "Public API healthy"
+                break
+              fi
+              if [ "${attempt}" = "24" ]; then
+                docker compose -f "${COMPOSE_FILE}" logs nginx --tail=80
+                exit 1
+              fi
+              sleep 5
+            done
+
+            for attempt in $(seq 1 24); do
+              if curl -sf --max-time 10 https://vocal.devdeepak.me >/dev/null; then
+                echo "Public web healthy"
+                break
+              fi
+              if [ "${attempt}" = "24" ]; then
+                docker compose -f "${COMPOSE_FILE}" logs nginx --tail=80
+                exit 1
+              fi
+              sleep 5
+            done
 
       - name: Run Prisma migration
         uses: appleboy/ssh-action@v1
