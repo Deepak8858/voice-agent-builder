@@ -1,7 +1,7 @@
 import { apiFetch } from '@/lib/api';
 import { KnowledgePanel } from '@/components/knowledge-panel';
+import { PageHeader } from '@/components/dashboard';
 import type { SessionUser } from '@voiceforge/shared';
-import { BookOpen } from 'lucide-react';
 
 export default async function KnowledgePage() {
   let me: SessionUser | null = null;
@@ -16,25 +16,27 @@ export default async function KnowledgePage() {
   if (apiError || !me) {
     return (
       <div className="flex flex-col gap-8">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Knowledge</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Could not load knowledge: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Knowledge base"
+          title="Knowledge"
+          description={
+            <>
+              Could not load knowledge:{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
+            </>
+          }
+        />
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Knowledge</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Workspace-level knowledge sources. Agents can reference these in addition to
-          their own agent-scoped sources.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Knowledge base"
+        title="Knowledge"
+        description="Workspace-level knowledge sources your agents can reference in addition to their own agent-scoped sources."
+      />
 
       <KnowledgePanel
         workspaceId={me.active_workspace_id ?? ''}

@@ -18,7 +18,7 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
-  VOICE_PROVIDER: z.enum(['vapi', 'twilio']).optional(),
+  VOICE_PROVIDER: z.enum(['vapi', 'twilio', 'openai-realtime']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
@@ -34,6 +34,10 @@ const EnvSchema = z.object({
   TWILIO_TWIML_WEBHOOK_URL: z.string().optional(),
   TWILIO_STATUS_WEBHOOK_URL: z.string().optional(),
 
+  OPENAI_REALTIME_BASE_URL: z.string().default('https://api.openai.com/v1'),
+  OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
+  OPENAI_REALTIME_VOICE: z.string().default('marin'),
+
   DEEPGRAM_API_KEY: z.string().optional(),
   DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
   DEEPGRAM_TTS_VOICE: z.string().default('aura-2-en-us'),
@@ -47,10 +51,12 @@ const EnvSchema = z.object({
   SUPABASE_URL: z.string().optional(),
   SUPABASE_JWT_SECRET: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+  SUPABASE_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().min(1).optional(),
 
   // Shared secret between Next.js frontend and this NestJS API. The
-  // frontend is the only legitimate caller; it forwards the verified
-  // user context via x-app-user-id / x-org-id headers.
+  // frontend is the only legitimate caller; it forwards the Supabase
+  // bearer token and the API derives user context server-side.
   INTERNAL_API_KEY: z.string().min(32).optional(),
 
   GITHUB_TOKEN: z.string().optional(),
@@ -90,6 +96,14 @@ const EnvSchema = z.object({
     .string()
     .default('')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
+}).superRefine((value, ctx) => {
+  if (value.NODE_ENV === 'production' && !value.VOICE_WEBHOOK_SECRET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_WEBHOOK_SECRET'],
+      message: 'VOICE_WEBHOOK_SECRET is required in production',
+    });
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -1,4 +1,5 @@
 export * from './utils/phone';
+export * from './utils/agent-spec-editor';
 export * from './schemas/agent-spec';
 export * from './schemas/agent';
 export * from './schemas/api';
@@ -9,6 +10,7 @@ export * from './schemas/compliance';
 export * from './schemas/analytics';
 export * from './schemas/white-label';
 export * from './schemas/billing';
+export * from './billing/catalog';
 export * from './constants/templates';
 export * from './constants/industries';
 export * from './types';

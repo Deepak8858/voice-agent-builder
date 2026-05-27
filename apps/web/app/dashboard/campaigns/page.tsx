@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
+import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import { useApi } from '@/lib/use-api';
-import { Megaphone, Plus, Pause, Play, Upload, AlertCircle, Check, X } from 'lucide-react';
+import { AlertCircle, Megaphone, Pause, Play, Plus, Upload, Users } from 'lucide-react';
 import { normalizePhone } from '@voiceforge/shared';
 
 interface Campaign {
@@ -35,7 +35,6 @@ interface ContactValidationError {
 
 interface SessionUser {
   active_workspace_id: string;
-  active_workspace_role?: string;
 }
 
 interface AgentSummary {
@@ -56,7 +55,6 @@ export default function CampaignsPage() {
   const { call } = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [role, setRole] = useState<string | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -72,10 +70,7 @@ export default function CampaignsPage() {
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
-      .then((me) => {
-        setWorkspaceId(me.active_workspace_id);
-        setRole(me.active_workspace_role ?? null);
-      })
+      .then((me) => setWorkspaceId(me.active_workspace_id))
       .catch(console.error);
   }, [call]);
 
@@ -171,36 +166,64 @@ export default function CampaignsPage() {
     if (fileRef.current) fileRef.current.value = '';
   }
 
-  const statusColor = (s: string) =>
-    s === 'running' ? 'default' : s === 'draft' ? 'secondary' : 'outline';
 
   if (loading) return <p className="p-6 text-sm text-muted-foreground">Loading...</p>;
 
   // ---- List view ----
   if (step === 'list') {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Outbound Campaigns</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Schedule and run bulk outbound calling campaigns with your voice agents.
-          </p>
-        </div>
-
-        <div className="flex gap-3">
-          <Button onClick={() => setStep('upload')} className="gap-1">
-            <Plus className="h-4 w-4" /> New Campaign
-          </Button>
-        </div>
+      <div className="flex flex-col gap-8">
+        <PageHeader
+          eyebrow="Outbound automation"
+          title="Outbound campaigns"
+          description="Schedule and run bulk outbound calling campaigns with voice agents, guardrails, and per-campaign rate limits."
+          actions={
+            <Button onClick={() => setStep('upload')} className="gap-2">
+              <Plus className="h-4 w-4" />
+              New campaign
+            </Button>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              label="Campaigns"
+              value={campaigns.length}
+              description="Total configured campaigns"
+              icon={<Megaphone className="h-5 w-5" />}
+            />
+            <StatCard
+              label="Running"
+              value={campaigns.filter((c) => c.status === 'running').length}
+              description="Actively dialing contacts"
+              tone="success"
+              icon={<Play className="h-5 w-5" />}
+            />
+            <StatCard
+              label="Contacts"
+              value={campaigns.reduce((sum, c) => sum + c.stats.total, 0)}
+              description="Queued across all campaigns"
+              tone="info"
+              icon={<Users className="h-5 w-5" />}
+            />
+            <StatCard
+              label="Completed"
+              value={campaigns.reduce((sum, c) => sum + c.stats.completed, 0)}
+              description="Completed campaign calls"
+              tone="success"
+            />
+          </div>
+        </PageHeader>
 
         {campaigns.length > 0 ? (
           <div className="grid gap-4">
             {campaigns.map((c) => (
-              <Card key={c.id}>
+              <Card key={c.id} className="overflow-hidden bg-card/95 shadow-sm">
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
-                      <Megaphone className="h-5 w-5 text-primary" />
+                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                        <Megaphone className="h-5 w-5" />
+                      </div>
                       <div>
                         <p className="font-medium">{c.name}</p>
                         <p className="text-xs text-muted-foreground">
@@ -210,9 +233,7 @@ export default function CampaignsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant={statusColor(c.status) as 'default' | 'secondary' | 'outline'}>
-                        {c.status}
-                      </Badge>
+                      <StatusBadge status={c.status} />
                       {c.status === 'draft' || c.status === 'paused' ? (
                         <Button size="sm" onClick={async () => {
                           await call(`/workspaces/${workspaceId}/campaigns/${c.id}/start`, { method: 'POST' });
@@ -250,10 +271,11 @@ export default function CampaignsPage() {
             ))}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border p-12 text-center">
-            <Megaphone className="mb-3 h-8 w-8 text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">No campaigns yet. Create one to start outbound calling.</p>
-          </div>
+          <EmptyState
+            icon={<Megaphone className="h-7 w-7" />}
+            title="No campaigns yet"
+            description="Create a campaign to upload contacts, review compliance, set rate limits, and start outbound calling."
+          />
         )}
       </div>
     );
@@ -262,16 +284,23 @@ export default function CampaignsPage() {
   // ---- Step 1: Upload ----
   if (step === 'upload') {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => { resetForm(); setStep('list'); }}>
-            ← Back
-          </Button>
-          <h2 className="font-[family-name:var(--font-serif)] text-2xl">Step 1: Upload Contacts</h2>
-        </div>
+      <div className="flex flex-col gap-8">
+        <PageHeader
+          eyebrow="Step 1"
+          title="Upload contacts"
+          description="Import a CSV or paste one contact per line. Phone numbers are normalized before preview."
+          actions={
+            <Button variant="outline" onClick={() => { resetForm(); setStep('list'); }}>
+              Back to campaigns
+            </Button>
+          }
+        />
 
-        <Card>
-          <CardContent className="py-8">
+        <FormSection
+          icon={<Upload className="h-4 w-4" />}
+          title="Upload CSV"
+          description="CSV files should include a phone column, with optional name and email columns."
+        >
             <div className="flex flex-col items-center justify-center gap-4">
               <Upload className="h-10 w-10 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
@@ -287,12 +316,9 @@ export default function CampaignsPage() {
                 onChange={handleFileChange}
               />
             </div>
-          </CardContent>
-        </Card>
+        </FormSection>
 
-        <Card>
-          <CardHeader><CardTitle>Or paste contacts</CardTitle></CardHeader>
-          <CardContent>
+        <FormSection title="Or paste contacts">
             <p className="mb-3 text-xs text-muted-foreground">
               One contact per line: <code className="bg-muted px-1 rounded">phone[, name[, email]]</code>
             </p>
@@ -330,8 +356,7 @@ export default function CampaignsPage() {
             >
               Continue →
             </Button>
-          </CardContent>
-        </Card>
+        </FormSection>
       </div>
     );
   }
@@ -339,11 +364,23 @@ export default function CampaignsPage() {
   // ---- Step 2: Preview ----
   if (step === 'preview') {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => setStep('upload')}>← Back</Button>
-          <h2 className="font-[family-name:var(--font-serif)] text-2xl">Step 2: Preview & Validate</h2>
-        </div>
+      <div className="flex flex-col gap-8">
+        <PageHeader
+          eyebrow="Step 2"
+          title="Preview and validate"
+          description="Review normalized contacts and resolve validation errors before scheduling."
+          actions={<Button variant="outline" onClick={() => setStep('upload')}>Back to upload</Button>}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <StatCard label="Valid contacts" value={contacts.length} description="Ready to add to the campaign" />
+            <StatCard
+              label="Validation errors"
+              value={errors.length}
+              description={errors.length > 0 ? 'Fix before continuing' : 'No blocking errors'}
+              tone={errors.length > 0 ? 'danger' : 'success'}
+            />
+          </div>
+        </PageHeader>
 
         {errors.length > 0 && (
           <Card className="border-destructive/50">
@@ -420,16 +457,17 @@ export default function CampaignsPage() {
   // ---- Step 3: Schedule ----
   if (step === 'schedule') {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={() => setStep('preview')}>← Back</Button>
-          <h2 className="font-[family-name:var(--font-serif)] text-2xl">Step 3: Schedule & Launch</h2>
-        </div>
+      <div className="flex flex-col gap-8">
+        <PageHeader
+          eyebrow="Step 3"
+          title="Schedule and launch"
+          description="Choose the agent, set throughput limits, and confirm consent before starting outbound dialing."
+          actions={<Button variant="outline" onClick={() => setStep('preview')}>Back to preview</Button>}
+        />
 
         <form onSubmit={handleCreate} className="flex flex-col gap-6">
-          <Card>
-            <CardHeader><CardTitle>Campaign Details</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-4">
+          <FormSection title="Campaign details">
+            <div className="flex flex-col gap-4">
               <div>
                 <Label>Campaign Name</Label>
                 <Input
@@ -454,12 +492,11 @@ export default function CampaignsPage() {
                   ))}
                 </select>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </FormSection>
 
-          <Card>
-            <CardHeader><CardTitle>Rate Limits</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4">
+          <FormSection title="Rate limits">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label>Max calls per hour</Label>
                 <Input
@@ -482,12 +519,11 @@ export default function CampaignsPage() {
                   onChange={(e) => setSchedule((s) => ({ ...s, max_concurrent: parseInt(e.target.value) || 1 }))}
                 />
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </FormSection>
 
-          <Card>
-            <CardHeader><CardTitle>Compliance Checklist</CardTitle></CardHeader>
-            <CardContent className="flex flex-col gap-3">
+          <FormSection title="Compliance checklist">
+            <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
@@ -511,8 +547,8 @@ export default function CampaignsPage() {
               <p className="text-xs text-muted-foreground">
                 {contacts.length} contacts will be added to this campaign. The compliance check will run per-call before dialing.
               </p>
-            </CardContent>
-          </Card>
+            </div>
+          </FormSection>
 
           <div className="flex gap-3">
             <Button type="submit" disabled={creating || !formName || !formAgent || !consentChecked || !dncChecked}>

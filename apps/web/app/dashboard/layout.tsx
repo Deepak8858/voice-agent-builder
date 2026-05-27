@@ -1,7 +1,7 @@
-import { redirect } from 'next/navigation';
 import { requireUser } from '@/lib/auth/session';
 import { AppSidebar } from '@/components/layout/app-sidebar';
-import { Separator } from '@/components/ui/separator';
+import { SubscriptionStatusBanner } from '@/components/billing/subscription-status-banner';
+export const dynamic = 'force-dynamic';
 
 export default async function DashboardLayout({
   children,
@@ -10,11 +10,11 @@ export default async function DashboardLayout({
 }) {
   await requireUser();
   return (
-    <div className="flex flex-1 min-h-[calc(100vh-57px)]">
+    <div className="flex min-h-dvh flex-1 bg-[radial-gradient(circle_at_top_left,rgba(220,38,38,0.08),transparent_32rem),linear-gradient(180deg,var(--background),var(--background))]">
       <AppSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Separator orientation="vertical" className="hidden md:block absolute left-64 h-full" />
-        <div className="flex flex-1 flex-col px-6 py-8 max-w-7xl mx-auto w-full">
+        <div className="mx-auto flex w-full max-w-[92rem] flex-1 flex-col px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+          <SubscriptionStatusBanner />
           {children}
         </div>
       </div>

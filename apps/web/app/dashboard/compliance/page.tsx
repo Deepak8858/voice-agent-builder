@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api';
 import { CompliancePanel } from '@/components/compliance-panel';
+import { PageHeader } from '@/components/dashboard';
 import type { SessionUser } from '@voiceforge/shared';
 
 export default async function CompliancePage() {
@@ -15,25 +16,27 @@ export default async function CompliancePage() {
   if (apiError || !me) {
     return (
       <div className="flex flex-col gap-8">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Compliance</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Could not load compliance: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Governance"
+          title="Compliance"
+          description={
+            <>
+              Could not load compliance:{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
+            </>
+          }
+        />
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Compliance</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Manage contacts, consent records, and the workspace Do-Not-Call list. Outbound
-          calls are gated on these checks.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Governance"
+        title="Compliance"
+        description="Manage contacts, consent records, and the workspace Do-Not-Call list. Outbound calls are gated on these checks."
+      />
 
       <CompliancePanel workspaceId={me.active_workspace_id ?? ''} />
     </div>

@@ -8,7 +8,9 @@ import {
 import { OpenAIEmbeddingAdapter } from './embeddings/openai.embedding.adapter';
 import { KnowledgeController } from './knowledge.controller';
 import { KnowledgeService } from './knowledge.service';
+import { KNOWLEDGE_FILE_STORAGE_TOKEN } from './knowledge-file-storage.interface';
 import { FileParser } from './parsers/file-parser';
+import { SupabaseKnowledgeFileStorage } from './supabase-knowledge-file-storage.service';
 
 const embeddingProvider: Provider = {
   provide: EMBEDDING_PROVIDER_TOKEN,
@@ -30,6 +32,11 @@ const embeddingProvider: Provider = {
     KnowledgeService,
     WorkspaceGuard,
     FileParser,
+    SupabaseKnowledgeFileStorage,
+    {
+      provide: KNOWLEDGE_FILE_STORAGE_TOKEN,
+      useExisting: SupabaseKnowledgeFileStorage,
+    },
     embeddingProvider,
   ],
   exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN],

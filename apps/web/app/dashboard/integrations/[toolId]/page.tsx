@@ -23,6 +23,8 @@ interface PageProps {
   params: Promise<{ toolId: string }>;
 }
 
+type ToolConfig = ToolDetail['config'];
+
 export default function ToolDetailPage({ params }: PageProps) {
   const { toolId } = use(params);
   const router = useRouter();
@@ -116,6 +118,8 @@ export default function ToolDetailPage({ params }: PageProps) {
     );
   }
   const tool = toolQuery.data;
+  const webhookConfig = isWebhookConfig(tool.config) ? tool.config : null;
+  const calendarConfig = isCalendarConfig(tool.config) ? tool.config : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -136,7 +140,8 @@ export default function ToolDetailPage({ params }: PageProps) {
             <Badge variant={tool.enabled ? 'default' : 'secondary'}>
               {tool.enabled ? 'enabled' : 'disabled'}
             </Badge>
-            {tool.config.hmac_secret_set ? <Badge variant="outline">HMAC signed</Badge> : null}
+            {webhookConfig?.hmac_secret_set ? <Badge variant="outline">HMAC signed</Badge> : null}
+            {calendarConfig?.refresh_token_set ? <Badge variant="outline">Calendar connected</Badge> : null}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -197,10 +202,21 @@ export default function ToolDetailPage({ params }: PageProps) {
           </CardHeader>
           <CardContent>
             <dl className="space-y-3 text-sm">
-              <Row label="URL" value={tool.config.url} />
-              <Row label="Method" value={tool.config.method ?? 'POST'} />
-              <Row label="Timeout" value={`${tool.config.timeout_ms ?? 10_000} ms`} />
-              <Row label="HMAC" value={tool.config.hmac_secret_set ? 'set' : 'not set'} />
+              {webhookConfig ? (
+                <>
+                  <Row label="URL" value={webhookConfig.url} />
+                  <Row label="Method" value={webhookConfig.method ?? 'POST'} />
+                  <Row label="Timeout" value={`${webhookConfig.timeout_ms ?? 10_000} ms`} />
+                  <Row label="HMAC" value={webhookConfig.hmac_secret_set ? 'set' : 'not set'} />
+                </>
+              ) : null}
+              {calendarConfig ? (
+                <>
+                  <Row label="Calendar" value={calendarConfig.calendar_id ?? 'primary'} />
+                  <Row label="Refresh token" value={calendarConfig.refresh_token_set ? 'set' : 'not set'} />
+                  <Row label="Client secret" value={calendarConfig.client_secret_set ? 'set' : 'not set'} />
+                </>
+              ) : null}
               <Row label="Agent" value={tool.agent_id ?? 'workspace-wide'} />
             </dl>
             <Separator className="my-4" />
@@ -257,4 +273,14 @@ function Row({ label, value }: { label: string; value: string | null | undefined
       <dd className="text-right font-medium text-foreground">{value ?? '—'}</dd>
     </div>
   );
+}
+
+function isWebhookConfig(config: ToolConfig): config is Extract<ToolConfig, { url: string }> {
+  return 'url' in config;
+}
+
+function isCalendarConfig(
+  config: ToolConfig,
+): config is Extract<ToolConfig, { refresh_token_set: boolean }> {
+  return 'refresh_token_set' in config;
 }

@@ -1,249 +1,384 @@
 'use client';
 
-import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useEffect, useMemo, useState, type ElementType, type ReactNode } from 'react';
+import {
+  AgentSpecSchema,
+  setAgentSpecPath,
+  summarizeAgentSpecIssues,
+  type AgentSpec,
+} from '@voiceforge/shared';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Code,
+  Eye,
+  FormInput,
+  MessageSquare,
+  Mic,
+  Plus,
+  Shield,
+  Target,
+  UserRound,
+  Workflow,
+  X,
+} from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Badge } from '@/components/ui/badge';
-import {
-  Code,
-  FormInput,
-  Mic,
-  Target,
-  Shield,
-  MessageSquare,
-  Settings2,
-  Plus,
-  X,
-  Eye,
-} from 'lucide-react';
-
-interface FormModeEditorProps {
-  /** Current spec JSON */
-  spec: Record<string, unknown>;
-  /** Called when spec changes via form edits */
-  onChange: (spec: Record<string, unknown>) => void;
-  /** Whether to default to form mode */
-  defaultMode?: 'json' | 'form';
-}
 
 type EditorMode = 'json' | 'form';
 
+export interface AgentSpecValidationState {
+  isValid: boolean;
+  issues: string[];
+  parsedSpec: AgentSpec | null;
+}
+
+interface FormModeEditorProps {
+  spec: unknown;
+  onChange: (spec: unknown) => void;
+  defaultMode?: EditorMode;
+  onValidationChange?: (state: AgentSpecValidationState) => void;
+}
+
 interface SpecSectionProps {
-  icon: React.ElementType;
+  icon: ElementType;
   title: string;
   description: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }
+
+const AGENT_TYPES = [
+  'inbound_receptionist',
+  'outbound_reminder',
+  'outbound_qualifier',
+  'outbound_confirmation',
+  'outbound_survey',
+] as const;
 
 function SpecSection({ icon: Icon, title, description, children }: SpecSectionProps) {
   return (
-    <div className="rounded-lg border border-border p-4 space-y-3">
+    <section className="rounded-lg border border-border p-4">
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 text-primary" />
-        <h3 className="font-medium text-sm">{title}</h3>
+        <h3 className="text-sm font-medium">{title}</h3>
       </div>
-      <p className="text-xs text-muted-foreground">{description}</p>
-      {children}
-    </div>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      <div className="mt-3 space-y-3">{children}</div>
+    </section>
   );
 }
 
-export function FormModeEditor({ spec, onChange, defaultMode = 'form' }: FormModeEditorProps) {
+export function FormModeEditor({
+  spec,
+  onChange,
+  defaultMode = 'form',
+  onValidationChange,
+}: FormModeEditorProps) {
   const [mode, setMode] = useState<EditorMode>(defaultMode);
-  const [jsonText, setJsonText] = useState(() => JSON.stringify(spec, null, 2));
+  const [jsonText, setJsonText] = useState(() => stringifySpec(spec));
   const [jsonError, setJsonError] = useState<string | null>(null);
 
-  const updateField = (path: string, value: unknown) => {
-    const newSpec = { ...spec };
-    const parts = path.split('.');
-    let current = newSpec as Record<string, unknown>;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!current[parts[i]]) current[parts[i]] = {};
-      current = current[parts[i]] as Record<string, unknown>;
+  const validation = useMemo<AgentSpecValidationState>(() => {
+    const parsed = AgentSpecSchema.safeParse(spec);
+    if (parsed.success) {
+      return { isValid: true, issues: [], parsedSpec: parsed.data };
     }
-    current[parts[parts.length - 1]] = value;
-    onChange(newSpec);
+    return {
+      isValid: false,
+      issues: summarizeAgentSpecIssues(parsed.error),
+      parsedSpec: null,
+    };
+  }, [spec]);
+
+  useEffect(() => {
+    onValidationChange?.(validation);
+  }, [onValidationChange, validation]);
+
+  useEffect(() => {
+    if (mode === 'form') {
+      setJsonText(stringifySpec(spec));
+      setJsonError(null);
+    }
+  }, [mode, spec]);
+
+  const specRecord = asRecord(spec);
+  const identity = asRecord(specRecord.identity);
+  const voice = asRecord(specRecord.voice);
+  const compliance = asRecord(specRecord.compliance);
+  const conversationRules = asRecord(specRecord.conversation_rules);
+  const handoff = asRecord(specRecord.handoff);
+  const analytics = asRecord(specRecord.analytics);
+  const goals = getStringArray(specRecord.goals);
+  const handoffConditions = getStringArray(handoff.conditions);
+  const successEvents = getStringArray(analytics.success_events);
+
+  const updateField = (path: string, value: unknown) => {
+    onChange(setAgentSpecPath(specRecord, path, value));
+  };
+
+  const updateStringArray = (path: string, values: string[]) => {
+    updateField(path, values);
+  };
+
+  const switchMode = (nextMode: EditorMode) => {
+    if (nextMode === 'json') {
+      setJsonText(stringifySpec(spec));
+      setJsonError(null);
+    }
+    setMode(nextMode);
   };
 
   const handleJsonChange = (text: string) => {
     setJsonText(text);
-    setJsonError(null);
     try {
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(text) as unknown;
+      setJsonError(null);
       onChange(parsed);
     } catch (err) {
       setJsonError((err as Error).message);
     }
   };
 
-  const identity = (spec['identity'] as Record<string, unknown>) ?? {};
-  const voice = (spec['voice'] as Record<string, unknown>) ?? {};
-  const goals = (spec['goals'] as string[]) ?? [];
-  const compliance = (spec['compliance'] as Record<string, unknown>) ?? {};
-  const conversationRules = (spec['conversation_rules'] as Record<string, unknown>) ?? {};
-
   return (
     <div className="flex flex-col gap-4">
-      {/* Mode toggle */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button
+          type="button"
           variant={mode === 'form' ? 'default' : 'outline'}
           size="sm"
-          onClick={() => setMode('form')}
+          onClick={() => switchMode('form')}
           className="gap-1.5"
         >
           <FormInput className="h-3.5 w-3.5" />
           Form
         </Button>
         <Button
+          type="button"
           variant={mode === 'json' ? 'default' : 'outline'}
           size="sm"
-          onClick={() => setMode('json')}
+          onClick={() => switchMode('json')}
           className="gap-1.5"
         >
           <Code className="h-3.5 w-3.5" />
           JSON
         </Button>
-        <Badge variant="outline" className="text-xs">
-          {mode === 'form' ? 'Form mode — click fields to edit' : 'JSON mode — raw spec'}
+        <Badge variant={validation.isValid ? 'secondary' : 'destructive'} className="gap-1 text-xs">
+          {validation.isValid ? (
+            <CheckCircle2 className="h-3 w-3" />
+          ) : (
+            <AlertCircle className="h-3 w-3" />
+          )}
+          {validation.isValid ? 'Valid Agent Spec' : `${validation.issues.length} validation issue${validation.issues.length === 1 ? '' : 's'}`}
         </Badge>
       </div>
 
+      {!validation.isValid ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+          <p className="font-medium">Fix these Agent Spec fields before saving.</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4">
+            {validation.issues.slice(0, 5).map((issue) => (
+              <li key={issue}>{issue}</li>
+            ))}
+          </ul>
+          {validation.issues.length > 5 ? (
+            <p className="mt-2 text-destructive/80">
+              {validation.issues.length - 5} more issue{validation.issues.length - 5 === 1 ? '' : 's'} in JSON mode.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {mode === 'form' ? (
         <div className="flex flex-col gap-4">
-          {/* Identity */}
-          <SpecSection icon={FormInput} title="Identity" description="Agent name, business, and disclosure">
-            <div className="grid grid-cols-2 gap-3">
+          <SpecSection icon={UserRound} title="Basics" description="Agent metadata used for creation, routing, and version display.">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <Label className="text-xs">Agent Name</Label>
+                <Label className="text-xs">Agent name</Label>
                 <Input
-                  className="mt-1 h-8 text-sm"
-                  value={(identity['agent_name'] as string) ?? ''}
-                  onChange={(e) => updateField('identity.agent_name', e.target.value)}
-                  placeholder="Alex"
+                  className="mt-1 h-9 text-sm"
+                  value={getString(specRecord.name)}
+                  onChange={(e) => updateField('name', e.target.value)}
+                  placeholder="Dental Receptionist"
                 />
               </div>
               <div>
-                <Label className="text-xs">Business Name</Label>
+                <Label className="text-xs">Industry</Label>
                 <Input
-                  className="mt-1 h-8 text-sm"
-                  value={(identity['business_name'] as string) ?? ''}
-                  onChange={(e) => updateField('identity.business_name', e.target.value)}
-                  placeholder="Smile Dental"
+                  className="mt-1 h-9 text-sm"
+                  value={getString(specRecord.industry)}
+                  onChange={(e) => updateField('industry', e.target.value)}
+                  placeholder="healthcare"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Agent type</Label>
+                <select
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                  value={getAgentType(specRecord.agent_type)}
+                  onChange={(e) => updateField('agent_type', e.target.value)}
+                >
+                  <option value="" disabled>
+                    Select type
+                  </option>
+                  {AGENT_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type.replaceAll('_', ' ')}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Language</Label>
+                <Input
+                  className="mt-1 h-9 text-sm"
+                  value={getString(specRecord.language)}
+                  onChange={(e) => updateField('language', e.target.value)}
+                  placeholder="en"
                 />
               </div>
             </div>
             <div>
-              <Label className="text-xs">AI Disclosure</Label>
-              <Input
-                className="mt-1 h-8 text-sm"
-                value={(identity['ai_disclosure'] as string) ?? ''}
-                onChange={(e) => updateField('identity.ai_disclosure', e.target.value)}
-                placeholder="This call may be recorded for quality assurance."
+              <Label className="text-xs">Description</Label>
+              <Textarea
+                className="mt-1 min-h-20 text-sm"
+                value={getString(specRecord.description)}
+                onChange={(e) => updateField('description', e.target.value)}
+                placeholder="Short internal summary of this agent."
               />
             </div>
           </SpecSection>
 
-          {/* Voice */}
-          <SpecSection icon={Mic} title="Voice" description="Tone, speaking rate, and voice selection">
-            <div className="grid grid-cols-2 gap-3">
+          <SpecSection icon={FormInput} title="Identity" description="How the agent introduces itself and the business.">
+            <div className="grid gap-3 sm:grid-cols-2">
               <div>
-                <Label className="text-xs">Tone</Label>
-                <select
-                  className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
-                  value={(voice['tone'] as string) ?? 'friendly'}
-                  onChange={(e) => updateField('voice.tone', e.target.value)}
-                >
-                  <option value="friendly">Friendly</option>
-                  <option value="professional">Professional</option>
-                  <option value="warm">Warm</option>
-                  <option value="casual">Casual</option>
-                  <option value="formal">Formal</option>
-                </select>
+                <Label className="text-xs">Business name</Label>
+                <Input
+                  className="mt-1 h-9 text-sm"
+                  value={getString(identity.business_name)}
+                  onChange={(e) => updateField('identity.business_name', e.target.value)}
+                  placeholder="Smile Dental Clinic"
+                />
               </div>
               <div>
-                <Label className="text-xs">Speaking Rate</Label>
+                <Label className="text-xs">Agent display name</Label>
                 <Input
-                  className="mt-1 h-8 text-sm"
-                  type="number"
-                  step="0.1"
-                  min="0.5"
-                  max="2"
-                  value={(voice['speaking_rate'] as number) ?? 1.0}
-                  onChange={(e) => updateField('voice.speaking_rate', parseFloat(e.target.value))}
+                  className="mt-1 h-9 text-sm"
+                  value={getString(identity.agent_name)}
+                  onChange={(e) => updateField('identity.agent_name', e.target.value)}
+                  placeholder="Ava"
                 />
               </div>
             </div>
             <div>
-              <Label className="text-xs">Voice Provider</Label>
-              <select
-                className="mt-1 h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
-                value={(voice['voice_provider'] as string) ?? 'vapi'}
-                onChange={(e) => updateField('voice.voice_provider', e.target.value)}
-              >
-                <option value="vapi">Vapi</option>
-                <option value="twilio">Twilio</option>
-              </select>
+              <Label className="text-xs">Disclosure line</Label>
+              <Input
+                className="mt-1 h-9 text-sm"
+                value={getString(identity.disclosure)}
+                onChange={(e) => updateField('identity.disclosure', e.target.value)}
+                placeholder="I am an AI assistant calling on behalf of Smile Dental Clinic."
+              />
             </div>
           </SpecSection>
 
-          {/* Goals */}
-          <SpecSection icon={Target} title="Goals" description="What the agent should accomplish">
-            <div className="space-y-2">
-              {goals.map((goal, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Input
-                    className="flex-1 h-8 text-sm"
-                    value={goal}
-                    onChange={(e) => {
-                      const newGoals = [...goals];
-                      newGoals[i] = e.target.value;
-                      updateField('goals', newGoals);
-                    }}
-                    placeholder="Book appointments"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0"
-                    onClick={() => {
-                      const newGoals = goals.filter((_, idx) => idx !== i);
-                      updateField('goals', newGoals);
-                    }}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              ))}
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => updateField('goals', [...goals, ''])}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add goal
-              </Button>
+          <SpecSection icon={Mic} title="Voice" description="Provider-neutral voice behavior. Provider adapter selection stays outside the spec.">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label className="text-xs">Tone</Label>
+                <Input
+                  className="mt-1 h-9 text-sm"
+                  value={getString(voice.tone)}
+                  onChange={(e) => updateField('voice.tone', e.target.value)}
+                  placeholder="friendly and professional"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Voice ID</Label>
+                <Input
+                  className="mt-1 h-9 text-sm"
+                  value={getString(voice.voice_id)}
+                  onChange={(e) => updateField('voice.voice_id', e.target.value)}
+                  placeholder="optional provider voice id"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Speaking rate</Label>
+                <Input
+                  className="mt-1 h-9 text-sm"
+                  type="number"
+                  step="0.1"
+                  min="0.5"
+                  max="2"
+                  value={getOptionalNumberInput(voice.speaking_rate)}
+                  onChange={(e) => updateField('voice.speaking_rate', toOptionalNumber(e.target.value))}
+                />
+              </div>
+              <label className="flex items-center gap-2 pt-6 text-sm">
+                <input
+                  type="checkbox"
+                  className="rounded border-border"
+                  checked={getBoolean(voice.allow_interruptions, true)}
+                  onChange={(e) => updateField('voice.allow_interruptions', e.target.checked)}
+                />
+                Allow interruptions
+              </label>
             </div>
           </SpecSection>
 
-          {/* Compliance */}
-          <SpecSection icon={Shield} title="Compliance" description="Consent, DNC, and disclosure settings">
-            <div className="grid grid-cols-2 gap-3">
+          <SpecSection icon={Target} title="Goals" description="The outcomes this agent should optimize for.">
+            <StringListEditor
+              values={goals}
+              placeholder="Book appointments"
+              addLabel="Add goal"
+              onChange={(values) => updateStringArray('goals', values)}
+            />
+          </SpecSection>
+
+          <SpecSection icon={MessageSquare} title="Conversation Rules" description="Runtime guardrails for how the agent speaks and recovers.">
+            <div>
+              <Label className="text-xs">First message</Label>
+              <Textarea
+                className="mt-1 min-h-20 text-sm"
+                value={getString(conversationRules.first_message)}
+                onChange={(e) => updateField('conversation_rules.first_message', e.target.value)}
+                placeholder="Thanks for calling Smile Dental Clinic. How can I help?"
+              />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
               {[
-                { key: 'consent_required_for_outbound', label: 'Consent required (outbound)' },
-                { key: 'opt_out_enabled', label: 'Opt-out detection' },
-                { key: 'dnc_check_enabled', label: 'DNC list check' },
-                { key: 'recording_notice_required', label: 'Recording notice' },
-              ].map(({ key, label }) => (
+                ['ask_one_question_at_a_time', 'Ask one question at a time'],
+                ['confirm_critical_information', 'Confirm critical information'],
+                ['do_not_make_up_answers', 'Do not make up answers'],
+                ['fallback_to_human_when_unsure', 'Fallback to human when unsure'],
+              ].map(([key, label]) => (
                 <label key={key} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
                     className="rounded border-border"
-                    checked={(compliance[key] as boolean) ?? false}
+                    checked={getBoolean(conversationRules[key], true)}
+                    onChange={(e) => updateField(`conversation_rules.${key}`, e.target.checked)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </SpecSection>
+
+          <SpecSection icon={Shield} title="Compliance" description="Consent and disclosure controls required before calls can run.">
+            <div className="grid gap-2 sm:grid-cols-2">
+              {[
+                ['ai_disclosure_required', 'AI disclosure required'],
+                ['recording_notice_required', 'Recording notice required'],
+                ['opt_out_enabled', 'Opt-out enabled'],
+                ['consent_required_for_outbound', 'Consent required for outbound'],
+              ].map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="rounded border-border"
+                    checked={getBoolean(compliance[key], key !== 'recording_notice_required')}
                     onChange={(e) => updateField(`compliance.${key}`, e.target.checked)}
                   />
                   {label}
@@ -252,57 +387,163 @@ export function FormModeEditor({ spec, onChange, defaultMode = 'form' }: FormMod
             </div>
           </SpecSection>
 
-          {/* First Message */}
-          <SpecSection icon={MessageSquare} title="First Message" description="Opening greeting">
-            <Textarea
-              className="min-h-[80px] text-sm"
-              value={(spec['first_message'] as string) ?? ''}
-              onChange={(e) => updateField('first_message', e.target.value)}
-              placeholder="Hello, you've reached [Business]. How can I help you today?"
+          <SpecSection icon={Workflow} title="Handoff" description="Human transfer behavior and escalation conditions.">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="rounded border-border"
+                checked={getBoolean(handoff.enabled, true)}
+                onChange={(e) => updateField('handoff.enabled', e.target.checked)}
+              />
+              Enable human handoff
+            </label>
+            <div>
+              <Label className="text-xs">Target phone</Label>
+              <Input
+                className="mt-1 h-9 text-sm"
+                value={getString(handoff.target_phone)}
+                onChange={(e) => updateField('handoff.target_phone', e.target.value)}
+                placeholder="+15555550100"
+              />
+            </div>
+            <StringListEditor
+              values={handoffConditions}
+              placeholder="caller_requests_human"
+              addLabel="Add condition"
+              onChange={(values) => updateStringArray('handoff.conditions', values)}
             />
           </SpecSection>
 
-          {/* Conversation Rules */}
-          <SpecSection icon={Settings2} title="Conversation Rules" description="How the agent handles conversation">
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { key: 'interruptions_enabled', label: 'Allow interruptions' },
-                { key: 'transfer_enabled', label: 'Enable transfers' },
-                { key: 'sentiment_detection', label: 'Sentiment detection' },
-                { key: 'callback_offer_on_negative', label: 'Offer callback on negative sentiment' },
-              ].map(({ key, label }) => (
-                <label key={key} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="rounded border-border"
-                    checked={(conversationRules[key] as boolean) ?? false}
-                    onChange={(e) => updateField(`conversation_rules.${key}`, e.target.checked)}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
+          <SpecSection icon={CheckCircle2} title="Analytics" description="Events counted as successful outcomes.">
+            <StringListEditor
+              values={successEvents}
+              placeholder="appointment_booked"
+              addLabel="Add event"
+              onChange={(values) => updateStringArray('analytics.success_events', values)}
+            />
           </SpecSection>
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <Label className="text-xs">Agent Spec JSON</Label>
-            <Button variant="ghost" size="sm" className="gap-1.5 h-7" onClick={() => setJsonText(JSON.stringify(spec, null, 2))}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5"
+              onClick={() => {
+                setJsonText(stringifySpec(spec));
+                setJsonError(null);
+              }}
+            >
               <Eye className="h-3 w-3" />
               Reset
             </Button>
           </div>
           <Textarea
-            className="font-mono text-xs min-h-[500px]"
+            className="min-h-[500px] font-mono text-xs"
             value={jsonText}
             onChange={(e) => handleJsonChange(e.target.value)}
           />
-          {jsonError && (
-            <p className="text-xs text-destructive">JSON error: {jsonError}</p>
-          )}
+          {jsonError ? (
+            <p className="text-xs text-destructive">JSON parse error: {jsonError}</p>
+          ) : null}
         </div>
       )}
     </div>
   );
+}
+
+function StringListEditor({
+  values,
+  placeholder,
+  addLabel,
+  onChange,
+}: {
+  values: string[];
+  placeholder: string;
+  addLabel: string;
+  onChange: (values: string[]) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      {values.map((value, index) => (
+        <div key={index} className="flex items-center gap-2">
+          <Input
+            className="h-9 flex-1 text-sm"
+            value={value}
+            onChange={(e) => {
+              const next = [...values];
+              next[index] = e.target.value;
+              onChange(next);
+            }}
+            placeholder={placeholder}
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            onClick={() => onChange(values.filter((_, i) => i !== index))}
+            aria-label="Remove item"
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+        onClick={() => onChange([...values, ''])}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        {addLabel}
+      </Button>
+    </div>
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function getString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => (typeof item === 'string' ? item : '')) : [];
+}
+
+function getBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function getOptionalNumberInput(value: unknown): number | '' {
+  return typeof value === 'number' && Number.isFinite(value) ? value : '';
+}
+
+function toOptionalNumber(value: string): number | undefined {
+  if (value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getAgentType(value: unknown): string {
+  return typeof value === 'string' && AGENT_TYPES.includes(value as (typeof AGENT_TYPES)[number])
+    ? value
+    : '';
+}
+
+function stringifySpec(value: unknown): string {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch {
+    return '{}';
+  }
 }

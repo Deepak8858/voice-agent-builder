@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import dynamic from 'next/dynamic';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
@@ -11,24 +10,21 @@ import type {
   KnowledgeSourceSummary,
   SessionUser,
 } from '@voiceforge/shared';
+import { AgentSpecSchema } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { AgentCreationModeTabs } from '@/components/agent-creation-mode-tabs';
+import { FormModeEditor, type AgentSpecValidationState } from '@/components/form-mode-editor';
+import { FormSection } from '@/components/dashboard/form-section';
+import { PageHeader } from '@/components/dashboard/page-header';
+import { PromptQualityChecklist } from '@/components/dashboard/prompt-quality-checklist';
 import { useApi } from '@/lib/use-api';
 import { useAgentDraftStore } from '@/lib/stores/agent-draft';
-import { Bot, Sparkles, RotateCcw, Save } from 'lucide-react';
-
-const MonacoEditor = dynamic(() => import('@monaco-editor/react').then((m) => m.default), {
-  ssr: false,
-  loading: () => (
-    <div className="flex h-72 items-center justify-center text-sm text-muted-foreground">
-      Loading editor…
-    </div>
-  ),
-});
+import { Bot, Sparkles, RotateCcw, Save, Building2, BookOpen, FileJson2 } from 'lucide-react';
 
 interface TemplateSummary {
   slug: string;
@@ -45,6 +41,13 @@ export default function NewAgentPage() {
 
   const draft = useAgentDraftStore();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [specValidation, setSpecValidation] = useState<AgentSpecValidationState | null>(null);
+
+  const parsedDraftSpec = useMemo(
+    () => (draft.draftSpec ? AgentSpecSchema.safeParse(draft.draftSpec) : null),
+    [draft.draftSpec],
+  );
+  const canSaveDraftSpec = Boolean(parsedDraftSpec?.success);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
@@ -94,7 +97,14 @@ export default function NewAgentPage() {
     },
     onSuccess: (res) => {
       draft.setGenerated(res as Parameters<typeof draft.setGenerated>[0]);
-      if (res.spec) draft.setDraftSpec(res.spec as Parameters<typeof draft.setDraftSpec>[0]);
+      if (res.spec) {
+        const parsed = AgentSpecSchema.safeParse(res.spec);
+        draft.setDraftSpec(parsed.success ? parsed.data : res.spec);
+        if (!parsed.success) {
+          toast.error('Generated spec needs validation fixes before saving.');
+          return;
+        }
+      }
       toast.success('Agent Spec generated.');
     },
     onError: (err: Error) => toast.error(err.message),
@@ -103,16 +113,23 @@ export default function NewAgentPage() {
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId || !draft.draftSpec) throw new Error('Missing spec');
+      const parsed = AgentSpecSchema.safeParse(draft.draftSpec);
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0];
+        const field = firstIssue?.path.length ? firstIssue.path.join('.') : 'spec';
+        throw new Error(`Fix Agent Spec validation before saving: ${field}`);
+      }
+      const spec = parsed.data;
       return call<AgentDetail>(
         `/workspaces/${workspaceId}/agents`,
         {
           method: 'POST',
           body: JSON.stringify({
-            name: draft.generated?.suggested_name ?? draft.draftSpec.name,
-            description: draft.generated?.rationale ?? undefined,
-            industry: draft.draftSpec.industry,
-            agent_type: draft.draftSpec.agent_type,
-            spec: draft.draftSpec,
+            name: spec.name,
+            description: spec.description ?? draft.generated?.rationale ?? undefined,
+            industry: spec.industry,
+            agent_type: spec.agent_type,
+            spec,
           } satisfies { name: string; industry: string; agent_type: string; spec: unknown } & {
             description?: string;
           }),
@@ -129,24 +146,30 @@ export default function NewAgentPage() {
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">New agent</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Describe what the agent should do. VoiceForge generates a full Agent Spec JSON
-          you can review and save as a draft.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Create voice agent"
+        title="Turn a phone workflow into a testable AI voice agent."
+        description="Give your agent clear goals, business context, and a natural opening message. VoiceForge generates the provider-neutral Agent Spec JSON behind the scenes."
+        actions={
+          <Button variant="outline" onClick={() => draft.reset()} className="gap-2">
+            <RotateCcw className="h-4 w-4" />
+            Reset draft
+          </Button>
+        }
+      >
+        <div>
+          <AgentCreationModeTabs active="spec" />
+        </div>
+      </PageHeader>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1.2fr]">
         <div className="flex flex-col gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-primary" />
-                Describe your agent
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
+          <FormSection
+            icon={<Sparkles className="h-4 w-4" />}
+            title="Agent setup"
+            description="Define what the agent should do, who it represents, and which business context it can use."
+          >
+            <div className="flex flex-col gap-5">
               <div>
                 <Label htmlFor="prompt">Prompt</Label>
                 <Textarea
@@ -154,14 +177,24 @@ export default function NewAgentPage() {
                   rows={6}
                   value={draft.prompt}
                   onChange={(e) => draft.setPrompt(e.target.value)}
-                  placeholder="Create an AI receptionist for a dental clinic that books appointments and transfers emergencies."
-                  className="mt-1.5"
+                  placeholder="You are a friendly customer support voice agent for {{business_name}}. Your goal is to answer questions, collect customer details, and schedule appointments. Keep responses short and natural for phone conversations."
+                  className="mt-1.5 min-h-40"
                 />
+                <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                  <span>Write instructions like you are training a human phone agent.</span>
+                  <span className="shrink-0 font-mono">{draft.prompt.length}/4000</span>
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <PromptQualityChecklist prompt={draft.prompt} />
+              <div className="flex items-center gap-2 border-t border-border/70 pt-2 text-sm font-semibold text-foreground">
+                <Building2 className="h-4 w-4 text-primary" />
+                Business context
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <Label>Template</Label>
+                  <Label htmlFor="template">Use case template</Label>
                   <select
+                    id="template"
                     className="mt-1.5 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     value={draft.templateSlug ?? ''}
                     onChange={(e) => draft.setTemplate(e.target.value || null)}
@@ -176,17 +209,19 @@ export default function NewAgentPage() {
                   </select>
                 </div>
                 <div>
-                  <Label>Business name</Label>
+                  <Label htmlFor="businessName">Business name</Label>
                   <Input
+                    id="businessName"
                     className="mt-1.5"
                     value={draft.businessName}
                     onChange={(e) => draft.setBusinessName(e.target.value)}
                     placeholder="Smile Dental Clinic"
                   />
                 </div>
-                <div className="col-span-2">
-                  <Label>Timezone</Label>
+                <div className="sm:col-span-2">
+                  <Label htmlFor="timezone">Timezone</Label>
                   <Input
+                    id="timezone"
                     className="mt-1.5"
                     value={draft.timezone}
                     onChange={(e) => draft.setTimezone(e.target.value)}
@@ -195,9 +230,12 @@ export default function NewAgentPage() {
                 </div>
               </div>
               <div>
-                <Label>Workspace knowledge (optional)</Label>
+                <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <BookOpen className="h-4 w-4 text-primary" />
+                  Workspace knowledge
+                </div>
                 {knowledgeQuery.data && knowledgeQuery.data.items.length > 0 ? (
-                  <ul className="mt-1.5 space-y-1 rounded-md border border-border bg-background p-3">
+                  <ul className="mt-2 space-y-1 rounded-xl border border-border bg-background p-3">
                     {knowledgeQuery.data.items.map((k) => (
                       <li key={k.id} className="flex items-center gap-2 text-sm">
                         <input
@@ -216,7 +254,7 @@ export default function NewAgentPage() {
                     ))}
                   </ul>
                 ) : (
-                  <p className="mt-1.5 text-xs text-muted-foreground">
+                  <p className="mt-2 rounded-xl border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground">
                     No workspace-level knowledge sources yet. Add them from the builder page
                     after creating the agent, or via the Knowledge admin screen.
                   </p>
@@ -236,15 +274,15 @@ export default function NewAgentPage() {
                   Reset
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </FormSection>
         </div>
 
         <Card className="flex min-h-[28rem] flex-col">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
-              <Bot className="h-4 w-4 text-primary" />
-              Agent Spec JSON
+              <FileJson2 className="h-4 w-4 text-primary" />
+              Review generated agent
             </CardTitle>
             {draft.generated?.matched_template_slug ? (
               <Badge variant="secondary">matched: {draft.generated.matched_template_slug}</Badge>
@@ -253,18 +291,25 @@ export default function NewAgentPage() {
           <CardContent className="flex-1 flex flex-col gap-4">
             {draft.draftSpec ? (
               <>
-                <div className="min-h-72 flex-1 overflow-hidden rounded-md border border-border">
-                  <MonacoEditor
-                    height="380px"
-                    defaultLanguage="json"
-                    value={JSON.stringify(draft.draftSpec, null, 2)}
-                    options={{
-                      readOnly: true,
-                      minimap: { enabled: false },
-                      fontSize: 12,
-                      scrollBeyondLastLine: false,
-                    }}
-                    theme="vs-dark"
+                {parsedDraftSpec?.success ? (
+                  <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                    <p className="text-sm font-semibold text-foreground">
+                      {draft.generated?.suggested_name ?? parsedDraftSpec.data.name}
+                    </p>
+                    <p className="mt-1 text-xs capitalize text-muted-foreground">
+                      {parsedDraftSpec.data.industry} · {parsedDraftSpec.data.agent_type.replace(/_/g, ' ')} · {parsedDraftSpec.data.language}
+                    </p>
+                    <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                      Review the form sections, fix validation warnings, then save as a draft and test before using it with real customers.
+                    </p>
+                  </div>
+                ) : null}
+                <div className="min-h-72 flex-1">
+                  <FormModeEditor
+                    spec={draft.draftSpec}
+                    onChange={draft.setDraftSpec}
+                    defaultMode="form"
+                    onValidationChange={setSpecValidation}
                   />
                 </div>
                 {draft.generated?.rationale ? (
@@ -273,17 +318,28 @@ export default function NewAgentPage() {
                 <div className="flex items-center gap-2">
                   <Button
                     onClick={() => createMutation.mutate()}
-                    disabled={createMutation.isPending || !workspaceId}
+                    disabled={createMutation.isPending || !workspaceId || !canSaveDraftSpec}
                     className="gap-2"
                   >
                     <Save className="h-4 w-4" />
                     {createMutation.isPending ? 'Saving…' : 'Save as draft'}
                   </Button>
+                  {specValidation && !specValidation.isValid ? (
+                    <span className="text-xs text-destructive">
+                      Resolve Agent Spec validation issues to save.
+                    </span>
+                  ) : null}
                 </div>
               </>
             ) : (
-              <div className="flex flex-1 items-center justify-center rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-                Your generated Agent Spec JSON will appear here.
+              <div className="flex flex-1 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/30 p-10 text-center text-sm text-muted-foreground">
+                <div className="max-w-sm">
+                  <Bot className="mx-auto mb-3 h-8 w-8 text-primary" />
+                  <p className="font-medium text-foreground">Your generated agent preview will appear here.</p>
+                  <p className="mt-1 leading-6">
+                    Complete the prompt and business context, then generate a draft Agent Spec JSON.
+                  </p>
+                </div>
               </div>
             )}
           </CardContent>

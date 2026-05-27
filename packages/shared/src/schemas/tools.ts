@@ -17,6 +17,16 @@ const WebhookConfigSchema = z.object({
 });
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 
+const GoogleCalendarConfigSchema = z.object({
+  refresh_token: z.string().min(1),
+  client_id: z.string().optional(),
+  client_secret: z.string().optional(),
+  calendar_id: z.string().min(1).default('primary'),
+});
+export type GoogleCalendarConfig = z.infer<typeof GoogleCalendarConfigSchema>;
+
+const ToolConfigSchema = z.union([WebhookConfigSchema, GoogleCalendarConfigSchema]);
+
 const JsonSchemaShape = z
   .object({
     type: z.literal('object'),
@@ -25,20 +35,33 @@ const JsonSchemaShape = z
   })
   .passthrough();
 
-export const CreateToolDtoSchema = z.object({
+const CreateToolBaseShape = {
   name: z.string().min(1).max(64).regex(/^[a-z0-9_]+$/, {
     message: 'name must be snake_case (a–z, 0–9, _ only).',
   }),
   description: z.string().min(1).max(500),
-  tool_type: ToolTypeSchema,
   agent_id: z.string().uuid().nullable().optional(),
-  config: WebhookConfigSchema,
   input_schema: JsonSchemaShape,
   enabled: z.boolean().default(true),
-});
+};
+
+export const CreateToolDtoSchema = z.discriminatedUnion('tool_type', [
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('webhook'), config: WebhookConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_get'), config: WebhookConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_post'), config: WebhookConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_calendar'), config: GoogleCalendarConfigSchema }),
+]);
 export type CreateToolDto = z.infer<typeof CreateToolDtoSchema>;
 
-export const UpdateToolDtoSchema = CreateToolDtoSchema.partial();
+export const UpdateToolDtoSchema = z.object({
+  name: CreateToolBaseShape.name.optional(),
+  description: CreateToolBaseShape.description.optional(),
+  tool_type: ToolTypeSchema.optional(),
+  agent_id: z.string().uuid().nullable().optional(),
+  config: ToolConfigSchema.optional(),
+  input_schema: JsonSchemaShape.optional(),
+  enabled: z.boolean().optional(),
+});
 export type UpdateToolDto = z.infer<typeof UpdateToolDtoSchema>;
 
 export const ToolSummarySchema = z.object({
@@ -54,10 +77,20 @@ export const ToolSummarySchema = z.object({
 });
 export type ToolSummary = z.infer<typeof ToolSummarySchema>;
 
+const PublicWebhookConfigSchema = WebhookConfigSchema.omit({ hmac_secret: true }).extend({
+  hmac_secret_set: z.boolean(),
+});
+
+const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema.omit({
+  refresh_token: true,
+  client_secret: true,
+}).extend({
+  refresh_token_set: z.boolean(),
+  client_secret_set: z.boolean(),
+});
+
 export const ToolDetailSchema = ToolSummarySchema.extend({
-  config: WebhookConfigSchema.omit({ hmac_secret: true }).extend({
-    hmac_secret_set: z.boolean(),
-  }),
+  config: z.union([PublicWebhookConfigSchema, PublicGoogleCalendarConfigSchema]),
   input_schema: JsonSchemaShape,
 });
 export type ToolDetail = z.infer<typeof ToolDetailSchema>;

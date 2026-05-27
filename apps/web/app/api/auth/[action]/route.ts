@@ -10,39 +10,28 @@ export async function POST(
 ) {
   const { action } = await params;
   const supabase = await createServerSupabaseClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) {
+  if (!user || !session?.access_token) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const body = await req.json().catch(() => ({}));
 
-  // Build context headers from Supabase user
   const headers: Record<string, string> = {
     'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-    'x-user-email': user.email ?? '',
+    authorization: `Bearer ${session.access_token}`,
   };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  if (user.app_metadata?.active_org_id) {
-    headers['x-org-id'] = user.app_metadata.active_org_id as string;
-  }
-
-  if (user.app_metadata?.active_org_role) {
-    headers['x-org-role'] = user.app_metadata.active_org_role as string;
-  }
 
   let targetPath = '/api/v1';
   let method = 'GET';
-  let apiBody: unknown = undefined;
+  const apiBody: unknown = undefined;
 
   switch (action) {
     case 'sign-out':
@@ -59,7 +48,7 @@ export async function POST(
       const { orgId } = body as { orgId?: string };
       if (!orgId) return NextResponse.json({ error: 'orgId required' }, { status: 400 });
 
-      const appUserId = user.user_metadata?.app_user_id;
+      const appUserId = user.app_metadata?.app_user_id;
       if (!appUserId) return NextResponse.json({ error: 'User profile not found' }, { status: 400 });
 
       // Find membership where workspace belongs to target organization
@@ -79,7 +68,6 @@ export async function POST(
 
       const adminClient = (await import('@/lib/supabase/admin')).createSupabaseAdminClient();
       await adminClient.auth.admin.updateUserById(user.id, {
-        user_metadata: { ...user.user_metadata, active_org_id: orgId },
         app_metadata: { ...user.app_metadata, active_org_id: orgId, active_org_role: orgRole },
       });
 

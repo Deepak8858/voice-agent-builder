@@ -11,7 +11,10 @@ type Tab = 'general' | 'team' | 'audit';
 
 interface MeResponse {
   id: string;
-  workspaces: Array<{ id: string; name: string; role: string }>;
+  active_workspace_id?: string | null;
+  active_workspace_name?: string | null;
+  active_workspace_role?: string | null;
+  workspaces?: Array<{ id: string; name: string; role: string }>;
 }
 
 interface Member {
@@ -38,7 +41,7 @@ export function SettingsPanel() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const currentWorkspaceId = me?.workspaces[0]?.id;
+  const currentWorkspaceId = me?.active_workspace_id ?? me?.workspaces?.[0]?.id;
 
   useEffect(() => {
     call<MeResponse>('/auth/me').then(setMe).catch(console.error);
@@ -90,7 +93,9 @@ export function SettingsPanel() {
             </div>
             <div className="flex items-center justify-between py-2">
               <span className="text-sm text-muted-foreground">Workspaces</span>
-              <span className="text-sm font-medium text-foreground">{me?.workspaces.length ?? 0}</span>
+              <span className="text-sm font-medium text-foreground">
+                {me?.active_workspace_id ? 1 : (me?.workspaces?.length ?? 0)}
+              </span>
             </div>
           </CardContent>
         </Card>

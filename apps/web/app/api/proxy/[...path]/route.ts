@@ -4,53 +4,52 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 const INTERNAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
+function apiTarget(req: NextRequest, pathString: string): string {
+  return `${INTERNAL_API_URL}${pathString}${req.nextUrl.search}`;
+}
+
 /**
  * API proxy route. Receives browser fetches, validates Supabase session,
- * then forwards to NestJS with internal key + user/org context headers.
+ * then forwards to NestJS with the internal key and Supabase bearer token.
  */
+async function getApiContextHeaders(contentType?: string) {
+  const supabase = await createServerSupabaseClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user || !session?.access_token) return null;
+
+  const headers: Record<string, string> = {
+    'x-internal-key': INTERNAL_API_KEY ?? '',
+    authorization: `Bearer ${session.access_token}`,
+  };
+
+  if (contentType) {
+    headers['content-type'] = contentType;
+  }
+
+  return headers;
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await params;
   const pathString = '/' + (path ?? []).join('/');
-  const supabase = await createServerSupabaseClient();
+  const headers = await getApiContextHeaders(req.headers.get('content-type') ?? 'application/json');
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!headers) {
     return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
-  }
-
-  // Build context headers from Supabase user
-  const headers: Record<string, string> = {
-    'content-type': req.headers.get('content-type') ?? 'application/json',
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-    'x-user-email': user.email ?? '',
-  };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  if (user.app_metadata?.active_org_id) {
-    headers['x-org-id'] = user.app_metadata.active_org_id as string;
-  }
-
-  if (user.app_metadata?.active_org_role) {
-    headers['x-org-role'] = user.app_metadata.active_org_role as string;
-  }
-
-  if (user.app_metadata?.active_workspace_id) {
-    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
   }
 
   const body = await req.text();
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+  const apiRes = await fetch(apiTarget(req, pathString), {
     method: 'POST',
     headers,
     body,
@@ -75,35 +74,13 @@ export async function GET(
 ) {
   const { path } = await params;
   const pathString = '/' + (path ?? []).join('/');
-  const supabase = await createServerSupabaseClient();
+  const headers = await getApiContextHeaders();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!headers) {
     return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
   }
 
-  const headers: Record<string, string> = {
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-    'x-user-email': user.email ?? '',
-  };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  if (user.app_metadata?.active_org_id) {
-    headers['x-org-id'] = user.app_metadata.active_org_id as string;
-  }
-
-  if (user.app_metadata?.active_org_role) {
-    headers['x-org-role'] = user.app_metadata.active_org_role as string;
-  }
-
-  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+  const apiRes = await fetch(apiTarget(req, pathString), {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -136,42 +113,15 @@ export async function PATCH(
 ) {
   const { path } = await params;
   const pathString = '/' + (path ?? []).join('/');
-  const supabase = await createServerSupabaseClient();
+  const headers = await getApiContextHeaders(req.headers.get('content-type') ?? 'application/json');
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!headers) {
     return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
-  }
-
-  const headers: Record<string, string> = {
-    'content-type': req.headers.get('content-type') ?? 'application/json',
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-    'x-user-email': user.email ?? '',
-  };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  if (user.app_metadata?.active_org_id) {
-    headers['x-org-id'] = user.app_metadata.active_org_id as string;
-  }
-
-  if (user.app_metadata?.active_org_role) {
-    headers['x-org-role'] = user.app_metadata.active_org_role as string;
-  }
-
-  if (user.app_metadata?.active_workspace_id) {
-    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
   }
 
   const body = await req.text();
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+  const apiRes = await fetch(apiTarget(req, pathString), {
     method: 'PATCH',
     headers,
     body,
@@ -191,42 +141,15 @@ export async function PUT(
 ) {
   const { path } = await params;
   const pathString = '/' + (path ?? []).join('/');
-  const supabase = await createServerSupabaseClient();
+  const headers = await getApiContextHeaders(req.headers.get('content-type') ?? 'application/json');
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!headers) {
     return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
-  }
-
-  const headers: Record<string, string> = {
-    'content-type': req.headers.get('content-type') ?? 'application/json',
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-    'x-user-email': user.email ?? '',
-  };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  if (user.app_metadata?.active_org_id) {
-    headers['x-org-id'] = user.app_metadata.active_org_id as string;
-  }
-
-  if (user.app_metadata?.active_org_role) {
-    headers['x-org-role'] = user.app_metadata.active_org_role as string;
-  }
-
-  if (user.app_metadata?.active_workspace_id) {
-    headers['x-workspace-id'] = user.app_metadata.active_workspace_id as string;
   }
 
   const body = await req.text();
 
-  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+  const apiRes = await fetch(apiTarget(req, pathString), {
     method: 'PUT',
     headers,
     body,
@@ -246,26 +169,13 @@ export async function DELETE(
 ) {
   const { path } = await params;
   const pathString = '/' + (path ?? []).join('/');
-  const supabase = await createServerSupabaseClient();
+  const headers = await getApiContextHeaders();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!headers) {
     return NextResponse.json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } }, { status: 401 });
   }
 
-  const headers: Record<string, string> = {
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    'x-user-id': user.id,
-  };
-
-  if (user.user_metadata?.app_user_id) {
-    headers['x-app-user-id'] = user.user_metadata.app_user_id as string;
-  }
-
-  const apiRes = await fetch(`${INTERNAL_API_URL}${pathString}`, {
+  const apiRes = await fetch(apiTarget(req, pathString), {
     method: 'DELETE',
     headers,
     cache: 'no-store',

@@ -34,9 +34,9 @@ export async function GET(req: NextRequest) {
   const user = data.user;
   const adminClient = createSupabaseAdminClient();
 
-  // For new OAuth signups, user_metadata.app_user_id is not set by default.
-  // Look up the public.users row and update user_metadata if needed.
-  if (!user.user_metadata?.app_user_id) {
+  // For new OAuth signups, app_metadata.app_user_id is not set by default.
+  // Look up the public.users row and update server-controlled metadata.
+  if (!user.app_metadata?.app_user_id) {
     const { data: appUser } = await supabase
       .from('users')
       .select('id')
@@ -44,9 +44,8 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (appUser) {
-      // Update user_metadata so future sessions have app_user_id
       await adminClient.auth.admin.updateUserById(user.id, {
-        user_metadata: { ...user.user_metadata, app_user_id: appUser.id },
+        app_metadata: { ...user.app_metadata, app_user_id: appUser.id },
       });
     }
   }
@@ -55,10 +54,16 @@ export async function GET(req: NextRequest) {
   const activeOrgId = user.app_metadata?.active_org_id;
 
   if (!activeOrgId) {
-    // New user or no org — redirect to onboarding
-    return NextResponse.redirect(new URL('/onboarding', req.url));
+    // New user or no org — push to onboarding and preserve the post-signup
+    // redirect target (e.g. /checkout/start?plan=starter) so paid plan
+    // intent survives org creation.
+    const onboarding = new URL('/onboarding', req.url);
+    if (next && next !== '/dashboard') {
+      onboarding.searchParams.set('next', next);
+    }
+    return NextResponse.redirect(onboarding);
   }
 
-  // Already has org — go to dashboard
+  // Already has org — go to dashboard (or the explicit `next` target).
   return NextResponse.redirect(new URL(next, req.url));
 }

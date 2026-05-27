@@ -1,4 +1,11 @@
-import { Controller, Headers, Post, Req } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Headers,
+  InternalServerErrorException,
+  Post,
+  Req,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { Public } from '../common/decorators/public.decorator';
 import { StripeWebhookService } from './stripe-webhook.service';
@@ -15,9 +22,15 @@ export class StripeWebhookController {
   ): Promise<{ ok: boolean; message: string }> {
     const rawBody = req.rawBody;
     if (!rawBody) {
-      return { ok: false, message: 'No raw body' };
+      throw new BadRequestException('No raw body');
     }
     const result = await this.service.handleWebhook(rawBody, signature);
-    return { ok: result.handled, message: result.message };
+    if (!result.handled) {
+      if (result.statusCode === 400) {
+        throw new BadRequestException(result.message);
+      }
+      throw new InternalServerErrorException(result.message);
+    }
+    return { ok: true, message: result.message };
   }
 }

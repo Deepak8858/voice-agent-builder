@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
+import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import { useApi } from '@/lib/use-api';
 import { Phone, Plus, Trash2, Link, Unlink } from 'lucide-react';
 
@@ -111,32 +111,58 @@ export default function PhoneNumbersPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Phone Numbers</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Provision Twilio numbers or bring your own. Assign to agents for inbound/outbound calls.
-        </p>
-      </div>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        eyebrow="Telephony"
+        title="Phone numbers"
+        description="Provision Twilio numbers or bring your own, then assign each number to an agent for inbound and outbound calls."
+        actions={
+          <>
+            <Button onClick={() => setShowProvision(true)} className="gap-2">
+              <Plus className="h-4 w-4" />
+              Provision number
+            </Button>
+            <Button variant="outline" onClick={() => setShowByo(true)} className="gap-2">
+              <Phone className="h-4 w-4" />
+              Bring your own
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-3">
+          <StatCard
+            label="Numbers"
+            value={numbers.length}
+            description="Configured for this workspace"
+            icon={<Phone className="h-5 w-5" />}
+          />
+          <StatCard
+            label="Assigned"
+            value={numbers.filter((n) => n.agentId).length}
+            description="Linked to active agents"
+            icon={<Link className="h-5 w-5" />}
+            tone="success"
+          />
+          <StatCard
+            label="Monthly cost"
+            value={`$${numbers.reduce((sum, n) => sum + Number(n.costPerMonth), 0).toFixed(2)}`}
+            description="Estimated phone number spend"
+            tone="info"
+          />
+        </div>
+      </PageHeader>
 
       {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
-      <div className="flex items-center gap-2">
-        <Button onClick={() => setShowProvision(true)} className="gap-1">
-          <Plus className="h-4 w-4" /> Provision Number
-        </Button>
-        <Button variant="outline" onClick={() => setShowByo(true)} className="gap-1">
-          <Phone className="h-4 w-4" /> Bring Your Own
-        </Button>
-      </div>
 
       {showProvision && (
-        <Card>
-          <CardHeader><CardTitle>Provision New Number</CardTitle></CardHeader>
-          <CardContent>
-            <form onSubmit={handleProvision} className="flex items-end gap-3">
+        <FormSection
+          title="Provision new number"
+          description="Search for an available number by area code and add it to the workspace."
+        >
+            <form onSubmit={handleProvision} className="flex flex-col gap-3 sm:flex-row sm:items-end">
               <div className="flex flex-col gap-1">
-                <Label>Area Code</Label>
+                <Label>Area code</Label>
                 <Input
                   value={areaCode}
                   onChange={(e) => setAreaCode(e.target.value)}
@@ -150,17 +176,17 @@ export default function PhoneNumbersPage() {
               </Button>
               <Button variant="outline" type="button" onClick={() => setShowProvision(false)}>Cancel</Button>
             </form>
-          </CardContent>
-        </Card>
+        </FormSection>
       )}
 
       {showByo && (
-        <Card>
-          <CardHeader><CardTitle>Bring Your Own Number</CardTitle></CardHeader>
-          <CardContent>
-            <form onSubmit={handleByo} className="flex items-end gap-3">
+        <FormSection
+          title="Bring your own number"
+          description="Connect an existing phone number in E.164 format."
+        >
+            <form onSubmit={handleByo} className="flex flex-col gap-3 sm:flex-row sm:items-end">
               <div className="flex flex-col gap-1">
-                <Label>Phone Number (E.164)</Label>
+                <Label>Phone number (E.164)</Label>
                 <Input
                   value={byoNumber}
                   onChange={(e) => setByoNumber(e.target.value)}
@@ -172,8 +198,7 @@ export default function PhoneNumbersPage() {
               </Button>
               <Button variant="outline" type="button" onClick={() => setShowByo(false)}>Cancel</Button>
             </form>
-          </CardContent>
-        </Card>
+        </FormSection>
       )}
 
       {numbers.length > 0 ? (
@@ -188,8 +213,8 @@ export default function PhoneNumbersPage() {
                   <div>
                     <p className="font-mono font-medium">{num.phoneNumber}</p>
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
-                      <Badge variant="outline" className="text-xs">{num.type}</Badge>
-                      <Badge variant={num.status === 'active' ? 'default' : 'secondary'} className="text-xs">{num.status}</Badge>
+                      <StatusBadge status={num.type} className="text-xs" />
+                      <StatusBadge status={num.status} className="text-xs" />
                       <span>${Number(num.costPerMonth).toFixed(2)}/mo</span>
                     </div>
                   </div>
@@ -230,10 +255,11 @@ export default function PhoneNumbersPage() {
           ))}
         </div>
       ) : (
-        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border p-12 text-center">
-          <Phone className="h-8 w-8 text-muted-foreground mb-3" />
-          <p className="text-sm text-muted-foreground">No phone numbers yet. Provision one or bring your own.</p>
-        </div>
+        <EmptyState
+          icon={<Phone className="h-7 w-7" />}
+          title="No phone numbers yet"
+          description="Provision a managed number or bring your own number to start routing calls through your agents."
+        />
       )}
     </div>
   );

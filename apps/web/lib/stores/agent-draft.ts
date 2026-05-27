@@ -1,8 +1,6 @@
 'use client';
 
 import { create } from 'zustand';
-import type { AgentSpec } from '@voiceforge/shared';
-
 export interface GenerationStatus {
   agent_id: string;
   status: string;
@@ -39,7 +37,7 @@ interface AgentDraftState {
   generated: GenerationResult | null;
   status: GenerationStatus | null;
   isPolling: boolean;
-  draftSpec: AgentSpec | null;
+  draftSpec: unknown | null;
   setPrompt: (p: string) => void;
   setTemplate: (slug: string | null) => void;
   setBusinessName: (n: string) => void;
@@ -52,7 +50,7 @@ interface AgentDraftState {
   setGenerated: (r: GenerationResult | null) => void;
   setStatus: (s: GenerationStatus | null) => void;
   setIsPolling: (v: boolean) => void;
-  setDraftSpec: (s: AgentSpec | null) => void;
+  setDraftSpec: (s: unknown | null) => void;
   reset: () => void;
 }
 

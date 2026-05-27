@@ -134,14 +134,7 @@ export class CallsService {
     }
 
     // Idempotency: prevent double-click double-call within 60s
-    const recentDuplicate = await this.prisma.call.findFirst({
-      where: {
-        workspaceId,
-        agentId,
-        toNumber: dto.to_number,
-        createdAt: { gt: new Date(Date.now() - 60000) },
-      },
-    });
+    const recentDuplicate = await this.findRecentOutboundDuplicate(workspaceId, agentId, dto.to_number);
     if (recentDuplicate) {
       return this.toSummary(recentDuplicate);
     }
@@ -183,6 +176,23 @@ export class CallsService {
         payload: { reasons: checkResult.reasons, to_number: dto.to_number },
       });
       throw new ComplianceBlockedError({ reasons: checkResult.reasons });
+    }
+
+    const dedupeKey = this.outboundDedupeKey(workspaceId, agent.id, dto.to_number);
+    const lockAcquired = await this.cache.acquireLock(dedupeKey, 60);
+    if (!lockAcquired) {
+      const duplicate = await this.findRecentOutboundDuplicate(workspaceId, agent.id, dto.to_number);
+      if (duplicate) return this.toSummary(duplicate);
+      throw new AppError(
+        'RATE_LIMITED',
+        'An outbound call to this number is already being started. Please retry in a few seconds.',
+        409,
+      );
+    }
+
+    const duplicateAfterLock = await this.findRecentOutboundDuplicate(workspaceId, agent.id, dto.to_number);
+    if (duplicateAfterLock) {
+      return this.toSummary(duplicateAfterLock);
     }
 
     const result = await this.voice.startOutboundCall({
@@ -353,7 +363,9 @@ export class CallsService {
     // Queue async evaluation (best-effort — worker handles retries)
     try {
       await this.queue.enqueue('evaluation', 'evaluate', { callId, workspaceId });
-    } catch {}
+    } catch {
+      // best-effort queueing
+    }
 
     // Phase 9: record usage
     await this.recordUsage(workspaceId, updated.id, updated.direction, durationSeconds);
@@ -516,7 +528,9 @@ export class CallsService {
       // Queue async evaluation (best-effort — worker handles retries)
       try {
         await this.queue.enqueue('evaluation', 'evaluate', { callId: call.id, workspaceId: call.workspaceId });
-      } catch {}
+      } catch {
+        // best-effort queueing
+      }
 
       // Phase 9: record usage for provider-driven call completion
       await this.recordUsage(call.workspaceId, updated.id, updated.direction, durationSeconds);
@@ -580,6 +594,26 @@ export class CallsService {
     } catch {
       // usage recording is best-effort; never fail a call end
     }
+  }
+
+  private async findRecentOutboundDuplicate(
+    workspaceId: string,
+    agentId: string,
+    toNumber: string,
+  ) {
+    return this.prisma.call.findFirst({
+      where: {
+        workspaceId,
+        agentId,
+        toNumber,
+        createdAt: { gt: new Date(Date.now() - 60000) },
+      },
+    });
+  }
+
+  private outboundDedupeKey(workspaceId: string, agentId: string, toNumber: string): string {
+    const normalizedNumber = toNumber.replace(/[^+\dA-Za-z_-]/g, '_');
+    return `calls:outbound:dedupe:${workspaceId}:${agentId}:${normalizedNumber}`;
   }
 
   private toSummary(c: {

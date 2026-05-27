@@ -1,14 +1,23 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { CallDetail, TestSessionResult } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { cn } from '@/lib/cn';
-import { Phone, X, ArrowRight } from 'lucide-react';
+import { ArrowRight, Clock3, MessageSquareText, Phone } from 'lucide-react';
 
 interface TestCallDrawerProps {
   workspaceId: string;
@@ -40,67 +49,94 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
     queryFn: () => call<CallDetail>(`/workspaces/${workspaceId}/calls/${callId}`),
   });
 
+  const turns = detailQuery.data?.turns ?? [];
+
   return (
     <>
-      <Button variant="outline" onClick={() => startMutation.mutate()} disabled={startMutation.isPending} className="gap-2">
+      <Button
+        variant="outline"
+        type="button"
+        onClick={() => startMutation.mutate()}
+        disabled={startMutation.isPending || !workspaceId}
+        className="gap-2"
+      >
         <Phone className="h-4 w-4" />
         {startMutation.isPending ? 'Starting…' : 'Test call'}
       </Button>
 
-      {open && callId ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-end bg-black/40 p-0 sm:items-center sm:p-6">
-          <div className="flex h-full w-full max-w-xl flex-col rounded-none bg-background shadow-2xl sm:h-auto sm:max-h-[80vh] sm:rounded-2xl border border-border">
-            <div className="flex items-center justify-between border-b border-border px-5 py-3">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-semibold text-foreground">Browser test call</h2>
-                <Badge variant="secondary">{detailQuery.data?.status ?? 'pending'}</Badge>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setOpen(false)} className="gap-1">
-                <X className="h-4 w-4" />
-                Close
-              </Button>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetContent side="right" className="flex h-full w-full flex-col p-0 sm:max-w-xl">
+          <SheetHeader className="border-b border-border px-6 py-5 pr-12 text-left">
+            <div className="flex flex-wrap items-center gap-2">
+              <SheetTitle>Browser test call</SheetTitle>
+              <StatusBadge status={detailQuery.data?.status ?? 'pending'} />
             </div>
+            <SheetDescription>
+              Review the generated browser test transcript before opening the full call record.
+            </SheetDescription>
+          </SheetHeader>
 
-            <div className="flex-1 overflow-y-auto px-5 py-4">
-              {detailQuery.isPending ? (
-                <p className="text-sm text-muted-foreground">Loading transcript…</p>
-              ) : detailQuery.data ? (
-                <ul className="space-y-3">
-                  {detailQuery.data.turns.map((t, idx) => (
+          <div className="flex-1 overflow-y-auto px-6 py-5">
+            {detailQuery.isPending ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+                <Clock3 className="h-4 w-4 animate-pulse" />
+                Loading transcript…
+              </div>
+            ) : turns.length > 0 ? (
+              <ul className="flex flex-col gap-3">
+                {turns.map((turn, idx) => {
+                  const isAgent = turn.speaker === 'agent';
+                  return (
                     <li
-                      key={idx}
+                      key={`${turn.speaker}-${turn.at_ms}-${idx}`}
                       className={cn(
-                        'flex max-w-[85%] flex-col rounded-xl px-4 py-3 text-sm',
-                        t.speaker === 'agent'
-                          ? 'self-start bg-muted border border-border'
-                          : 'self-end bg-primary/10 text-primary-foreground border border-primary/20',
+                        'flex max-w-[88%] flex-col rounded-2xl border px-4 py-3 text-sm shadow-sm',
+                        isAgent
+                          ? 'self-start border-border bg-muted/70'
+                          : 'self-end border-primary/20 bg-primary text-primary-foreground',
                       )}
                     >
-                      <span className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground mb-1">
-                        {t.speaker} · {Math.round(t.at_ms / 1000)}s
+                      <span
+                        className={cn(
+                          'mb-1 text-[10px] font-semibold uppercase tracking-[0.18em]',
+                          isAgent ? 'text-muted-foreground' : 'text-primary-foreground/75',
+                        )}
+                      >
+                        {turn.speaker} · {Math.round(turn.at_ms / 1000)}s
                       </span>
-                      <span className="text-foreground">{t.text}</span>
+                      <span>{turn.text}</span>
                     </li>
-                  ))}
-                  {detailQuery.data.turns.length === 0 ? (
-                    <li className="text-sm text-muted-foreground">
-                      No transcript yet. Transcript appears once the session ends.
-                    </li>
-                  ) : null}
-                </ul>
-              ) : null}
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs text-muted-foreground">
-              <span>Browser test session</span>
-              <a className="inline-flex items-center gap-1 text-primary hover:underline" href={`/dashboard/calls/${callId}`}>
-                Open full call
-                <ArrowRight className="h-3 w-3" />
-              </a>
-            </div>
+                  );
+                })}
+              </ul>
+            ) : (
+              <div className="flex min-h-72 flex-col items-center justify-center rounded-3xl border border-dashed border-border bg-muted/30 px-6 text-center">
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                  <MessageSquareText className="h-6 w-6" />
+                </div>
+                <p className="font-medium text-foreground">No transcript yet</p>
+                <p className="mt-1 max-w-sm text-sm leading-6 text-muted-foreground">
+                  The transcript appears here after the browser test session creates turns.
+                </p>
+              </div>
+            )}
           </div>
-        </div>
-      ) : null}
+
+          <SheetFooter className="border-t border-border px-6 py-4 sm:justify-between sm:space-x-0">
+            <span className="text-xs text-muted-foreground">
+              {callId ? `Call ${callId.slice(0, 8)}` : 'Browser test session'}
+            </span>
+            {callId ? (
+              <Button asChild variant="outline" size="sm" className="gap-2">
+                <Link href={`/dashboard/calls/${callId}`}>
+                  Open full call
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              </Button>
+            ) : null}
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

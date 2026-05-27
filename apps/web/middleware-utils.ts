@@ -6,7 +6,21 @@ import { createServerClient } from '@supabase/ssr';
  * Called from /middleware.ts. Returns either the next response or a
  * redirect to /sign-in for protected paths when no session is present.
  */
-const PROTECTED_PREFIXES = ['/dashboard', '/agents', '/calls', '/onboarding', '/invite', '/settings'];
+const PROTECTED_PREFIXES = [
+  '/dashboard',
+  '/agents',
+  '/calls',
+  '/onboarding',
+  '/invite',
+  '/settings',
+  '/knowledge',
+  '/integrations',
+  '/compliance',
+  '/analytics',
+  '/white-label',
+  '/clients',
+  '/billing',
+];
 
 export async function updateSupabaseSession(req: NextRequest): Promise<NextResponse> {
   let res = NextResponse.next({ request: req });

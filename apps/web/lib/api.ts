@@ -7,14 +7,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v
 
 /**
  * Server-side API fetch. Used in Server Components and Route Handlers.
- * Reads Supabase session from cookies, adds internal key + user context,
- * then calls NestJS directly.
+ * Reads Supabase session from cookies, adds the internal key and verified
+ * bearer token, then calls NestJS directly.
  */
 export async function apiFetch<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
   const supabase = await createServerSupabaseClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -25,19 +28,8 @@ export async function apiFetch<T>(
   headers.set('x-requested-with', 'XMLHttpRequest');
 
   if (user) {
-    headers.set('x-user-id', user.id);
-    headers.set('x-user-email', user.email ?? '');
-    if (user.user_metadata?.app_user_id) {
-      headers.set('x-app-user-id', user.user_metadata.app_user_id as string);
-    }
-    if (user.app_metadata?.active_org_id) {
-      headers.set('x-org-id', user.app_metadata.active_org_id as string);
-    }
-    if (user.app_metadata?.active_org_role) {
-      headers.set('x-org-role', user.app_metadata.active_org_role as string);
-    }
-    if (user.app_metadata?.active_workspace_id) {
-      headers.set('x-workspace-id', user.app_metadata.active_workspace_id as string);
+    if (session?.access_token) {
+      headers.set('authorization', `Bearer ${session.access_token}`);
     }
   }
 

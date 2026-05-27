@@ -6,10 +6,38 @@ import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 import { BillingService } from '../billing/billing.service';
 
+interface StripeWebhookResult {
+  handled: boolean;
+  message: string;
+  statusCode: 200 | 400 | 500;
+}
+
+interface StripeWebhookEvent {
+  id: string;
+  type: string;
+  api_version?: string | null;
+  created: number;
+  livemode: boolean;
+  pending_webhooks: number;
+  data: { object: unknown };
+}
+
+type StripeEventClaim = 'claimed' | 'processed' | 'processing';
+
+interface StripeWebhookClient {
+  webhooks: {
+    constructEvent(
+      payload: Buffer,
+      signature: string,
+      secret: string,
+    ): StripeWebhookEvent;
+  };
+}
+
 @Injectable()
 export class StripeWebhookService {
   private readonly logger = new Logger(StripeWebhookService.name);
-  private readonly stripe: Stripe | null;
+  private readonly stripe: StripeWebhookClient | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -17,20 +45,20 @@ export class StripeWebhookService {
     private readonly queueService: QueueService,
   ) {
     this.stripe = env.STRIPE_SECRET_KEY
-      ? new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+      ? (new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia' }) as unknown as StripeWebhookClient)
       : null;
   }
 
   async handleWebhook(
     payload: Buffer,
     signature: string,
-  ): Promise<{ handled: boolean; message: string }> {
+  ): Promise<StripeWebhookResult> {
     if (!this.stripe || !env.STRIPE_WEBHOOK_SECRET) {
       this.logger.warn('Stripe not configured; skipping webhook.');
-      return { handled: false, message: 'Stripe not configured' };
+      return { handled: false, message: 'Stripe not configured', statusCode: 500 };
     }
 
-    let event: Stripe.Event;
+    let event: StripeWebhookEvent;
     try {
       event = this.stripe.webhooks.constructEvent(
         payload,
@@ -39,59 +67,83 @@ export class StripeWebhookService {
       );
     } catch (err) {
       this.logger.error(`Webhook signature verification failed: ${err}`);
-      return { handled: false, message: 'Invalid signature' };
+      return { handled: false, message: 'Invalid signature', statusCode: 400 };
     }
 
-    // Idempotency check moved into transaction below
-
     try {
-      // Atomic idempotency: insert or skip, then dispatch
-      await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.stripeEvent.findUnique({
-          where: { stripeEventId: event.id },
-        });
-        if (existing?.processedAt) {
-          throw new Error(`Event ${event.id} already processed`);
-        }
-        await tx.stripeEvent.upsert({
-          where: { stripeEventId: event.id },
-          create: {
-            stripeEventId: event.id,
-            type: event.type,
-            apiVersion: event.api_version ?? null,
-            created: new Date(event.created * 1000),
-            data: event.data.object as unknown as Prisma.InputJsonValue,
-            livemode: event.livemode,
-            pendingWebhooks: event.pending_webhooks,
-          },
-          update: {},
-        });
-      });
+      const claim = await this.claimEvent(event);
+      if (claim === 'processed') {
+        return { handled: true, message: `Event ${event.id} already processed`, statusCode: 200 };
+      }
+      if (claim === 'processing') {
+        return { handled: true, message: `Event ${event.id} already being processed`, statusCode: 200 };
+      }
       await this.dispatch(event);
       await this.markProcessed(event);
-      return { handled: true, message: `Event ${event.id} processed` };
+      return { handled: true, message: `Event ${event.id} processed`, statusCode: 200 };
     } catch (err) {
-      if (String(err).includes('already processed')) {
-        return { handled: true, message: String(err) };
-      }
       await this.markError(event, String(err));
-      return { handled: false, message: String(err) };
+      return { handled: false, message: String(err), statusCode: 500 };
     }
   }
 
-  private async markProcessed(event: Stripe.Event): Promise<void> {
+  private async markProcessed(event: StripeWebhookEvent): Promise<void> {
     await this.prisma.stripeEvent.update({
       where: { stripeEventId: event.id },
       data: { processedAt: new Date(), errorMessage: null },
     });
   }
 
-  private async markError(event: Stripe.Event, errorMessage: string): Promise<void> {
+  private async claimEvent(event: StripeWebhookEvent): Promise<StripeEventClaim> {
+    try {
+      await this.prisma.stripeEvent.create({
+        data: this.stripeEventData(event),
+      });
+      return 'claimed';
+    } catch (err) {
+      if (!this.isUniqueConstraintError(err)) throw err;
+    }
+
+    const existing = await this.prisma.stripeEvent.findUnique({
+      where: { stripeEventId: event.id },
+    });
+    if (existing?.processedAt) return 'processed';
+    if (!existing?.errorMessage) return 'processing';
+
+    const claimed = await this.prisma.stripeEvent.updateMany({
+      where: {
+        stripeEventId: event.id,
+        processedAt: null,
+        errorMessage: { not: null },
+      },
+      data: { errorMessage: null },
+    });
+    return claimed.count === 1 ? 'claimed' : 'processing';
+  }
+
+  private stripeEventData(event: StripeWebhookEvent): Prisma.StripeEventCreateInput {
+    return {
+      stripeEventId: event.id,
+      type: event.type,
+      apiVersion: event.api_version ?? null,
+      created: new Date(event.created * 1000),
+      data: event.data.object as unknown as Prisma.InputJsonValue,
+      livemode: event.livemode,
+      pendingWebhooks: event.pending_webhooks,
+    };
+  }
+
+  private isUniqueConstraintError(err: unknown): boolean {
+    return typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002';
+  }
+
+  private async markError(event: StripeWebhookEvent, errorMessage: string): Promise<void> {
     await this.prisma.stripeEvent.upsert({
       where: { stripeEventId: event.id },
       create: {
         stripeEventId: event.id,
         type: event.type,
+        apiVersion: event.api_version ?? null,
         created: new Date(event.created * 1000),
         data: event.data.object as unknown as Prisma.InputJsonValue,
         livemode: event.livemode,
@@ -102,7 +154,7 @@ export class StripeWebhookService {
     });
   }
 
-  private async dispatch(event: Stripe.Event): Promise<void> {
+  private async dispatch(event: StripeWebhookEvent): Promise<void> {
     const data = event.data.object as unknown as Record<string, unknown>;
     const orgId = (data['metadata'] as Record<string, string> | undefined)?.organizationId;
 
@@ -114,6 +166,7 @@ export class StripeWebhookService {
         }
         break;
       }
+      case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const subId = data['id'] as string;
         const customerId = data['customer'] as string;
@@ -125,21 +178,21 @@ export class StripeWebhookService {
       case 'customer.subscription.deleted': {
         const subId = data['id'] as string;
         if (subId) {
-          await this.handleSubscriptionDeleted(subId, data);
+          await this.handleSubscriptionDeleted(subId);
         }
         break;
       }
       case 'invoice.paid': {
         const customerId = data['customer'] as string;
         if (customerId) {
-          await this.handleInvoicePaid(customerId, data);
+          await this.handleInvoicePaid(customerId);
         }
         break;
       }
       case 'invoice.payment_failed': {
         const customerId = data['customer'] as string;
         if (customerId) {
-          await this.handleInvoicePaymentFailed(customerId, data);
+          await this.handleInvoicePaymentFailed(customerId);
         }
         break;
       }
@@ -151,10 +204,31 @@ export class StripeWebhookService {
   private async handleCheckoutCompleted(
     orgId: string,
     customerId: string,
-    _data: Record<string, unknown>,
+    data: Record<string, unknown>,
   ): Promise<void> {
     this.logger.log(`Checkout completed for org ${orgId}, customer ${customerId}`);
-    // Subscription updated will handle the plan change
+    const subscriptionId = typeof data['subscription'] === 'string'
+      ? data['subscription']
+      : null;
+    await this.prisma.subscription.upsert({
+      where: { organizationId: orgId },
+      create: {
+        organizationId: orgId,
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId,
+        plan: 'free',
+        status: 'incomplete',
+      },
+      update: {
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId ?? undefined,
+      },
+    });
+    await this.logBillingAudit(orgId, 'billing.subscription_synced', {
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+      status: 'incomplete',
+    });
   }
 
   private async handleSubscriptionUpdated(
@@ -163,7 +237,8 @@ export class StripeWebhookService {
     data: Record<string, unknown>,
   ): Promise<void> {
     const status = data['status'] as string;
-    const plan = this.inferPlan(data);
+    const priceId = this.extractPriceId(data);
+    const plan = this.inferPlanFromPriceId(priceId);
     const periodStart = new Date((data['current_period_start'] as number) * 1000);
     const periodEnd = new Date((data['current_period_end'] as number) * 1000);
     const cancelAtPeriodEnd = data['cancel_at_period_end'] as boolean;
@@ -175,6 +250,7 @@ export class StripeWebhookService {
       where: { stripeCustomerId: customerId },
       data: {
         stripeSubscriptionId: data['id'] as string,
+        stripePriceId: priceId,
         status: status ?? 'active',
         plan,
         currentPeriodStart: periodStart,
@@ -183,35 +259,44 @@ export class StripeWebhookService {
         trialEnd,
       },
     });
+    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+      stripeSubscriptionId: data['id'],
+      stripePriceId: priceId,
+      plan,
+      status,
+    });
   }
 
-  private async handleSubscriptionDeleted(
-    stripeSubId: string,
-    _data: Record<string, unknown>,
-  ): Promise<void> {
+  private async handleSubscriptionDeleted(stripeSubId: string): Promise<void> {
     await this.prisma.subscription.updateMany({
       where: { stripeSubscriptionId: stripeSubId },
       data: { status: 'canceled' },
     });
+    await this.logBillingAuditForSubscription(stripeSubId, 'billing.subscription_synced', {
+      stripeSubscriptionId: stripeSubId,
+      status: 'canceled',
+    });
   }
 
-  private async handleInvoicePaid(
-    customerId: string,
-    _data: Record<string, unknown>,
-  ): Promise<void> {
+  private async handleInvoicePaid(customerId: string): Promise<void> {
     await this.prisma.subscription.updateMany({
       where: { stripeCustomerId: customerId },
       data: { status: 'active' },
     });
+    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+      stripeCustomerId: customerId,
+      status: 'active',
+    });
   }
 
-  private async handleInvoicePaymentFailed(
-    customerId: string,
-    _data: Record<string, unknown>,
-  ): Promise<void> {
+  private async handleInvoicePaymentFailed(customerId: string): Promise<void> {
     await this.prisma.subscription.updateMany({
       where: { stripeCustomerId: customerId },
       data: { status: 'past_due' },
+    });
+    await this.logBillingAuditForCustomer(customerId, 'billing.payment_failed', {
+      stripeCustomerId: customerId,
+      status: 'past_due',
     });
     // Queue dunning email notification (best-effort)
     try {
@@ -232,13 +317,58 @@ export class StripeWebhookService {
     }
   }
 
-  private inferPlan(data: Record<string, unknown>): string {
+  private extractPriceId(data: Record<string, unknown>): string | null {
     const priceId = (data['items'] as { data: Array<{ price?: { id?: string } }> } | undefined)
       ?.data?.[0]?.price?.id;
 
+    return priceId ?? null;
+  }
+
+  private inferPlanFromPriceId(priceId: string | null): string {
     if (priceId === env.STRIPE_STARTER_PRICE_ID) return 'starter';
     if (priceId === env.STRIPE_GROWTH_PRICE_ID) return 'growth';
     if (priceId === env.STRIPE_ENTERPRISE_PRICE_ID) return 'enterprise';
     return 'free';
+  }
+
+  private async logBillingAuditForCustomer(
+    stripeCustomerId: string,
+    action: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: { stripeCustomerId },
+      select: { organizationId: true },
+    });
+    if (!sub) return;
+    await this.logBillingAudit(sub.organizationId, action, metadata);
+  }
+
+  private async logBillingAuditForSubscription(
+    stripeSubscriptionId: string,
+    action: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: { stripeSubscriptionId },
+      select: { organizationId: true },
+    });
+    if (!sub) return;
+    await this.logBillingAudit(sub.organizationId, action, metadata);
+  }
+
+  private async logBillingAudit(
+    organizationId: string,
+    action: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId,
+        action,
+        resourceType: 'subscription',
+        metadata: metadata as Prisma.InputJsonValue,
+      },
+    });
   }
 }

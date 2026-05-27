@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import type { AgentSummary, SessionUser } from '@voiceforge/shared';
+import { AgentCard } from '@/components/dashboard/agent-card';
+import { EmptyState } from '@/components/dashboard/empty-state';
+import { PageHeader } from '@/components/dashboard/page-header';
+import { StatCard } from '@/components/dashboard/stat-card';
+import { StatusBadge } from '@/components/dashboard/status-badge';
+import type { AgentSummary, CallSummary, SessionUser } from '@voiceforge/shared';
 import {
   Bot,
   Phone,
@@ -14,172 +17,248 @@ import {
   CheckCircle2,
   Circle,
   Radio,
+  Sparkles,
+  ShieldCheck,
+  BookOpen,
 } from 'lucide-react';
 
 export default async function DashboardHome() {
   let me: SessionUser | null = null;
   let agents: AgentSummary[] = [];
+  let calls: CallSummary[] = [];
   let apiError: string | null = null;
 
   try {
     me = await apiFetch<SessionUser>('/auth/me');
-    const res = await apiFetch<{ items: AgentSummary[] }>(
-      `/workspaces/${me.active_workspace_id}/agents`,
-    );
-    agents = res.items;
+    const [agentsRes, callsRes] = await Promise.all([
+      apiFetch<{ items: AgentSummary[] }>(`/workspaces/${me.active_workspace_id}/agents`),
+      apiFetch<{ items: CallSummary[] }>(`/workspaces/${me.active_workspace_id}/calls`),
+    ]);
+    agents = agentsRes.items;
+    calls = callsRes.items;
   } catch (err) {
     apiError = (err as Error).message;
   }
 
-  const publishedCount = agents.filter((a) => a.status === 'published').length;
-  const draftCount = agents.filter((a) => a.status === 'draft').length;
+  const activeCount = agents.filter((agent) => agent.status === 'published').length;
+  const draftCount = agents.filter((agent) => agent.status === 'draft').length;
+  const testCallCount = calls.filter((call) => call.direction === 'browser_test').length;
+  const recentAgents = agents.slice(0, 3);
+  const recentCalls = calls.slice(0, 5);
 
   return (
     <div className="flex flex-col gap-8">
-      {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
-            {me ? `Welcome back${me.name ? `, ${me.name}` : ''}` : 'Welcome to VoiceForge'}
-          </h1>
-          <p className="mt-1.5 text-sm text-muted-foreground">
-            {me ? (
-              <span className="inline-flex items-center gap-2">
-                Workspace:
-                <Badge variant="secondary">{me.active_workspace_name}</Badge>
-              </span>
-            ) : (
-              'Set up your first agent to start answering calls.'
-            )}
-          </p>
+      <PageHeader
+        eyebrow={me ? me.active_workspace_name : 'VoiceForge'}
+        title="Build and test AI voice agents for real customer conversations."
+        description="Create agents that can qualify leads, answer questions, book appointments, and handle phone calls with natural conversation."
+        actions={
+          <>
+            <Button asChild variant="outline" className="gap-2">
+              <Link href="/dashboard/templates">
+                <FileEdit className="h-4 w-4" />
+                Browse templates
+              </Link>
+            </Button>
+            <Button asChild className="gap-2">
+              <Link href="/dashboard/agents/new">
+                <Bot className="h-4 w-4" />
+                Create Voice Agent
+              </Link>
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-wrap gap-2">
+          <Badge variant="secondary" className="gap-1.5 rounded-full px-3 py-1">
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Workspace scoped
+          </Badge>
+          <Badge variant="secondary" className="gap-1.5 rounded-full px-3 py-1">
+            <Radio className="h-3.5 w-3.5" />
+            Test before publish
+          </Badge>
+          <Badge variant="secondary" className="gap-1.5 rounded-full px-3 py-1">
+            <BookOpen className="h-3.5 w-3.5" />
+            Knowledge-ready
+          </Badge>
         </div>
-        <Link href="/dashboard/agents/new">
-          <Button className="gap-2">
-            <Bot className="h-4 w-4" />
-            New agent
-          </Button>
-        </Link>
-      </div>
+      </PageHeader>
 
       {apiError ? (
-        <Card className="border-destructive/50 bg-destructive/5">
+        <Card className="border-destructive/40 bg-destructive/5">
           <CardHeader>
             <CardTitle className="text-destructive">API not reachable</CardTitle>
             <CardDescription>
-              The backend returned: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
+              The backend returned:{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Start the API with <code className="text-xs bg-muted px-1 py-0.5 rounded">npm run dev</code>{' '}
-              after setting DATABASE_URL in <code className="text-xs bg-muted px-1 py-0.5 rounded">.env</code>.
+            <p className="text-sm leading-6 text-muted-foreground">
+              Start the API with <code className="rounded bg-muted px-1 py-0.5 text-xs">npm run dev</code>{' '}
+              after configuring the required environment variables.
             </p>
           </CardContent>
         </Card>
       ) : (
         <>
-          {/* Stats */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <Card className="relative overflow-hidden">
-              <div className="absolute right-4 top-4 h-8 w-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Bot className="h-4 w-4 text-primary" />
-              </div>
-              <CardHeader className="pb-2">
-                <CardDescription>Total agents</CardDescription>
-                <CardTitle className="text-3xl font-semibold">{agents.length}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground">In this workspace</p>
-              </CardContent>
-            </Card>
-            <Card className="relative overflow-hidden">
-              <div className="absolute right-4 top-4 h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
-                <Radio className="h-4 w-4 text-emerald-600" />
-              </div>
-              <CardHeader className="pb-2">
-                <CardDescription>Published</CardDescription>
-                <CardTitle className="text-3xl font-semibold">{publishedCount}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground">Currently accepting calls</p>
-              </CardContent>
-            </Card>
-            <Card className="relative overflow-hidden">
-              <div className="absolute right-4 top-4 h-8 w-8 rounded-lg bg-amber-500/10 flex items-center justify-center">
-                <FileEdit className="h-4 w-4 text-amber-600" />
-              </div>
-              <CardHeader className="pb-2">
-                <CardDescription>Drafts</CardDescription>
-                <CardTitle className="text-3xl font-semibold">{draftCount}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-xs text-muted-foreground">Work in progress</p>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="Total agents"
+              value={agents.length}
+              description="Voice agents in this workspace"
+              icon={<Bot className="h-5 w-5" />}
+            />
+            <StatCard
+              label="Active agents"
+              value={activeCount}
+              description="Published and ready to receive calls"
+              icon={<Radio className="h-5 w-5" />}
+              tone="success"
+            />
+            <StatCard
+              label="Draft agents"
+              value={draftCount}
+              description="Configuration work in progress"
+              icon={<FileEdit className="h-5 w-5" />}
+              tone="warning"
+            />
+            <StatCard
+              label="Test calls"
+              value={testCallCount}
+              description="Browser test sessions captured"
+              icon={<Phone className="h-5 w-5" />}
+              tone="info"
+            />
           </div>
 
-          <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
-            {/* Quick links */}
-            <Card className="lg:col-span-2">
-              <CardHeader>
-                <CardTitle>Quick actions</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {[
-                    { href: '/dashboard/agents/new', label: 'Create new agent', desc: 'Start from a prompt or template', icon: Bot },
-                    { href: '/dashboard/calls', label: 'Review calls', desc: 'Listen to transcripts and outcomes', icon: Phone },
-                    { href: '/dashboard/templates', label: 'Browse templates', desc: 'Use pre-built agent configurations', icon: FileEdit },
-                    { href: '/dashboard/analytics', label: 'View analytics', desc: 'Performance and compliance metrics', icon: Radio },
-                  ].map((action) => (
-                    <Link
-                      key={action.href}
-                      href={action.href}
-                      className="group flex items-center gap-4 rounded-lg border border-border bg-background p-4 transition-all hover:border-primary/30 hover:bg-accent hover:shadow-sm"
-                    >
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                        <action.icon className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-foreground">{action.label}</p>
-                        <p className="text-xs text-muted-foreground">{action.desc}</p>
-                      </div>
-                      <ArrowRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
+            <section className="flex flex-col gap-6">
+              <Card className="overflow-hidden bg-card/90">
+                <CardHeader className="flex flex-col gap-3 border-b border-border/70 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle>Recent voice agents</CardTitle>
+                    <CardDescription>Open an agent to adjust instructions, add knowledge, or run a test call.</CardDescription>
+                  </div>
+                  <Button asChild variant="outline" size="sm" className="gap-2">
+                    <Link href="/dashboard/agents">
+                      View all
+                      <ArrowRight className="h-3.5 w-3.5" />
                     </Link>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+                  </Button>
+                </CardHeader>
+                <CardContent className="p-5">
+                  {recentAgents.length === 0 ? (
+                    <EmptyState
+                      icon={<Bot className="h-7 w-7" />}
+                      title="No voice agents yet"
+                      description="Create your first agent and test it in minutes. Start with a template or describe the phone workflow you want automated."
+                      actionHref="/dashboard/agents/new"
+                      actionLabel="Create Voice Agent"
+                      className="border-0 bg-muted/40 shadow-none"
+                    />
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                      {recentAgents.map((agent) => (
+                        <AgentCard key={agent.id} agent={agent} />
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
 
-            {/* Checklist */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Setup checklist</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ul className="space-y-3">
-                  {[
-                    { text: 'Create your first agent from a template or prompt', done: agents.length > 0 },
-                    { text: 'Upload FAQs or a PDF knowledge base', done: false },
-                    { text: 'Connect Google Calendar for booking tools', done: false },
-                    { text: 'Test a call and review the transcript', done: false },
-                    { text: 'Configure compliance: consent, DNC, opt-out', done: false },
-                    { text: 'Brand your client dashboard', done: false },
-                  ].map((item) => (
-                    <li key={item.text} className="flex items-start gap-3">
-                      {item.done ? (
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                      ) : (
-                        <Circle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/40" />
-                      )}
-                      <span className={cn('text-sm', item.done ? 'text-muted-foreground line-through' : 'text-foreground')}>
-                        {item.text}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
+              <Card className="bg-card/90">
+                <CardHeader>
+                  <CardTitle>Recent activity</CardTitle>
+                  <CardDescription>Latest test, inbound, and outbound call records.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {recentCalls.length === 0 ? (
+                    <p className="rounded-2xl border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
+                      No calls yet. Open an agent and choose “Test Agent” to generate a browser test session.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-border/70">
+                      {recentCalls.map((call) => (
+                        <li key={call.id} className="py-3">
+                          <Link
+                            href={`/dashboard/calls/${call.id}`}
+                            className="group flex items-center justify-between gap-3 rounded-xl px-2 py-2 transition hover:bg-accent/45"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-foreground">
+                                {call.contact_name ?? call.to_number ?? call.from_number ?? 'Unknown caller'}
+                              </p>
+                              <p className="mt-0.5 text-xs capitalize text-muted-foreground">
+                                {call.direction.replace(/_/g, ' ')} · {call.provider} ·{' '}
+                                {new Date(call.created_at).toLocaleString()}
+                              </p>
+                            </div>
+                            <StatusBadge status={call.status} className="shrink-0" />
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+
+            <aside className="flex flex-col gap-6">
+              <Card className="overflow-hidden bg-card/90">
+                <CardHeader>
+                  <CardTitle>Getting started</CardTitle>
+                  <CardDescription>Follow the shortest path to a production-ready voice agent.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ul className="space-y-4">
+                    {[
+                      { text: 'Create your first voice agent', done: agents.length > 0, href: '/dashboard/agents/new' },
+                      { text: 'Add clear instructions and business context', done: agents.some((agent) => agent.description), href: '/dashboard/agents' },
+                      { text: 'Run a browser test conversation', done: testCallCount > 0, href: '/dashboard/agents' },
+                      { text: 'Add knowledge or FAQs', done: false, href: '/dashboard/knowledge' },
+                      { text: 'Publish when ready for real calls', done: activeCount > 0, href: '/dashboard/agents' },
+                    ].map((item) => (
+                      <li key={item.text} className="flex items-start gap-3">
+                        {item.done ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                        ) : (
+                          <Circle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/45" />
+                        )}
+                        <Link
+                          href={item.href}
+                          className={item.done ? 'text-sm text-muted-foreground line-through' : 'text-sm text-foreground hover:text-primary'}
+                        >
+                          {item.text}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+
+              <Card className="border-primary/20 bg-gradient-to-br from-primary/10 via-card to-sky-500/10">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    Prompt tip
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Write instructions like you are training a human phone agent. Include goals, tone, rules,
+                    and what to do when unsure.
+                  </p>
+                  <Button asChild className="mt-4 w-full gap-2">
+                    <Link href="/dashboard/agents/new/ai-generate">
+                      Try AI generator
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                </CardContent>
+              </Card>
+            </aside>
           </div>
         </>
       )}

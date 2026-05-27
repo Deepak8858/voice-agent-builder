@@ -60,6 +60,8 @@ RUN apk add --no-cache tini openssl \
 # Copy built artifacts (owned by nodeuser)
 COPY --chown=1001:1001 --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --chown=1001:1001 --from=builder /app/apps/api/prisma ./apps/api/prisma
+COPY --chown=1001:1001 --from=builder /app/apps/api/package.json ./apps/api/package.json
+COPY --chown=1001:1001 --from=builder /app/packages/shared/package.json ./packages/shared/package.json
 COPY --chown=1001:1001 --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --chown=1001:1001 --from=builder /app/node_modules ./node_modules
 

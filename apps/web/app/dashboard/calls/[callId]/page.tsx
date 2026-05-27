@@ -1,13 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ApiCallError, apiFetch } from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { CallLiveMonitor } from '@/components/call-live-monitor';
-import { cn } from '@/lib/cn';
+import { PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import type { CallDetail, SessionUser } from '@voiceforge/shared';
-import { Phone, ArrowLeft, Clock, Calendar, User, MapPin } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock3, MapPin, Phone, User } from 'lucide-react';
 
 interface PageProps {
   params: Promise<{ callId: string }>;
@@ -28,34 +28,69 @@ export default async function CallDetailPage({ params }: PageProps) {
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <Link
-          href="/dashboard/calls"
-          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-2"
-        >
-          <ArrowLeft className="h-3 w-3" />
-          Back to calls
-        </Link>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
-          {detail.contact_name ?? detail.to_number ?? 'Call'}
-        </h1>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Badge variant={detail.status === 'completed' ? 'default' : 'secondary'} className="capitalize">
-            {detail.status.replace('_', ' ')}
-          </Badge>
-          <span className="text-sm text-muted-foreground capitalize">
-            {detail.direction.replace('_', ' ')} · {detail.provider}
-          </span>
+      <PageHeader
+        eyebrow="Call detail"
+        title={detail.contact_name ?? detail.to_number ?? 'Call'}
+        description={`${detail.direction.replace('_', ' ')} · ${detail.provider}`}
+        actions={
+          <Button asChild variant="outline" size="sm" className="gap-2">
+            <Link href="/dashboard/calls">
+              <ArrowLeft className="h-4 w-4" />
+              Calls
+            </Link>
+          </Button>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge status={detail.status} />
+          {detail.outcome ? (
+            <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-xs font-medium text-muted-foreground">
+              {detail.outcome}
+            </span>
+          ) : null}
         </div>
+      </PageHeader>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Contact"
+          value={detail.contact_name ?? detail.to_number ?? detail.from_number ?? 'Unknown'}
+          description="Caller or recipient identifier."
+          icon={<User className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Duration"
+          value={detail.duration_seconds != null ? `${detail.duration_seconds}s` : '—'}
+          description="Measured from provider call metadata."
+          icon={<Clock3 className="h-5 w-5" />}
+          tone="info"
+        />
+        <StatCard
+          label="Started"
+          value={detail.started_at ? new Date(detail.started_at).toLocaleDateString() : '—'}
+          description={detail.started_at ? new Date(detail.started_at).toLocaleTimeString() : 'No start time recorded'}
+          icon={<Calendar className="h-5 w-5" />}
+          tone="warning"
+        />
+        <StatCard
+          label="Turns"
+          value={detail.turns.length}
+          description="Transcript turns captured for this call."
+          icon={<Phone className="h-5 w-5" />}
+          tone="success"
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
-        <Card>
+        <Card className="overflow-hidden">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Phone className="h-4 w-4 text-primary" />
               Live Transcript
             </CardTitle>
+            <CardDescription>
+              Follow the call in real time and inspect the stored transcript.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <CallLiveMonitor
@@ -74,6 +109,7 @@ export default async function CallDetailPage({ params }: PageProps) {
                 <MapPin className="h-4 w-4 text-primary" />
                 Metadata
               </CardTitle>
+              <CardDescription>Provider, routing, timing, and call outcome details.</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="space-y-3 text-sm">
@@ -98,6 +134,7 @@ export default async function CallDetailPage({ params }: PageProps) {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Evaluation</CardTitle>
+                <CardDescription>Automated quality score and metric breakdown.</CardDescription>
               </CardHeader>
               <CardContent>
                 <p className="text-3xl font-semibold text-foreground font-[family-name:var(--font-serif)]">

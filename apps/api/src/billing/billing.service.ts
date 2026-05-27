@@ -1,21 +1,21 @@
 import {
+  BadRequestException,
   HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
-  NotFoundException,
 } from '@nestjs/common';
 import Stripe from 'stripe';
+import { Prisma } from '@prisma/client';
 import type {
+  CheckoutPlan,
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
   FeatureGate,
   InvoiceDto,
-  PLAN_LIMITS,
   PlanType,
   SubscriptionDto,
   SubscriptionStatus,
-  UsageRecordDto,
   WorkspaceUsageDto,
 } from '@voiceforge/shared';
 import { PLAN_LIMITS as SHARED_PLAN_LIMITS } from '@voiceforge/shared';
@@ -24,15 +24,59 @@ import { AppError } from '../common/errors';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 
+interface StripeCustomer {
+  id: string;
+}
+
+interface StripeSession {
+  url: string | null;
+}
+
+interface StripeInvoice {
+  id: string;
+  number: string | null;
+  status: string | null;
+  amount_due: number;
+  amount_paid: number;
+  currency: string;
+  created: number;
+  period_start?: number | null;
+  period_end?: number | null;
+  invoice_pdf?: string | null;
+  hosted_invoice_url?: string | null;
+}
+
+interface StripeClient {
+  customers: {
+    create(params: Record<string, unknown>): Promise<StripeCustomer>;
+  };
+  checkout: {
+    sessions: {
+      create(params: Record<string, unknown>): Promise<StripeSession>;
+    };
+  };
+  billingPortal: {
+    sessions: {
+      create(params: Record<string, unknown>): Promise<StripeSession>;
+    };
+  };
+  invoices: {
+    list(params: Record<string, unknown>): Promise<{ data: StripeInvoice[] }>;
+  };
+}
+
+function hasControlCharacter(value: string): boolean {
+  return Array.from(value).some((char) => char.charCodeAt(0) <= 31);
+}
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
-  private readonly stripe: Stripe | null;
-  private readonly freeLimits = SHARED_PLAN_LIMITS.free;
+  private readonly stripe: StripeClient | null;
 
   constructor(private readonly prisma: PrismaService) {
     this.stripe = env.STRIPE_SECRET_KEY
-      ? new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' })
+      ? (new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia' }) as unknown as StripeClient)
       : null;
     if (!this.stripe) {
       this.logger.warn('STRIPE_SECRET_KEY is not set. Stripe operations will be no-ops.');
@@ -86,15 +130,29 @@ export class BillingService {
   ): Promise<{ url: string }> {
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
+    const priceId = this.getPriceIdForPlan(dto.plan);
+    const successUrl = this.withCheckoutSessionId(this.buildAppUrl(dto.successPath));
+    const cancelUrl = this.buildAppUrl(dto.cancelPath);
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
-      line_items: [{ price: dto.priceId, quantity: 1 }],
-      success_url: dto.successUrl,
-      cancel_url: dto.cancelUrl,
-      metadata: { organizationId },
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      automatic_tax: { enabled: true },
+      billing_address_collection: 'required',
+      tax_id_collection: { enabled: true },
+      metadata: { organizationId, plan: dto.plan },
+      subscription_data: {
+        metadata: { organizationId, plan: dto.plan },
+      },
     });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
+    await this.logBillingAudit(organizationId, 'billing.checkout_started', {
+      plan: dto.plan,
+      priceId,
+      stripeCustomerId: customerId,
+    });
     return { url: session.url };
   }
 
@@ -104,11 +162,64 @@ export class BillingService {
   ): Promise<{ url: string }> {
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
+    const returnUrl = this.buildAppUrl(dto.returnPath);
     const session = await this.stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: dto.returnUrl,
+      return_url: returnUrl,
+    });
+    if (!session.url) throw new InternalServerErrorException('Stripe returned no portal URL.');
+    await this.logBillingAudit(organizationId, 'billing.portal_opened', {
+      stripeCustomerId: customerId,
     });
     return { url: session.url };
+  }
+
+  private getPriceIdForPlan(plan: CheckoutPlan): string {
+    const priceIds: Record<CheckoutPlan, string | undefined> = {
+      starter: env.STRIPE_STARTER_PRICE_ID,
+      growth: env.STRIPE_GROWTH_PRICE_ID,
+      enterprise: env.STRIPE_ENTERPRISE_PRICE_ID,
+    };
+    const priceId = priceIds[plan];
+    if (!priceId) {
+      throw new InternalServerErrorException(`Stripe price ID is not configured for ${plan}.`);
+    }
+    return priceId;
+  }
+
+  private buildAppUrl(path: string): string {
+    this.assertSafeRelativePath(path);
+    return new URL(path, env.WEB_BASE_URL).toString();
+  }
+
+  private assertSafeRelativePath(path: string): void {
+    if (
+      !path.startsWith('/') ||
+      path.startsWith('//') ||
+      path.includes('\\') ||
+      hasControlCharacter(path)
+    ) {
+      throw new BadRequestException('Invalid redirect path');
+    }
+  }
+
+  private withCheckoutSessionId(url: string): string {
+    return `${url}${url.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`;
+  }
+
+  private async logBillingAudit(
+    organizationId: string,
+    action: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId,
+        action,
+        resourceType: 'subscription',
+        metadata: metadata as Prisma.InputJsonValue,
+      },
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -231,7 +342,7 @@ export class BillingService {
       case 'ai_insights':
         return plan !== 'free';
       case 'compliance_blocks':
-        return limits.complianceBlocks;
+        return Boolean(limits.complianceBlocks);
       case 'white_label':
         return plan === 'growth' || plan === 'enterprise';
       case 'api_access':
@@ -271,7 +382,7 @@ export class BillingService {
 
   async enforceAgentLimit(organizationId: string): Promise<void> {
     const count = await this.prisma.agent.count({
-      where: { workspace: { organizationId } },
+      where: { workspace: { organizationId }, status: 'published' },
     });
     const allowed = await this.canPublishAgent(organizationId, count);
     if (!allowed) {

@@ -3,7 +3,6 @@ import {
   Body,
   Controller,
   Get,
-  Inject,
   Param,
   Post,
   Req,
@@ -13,7 +12,6 @@ import type { Request } from 'express';
 import type {
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
-  SessionUser,
 } from '@voiceforge/shared';
 import {
   CreateCheckoutSessionDtoSchema,
@@ -23,18 +21,6 @@ import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingService, ForbiddenPlanError } from './billing.service';
-
-function isTrustedRedirectUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    // Require HTTPS in production; allow localhost/http in dev
-    if (process.env.NODE_ENV === 'production' && u.protocol !== 'https:') return false;
-    return true;
-  } catch {
-    // Allow relative URLs
-    return url.startsWith('/');
-  }
-}
 
 @Controller('workspaces/:workspaceId/billing')
 @UseGuards(WorkspaceGuard)
@@ -77,9 +63,6 @@ export class BillingController {
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateCheckoutSessionDtoSchema)) dto: CreateCheckoutSessionDto,
   ): Promise<{ url: string }> {
-    if (!isTrustedRedirectUrl(dto.successUrl) || !isTrustedRedirectUrl(dto.cancelUrl)) {
-      throw new BadRequestException('Invalid redirect URL');
-    }
     const orgId = await this.getOrgId(workspaceId);
     try {
       return await this.billing.createCheckoutSession(orgId, dto);
@@ -94,9 +77,6 @@ export class BillingController {
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreatePortalSessionDtoSchema)) dto: CreatePortalSessionDto,
   ): Promise<{ url: string }> {
-    if (dto.returnUrl && !isTrustedRedirectUrl(dto.returnUrl)) {
-      throw new BadRequestException('Invalid redirect URL');
-    }
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createPortalSession(orgId, dto);
   }

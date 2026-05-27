@@ -323,6 +323,26 @@ export class ToolsService {
     createdAt: Date;
     updatedAt: Date;
   }): ToolDetail {
+    if (row.toolType === 'google_calendar') {
+      const cfg = (row.config ?? {}) as {
+        refresh_token?: string;
+        client_id?: string;
+        client_secret?: string;
+        calendar_id?: string;
+      };
+      const { refresh_token, client_secret, ...publicCfg } = cfg;
+      return {
+        ...this.toSummary(row),
+        config: {
+          ...publicCfg,
+          calendar_id: publicCfg.calendar_id ?? 'primary',
+          refresh_token_set: Boolean(refresh_token),
+          client_secret_set: Boolean(client_secret),
+        },
+        input_schema: row.inputSchema as ToolDetail['input_schema'],
+      };
+    }
+
     const cfg = (row.config ?? {}) as WebhookConfig & { hmac_secret?: string };
     const { hmac_secret, ...publicCfg } = cfg;
     return {

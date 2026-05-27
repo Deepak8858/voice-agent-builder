@@ -53,6 +53,18 @@ export class CacheService {
     }
   }
 
+  async acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+    try {
+      const result = await this.queue
+        .getConnection()
+        .set(this.k(key), '1', 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (err) {
+      this.logger.debug(`[cache.acquireLock:${key}] ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   /**
    * Read-through helper. Returns cached value if present; otherwise calls
    * `loader`, caches the result for `ttlSeconds`, and returns it.

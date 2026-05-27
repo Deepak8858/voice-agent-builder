@@ -5,19 +5,16 @@ import type { SessionUser } from '@voiceforge/shared';
 import { env } from '../config/env';
 import { UnauthorizedError } from '../common/errors';
 import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
+import { SupabaseAuthService } from './supabase-auth.service';
 
 /**
  * Trust boundary for the API. The Next.js frontend is the only legitimate
- * caller; it verifies the Supabase session, then forwards the request with:
+ * caller. This guard verifies the internal key, then derives req.user from
+ * the Supabase bearer token. It intentionally does not trust forwarded user
+ * metadata headers because Supabase raw_user_meta_data is user-editable.
  *
  *   x-internal-key   shared secret (env.INTERNAL_API_KEY)
- *   x-user-id        auth.users.id (uuid)
- *   x-app-user-id    public.users.id (uuid)
- *   x-org-id         active organization id (uuid, optional)
- *   x-org-role       caller's role in the active workspace (optional)
- *   x-user-email     caller email (optional, for logs)
- *   x-workspace-id   active workspace id (optional)
- *   x-workspace-name active workspace name (optional)
+ *   authorization    Supabase access token, when acting as a user
  *
  * Public routes (health, metrics, provider webhooks) opt out via @Public().
  */
@@ -25,9 +22,12 @@ import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
 export class InternalAuthGuard implements CanActivate {
   private readonly logger = new Logger(InternalAuthGuard.name);
 
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly authService: SupabaseAuthService,
+  ) {}
 
-  canActivate(ctx: ExecutionContext): boolean {
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       ctx.getHandler(),
       ctx.getClass(),
@@ -47,31 +47,24 @@ export class InternalAuthGuard implements CanActivate {
       throw new UnauthorizedError();
     }
 
-    const appUserId = headerString(req, 'x-app-user-id');
-    const authUserId = headerString(req, 'x-user-id'); // Supabase auth.users.id
-
-    if (!appUserId && !authUserId) {
-      // No user context — caller is the platform itself; allow but with no user.
+    const authorization = headerString(req, 'authorization');
+    if (!authorization) {
+      if (headerString(req, 'x-user-id') || headerString(req, 'x-app-user-id')) {
+        this.logger.warn('Rejecting user context without a Supabase bearer token.');
+        throw new UnauthorizedError();
+      }
+      // No user context: allow internal platform calls, but workspace routes
+      // will still fail in WorkspaceGuard because req.user is absent.
       return true;
     }
 
-    // Validate UUID format to prevent spoofing
-    const userId = appUserId ?? authUserId;
-    if (!userId || !isValidUUID(userId)) {
-      this.logger.warn(`Invalid user id format: ${userId}`);
+    const sessionUser = await this.authService.getSessionUser(req);
+    if (!sessionUser?.id || !isValidUUID(sessionUser.id)) {
+      this.logger.warn('Supabase bearer token did not resolve to a valid app user.');
       throw new UnauthorizedError();
     }
 
-    const role = (headerString(req, 'x-org-role') ?? 'viewer') as SessionUser['active_workspace_role'];
-
-    req.user = {
-      id: userId,
-      email: headerString(req, 'x-user-email') ?? '',
-      name: null,
-      active_workspace_id: headerString(req, 'x-workspace-id') ?? null,
-      active_workspace_name: headerString(req, 'x-workspace-name') ?? null,
-      active_workspace_role: role,
-    };
+    req.user = sessionUser;
 
     return true;
   }

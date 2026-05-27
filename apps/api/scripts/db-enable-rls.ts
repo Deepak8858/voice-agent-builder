@@ -30,6 +30,7 @@ const TABLES = [
   'call_events',
   'call_evaluations',
   'audit_logs',
+  'audit_reports',
   'integration_tools',
   'tool_invocations',
 ];

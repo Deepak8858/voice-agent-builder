@@ -131,6 +131,32 @@ describe('VapiVoiceAdapter', () => {
     });
   });
 
+  describe('createBrowserTestSession', () => {
+    it('falls back to a scripted browser test session when Vapi rejects web calls', async () => {
+      mockPrisma.agentVersion.findUnique.mockResolvedValue({ providerRuntimeId: 'vapi-asst-web' });
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        errorResponse(400, 'Bad Request', '{"message":["type must be one of the following values: outboundPhoneCall, inboundPhoneCall"]}'),
+      );
+
+      const result = await adapter.createBrowserTestSession({
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        agentVersionId: 'version-1',
+      });
+
+      expect(result.test_session_id).toMatch(/^vapi_mock_test_v1_agent-1_/);
+      expect(result.web_socket_url).toBeUndefined();
+    });
+
+    it('returns scripted transcript for fallback browser test sessions', async () => {
+      const result = await adapter.getTranscript({ callId: 'vapi_mock_test_v1_agent-1_123' });
+
+      expect(result.turns.length).toBeGreaterThan(0);
+      expect(result.turns[0]!.speaker).toBe('agent');
+      expect(result.transcript).toContain('AI assistant');
+    });
+  });
+
   describe('endCall', () => {
     it('calls correct endpoint with POST', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));

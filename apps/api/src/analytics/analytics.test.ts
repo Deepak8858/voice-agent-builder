@@ -57,6 +57,14 @@ function inRange(d: Date, gte?: Date, lte?: Date): boolean {
   return true;
 }
 
+const RECENT_TEST_ANCHOR = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+function recentAt(hour: number): Date {
+  const d = new Date(RECENT_TEST_ANCHOR);
+  d.setHours(hour, 0, 0, 0);
+  return d;
+}
+
 function makePrisma(state: {
   calls: CallRow[];
   tools: ToolRow[];
@@ -175,7 +183,7 @@ function makePrisma(state: {
 }
 
 function defaultState() {
-  const t = (h: number) => new Date(2026, 3, 20, h);
+  const t = recentAt;
   return {
     calls: [
       { id: 'c1', status: 'completed', durationSeconds: 120, outcome: 'appointment_booked', agentId: 'a1', direction: 'outbound', createdAt: t(10) },
@@ -241,8 +249,8 @@ describe('AnalyticsService.workspaceMetrics', () => {
   it('handles null durationSeconds without NaN', async () => {
     const state = defaultState();
     state.calls = [
-      { id: 'x1', status: 'completed', durationSeconds: null, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: new Date(2026, 3, 20, 10) },
-      { id: 'x2', status: 'completed', durationSeconds: null, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: new Date(2026, 3, 20, 11) },
+      { id: 'x1', status: 'completed', durationSeconds: null, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: recentAt(10) },
+      { id: 'x2', status: 'completed', durationSeconds: null, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: recentAt(11) },
     ];
     const svc = new AnalyticsService(makePrisma(state) as never);
     const m = await svc.workspaceMetrics('ws-1', {});
@@ -254,8 +262,8 @@ describe('AnalyticsService.workspaceMetrics', () => {
   it('rolls null outcome under "unknown" bucket', async () => {
     const state = defaultState();
     state.calls = [
-      { id: 'u1', status: 'completed', durationSeconds: 10, outcome: null, agentId: 'a1', direction: 'inbound', createdAt: new Date(2026, 3, 20, 10) },
-      { id: 'u2', status: 'completed', durationSeconds: 10, outcome: null, agentId: 'a1', direction: 'inbound', createdAt: new Date(2026, 3, 20, 11) },
+      { id: 'u1', status: 'completed', durationSeconds: 10, outcome: null, agentId: 'a1', direction: 'inbound', createdAt: recentAt(10) },
+      { id: 'u2', status: 'completed', durationSeconds: 10, outcome: null, agentId: 'a1', direction: 'inbound', createdAt: recentAt(11) },
     ];
     const svc = new AnalyticsService(makePrisma(state) as never);
     const m = await svc.workspaceMetrics('ws-1', {});
@@ -265,7 +273,7 @@ describe('AnalyticsService.workspaceMetrics', () => {
 
   it('sorts outcomes by count desc', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: '1', status: 'completed', durationSeconds: 10, outcome: 'voicemail', agentId: 'a1', direction: 'outbound', createdAt: t(10) },
       { id: '2', status: 'completed', durationSeconds: 10, outcome: 'voicemail', agentId: 'a1', direction: 'outbound', createdAt: t(11) },
@@ -305,7 +313,7 @@ describe('AnalyticsService.workspaceMetrics', () => {
 
   it('all-failed workspace yields failed_call_rate=1, success_rate=0', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: 'f1', status: 'failed', durationSeconds: 0, outcome: 'agent_failed', agentId: 'a1', direction: 'outbound', createdAt: t(10) },
       { id: 'f2', status: 'failed', durationSeconds: 0, outcome: 'tool_failed', agentId: 'a1', direction: 'outbound', createdAt: t(11) },
@@ -320,7 +328,7 @@ describe('AnalyticsService.workspaceMetrics', () => {
 
   it('rounds total_minutes to 2 decimals', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: 'm1', status: 'completed', durationSeconds: 75, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: t(10) },
     ];
@@ -383,7 +391,7 @@ describe('AnalyticsService.agentMetrics', () => {
 
   it('null durations on agent calls do not break average', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: 'd1', status: 'completed', durationSeconds: null, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: t(10) },
       { id: 'd2', status: 'completed', durationSeconds: 60, outcome: 'message_taken', agentId: 'a1', direction: 'inbound', createdAt: t(11) },
@@ -410,7 +418,7 @@ describe('AnalyticsService.complianceMetrics', () => {
 
   it('counts multiple reasons in a single check', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.compliance = [
       { agentId: 'a1', status: 'blocked', reasons: [{ code: 'missing_consent' }, { code: 'dnc_listed' }], checkedAt: t(9) },
     ];
@@ -424,7 +432,7 @@ describe('AnalyticsService.complianceMetrics', () => {
 
   it('handles empty reasons array and reasons missing code', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.compliance = [
       { agentId: 'a1', status: 'blocked', reasons: [], checkedAt: t(9) },
       { agentId: 'a1', status: 'blocked', reasons: [{}], checkedAt: t(9) },
@@ -439,7 +447,7 @@ describe('AnalyticsService.complianceMetrics', () => {
 
   it('sorts block_reasons by count desc', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.compliance = [
       { agentId: 'a1', status: 'blocked', reasons: [{ code: 'dnc_listed' }], checkedAt: t(9) },
       { agentId: 'a1', status: 'blocked', reasons: [{ code: 'dnc_listed' }], checkedAt: t(9) },
@@ -468,7 +476,7 @@ describe('AnalyticsService.complianceMetrics', () => {
 
   it('agent_id filter narrows blocked checks', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.compliance = [
       { agentId: 'a1', status: 'blocked', reasons: [{ code: 'missing_consent' }], checkedAt: t(9) },
       { agentId: 'a2', status: 'blocked', reasons: [{ code: 'dnc_listed' }], checkedAt: t(9) },
@@ -506,7 +514,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('does not flag low_success_rate below 5-call threshold even at 0% success', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: 'l1', status: 'failed', durationSeconds: 5, outcome: 'agent_failed', agentId: 'a1', direction: 'outbound', createdAt: t(10) },
       { id: 'l2', status: 'failed', durationSeconds: 5, outcome: 'agent_failed', agentId: 'a1', direction: 'outbound', createdAt: t(11) },
@@ -523,7 +531,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('flags low_success_rate at exactly 5-call threshold', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = Array.from({ length: 5 }, (_, i) => ({
       id: `s${i}`,
       status: 'failed',
@@ -546,7 +554,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('flags high_short_call_rate when > 30% calls < 15s', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [
       { id: '1', status: 'completed', durationSeconds: 5, outcome: 'caller_hung_up', agentId: 'a1', direction: 'outbound', createdAt: t(10) },
       { id: '2', status: 'completed', durationSeconds: 5, outcome: 'caller_hung_up', agentId: 'a1', direction: 'outbound', createdAt: t(11) },
@@ -566,7 +574,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('escalates compliance_blocks severity to critical at >= 5 blocks', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [];
     state.tools = [];
     state.compliance = Array.from({ length: 5 }, () => ({
@@ -592,7 +600,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('flags low_evaluation_score when avg < 0.5 and count >= 3', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.evals = [
       { agentId: 'a1', overallScore: 0.3, createdAt: t(10) },
       { agentId: 'a1', overallScore: 0.4, createdAt: t(11) },
@@ -608,7 +616,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('skips low_evaluation_score with only 2 evals (below 3 threshold)', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.evals = [
       { agentId: 'a1', overallScore: 0.1, createdAt: t(10) },
       { agentId: 'a1', overallScore: 0.1, createdAt: t(11) },
@@ -623,7 +631,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('skips tool_failure_rate_high when toolTotal < 3', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = [];
     state.tools = [
       { status: 'failed', agentId: 'a1', startedAt: t(10) },
@@ -638,7 +646,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('emits multiple suggestions when several conditions trigger', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     // 6 short failed calls → low_success + high_short_call
     state.calls = Array.from({ length: 6 }, (_, i) => ({
       id: `m${i}`,
@@ -677,7 +685,7 @@ describe('AnalyticsService.improvementSuggestions', () => {
 
   it('healthy agent emits no suggestions', async () => {
     const state = defaultState();
-    const t = (h: number) => new Date(2026, 3, 20, h);
+    const t = recentAt;
     state.calls = Array.from({ length: 10 }, (_, i) => ({
       id: `h${i}`,
       status: 'completed',

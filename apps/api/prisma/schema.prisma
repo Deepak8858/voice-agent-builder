@@ -144,7 +144,7 @@ model WorkspaceMembership {
   @@map("workspace_memberships")
 }
 
-// Email-based invites into an organization (replaces Clerk invitations)
+// Email-based invites into an organization.
 model OrgInvite {
   id              String    @id @default(uuid()) @db.Uuid
   organizationId  String    @map("organization_id") @db.Uuid
@@ -697,6 +697,7 @@ model Subscription {
   organizationId       String    @unique @map("organization_id") @db.Uuid
   stripeSubscriptionId String?   @unique @map("stripe_subscription_id")
   stripeCustomerId     String?   @map("stripe_customer_id")
+  stripePriceId        String?   @map("stripe_price_id")
   plan                 String    @default("free") // free | starter | growth | enterprise
   status               String    @default("active") // active | trialing | past_due | canceled
   currentPeriodStart   DateTime? @map("current_period_start")
@@ -711,6 +712,7 @@ model Subscription {
 
   @@index([organizationId])
   @@index([stripeCustomerId])
+  @@index([stripePriceId])
   @@map("subscriptions")
 }
 

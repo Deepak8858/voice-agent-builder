@@ -1,5 +1,9 @@
+import { UnauthorizedException } from '@nestjs/common';
+import { createHmac } from 'crypto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { CallsService } from './calls.service';
+import { VoiceWebhookController } from './voice-webhook.controller';
+import { env } from '../config/env';
 
 interface CallRow {
   id: string;
@@ -43,8 +47,13 @@ function makeService(opts: {
     },
     callEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        events.push(data);
-        return data;
+        const row = {
+          id: `evt_${events.length + 1}`,
+          eventTime: new Date('2026-05-21T12:00:00.000Z'),
+          ...data,
+        };
+        events.push(row);
+        return row;
       }),
     },
     agentVersion: {
@@ -62,6 +71,7 @@ function makeService(opts: {
   const analytics = { recordEventInternal: vi.fn(async () => undefined) };
   const billing = { checkFeatureGate: vi.fn(async () => true), recordUsage: vi.fn(async () => {}), canOutboundCall: vi.fn(async () => true) };
   const queue = { enqueue: vi.fn(async () => undefined) };
+  const retention = {};
   const cache = { publish: vi.fn(async () => undefined) };
   const service = new CallsService(
     prisma as never,
@@ -72,6 +82,7 @@ function makeService(opts: {
     analytics as never,
     billing as never,
     queue as never,
+    retention as never,
     cache as never,
   );
   return { service, prisma, created, updates, events, evals, queue };
@@ -235,12 +246,6 @@ describe('Webhook security', () => {
     process.env.NODE_ENV = 'production';
 
     try {
-      // Simulate webhook payload without signature header
-      const payload = {
-        event_type: 'call.started',
-        provider_call_id: 'call_xyz',
-      };
-
       // Verify that when NODE_ENV is production and no signature is present,
       // the webhook handler should reject the request
       const hasSignature = false; // Simulated: headers['x-webhook-signature'] missing
@@ -274,12 +279,67 @@ describe('Webhook security', () => {
 
     // In a real implementation, this would use crypto.timingSafeEqual
     const fakeSignatureCheck = (payload: string, secret: string, provided: string): boolean => {
-      const crypto = require('crypto');
-      const expected = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+      const expected = createHmac('sha256', secret).update(payload).digest('hex');
       return `sha256=${expected}` === provided;
     };
 
     const isValid = fakeSignatureCheck(webhookPayload, validSecret, providedSignature);
     expect(isValid).toBe(false); // Should reject invalid signature
+  });
+
+  it('rejects a signed webhook when the raw body is unavailable', async () => {
+    const originalSecret = env.VOICE_WEBHOOK_SECRET;
+    Object.assign(env, { VOICE_WEBHOOK_SECRET: 'test-voice-webhook-secret' });
+    const callsService = { ingestEvent: vi.fn(async () => undefined) };
+    const controller = new VoiceWebhookController(callsService as never);
+    const body = {
+      event_type: 'call.started',
+      provider_call_id: 'call_raw_missing',
+      data: { provider_runtime_id: 'runtime_1' },
+    };
+    const signature = createHmac('sha256', env.VOICE_WEBHOOK_SECRET ?? '')
+      .update(Buffer.from(JSON.stringify(body), 'utf8'))
+      .digest('hex');
+
+    try {
+      await expect(
+        controller.receive('vapi', signature, {} as never, body),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(callsService.ingestEvent).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(env, { VOICE_WEBHOOK_SECRET: originalSecret });
+    }
+  });
+
+  it('accepts a valid signature over the exact raw body bytes', async () => {
+    const originalSecret = env.VOICE_WEBHOOK_SECRET;
+    Object.assign(env, { VOICE_WEBHOOK_SECRET: 'test-voice-webhook-secret' });
+    const callsService = { ingestEvent: vi.fn(async () => undefined) };
+    const controller = new VoiceWebhookController(callsService as never);
+    const rawBody = Buffer.from(
+      '{"provider_call_id":"call_raw_ok","event_type":"call.started","data":{"provider_runtime_id":"runtime_1"}}',
+      'utf8',
+    );
+    const signature = createHmac('sha256', env.VOICE_WEBHOOK_SECRET ?? '')
+      .update(rawBody)
+      .digest('hex');
+    const parsedBody = {
+      event_type: 'call.started',
+      provider_call_id: 'call_raw_ok',
+      data: { provider_runtime_id: 'runtime_1' },
+    };
+
+    try {
+      await expect(
+        controller.receive('vapi', signature, { rawBody } as never, parsedBody),
+      ).resolves.toEqual({ received: true });
+      expect(callsService.ingestEvent).toHaveBeenCalledWith('vapi', {
+        event_type: 'call.started',
+        provider_call_id: 'call_raw_ok',
+        data: { provider_runtime_id: 'runtime_1' },
+      });
+    } finally {
+      Object.assign(env, { VOICE_WEBHOOK_SECRET: originalSecret });
+    }
   });
 });

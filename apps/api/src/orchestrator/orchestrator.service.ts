@@ -133,7 +133,7 @@ export class AgentOrchestratorService {
         number: number?.phoneNumber,
       },
       publish: {
-        status: 'pending' as 'pending',
+        status: 'pending' as const,
       },
     };
   }

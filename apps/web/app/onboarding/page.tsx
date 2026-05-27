@@ -1,22 +1,30 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
-import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
 
-export default function OnboardingPage() {
+function sanitizeNext(next: string | null): string {
+  if (!next) return '/dashboard';
+  if (!next.startsWith('/') || next.startsWith('//')) return '/dashboard';
+  if (next.includes('\\')) return '/dashboard';
+  return next;
+}
+
+function OnboardingInner() {
   const router = useRouter();
+  const search = useSearchParams();
   const supabase = createBrowserSupabaseClient();
   const [orgName, setOrgName] = useState('');
   const [workspaceName, setWorkspaceName] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const next = useMemo(() => sanitizeNext(search?.get('next') ?? null), [search]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -30,64 +38,22 @@ export default function OnboardingPage() {
       return;
     }
 
-    const appUserId = user.user_metadata?.app_user_id;
-    if (!appUserId) {
-      setError('User profile not found. Please sign out and sign in again.');
-      setLoading(false);
-      return;
-    }
-
     try {
-      const adminClient = createSupabaseAdminClient();
-
-      // Create organization
-      const { data: org, error: orgError } = await adminClient
-        .from('organizations')
-        .insert({
-          name: orgName,
-          created_by_user_id: appUserId,
-        })
-        .select('id')
-        .single();
-
-      if (orgError) throw orgError;
-
-      // Create default workspace
-      const { data: workspace, error: wsError } = await adminClient
-        .from('workspaces')
-        .insert({
-          name: workspaceName || 'My Workspace',
-          organization_id: org.id,
-        })
-        .select('id')
-        .single();
-
-      if (wsError) throw wsError;
-
-      // Create owner membership
-      const { error: memberError } = await adminClient
-        .from('memberships')
-        .insert({
-          user_id: appUserId,
-          workspace_id: workspace.id,
-          role: 'owner',
-        });
-
-      if (memberError) throw memberError;
-
-      // Update user JWT app_metadata with active org
-      await adminClient.auth.admin.updateUserById(user.id, {
-        user_metadata: { ...user.user_metadata, active_org_id: org.id },
-        app_metadata: {
-          ...user.app_metadata,
-          active_org_id: org.id,
-          active_org_role: 'owner',
-        },
+      const res = await fetch('/api/onboarding', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          orgName,
+          workspaceName,
+        }),
       });
 
-      // Sign out to refresh cookies with new metadata
-      await supabase.auth.signOut();
-      router.push('/dashboard');
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok) throw new Error(data?.error ?? `Onboarding failed (${res.status})`);
+
+      await supabase.auth.refreshSession();
+      router.push(next);
+      router.refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create organization';
       setError(message);
@@ -147,5 +113,19 @@ export default function OnboardingPage() {
         </form>
       </div>
     </div>
+  );
+}
+
+export default function OnboardingPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        </div>
+      }
+    >
+      <OnboardingInner />
+    </Suspense>
   );
 }

@@ -1,5 +1,6 @@
 import { apiFetch } from '@/lib/api';
 import { WhiteLabelPanel } from '@/components/white-label-panel';
+import { PageHeader } from '@/components/dashboard';
 import type { SessionUser } from '@voiceforge/shared';
 
 export default async function WhiteLabelPage() {
@@ -15,24 +16,27 @@ export default async function WhiteLabelPage() {
   if (apiError || !me) {
     return (
       <div className="flex flex-col gap-8">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">White label</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Could not load settings: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Agency brand"
+          title="White label"
+          description={
+            <>
+              Could not load settings:{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
+            </>
+          }
+        />
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">White label</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Brand the dashboard for your agency: logo, primary color, custom domain, support email.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Agency brand"
+        title="White label"
+        description="Brand the dashboard for your agency with a logo, primary color, custom domain, and support email."
+      />
 
       <WhiteLabelPanel workspaceId={me.active_workspace_id ?? ''} />
     </div>

@@ -7,6 +7,9 @@ import { z } from 'zod';
 export const PlanTypeSchema = z.enum(['free', 'starter', 'growth', 'enterprise']);
 export type PlanType = z.infer<typeof PlanTypeSchema>;
 
+export const CheckoutPlanSchema = z.enum(['starter', 'growth', 'enterprise']);
+export type CheckoutPlan = z.infer<typeof CheckoutPlanSchema>;
+
 export const SubscriptionStatusSchema = z.enum([
   'active',
   'trialing',
@@ -33,7 +36,7 @@ export const PLAN_LIMITS = {
     tools: 2,
     workspaces: 1,
     contacts: 50,
-    complianceBlocks: false,
+    complianceBlocks: 10,
   },
   starter: {
     agents: 3,
@@ -66,20 +69,38 @@ export const PLAN_LIMITS = {
 
 export type PlanLimits = typeof PLAN_LIMITS;
 
+const RelativeBillingPathSchema = z
+  .string()
+  .min(1)
+  .refine((value) => {
+    if (!value.startsWith('/') || value.startsWith('//')) return false;
+    if (value.includes('\\') || /[\u0000-\u001f]/.test(value)) return false;
+    try {
+      const parsed = new URL(value, 'https://app.voiceforge.local');
+      return parsed.origin === 'https://app.voiceforge.local';
+    } catch {
+      return false;
+    }
+  }, 'Must be a safe relative path');
+
 // --------------------------------------------------------------------------
 // DTOs
 // --------------------------------------------------------------------------
 
-export const CreateCheckoutSessionDtoSchema = z.object({
-  priceId: z.string(),
-  successUrl: z.string().url(),
-  cancelUrl: z.string().url(),
-});
+export const CreateCheckoutSessionDtoSchema = z
+  .object({
+    plan: CheckoutPlanSchema,
+    successPath: RelativeBillingPathSchema.default('/checkout/success'),
+    cancelPath: RelativeBillingPathSchema.default('/checkout/cancel'),
+  })
+  .strict();
 export type CreateCheckoutSessionDto = z.infer<typeof CreateCheckoutSessionDtoSchema>;
 
-export const CreatePortalSessionDtoSchema = z.object({
-  returnUrl: z.string().url().optional(),
-});
+export const CreatePortalSessionDtoSchema = z
+  .object({
+    returnPath: RelativeBillingPathSchema.default('/dashboard/billing'),
+  })
+  .strict();
 export type CreatePortalSessionDto = z.infer<typeof CreatePortalSessionDtoSchema>;
 
 export const SubscriptionDtoSchema = z.object({

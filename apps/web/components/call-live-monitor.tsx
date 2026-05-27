@@ -39,6 +39,7 @@ export function CallLiveMonitor({
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectRef = useRef<(() => void) | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const connect = useCallback(() => {
@@ -96,10 +97,14 @@ export function CallLiveMonitor({
       es.close();
       // Auto-reconnect every 3s for active calls
       if (status !== 'completed') {
-        reconnectTimer.current = setTimeout(connect, 3000);
+        reconnectTimer.current = setTimeout(() => connectRef.current?.(), 3000);
       }
     };
   }, [callId, workspaceId, status]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     connect();

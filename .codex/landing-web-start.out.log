@@ -1,0 +1,8 @@
+
+> @voiceforge/web@0.1.0 start
+> next start --port 3100
+
+▲ Next.js 16.2.4
+- Local:         http://localhost:3100
+- Network:       http://10.108.128.51:3100
+✓ Ready in 432ms

@@ -1,11 +1,16 @@
 import { Global, Logger, Module } from '@nestjs/common';
 import { env } from '../config/env';
 import { TwilioVoiceAdapter } from '../twilio-adapter/twilio.adapter';
+import { OpenAIRealtimeVoiceAdapter } from './adapters/openai-realtime.adapter';
 import { VapiVoiceAdapter } from './adapters/vapi.adapter';
 
 export const VOICE_PROVIDER_TOKEN = Symbol.for('VOICE_PROVIDER_TOKEN');
 
-function resolveVoiceProvider(vapi: VapiVoiceAdapter, twilio: TwilioVoiceAdapter) {
+function resolveVoiceProvider(
+  vapi: VapiVoiceAdapter,
+  twilio: TwilioVoiceAdapter,
+  openaiRealtime: OpenAIRealtimeVoiceAdapter,
+) {
   const logger = new Logger('VoiceModule');
   switch (env.VOICE_PROVIDER) {
     case 'vapi':
@@ -18,10 +23,15 @@ function resolveVoiceProvider(vapi: VapiVoiceAdapter, twilio: TwilioVoiceAdapter
         throw new Error('VOICE_PROVIDER=twilio but TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN is not set.');
       }
       return twilio;
+    case 'openai-realtime':
+      if (!env.OPENAI_API_KEY) {
+        logger.warn('VOICE_PROVIDER=openai-realtime but OPENAI_API_KEY is not set. Using mock Realtime sessions.');
+      }
+      return openaiRealtime;
     default:
       if (env.NODE_ENV === 'production') {
         throw new Error(
-          'VOICE_PROVIDER must be set in production. Choose `vapi` or `twilio` and provide the matching credentials.',
+          'VOICE_PROVIDER must be set in production. Choose `vapi`, `twilio`, or `openai-realtime` and provide the matching credentials.',
         );
       }
       logger.warn(
@@ -31,17 +41,20 @@ function resolveVoiceProvider(vapi: VapiVoiceAdapter, twilio: TwilioVoiceAdapter
   }
 }
 
+export const resolveVoiceProviderForTest = resolveVoiceProvider;
+
 @Global()
 @Module({
   providers: [
     VapiVoiceAdapter,
     TwilioVoiceAdapter,
+    OpenAIRealtimeVoiceAdapter,
     {
       provide: VOICE_PROVIDER_TOKEN,
-      inject: [VapiVoiceAdapter, TwilioVoiceAdapter],
+      inject: [VapiVoiceAdapter, TwilioVoiceAdapter, OpenAIRealtimeVoiceAdapter],
       useFactory: resolveVoiceProvider,
     },
   ],
-  exports: [VOICE_PROVIDER_TOKEN, TwilioVoiceAdapter],
+  exports: [VOICE_PROVIDER_TOKEN, TwilioVoiceAdapter, OpenAIRealtimeVoiceAdapter],
 })
 export class VoiceModule {}

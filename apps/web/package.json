@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "next lint",
+    "lint": "eslint app components lib middleware.ts middleware-utils.ts next.config.ts",
     "clean": "rimraf .next"
   },
   "dependencies": {

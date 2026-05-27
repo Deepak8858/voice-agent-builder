@@ -161,7 +161,7 @@ describe('ComplianceService.check', () => {
       workspaceId: 'ws-1',
       agentId: 'agent-1',
       direction: 'outbound',
-      toNumber: '+15551234567',
+      toNumber: '+12025550101',
     });
     expect(result.status).toBe('blocked');
     expect(result.reasons.map((r) => r.code)).toContain('agent_not_published');
@@ -169,13 +169,13 @@ describe('ComplianceService.check', () => {
 
   it('blocks outbound on DNC-listed number', async () => {
     const state = defaultState();
-    state.dnc.add('+15550009999');
+    state.dnc.add('+12025550100');
     const svc = makeService(state);
     const result = await svc.check({
       workspaceId: 'ws-1',
       agentId: 'agent-1',
       direction: 'outbound',
-      toNumber: '+1 555 000 9999',
+      toNumber: '+1 202 555 0100',
     });
     expect(result.status).toBe('blocked');
     expect(result.reasons.map((r) => r.code)).toContain('dnc_listed');
@@ -183,7 +183,7 @@ describe('ComplianceService.check', () => {
 
   it('blocks outbound when contact opted out', async () => {
     const state = defaultState();
-    const phone = '+15551112222';
+    const phone = '+12025550102';
     state.contactByPhone.set(phone, { id: 'c1', optOut: true });
     state.contactById.set('c1', { id: 'c1', optOut: true });
     state.consentByContact.set('c1', [
@@ -202,7 +202,7 @@ describe('ComplianceService.check', () => {
 
   it('blocks outbound when consent required and missing', async () => {
     const state = defaultState();
-    const phone = '+15553334444';
+    const phone = '+12025550103';
     state.contactByPhone.set(phone, { id: 'c2', optOut: false });
     state.contactById.set('c2', { id: 'c2', optOut: false });
     const svc = makeService(state);
@@ -218,7 +218,7 @@ describe('ComplianceService.check', () => {
 
   it('blocks unsupported outbound purpose', async () => {
     const state = defaultState();
-    const phone = '+15554445555';
+    const phone = '+12025550104';
     state.contactByPhone.set(phone, { id: 'c3', optOut: false });
     state.contactById.set('c3', { id: 'c3', optOut: false });
     state.consentByContact.set('c3', [
@@ -238,7 +238,7 @@ describe('ComplianceService.check', () => {
 
   it('blocks outbound outside allowed call window', async () => {
     const state = defaultState();
-    const phone = '+15555556666';
+    const phone = '+12025550105';
     state.contactByPhone.set(phone, { id: 'c4', optOut: false });
     state.contactById.set('c4', { id: 'c4', optOut: false });
     state.consentByContact.set('c4', [
@@ -268,7 +268,7 @@ describe('ComplianceService.check', () => {
 
   it('passes when all preconditions met', async () => {
     const state = defaultState();
-    const phone = '+15557778888';
+    const phone = '+12025550106';
     state.contactByPhone.set(phone, { id: 'c5', optOut: false });
     state.contactById.set('c5', { id: 'c5', optOut: false });
     state.consentByContact.set('c5', [
@@ -291,7 +291,7 @@ describe('ComplianceService.check', () => {
     state.agent!.versions[0].specJson = spec({
       identity: { business_name: 'Acme', agent_name: 'Ava' },
     });
-    const phone = '+15558889999';
+    const phone = '+12025550107';
     state.contactByPhone.set(phone, { id: 'c6', optOut: false });
     state.contactById.set('c6', { id: 'c6', optOut: false });
     state.consentByContact.set('c6', [
@@ -311,9 +311,9 @@ describe('ComplianceService.check', () => {
 });
 
 describe('normalizePhone', () => {
-  it('strips formatting', () => {
-    expect(normalizePhone('+1 (555) 123-4567')).toBe('+15551234567');
-    expect(normalizePhone('555.123.4567')).toBe('5551234567');
+  it('normalizes valid formatted numbers to E.164', () => {
+    expect(normalizePhone('+1 (202) 555-0108')).toBe('+12025550108');
+    expect(normalizePhone('202.555.0109')).toBe('+12025550109');
   });
 });
 
@@ -322,7 +322,7 @@ describe('ComplianceService.processTranscriptOptOut', () => {
 
   it('flips contact opt_out and adds DNC when transcript matches', async () => {
     const state = defaultState();
-    state.contactByPhone.set('+15551112222', { id: 'c-opt', optOut: false });
+    state.contactByPhone.set('+12025550110', { id: 'c-opt', optOut: false });
     state.contactById.set('c-opt', { id: 'c-opt', optOut: false });
     const svc = makeService(state);
     const result = await svc.processTranscriptOptOut({
@@ -330,14 +330,14 @@ describe('ComplianceService.processTranscriptOptOut', () => {
       callId: 'call-1',
       direction: 'inbound',
       contactId: null,
-      fromNumber: '+1-555-111-2222',
+      fromNumber: '+1-202-555-0110',
       toNumber: null,
       transcript: 'caller: please do not call me again. agent: noted, goodbye.',
     });
     expect(result.opted_out).toBe(true);
     expect(result.matched_phrase).toBe('do not call');
     expect(state.contactById.get('c-opt')?.optOut).toBe(true);
-    expect(state.dnc.has('+15551112222')).toBe(true);
+    expect(state.dnc.has('+12025550110')).toBe(true);
   });
 
   it('no-op when transcript has no opt-out phrase', async () => {
@@ -349,7 +349,7 @@ describe('ComplianceService.processTranscriptOptOut', () => {
       direction: 'outbound',
       contactId: null,
       fromNumber: null,
-      toNumber: '+15551234567',
+      toNumber: '+12025550111',
       transcript: 'caller: thanks, sounds good.',
     });
     expect(result.opted_out).toBe(false);

@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import type {
   CreateKnowledgeSourceDto,
   KnowledgeSearchHit,
@@ -18,6 +19,11 @@ import {
   EMBEDDING_PROVIDER_TOKEN,
   type EmbeddingProvider,
 } from './embeddings/embedding.provider.interface';
+import {
+  KNOWLEDGE_FILE_STORAGE_TOKEN,
+  type KnowledgeFileStorage,
+  type StoredKnowledgeFile,
+} from './knowledge-file-storage.interface';
 import { FileParser } from './parsers/file-parser';
 
 const CHUNK_CHAR_SIZE = 1200;
@@ -32,6 +38,12 @@ interface UploadFileInput {
   agentId?: string | null;
 }
 
+interface RawKnowledgeChunk {
+  id: string;
+  content: string;
+  source_id: string;
+}
+
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name);
@@ -41,6 +53,7 @@ export class KnowledgeService {
     private readonly audit: AuditService,
     @Inject(EMBEDDING_PROVIDER_TOKEN) private readonly embedder: EmbeddingProvider,
     private readonly fileParser: FileParser,
+    @Inject(KNOWLEDGE_FILE_STORAGE_TOKEN) private readonly fileStorage: KnowledgeFileStorage,
   ) {}
 
   async list(workspaceId: string, query: KnowledgeSourceListQuery): Promise<KnowledgeSourceSummary[]> {
@@ -144,25 +157,35 @@ export class KnowledgeService {
 
     const organizationId = await this.prisma.organizationIdFor(workspaceId);
 
-    const created = await this.prisma.knowledgeSource.create({
-      data: {
-        workspaceId,
-        organizationId,
-        agentId: input.agentId ?? null,
-        sourceType: 'file',
-        title: input.title,
-        fileUrl: null,
-        content: parsed.text,
-        status: 'pending',
-        metadata: {
-          filename: input.filename ?? null,
-          mime_type: input.mimeType ?? null,
-          file_kind: parsed.kind,
-          bytes: parsed.bytes,
-        } as Prisma.InputJsonValue,
-        createdBy: actorUserId,
-      },
+    const storedFile = await this.fileStorage.saveUploadedFile({
+      workspaceId,
+      organizationId,
+      agentId: input.agentId ?? null,
+      buffer: input.buffer,
+      filename: input.filename ?? null,
+      mimeType: input.mimeType ?? null,
     });
+
+    let created: { id: string };
+    try {
+      created = await this.prisma.knowledgeSource.create({
+        data: {
+          workspaceId,
+          organizationId,
+          agentId: input.agentId ?? null,
+          sourceType: 'file',
+          title: input.title,
+          fileUrl: storedFile.fileUrl,
+          content: parsed.text,
+          status: 'pending',
+          metadata: this.fileMetadata(input, parsed, storedFile) as Prisma.InputJsonValue,
+          createdBy: actorUserId,
+        },
+      });
+    } catch (err) {
+      await this.fileStorage.deleteStoredFile(storedFile);
+      throw err;
+    }
 
     await this.processSource(created.id, workspaceId, organizationId, input.agentId ?? null, parsed.text);
 
@@ -176,6 +199,9 @@ export class KnowledgeService {
         title: input.title,
         file_kind: parsed.kind,
         bytes: parsed.bytes,
+        storage_provider: storedFile.provider,
+        storage_bucket: storedFile.bucket,
+        storage_path: storedFile.path,
         agent_id: input.agentId ?? null,
       },
     });
@@ -293,16 +319,62 @@ export class KnowledgeService {
    * Cosine-similarity search via pgvector. Falls back to JSON embed if pgvector
    * is unavailable or dimension does not match.
    */
-  async pgvectorSearch(workspaceId: string, queryEmbedding: number[], topK = 5) {
-    const chunks = await this.prisma.$queryRaw<Array<{ id: string; content: string; source_id: string }>>`
-      SELECT id, content, source_id
+  async pgvectorSearch(
+    workspaceId: string,
+    queryEmbedding: number[],
+    topK = 5,
+    agentId?: string | null,
+  ) {
+    const agentClause = agentId === undefined
+      ? Prisma.empty
+      : agentId === null
+        ? Prisma.sql`AND ks.agent_id IS NULL`
+        : Prisma.sql`AND (ks.agent_id = ${agentId}::uuid OR ks.agent_id IS NULL)`;
+    const vectorLiteral = `[${queryEmbedding.join(',')}]`;
+    const chunks = await this.prisma.$queryRaw<RawKnowledgeChunk[]>`
+      SELECT kc.id, kc.content, kc.source_id
       FROM knowledge_chunks kc
       JOIN knowledge_sources ks ON ks.id = kc.source_id
-      WHERE ks.workspace_id = ${workspaceId}
-      ORDER BY kc.embedding_vector <=> ${queryEmbedding}::vector
+      WHERE ks.workspace_id = ${workspaceId}::uuid
+        AND ks.status = 'ready'
+        AND kc.embedding IS NOT NULL
+        ${agentClause}
+      ORDER BY kc.embedding <=> ${vectorLiteral}::vector
       LIMIT ${topK}
     `;
     return chunks;
+  }
+
+  private async lexicalSearch(
+    workspaceId: string,
+    query: string,
+    topK: number,
+    agentId?: string | null,
+  ): Promise<RawKnowledgeChunk[]> {
+    const agentClause = agentId === undefined
+      ? Prisma.empty
+      : agentId === null
+        ? Prisma.sql`AND ks.agent_id IS NULL`
+        : Prisma.sql`AND (ks.agent_id = ${agentId}::uuid OR ks.agent_id IS NULL)`;
+    const likePattern = this.escapeLikePattern(query);
+    const likeEscape = '\\';
+    return this.prisma.$queryRaw<RawKnowledgeChunk[]>`
+      SELECT kc.id, kc.content, kc.source_id
+      FROM knowledge_chunks kc
+      JOIN knowledge_sources ks ON ks.id = kc.source_id
+      WHERE ks.workspace_id = ${workspaceId}::uuid
+        AND ks.status = 'ready'
+        ${agentClause}
+        AND (
+          kc.content ILIKE ${likePattern} ESCAPE ${likeEscape}
+          OR to_tsvector('simple', kc.content) @@ websearch_to_tsquery('simple', ${query})
+        )
+      ORDER BY
+        CASE WHEN kc.content ILIKE ${likePattern} ESCAPE ${likeEscape} THEN 0 ELSE 1 END,
+        ts_rank_cd(to_tsvector('simple', kc.content), websearch_to_tsquery('simple', ${query})) DESC,
+        kc.created_at DESC
+      LIMIT ${topK}
+    `;
   }
 
   /**
@@ -319,34 +391,28 @@ export class KnowledgeService {
     const trimmed = query.trim();
     if (trimmed.length === 0) return [];
 
-    const [queryVec] = await this.embedder.embed([trimmed]);
+    let lexicalChunks: RawKnowledgeChunk[] = [];
+    try {
+      lexicalChunks = await this.lexicalSearch(workspaceId, trimmed, k, opts.agentId);
+    } catch (err) {
+      this.logger.warn(`lexical knowledge search failed: ${(err as Error).message}`);
+    }
+
+    let queryVec: number[];
+    try {
+      [queryVec] = await this.embedder.embed([trimmed]);
+    } catch (err) {
+      if (lexicalChunks.length > 0) return this.toSearchHits(lexicalChunks, new Map(lexicalChunks.map((c) => [c.id, 1])));
+      throw err;
+    }
 
     // Try pgvector path when embedder dim is 1536 (Azure Ada v2 default)
     if (this.embedder.dimensions === 1536) {
       try {
-        const vectorChunks = await this.pgvectorSearch(workspaceId, queryVec, k);
-        if (vectorChunks.length > 0) {
-          const rows = await this.prisma.knowledgeChunk.findMany({
-            where: { id: { in: vectorChunks.map((c) => c.id) } },
-            include: {
-              source: {
-                select: { id: true, title: true, sourceType: true, agentId: true },
-              },
-            },
-          });
-          return vectorChunks.map((vc) => {
-            const row = rows.find((r) => r.id === vc.id);
-            return {
-              chunk_id: vc.id,
-              source_id: vc.source_id,
-              source_title: row?.source.title ?? '',
-              source_type: (row?.source.sourceType ?? 'text') as KnowledgeSearchHit['source_type'],
-              agent_id: row?.source.agentId ?? null,
-              chunk_index: row?.chunkIndex ?? 0,
-              content: vc.content,
-              score: 1,
-            };
-          });
+        const vectorChunks = await this.pgvectorSearch(workspaceId, queryVec, k, opts.agentId);
+        const combined = this.dedupeChunks([...lexicalChunks, ...vectorChunks]).slice(0, k);
+        if (combined.length > 0) {
+          return this.toSearchHits(combined, new Map(combined.map((c) => [c.id, 1])));
         }
       } catch (err) {
         this.logger.warn(`pgvector search failed, falling back to JSON: ${(err as Error).message}`);
@@ -368,7 +434,11 @@ export class KnowledgeService {
       where,
       include: { source: true },
     });
-    if (chunks.length === 0) return [];
+    if (chunks.length === 0) {
+      return lexicalChunks.length > 0
+        ? this.toSearchHits(lexicalChunks, new Map(lexicalChunks.map((c) => [c.id, 1])))
+        : [];
+    }
 
     const scored = chunks
       .map((c) => {
@@ -382,16 +452,64 @@ export class KnowledgeService {
       .filter((x): x is { chunk: (typeof chunks)[number]; score: number } => x !== null);
 
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, k).map(({ chunk, score }) => ({
-      chunk_id: chunk.id,
-      source_id: chunk.sourceId,
-      source_title: chunk.source.title,
-      source_type: chunk.source.sourceType as KnowledgeSearchHit['source_type'],
-      agent_id: chunk.source.agentId,
-      chunk_index: chunk.chunkIndex,
+    const jsonHits = scored.slice(0, k).map(({ chunk, score }) => ({
+      id: chunk.id,
       content: chunk.content,
+      source_id: chunk.sourceId,
       score: Number(score.toFixed(6)),
     }));
+    const combined = this.dedupeChunks([
+      ...lexicalChunks,
+      ...jsonHits.map(({ score: _score, ...chunk }) => chunk),
+    ]).slice(0, k);
+    const scoreById = new Map<string, number>([
+      ...lexicalChunks.map((c) => [c.id, 1] as const),
+      ...jsonHits.map((c) => [c.id, c.score] as const),
+    ]);
+    return this.toSearchHits(combined, scoreById);
+  }
+
+  private async toSearchHits(
+    chunks: RawKnowledgeChunk[],
+    scoreById: Map<string, number>,
+  ): Promise<KnowledgeSearchHit[]> {
+    const rows = await this.prisma.knowledgeChunk.findMany({
+      where: { id: { in: chunks.map((c) => c.id) } },
+      include: {
+        source: {
+          select: { id: true, title: true, sourceType: true, agentId: true },
+        },
+      },
+    });
+    const rowsById = new Map(rows.map((r) => [r.id, r]));
+    return chunks.map((chunk) => {
+      const row = rowsById.get(chunk.id);
+      return {
+        chunk_id: chunk.id,
+        source_id: chunk.source_id,
+        source_title: row?.source.title ?? '',
+        source_type: (row?.source.sourceType ?? 'text') as KnowledgeSearchHit['source_type'],
+        agent_id: row?.source.agentId ?? null,
+        chunk_index: row?.chunkIndex ?? 0,
+        content: chunk.content,
+        score: scoreById.get(chunk.id) ?? 1,
+      };
+    });
+  }
+
+  private dedupeChunks(chunks: RawKnowledgeChunk[]): RawKnowledgeChunk[] {
+    const seen = new Set<string>();
+    const out: RawKnowledgeChunk[] = [];
+    for (const chunk of chunks) {
+      if (seen.has(chunk.id)) continue;
+      seen.add(chunk.id);
+      out.push(chunk);
+    }
+    return out;
+  }
+
+  private escapeLikePattern(value: string): string {
+    return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
   }
 
   private async processSource(
@@ -423,21 +541,17 @@ export class KnowledgeService {
         embeddings.push(...vecs);
       }
 
-      await this.prisma.knowledgeChunk.createMany({
-        data: chunks.map((content, idx) => ({
+      await this.prisma.$transaction(
+        chunks.map((content, idx) => this.insertChunkWithVector({
           sourceId,
           workspaceId,
           organizationId,
           agentId,
           chunkIndex: idx,
           content,
-          embedding: embeddings[idx] as unknown as Prisma.InputJsonValue,
-          metadata: {
-            embedder: this.embedder.name,
-            dimensions: this.embedder.dimensions,
-          } as Prisma.InputJsonValue,
+          embedding: embeddings[idx],
         })),
-      });
+      );
 
       await this.prisma.knowledgeSource.update({
         where: { id: sourceId },
@@ -445,15 +559,94 @@ export class KnowledgeService {
       });
     } catch (err) {
       this.logger.error(`Knowledge ingest failed for ${sourceId}: ${(err as Error).message}`);
+      const existing = await this.prisma.knowledgeSource.findUnique({
+        where: { id: sourceId },
+        select: { metadata: true },
+      });
       await this.prisma.knowledgeSource.update({
         where: { id: sourceId },
         data: {
           status: 'failed',
-          metadata: { error: (err as Error).message } as Prisma.InputJsonValue,
+          metadata: this.mergeMetadata(existing?.metadata ?? null, {
+            error: (err as Error).message,
+          }) as Prisma.InputJsonValue,
         },
       });
       throw new KnowledgeIngestFailedError((err as Error).message, { sourceId });
     }
+  }
+
+  private fileMetadata(
+    input: UploadFileInput,
+    parsed: { kind: string; bytes: number },
+    storedFile: StoredKnowledgeFile,
+  ): Record<string, unknown> {
+    return {
+      filename: input.filename ?? null,
+      mime_type: input.mimeType ?? null,
+      file_kind: parsed.kind,
+      bytes: parsed.bytes,
+      storage_provider: storedFile.provider,
+      storage_bucket: storedFile.bucket,
+      storage_path: storedFile.path,
+      storage_public_url: storedFile.publicUrl ?? null,
+    };
+  }
+
+  private insertChunkWithVector(input: {
+    sourceId: string;
+    workspaceId: string;
+    organizationId: string;
+    agentId: string | null;
+    chunkIndex: number;
+    content: string;
+    embedding: number[] | undefined;
+  }) {
+    const vectorLiteral = `[${(input.embedding ?? []).join(',')}]`;
+    const metadata = JSON.stringify({
+      embedder: this.embedder.name,
+      dimensions: this.embedder.dimensions,
+    });
+    const agentIdValue = input.agentId
+      ? Prisma.sql`${input.agentId}::uuid`
+      : Prisma.sql`NULL`;
+
+    return this.prisma.$executeRaw`
+      INSERT INTO knowledge_chunks (
+        id,
+        source_id,
+        workspace_id,
+        organization_id,
+        agent_id,
+        chunk_index,
+        content,
+        embedding,
+        metadata,
+        created_at
+      )
+      VALUES (
+        ${randomUUID()}::uuid,
+        ${input.sourceId}::uuid,
+        ${input.workspaceId}::uuid,
+        ${input.organizationId}::uuid,
+        ${agentIdValue},
+        ${input.chunkIndex},
+        ${input.content},
+        ${vectorLiteral}::vector,
+        ${metadata}::jsonb,
+        now()
+      )
+    `;
+  }
+
+  private mergeMetadata(
+    existing: Prisma.JsonValue | null,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
+      return { ...(existing as Record<string, unknown>), ...patch };
+    }
+    return patch;
   }
 
   private coerceVec(value: Prisma.JsonValue | null): number[] | null {

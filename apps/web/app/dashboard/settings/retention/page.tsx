@@ -1,6 +1,11 @@
 'use client';
 import { useState } from 'react';
 import { useApi } from '@/lib/use-api';
+import { FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Archive } from 'lucide-react';
 
 export default function RetentionSettingsPage() {
   const [retentionDays, setRetentionDays] = useState(365);
@@ -24,36 +29,54 @@ export default function RetentionSettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-xl">
-      <h1 className="font-[family-name:var(--font-serif)] text-3xl">Data Retention</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Configure how long call records are retained. Range: 30–3650 days.
-      </p>
-
-      <form onSubmit={save} className="mt-8 space-y-4">
-        <div>
-          <label className="block text-sm font-medium">Retention period (days)</label>
-          <input
-            type="number"
-            min={30}
-            max={3650}
-            value={retentionDays}
-            onChange={e => setRetentionDays(Number(e.target.value))}
-            className="mt-1 w-full rounded-lg border bg-background px-3 py-2"
+    <div className="mx-auto flex max-w-3xl flex-col gap-8">
+      <PageHeader
+        eyebrow="Governance"
+        title="Data retention"
+        description="Configure how long call records are retained before they are eligible for archival or deletion."
+      >
+        <div className="grid gap-3 sm:grid-cols-2">
+          <StatCard
+            label="Retention period"
+            value={`${retentionDays} days`}
+            description={`${Math.round((retentionDays / 365) * 10) / 10} years`}
+            icon={<Archive className="h-5 w-5" />}
           />
-          <p className="mt-1 text-xs text-muted-foreground">
-            Current: {retentionDays} days ({Math.round(retentionDays / 365 * 10) / 10} years)
-          </p>
+          <StatCard
+            label="Allowed range"
+            value="30–3650"
+            description="Days supported by the workspace policy"
+            tone="info"
+          />
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {saved && <p className="text-sm text-green-600">Saved!</p>}
-        <button
-          type="submit"
-          className="rounded-lg bg-primary px-4 py-2 text-sm text-primary-foreground"
-        >
-          Save
-        </button>
-      </form>
+      </PageHeader>
+
+      <FormSection
+        title="Retention policy"
+        description="Choose a period that balances analytics needs, compliance requirements, and storage minimization."
+      >
+        <form onSubmit={save} className="space-y-4">
+          <div>
+            <Label htmlFor="retention-days">Retention period (days)</Label>
+            <Input
+              id="retention-days"
+              type="number"
+              min={30}
+              max={3650}
+              value={retentionDays}
+              onChange={(e) => setRetentionDays(Number(e.target.value))}
+              className="mt-1"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Current: {retentionDays} days ({Math.round((retentionDays / 365) * 10) / 10} years)
+            </p>
+          </div>
+          {error && <StatusBadge status="error" />}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {saved && <StatusBadge status="saved" />}
+          <Button type="submit">Save retention policy</Button>
+        </form>
+      </FormSection>
     </div>
   );
 }

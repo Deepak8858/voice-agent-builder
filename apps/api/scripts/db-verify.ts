@@ -15,6 +15,7 @@ const EXPECTED_TABLES = [
   'call_events',
   'call_evaluations',
   'audit_logs',
+  'audit_reports',
 ];
 
 async function main() {
@@ -95,6 +96,10 @@ async function main() {
   const rlsOff = rls.filter((r) => !r.rowsecurity).map((r) => r.tablename);
   console.log(`[db-verify] RLS enabled (${rlsOn.length}):`, rlsOn);
   console.log(`[db-verify] RLS disabled (${rlsOff.length}):`, rlsOff);
+  if (rlsOff.length) {
+    console.error('[db-verify] FAIL — public tables with RLS disabled:', rlsOff);
+    process.exit(1);
+  }
 
   // 7. Connection pool sanity.
   const dbUrl = new URL(process.env.DATABASE_URL!);

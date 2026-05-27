@@ -1,20 +1,72 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { Mic2, Building2, ArrowRight, Play } from 'lucide-react';
+import { z } from 'zod';
+import { Mic2, Building2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DemoAudioPlayer } from '@/components/demo-audio-player';
 
 interface AgentSharePageProps {
   params: Promise<{ slug: string }>;
 }
 
+const PublicAgentShareSchema = z.discriminatedUnion('found', [
+  z.object({
+    found: z.literal(true),
+    id: z.string().uuid(),
+    name: z.string(),
+    shareSlug: z.string().min(1).optional(),
+    publicPath: z.string().min(1).optional(),
+    demoAudioUrl: z.string().min(1).nullable().optional(),
+    sampleTranscript: z
+      .array(z.object({ speaker: z.string(), text: z.string() }))
+      .default([]),
+    spec: z
+      .object({
+        identity: z
+          .object({
+            business_name: z.string().optional(),
+            agent_name: z.string().optional(),
+          })
+          .catchall(z.unknown())
+          .default({}),
+        voice: z.record(z.unknown()).default({}),
+        goals: z.array(z.string()).default([]),
+      })
+      .default({ identity: {}, voice: {}, goals: [] }),
+    workspaceName: z.string(),
+    organizationName: z.string().nullable().optional(),
+    branding: z
+      .object({
+        brandName: z.string().nullable(),
+        logoUrl: z.string().nullable(),
+        primaryColor: z.string().nullable(),
+        hidePlatformBranding: z.boolean(),
+      })
+      .nullable()
+      .optional(),
+    publishedAt: z.string().or(z.date()).optional(),
+  }),
+  z.object({ found: z.literal(false) }),
+]);
+
+const ApiEnvelopeSchema = z.object({
+  success: z.boolean(),
+  data: z.unknown().nullable(),
+  error: z.unknown().nullable().optional(),
+});
+
 async function getAgentBySlug(slug: string) {
   const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
   try {
     const res = await fetch(`${baseUrl}/agents/a/${slug}`, {
-      next: { revalidate: 60 }, // Cache for 60 seconds
+      next: { revalidate: 60 },
     });
     if (!res.ok) return null;
-    return res.json();
+    const json = await res.json();
+    const envelope = ApiEnvelopeSchema.safeParse(json);
+    const payload = envelope.success ? envelope.data.data : json;
+    const parsed = PublicAgentShareSchema.safeParse(payload);
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -28,7 +80,8 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
     notFound();
   }
 
-  const ref = slug; // Used as referral
+  const ref = agent.shareSlug ?? slug;
+  const brandName = agent.branding?.brandName ?? agent.workspaceName;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-accent/20 flex flex-col">
@@ -39,7 +92,7 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
             <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
               <Mic2 className="h-4 w-4 text-primary-foreground" />
             </div>
-            <span className="font-serif text-lg">VoiceForge</span>
+            <span className="font-serif text-lg">{brandName}</span>
           </Link>
           <Link href={`/sign-up?ref=${ref}`}>
             <Button size="sm" className="gap-2">
@@ -78,29 +131,13 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
               </div>
 
               {/* Demo audio player */}
-              {agent.demoAudioUrl ? (
-                <div className="rounded-xl border border-border/50 bg-muted/30 p-4 mb-6">
-                  <div className="flex items-center gap-4">
-                    <button className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors">
-                      <Play className="h-5 w-5 ml-0.5" />
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium">Sample call demo</p>
-                      <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full bg-primary w-0" />
-                      </div>
-                    </div>
-                    <span className="shrink-0 text-xs text-muted-foreground font-mono">0:00 / 0:30</span>
-                  </div>
-                  <audio className="hidden" src={agent.demoAudioUrl} controls />
-                </div>
-              ) : (
-                <div className="rounded-xl border border-border/50 bg-muted/30 p-4 mb-6 text-center">
-                  <p className="text-sm text-muted-foreground">
-                    Live demo coming soon
-                  </p>
-                </div>
-              )}
+              <div className="mb-6">
+                <DemoAudioPlayer
+                  src={agent.demoAudioUrl ?? undefined}
+                  label="Sample call demo"
+                  caption="Generated sample call audio"
+                />
+              </div>
             </div>
 
             {/* Sample transcript */}
@@ -116,7 +153,7 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
                       className={turn.speaker === 'agent' ? 'text-foreground' : 'text-muted-foreground'}
                     >
                       <span className="font-medium text-xs">
-                        {turn.speaker === 'agent' ? '🤖 Agent' : '👤 Caller'}:
+                        {turn.speaker === 'agent' ? 'Agent' : 'Caller'}:
                       </span>
                       <span className="ml-2">{turn.text}</span>
                     </div>
@@ -167,7 +204,7 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
         <div className="mx-auto max-w-4xl flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center gap-2">
             <Mic2 className="h-3.5 w-3.5" />
-            <span>VoiceForge AI</span>
+            <span>{brandName}</span>
           </div>
           <Link href="/pricing" className="hover:text-foreground transition-colors">
             View pricing
@@ -187,7 +224,7 @@ export async function generateMetadata({ params }: AgentSharePageProps) {
   }
 
   return {
-    title: `${agent.name} — Voice Agent by ${agent.workspaceName}`,
+    title: `${agent.name} - Voice Agent by ${agent.workspaceName}`,
     description: `Try this AI voice agent for ${agent.spec?.identity?.business_name ?? 'your business'}. Built with VoiceForge AI.`,
   };
 }

@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { AnthropicLlmAdapter } from './adapters/anthropic.adapter';
 import { AzureAiFoundryAdapter } from './adapters/azure-aifoundry.adapter';
 import { GithubModelsLlmAdapter } from './adapters/github-models.adapter';
+import { OpenAiEmbeddingsAdapter } from './adapters/openai-embeddings.adapter';
 import { OpenAiLlmAdapter } from './adapters/openai.adapter';
 import { LlmCacheService } from './llm-cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.interface';
@@ -13,6 +14,7 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
     LlmCacheService,
     GithubModelsLlmAdapter,
     OpenAiLlmAdapter,
+    OpenAiEmbeddingsAdapter,
     AnthropicLlmAdapter,
     AzureAiFoundryAdapter,
     {
@@ -43,6 +45,6 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
       },
     },
   ],
-  exports: [LLM_PROVIDER_TOKEN, LlmCacheService],
+  exports: [LLM_PROVIDER_TOKEN, LlmCacheService, OpenAiEmbeddingsAdapter],
 })
 export class LlmModule {}

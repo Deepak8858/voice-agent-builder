@@ -23,7 +23,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   if (!user) return null;
 
   // Get app user profile
-  const appUserId = user.user_metadata?.app_user_id as string | undefined;
+  const appUserId = user.app_metadata?.app_user_id as string | undefined;
 
   // Get active org from JWT app_metadata
   const activeOrgId = user.app_metadata?.active_org_id as string | undefined ?? null;

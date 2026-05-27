@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -10,16 +10,18 @@ import type {
   SessionUser,
   KnowledgeSourceSummary,
 } from '@voiceforge/shared';
+import { AgentSpecSchema } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useApi } from '@/lib/use-api';
 import { useAgentDraftStore } from '@/lib/stores/agent-draft';
-import { AgentBuilderForm } from '@/components/agent-builder-form';
+import { AgentCreationModeTabs } from '@/components/agent-creation-mode-tabs';
 import { AgentPreviewPanel } from '@/components/agent-preview-panel';
+import { PageHeader } from '@/components/dashboard/page-header';
+import { PromptQualityChecklist } from '@/components/dashboard/prompt-quality-checklist';
 import { RotateCcw, Save, PhoneIncoming, PhoneOutgoing, Phone, Loader2, Sparkles } from 'lucide-react';
 
 interface TemplateSummary {
@@ -71,6 +73,12 @@ export default function AiGenerateAgentPage() {
   const [streamingToken, setStreamingToken] = useState('');
   const [streamingError, setStreamingError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  const parsedDraftSpec = useMemo(
+    () => (draft.draftSpec ? AgentSpecSchema.safeParse(draft.draftSpec) : null),
+    [draft.draftSpec],
+  );
+  const canSaveDraftSpec = Boolean(parsedDraftSpec?.success);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
@@ -175,16 +183,23 @@ export default function AiGenerateAgentPage() {
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId || !draft.draftSpec) throw new Error('Generate an agent first');
+      const parsed = AgentSpecSchema.safeParse(draft.draftSpec);
+      if (!parsed.success) {
+        const firstIssue = parsed.error.issues[0];
+        const field = firstIssue?.path.length ? firstIssue.path.join('.') : 'spec';
+        throw new Error(`Fix Agent Spec validation before saving: ${field}`);
+      }
+      const spec = parsed.data;
       return call<AgentDetail>(
         `/workspaces/${workspaceId}/agents`,
         {
           method: 'POST',
           body: JSON.stringify({
-            name: (draft.draftSpec as { name?: string }).name ?? 'Untitled Agent',
-            description: (draft.draftSpec as { description?: string }).description ?? undefined,
-            industry: (draft.draftSpec as { industry?: string }).industry ?? 'General',
-            agent_type: (draft.draftSpec as { agent_type?: string }).agent_type ?? 'inbound_receptionist',
-            spec: draft.draftSpec,
+            name: spec.name,
+            description: spec.description ?? undefined,
+            industry: spec.industry,
+            agent_type: spec.agent_type,
+            spec,
           }),
         },
       );
@@ -199,26 +214,33 @@ export default function AiGenerateAgentPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">AI Agent Generator</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Describe in plain English. VoiceForge handles spec, CRM routing, docs, and phone setup.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => draft.reset()} className="gap-2">
-            <RotateCcw className="h-4 w-4" />
-            Reset
-          </Button>
-          {draft.draftSpec && (
-            <Button onClick={() => createMutation.mutate()} disabled={createMutation.isPending || !workspaceId} className="gap-2">
+      <PageHeader
+        eyebrow="AI generator"
+        title="Describe the outcome. Generate the voice-agent spec."
+        description="Use plain English to define the call direction, CRM context, voice settings, and business workflow. Review the generated agent before saving."
+        actions={
+          <>
+            <Button variant="outline" size="sm" onClick={() => draft.reset()} className="gap-2">
+              <RotateCcw className="h-4 w-4" />
+              Reset
+            </Button>
+          {Boolean(draft.draftSpec) && (
+            <Button
+              onClick={() => createMutation.mutate()}
+              disabled={createMutation.isPending || !workspaceId || !canSaveDraftSpec}
+              className="gap-2"
+            >
               <Save className="h-4 w-4" />
               {createMutation.isPending ? 'Saving…' : 'Save Agent'}
             </Button>
-          )}
+            )}
+          </>
+        }
+      >
+        <div>
+            <AgentCreationModeTabs active="chat" />
         </div>
-      </div>
+      </PageHeader>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1fr]">
         {/* Left: Form */}
@@ -242,10 +264,15 @@ export default function AiGenerateAgentPage() {
                   rows={5}
                   value={draft.prompt}
                   onChange={(e) => draft.setPrompt(e.target.value)}
-                  placeholder="Create an AI receptionist for a dental clinic that books appointments, qualifies leads, and routes to HubSpot."
-                  className="mt-1.5"
+                  placeholder="Create a friendly AI receptionist for a dental clinic. Qualify new patients, answer common questions, book appointments, and transfer emergencies to a human."
+                  className="mt-1.5 min-h-36"
                 />
+                <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                  <span>Keep phone responses short, natural, and goal-focused.</span>
+                  <span className="shrink-0 font-mono">{draft.prompt.length}/4000</span>
+                </div>
               </div>
+              <PromptQualityChecklist prompt={draft.prompt} />
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <Label>Industry Template</Label>

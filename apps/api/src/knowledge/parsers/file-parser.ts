@@ -13,7 +13,7 @@ const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB hard cap
 
 const PDF_MIMES = new Set(['application/pdf', 'application/x-pdf']);
 const CSV_MIMES = new Set(['text/csv', 'application/vnd.ms-excel']);
-const TXT_MIMES = new Set(['text/plain', 'text/markdown']);
+const TXT_MIMES = new Set(['text/plain', 'text/markdown', 'application/json']);
 
 /**
  * File ingestion adapter. Detects kind from mime + filename, extracts plain
@@ -29,9 +29,9 @@ export class FileParser {
     const fn = (filename ?? '').toLowerCase();
     if (PDF_MIMES.has(mt) || fn.endsWith('.pdf')) return 'pdf';
     if (CSV_MIMES.has(mt) || fn.endsWith('.csv')) return 'csv';
-    if (TXT_MIMES.has(mt) || fn.endsWith('.txt') || fn.endsWith('.md')) return 'txt';
+    if (TXT_MIMES.has(mt) || fn.endsWith('.txt') || fn.endsWith('.md') || fn.endsWith('.json')) return 'txt';
     throw new KnowledgeFileInvalidError(
-      `Unsupported file type. Allowed: pdf, csv, txt, md. Received mime="${mt}" name="${fn}".`,
+      `Unsupported file type. Allowed: pdf, csv, txt, md, json. Received mime="${mt}" name="${fn}".`,
       { mimeType: mt, filename: fn },
     );
   }

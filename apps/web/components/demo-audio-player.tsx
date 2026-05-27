@@ -29,10 +29,16 @@ export function DemoAudioPlayer({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(duration);
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setTotalDuration(duration);
+    setAudioUnavailable(false);
+
     if (audioRef.current && src) {
       audioRef.current.onloadedmetadata = () => {
         setTotalDuration(audioRef.current?.duration ?? duration);
@@ -44,25 +50,34 @@ export function DemoAudioPlayer({
       audioRef.current.ontimeupdate = () => {
         setCurrentTime(audioRef.current?.currentTime ?? 0);
       };
+      audioRef.current.onerror = () => {
+        setIsPlaying(false);
+        setCurrentTime(0);
+        setAudioUnavailable(true);
+      };
     }
   }, [src, duration]);
 
-  const togglePlay = () => {
-    if (!src) return;
+  const togglePlay = async () => {
+    if (!src || audioUnavailable) return;
 
     if (isPlaying) {
       audioRef.current?.pause();
       setIsPlaying(false);
     } else {
-      audioRef.current?.play();
-      setIsPlaying(true);
+      try {
+        await audioRef.current?.play();
+        setIsPlaying(true);
+      } catch {
+        setIsPlaying(false);
+        setAudioUnavailable(true);
+      }
     }
   };
 
   const progress = totalDuration > 0 ? (currentTime / totalDuration) * 100 : 0;
 
-  // If no audio src, show a placeholder UI
-  if (!src) {
+  if (!src || audioUnavailable) {
     return (
       <div className="relative mx-auto max-w-2xl mt-8">
         <div className="relative flex items-center gap-4 rounded-2xl border border-border/50 bg-card/80 p-4 opacity-60">
@@ -71,7 +86,9 @@ export function DemoAudioPlayer({
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium truncate text-muted-foreground">{label}</p>
-            <p className="text-xs text-muted-foreground mt-1">Demo audio coming soon</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {src ? 'Audio preview unavailable' : 'Demo audio coming soon'}
+            </p>
           </div>
           <span className="shrink-0 text-xs text-muted-foreground font-mono">
             0:00 / 0:30

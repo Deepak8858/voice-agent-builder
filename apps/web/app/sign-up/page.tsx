@@ -1,22 +1,42 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
+import { CheckoutPlanSchema } from '@voiceforge/shared';
 
-export default function SignUpPage() {
-  const router = useRouter();
+function sanitizeNext(next: string | null): string | null {
+  if (!next) return null;
+  if (!next.startsWith('/') || next.startsWith('//')) return null;
+  if (next.includes('\\')) return null;
+  return next;
+}
+
+function SignUpInner() {
+  const search = useSearchParams();
   const supabase = createBrowserSupabaseClient();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+
+  // Both `plan` (deep-link into Stripe Checkout) and `next` (free-form
+  // redirect target) are honored after sign-up / OAuth. Plan wins because we
+  // want the user to land on a paid product as quickly as possible.
+  const requestedPlan = useMemo(() => {
+    const parsed = CheckoutPlanSchema.safeParse(search?.get('plan'));
+    return parsed.success ? parsed.data : null;
+  }, [search]);
+  const next = useMemo(() => sanitizeNext(search?.get('next') ?? null), [search]);
+  const postAuthRedirect = requestedPlan
+    ? `/checkout/start?plan=${requestedPlan}`
+    : next ?? '/dashboard';
 
   async function handleEmailSignUp(e: React.FormEvent) {
     e.preventDefault();
@@ -28,7 +48,7 @@ export default function SignUpPage() {
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(postAuthRedirect)}`,
       },
     });
 
@@ -47,7 +67,7 @@ export default function SignUpPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(postAuthRedirect)}`,
       },
     });
 
@@ -141,5 +161,19 @@ export default function SignUpPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        </div>
+      }
+    >
+      <SignUpInner />
+    </Suspense>
   );
 }

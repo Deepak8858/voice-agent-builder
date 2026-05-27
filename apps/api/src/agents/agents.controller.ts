@@ -15,6 +15,7 @@ import {
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CurrentUser } from '../common/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
 import { AgentsService } from './agents.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -38,6 +39,10 @@ const UpdateFlowDtoSchema = z.object({
   nodes: z.array(FlowNodeSchema),
   edges: z.array(FlowEdgeSchema),
 });
+
+const PublicAgentSlugSchema = z.string().trim().min(1).max(180).regex(/^[a-zA-Z0-9-]+$/);
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
+const DEFAULT_DEMO_AUDIO_URL = '/demo/dental-receptionist-30s.wav';
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/agents')
@@ -177,13 +182,45 @@ export class PublicAgentsController {
     private readonly prisma: PrismaService,
   ) {}
 
+  @Public()
+  @Header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   @Get('a/:id')
   async getById(@Param('id') id: string) {
-    // Find published agent by ID
+    const parsed = PublicAgentSlugSchema.safeParse(id);
+    if (!parsed.success) {
+      return { found: false };
+    }
+
+    const agentId = this.extractAgentId(parsed.data);
+    if (!agentId) {
+      return { found: false };
+    }
+
     const agent = await this.prisma.agent.findFirst({
       where: {
-        id: id,
+        id: agentId,
         status: 'published',
+      },
+      include: {
+        workspace: {
+          select: {
+            name: true,
+            slug: true,
+            whiteLabel: {
+              select: {
+                brandName: true,
+                logoUrl: true,
+                primaryColor: true,
+                hidePlatformBranding: true,
+              },
+            },
+          },
+        },
+        organization: {
+          select: {
+            name: true,
+          },
+        },
       },
     });
 
@@ -191,29 +228,94 @@ export class PublicAgentsController {
       return { found: false };
     }
 
-    // Get latest version
-    const version = await this.prisma.agentVersion.findFirst({
-      where: { agentId: agent.id },
-      orderBy: { versionNumber: 'desc' },
-    });
+    const version = agent.activeVersionId
+      ? await this.prisma.agentVersion.findFirst({
+          where: { id: agent.activeVersionId, agentId: agent.id },
+        })
+      : await this.prisma.agentVersion.findFirst({
+          where: { agentId: agent.id },
+          orderBy: { versionNumber: 'desc' },
+        });
 
     const spec = version?.specJson as Record<string, unknown> ?? {};
+    const workspaceName = agent.workspace?.whiteLabel?.brandName ?? agent.workspace?.name ?? 'VoiceForge Agent';
+    const shareSlug = this.buildShareSlug(agent.name, agent.id);
 
     return {
       found: true,
       id: agent.id,
       name: agent.name,
-      demoAudioUrl: null,
+      shareSlug,
+      publicPath: `/a/${shareSlug}`,
+      demoAudioUrl: this.resolveDemoAudioUrl(spec),
       sampleTranscript: this.buildSampleTranscript(spec),
       spec: {
         identity: spec['identity'] as Record<string, unknown> ?? {},
         voice: spec['voice'] as Record<string, unknown> ?? {},
         goals: (spec['goals'] as string[]) ?? [],
       },
-      workspaceName: 'VoiceForge Agent',
-      organizationName: null,
+      workspaceName,
+      organizationName: agent.organization?.name ?? null,
+      branding: agent.workspace?.whiteLabel
+        ? {
+            brandName: agent.workspace.whiteLabel.brandName,
+            logoUrl: agent.workspace.whiteLabel.logoUrl,
+            primaryColor: agent.workspace.whiteLabel.primaryColor,
+            hidePlatformBranding: agent.workspace.whiteLabel.hidePlatformBranding,
+          }
+        : null,
       publishedAt: version?.createdAt ?? agent.createdAt,
     };
+  }
+
+  private extractAgentId(slugOrId: string): string | null {
+    return slugOrId.match(UUID_PATTERN)?.[0] ?? null;
+  }
+
+  private buildShareSlug(name: string, id: string): string {
+    const slug = name
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80);
+    return `${slug || 'agent'}-${id}`;
+  }
+
+  private resolveDemoAudioUrl(spec: Record<string, unknown>): string {
+    const direct = this.getString(spec, 'demo_audio_url') ?? this.getString(spec, 'demoAudioUrl');
+    if (direct && this.isSafeAudioUrl(direct)) {
+      return direct;
+    }
+
+    const demo = spec['demo'];
+    if (demo && typeof demo === 'object') {
+      const nested = this.getString(demo as Record<string, unknown>, 'audio_url')
+        ?? this.getString(demo as Record<string, unknown>, 'audioUrl');
+      if (nested && this.isSafeAudioUrl(nested)) {
+        return nested;
+      }
+    }
+
+    return DEFAULT_DEMO_AUDIO_URL;
+  }
+
+  private getString(record: Record<string, unknown>, key: string): string | null {
+    const value = record[key];
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private isSafeAudioUrl(value: string): boolean {
+    if (value.startsWith('/') && !value.startsWith('//')) {
+      return true;
+    }
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:';
+    } catch {
+      return false;
+    }
   }
 
   private buildSampleTranscript(spec: Record<string, unknown>): Array<{ speaker: string; text: string }> {

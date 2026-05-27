@@ -1,9 +1,9 @@
 import Link from 'next/link';
 import { apiFetch } from '@/lib/api';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { EmptyState, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import type { CallSummary, SessionUser } from '@voiceforge/shared';
-import { Phone, ArrowRight } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Clock3, FlaskConical, Phone } from 'lucide-react';
 
 export default async function CallsPage() {
   let items: CallSummary[] = [];
@@ -22,23 +22,59 @@ export default async function CallsPage() {
   if (apiError) {
     return (
       <div className="flex flex-col gap-8">
-        <div>
-          <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Calls</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Could not load calls: <code className="text-xs bg-muted px-1 py-0.5 rounded">{apiError}</code>
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Voice operations"
+          title="Calls"
+          description={
+            <>
+              Could not load calls:{' '}
+              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
+            </>
+          }
+        />
       </div>
     );
   }
+  const completedCalls = items.filter((call) => call.status === 'completed').length;
+  const liveCalls = items.filter((call) => ['queued', 'ringing', 'in_progress'].includes(call.status)).length;
+  const browserTests = items.filter((call) => call.direction === 'browser_test').length;
 
   return (
     <div className="flex flex-col gap-8">
-      <div>
-        <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">Calls</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          All calls across this workspace. Includes browser tests, inbound, and outbound.
-        </p>
+      <PageHeader
+        eyebrow="Voice operations"
+        title="Calls"
+        description="Review browser tests, inbound calls, outbound calls, transcripts, and post-call outcomes across this workspace."
+      />
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Total calls"
+          value={items.length}
+          description="All call records in this workspace."
+          icon={<Phone className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Completed"
+          value={completedCalls}
+          description="Calls with finished transcripts and metadata."
+          icon={<CheckCircle2 className="h-5 w-5" />}
+          tone="success"
+        />
+        <StatCard
+          label="Live / queued"
+          value={liveCalls}
+          description="Calls still in progress or waiting to start."
+          icon={<Clock3 className="h-5 w-5" />}
+          tone="info"
+        />
+        <StatCard
+          label="Browser tests"
+          value={browserTests}
+          description="Test calls started from the builder."
+          icon={<FlaskConical className="h-5 w-5" />}
+          tone="warning"
+        />
       </div>
 
       <Card>
@@ -47,14 +83,13 @@ export default async function CallsPage() {
         </CardHeader>
         <CardContent>
           {items.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent">
-                <Phone className="h-6 w-6 text-accent-foreground" />
-              </div>
-              <p className="text-sm text-muted-foreground">
-                No calls yet. Open an agent and click <em>Test call</em> to generate one.
-              </p>
-            </div>
+            <EmptyState
+              icon={<Phone className="h-7 w-7" />}
+              title="No calls yet"
+              description="Open an agent and start a browser test call to generate a transcript and call record."
+              actionLabel="Open agents"
+              actionHref="/dashboard/agents"
+            />
           ) : (
             <ul className="divide-y divide-border">
               {items.map((c) => (
@@ -81,9 +116,7 @@ export default async function CallsPage() {
                           {c.duration_seconds}s
                         </span>
                       ) : null}
-                      <Badge variant="secondary" className="capitalize">
-                        {c.status.replace('_', ' ')}
-                      </Badge>
+                      <StatusBadge status={c.status} />
                       <ArrowRight className="h-4 w-4 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
                     </div>
                   </Link>

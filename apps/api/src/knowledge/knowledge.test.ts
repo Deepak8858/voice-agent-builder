@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FileParser } from './parsers/file-parser';
-import { cosineSim, splitIntoChunks } from './knowledge.service';
+import { cosineSim, KnowledgeService, splitIntoChunks } from './knowledge.service';
+import type { KnowledgeFileStorage } from './knowledge-file-storage.interface';
 
 describe('splitIntoChunks', () => {
   it('returns empty array for empty input', () => {
@@ -37,6 +38,94 @@ describe('cosineSim', () => {
   });
 });
 
+describe('KnowledgeService.pgvectorSearch', () => {
+  it('casts UUID filter parameters in raw pgvector SQL', async () => {
+    const prisma = { $queryRaw: vi.fn(async () => []) };
+    const service = new KnowledgeService(
+      prisma as never,
+      { log: vi.fn(async () => undefined) } as never,
+      {
+        name: 'test-embedder',
+        dimensions: 1536,
+        embed: vi.fn(async () => [[0.1, 0.2, 0.3]]),
+      },
+      new FileParser(),
+      {
+        saveUploadedFile: vi.fn(),
+        deleteStoredFile: vi.fn(),
+      } as never,
+    );
+
+    await service.pgvectorSearch('17701666-b0e9-4ac1-a629-4a92d42b056c', [0.1, 0.2, 0.3], 3);
+
+    const [strings] = prisma.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(Array.from(strings).join('?')).toContain('ks.workspace_id = ?::uuid');
+  });
+
+  it('ranks exact lexical knowledge matches before vector neighbors', async () => {
+    const exactChunk = {
+      id: '11111111-1111-4111-8111-111111111111',
+      source_id: '22222222-2222-4222-8222-222222222222',
+      content: 'The retrieval token is vfkb-exact-token and support hours are 9-5.',
+    };
+    const vectorNeighbor = {
+      id: '33333333-3333-4333-8333-333333333333',
+      source_id: '44444444-4444-4444-8444-444444444444',
+      content: 'A similar upload mentions support hours but has a different token.',
+    };
+    const prisma = {
+      $queryRaw: vi.fn()
+        .mockResolvedValueOnce([exactChunk])
+        .mockResolvedValueOnce([vectorNeighbor]),
+      knowledgeChunk: {
+        findMany: vi.fn(async () => [
+          {
+            id: exactChunk.id,
+            chunkIndex: 0,
+            source: {
+              title: 'Exact',
+              sourceType: 'file',
+              agentId: null,
+            },
+          },
+          {
+            id: vectorNeighbor.id,
+            chunkIndex: 0,
+            source: {
+              title: 'Vector neighbor',
+              sourceType: 'file',
+              agentId: null,
+            },
+          },
+        ]),
+      },
+    };
+    const service = new KnowledgeService(
+      prisma as never,
+      { log: vi.fn(async () => undefined) } as never,
+      {
+        name: 'test-embedder',
+        dimensions: 1536,
+        embed: vi.fn(async () => [[0.1, 0.2, 0.3]]),
+      },
+      new FileParser(),
+      {
+        saveUploadedFile: vi.fn(),
+        deleteStoredFile: vi.fn(),
+      } as never,
+    );
+
+    const hits = await service.search(
+      '17701666-b0e9-4ac1-a629-4a92d42b056c',
+      'vfkb-exact-token',
+      { k: 2 },
+    );
+
+    expect(hits.map((hit) => hit.chunk_id)).toEqual([exactChunk.id, vectorNeighbor.id]);
+    expect(hits[0].content).toContain('vfkb-exact-token');
+  });
+});
+
 describe('FileParser', () => {
   const parser = new FileParser();
 
@@ -44,6 +133,7 @@ describe('FileParser', () => {
     expect(parser.detectKind('application/pdf', 'x.pdf')).toBe('pdf');
     expect(parser.detectKind(undefined, 'data.csv')).toBe('csv');
     expect(parser.detectKind('text/plain', 'notes.txt')).toBe('txt');
+    expect(parser.detectKind('application/json', 'schema.json')).toBe('txt');
     expect(parser.detectKind(undefined, 'README.md')).toBe('txt');
   });
 
@@ -64,6 +154,16 @@ describe('FileParser', () => {
     const result = await parser.parse(Buffer.from('Hello world\r\n', 'utf8'), 'text/plain', 'a.txt');
     expect(result.kind).toBe('txt');
     expect(result.text).toBe('Hello world');
+  });
+
+  it('parses JSON uploads as text knowledge', async () => {
+    const result = await parser.parse(
+      Buffer.from('{"hours":"9-5","city":"Delhi"}', 'utf8'),
+      'application/json',
+      'data.json',
+    );
+    expect(result.kind).toBe('txt');
+    expect(result.text).toContain('"hours":"9-5"');
   });
 
   it('rejects empty buffers', async () => {
@@ -111,5 +211,102 @@ describe('FileParser', () => {
     for (const ext of dangerousExtensions) {
       expect(() => parser.detectKind('application/octet-stream', `file${ext}`)).toThrow();
     }
+  });
+});
+
+describe('KnowledgeService.uploadFile', () => {
+  it('persists the original file to Supabase storage before creating chunks', async () => {
+    const now = new Date('2026-05-21T12:00:00.000Z');
+    const storedFile = {
+      provider: 'supabase' as const,
+      bucket: 'knowledge-files',
+      path: 'organizations/org-1/workspaces/workspace-1/workspace/file.txt',
+      fileUrl: 'supabase://knowledge-files/organizations/org-1/workspaces/workspace-1/workspace/file.txt',
+      publicUrl: 'https://example.supabase.co/storage/v1/object/public/knowledge-files/file.txt',
+    };
+    const row = {
+      id: 'source-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      agentId: null,
+      sourceType: 'file',
+      title: 'FAQ',
+      fileUrl: storedFile.fileUrl,
+      content: 'Clinic hours are 9-5.',
+      status: 'pending',
+      metadata: null as unknown,
+      createdBy: 'user-1',
+      createdAt: now,
+      updatedAt: now,
+      _count: { chunks: 1 },
+    };
+    const prisma = {
+      agent: { findFirst: vi.fn() },
+      organizationIdFor: vi.fn(async () => 'org-1'),
+      knowledgeSource: {
+        create: vi.fn(async ({ data }) => {
+          row.fileUrl = data.fileUrl;
+          row.content = data.content;
+          row.metadata = data.metadata;
+          return { ...row };
+        }),
+        update: vi.fn(async ({ data }) => {
+          if (data.status) row.status = data.status;
+          if (data.metadata) row.metadata = data.metadata;
+          return { ...row };
+        }),
+        findUnique: vi.fn(async () => ({ metadata: row.metadata })),
+        findFirst: vi.fn(async () => ({ ...row, _count: { chunks: 1 } })),
+      },
+      knowledgeChunk: {
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+      },
+      $executeRaw: vi.fn(async () => 1),
+      $transaction: vi.fn(async (ops: Array<Promise<unknown>>) => Promise.all(ops)),
+    };
+    const storage: KnowledgeFileStorage = {
+      saveUploadedFile: vi.fn(async () => storedFile),
+      deleteStoredFile: vi.fn(async () => undefined),
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const embedder = {
+      name: 'test-embedder',
+      dimensions: 3,
+      embed: vi.fn(async (inputs: string[]) => inputs.map(() => [1, 0, 0])),
+    };
+    const service = new KnowledgeService(
+      prisma as never,
+      audit as never,
+      embedder,
+      new FileParser(),
+      storage,
+    );
+
+    const result = await service.uploadFile('workspace-1', 'user-1', {
+      title: 'FAQ',
+      filename: 'faq.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Clinic hours are 9-5.', 'utf8'),
+    });
+
+    expect(storage.saveUploadedFile).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      filename: 'faq.txt',
+      mimeType: 'text/plain',
+    }));
+    expect(prisma.knowledgeSource.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        fileUrl: storedFile.fileUrl,
+        metadata: expect.objectContaining({
+          storage_provider: 'supabase',
+          storage_bucket: storedFile.bucket,
+          storage_path: storedFile.path,
+        }),
+      }),
+    }));
+    expect(prisma.$executeRaw).toHaveBeenCalled();
+    expect(result.file_url).toBe(storedFile.fileUrl);
+    expect(result.status).toBe('ready');
   });
 });

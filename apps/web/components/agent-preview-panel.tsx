@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { useAgentDraftStore, type GenerationStatus } from '@/lib/stores/agent-draft';
-import { Bot, CheckCircle2, Circle, Clock, Loader2, XCircle } from 'lucide-react';
+import { FormModeEditor } from '@/components/form-mode-editor';
+import { Bot, CheckCircle2, Circle, Clock, FileJson2, Loader2, Mic2, XCircle } from 'lucide-react';
 
 function Progress({ value, className }: { value: number; className?: string }) {
   return (
@@ -62,7 +63,7 @@ export function AgentPreviewPanel() {
 
   if (!generated && !draftSpec) {
     return (
-      <Card className="flex min-h-[28rem] flex-col">
+      <Card className="flex min-h-[28rem] flex-col overflow-hidden bg-card/90">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Bot className="h-4 w-4 text-primary" />
@@ -70,7 +71,15 @@ export function AgentPreviewPanel() {
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted-foreground">Enter a prompt and click Generate to preview your agent.</p>
+          <div className="max-w-sm text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/15 bg-primary/10 text-primary">
+              <Mic2 className="h-7 w-7" />
+            </div>
+            <p className="font-medium text-foreground">Your generated agent will appear here</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Describe the caller journey, business rules, and integrations, then generate a validated voice-agent spec.
+            </p>
+          </div>
         </CardContent>
       </Card>
     );
@@ -78,7 +87,7 @@ export function AgentPreviewPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Card>
+      <Card className="overflow-hidden bg-card/90">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
             <span className="flex items-center gap-2">
@@ -86,15 +95,13 @@ export function AgentPreviewPanel() {
               Agent Preview
             </span>
             {generated && (
-              <Badge variant={status?.status === 'published' ? 'default' : 'secondary'}>
-                {status?.status ?? 'pending'}
-              </Badge>
+              <StatusBadge status={status?.status ?? 'pending'} />
             )}
           </CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {generated && status && (
-            <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+            <div className="space-y-3 rounded-2xl border border-border bg-muted/30 p-4">
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Generation Progress</p>
               <div className="space-y-1.5">
                 <StepStatus label="Spec Generation" status={status.steps.spec_generation.status} />
@@ -142,13 +149,18 @@ export function AgentPreviewPanel() {
                   <p className="font-medium truncate">{(draftSpec as { call_direction?: string }).call_direction ?? '—'}</p>
                 </div>
               </div>
-              <details className="rounded-md border border-border">
-                <summary className="cursor-pointer px-3 py-2 text-sm font-medium hover:bg-muted/50">
-                  View Full Spec JSON
+              <details className="rounded-2xl border border-border bg-background">
+                <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-medium hover:bg-muted/50">
+                  <FileJson2 className="h-4 w-4 text-primary" />
+                  Edit Agent Spec
                 </summary>
-                <pre className="overflow-x-auto px-3 py-2 text-xs bg-muted/30 max-h-64">
-                  {JSON.stringify(draftSpec, null, 2)}
-                </pre>
+                <div className="border-t border-border px-3 py-3">
+                  <FormModeEditor
+                    spec={draftSpec}
+                    onChange={setDraftSpec}
+                    defaultMode="form"
+                  />
+                </div>
               </details>
             </div>
           ) : (

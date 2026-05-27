@@ -1,5 +1,7 @@
 import { Controller, Get, Req } from '@nestjs/common';
 import type { Request } from 'express';
+import type { SessionUser } from '@voiceforge/shared';
+import { UnauthorizedError } from '../common/errors';
 import { SupabaseAuthService } from './supabase-auth.service';
 
 @Controller('auth')
@@ -10,17 +12,10 @@ export class MeController {
   async me(@Req() req: Request) {
     // Delegate to SupabaseAuthService — workspace provisioning and session
     // building are already handled there. We only need to pass the auth header.
-    const sessionUser = await this.authService.getSessionUser(req);
+    const sessionUser = (req as Request & { user?: SessionUser }).user
+      ?? await this.authService.getSessionUser(req);
     if (!sessionUser) {
-      const authUserId = req.headers['x-user-id'] as string;
-      return {
-        id: authUserId ?? null,
-        email: req.headers['x-user-email'] as string ?? '',
-        name: null,
-        active_workspace_id: null,
-        active_workspace_name: null,
-        active_workspace_role: 'viewer',
-      };
+      throw new UnauthorizedError();
     }
     return {
       id: sessionUser.id,

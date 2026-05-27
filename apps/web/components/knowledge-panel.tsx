@@ -19,8 +19,9 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RichTextEditor } from '@/components/ui/rich-text-editor';
+import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
-import { BookOpen, Search, Trash2, Upload, Link, FileText } from 'lucide-react';
+import { BookOpen, Search, Trash2, Upload, FileText } from 'lucide-react';
 
 interface KnowledgePanelProps {
   workspaceId: string;
@@ -129,14 +130,24 @@ export function KnowledgePanel({
       (sourceType === 'file' && file !== null));
 
   const canSearch = searchInput.trim().length > 0 && !searchMutation.isPending;
+  const removeSource = (sourceId: string, sourceTitle: string) => {
+    const confirmed = window.confirm(`Remove "${sourceTitle}" from this knowledge base?`);
+    if (!confirmed) return;
+    deleteMutation.mutate(sourceId);
+  };
 
   return (
-    <Card>
+    <Card className="overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle className="flex items-center gap-2">
-          <BookOpen className="h-4 w-4 text-primary" />
-          {headerTitle}
-        </CardTitle>
+        <div>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <BookOpen className="h-4 w-4 text-primary" />
+            {headerTitle}
+          </CardTitle>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Attach FAQs, policies, docs, and URLs the agent can retrieve during calls.
+          </p>
+        </div>
         <Badge variant="secondary">{listQuery.data?.items.length ?? 0}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
@@ -148,15 +159,17 @@ export function KnowledgePanel({
             >
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium text-foreground">{s.title}</p>
-                <p className="text-xs text-muted-foreground">
-                  {s.source_type} · {s.status} · {s.chunk_count} chunks
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {s.source_type} · {s.chunk_count} chunks
                   {s.agent_id ? '' : ' · workspace'}
                 </p>
               </div>
+              <StatusBadge status={s.status} className="hidden shrink-0 sm:inline-flex" />
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => deleteMutation.mutate(s.id)}
+                type="button"
+                onClick={() => removeSource(s.id, s.title)}
                 disabled={deleteMutation.isPending}
                 className="gap-1 text-destructive hover:bg-destructive/10"
               >
@@ -166,14 +179,19 @@ export function KnowledgePanel({
             </li>
           ))}
           {listQuery.data && listQuery.data.items.length === 0 ? (
-            <li className="text-xs text-muted-foreground">No knowledge attached yet.</li>
+            <li className="rounded-2xl border border-dashed border-border bg-muted/30 px-5 py-8 text-center">
+              <p className="text-sm font-medium text-foreground">No knowledge attached yet.</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Add source material below so the agent can answer account, pricing, policy, and scheduling questions accurately.
+              </p>
+            </li>
           ) : null}
         </ul>
 
         <div className="rounded-lg border border-dashed border-border bg-accent/30 p-5">
           <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">Add new</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
               <Label>Title</Label>
               <Input
                 className="mt-1.5"
@@ -195,7 +213,7 @@ export function KnowledgePanel({
               </select>
             </div>
             {sourceType === 'text' ? (
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <Label>Content</Label>
                 <RichTextEditor
                   value={content}
@@ -206,7 +224,7 @@ export function KnowledgePanel({
                 />
               </div>
             ) : sourceType === 'file' ? (
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <Label>File</Label>
                 <input
                   type="file"
@@ -221,7 +239,7 @@ export function KnowledgePanel({
                 ) : null}
               </div>
             ) : (
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <Label>URL</Label>
                 <Input
                   className="mt-1.5"
@@ -234,6 +252,7 @@ export function KnowledgePanel({
           </div>
           <div className="mt-4 flex justify-end">
             <Button
+              type="button"
               onClick={() => createMutation.mutate()}
               disabled={!canSubmit || createMutation.isPending}
               className="gap-2"
@@ -246,13 +265,13 @@ export function KnowledgePanel({
 
         <div className="rounded-lg border border-border bg-background p-5">
           <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">Test retrieval</p>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Ask a question your agent might receive..."
             />
-            <Button onClick={() => searchMutation.mutate()} disabled={!canSearch} className="gap-2">
+            <Button type="button" onClick={() => searchMutation.mutate()} disabled={!canSearch} className="gap-2">
               <Search className="h-4 w-4" />
               {searchMutation.isPending ? 'Searching…' : 'Search'}
             </Button>

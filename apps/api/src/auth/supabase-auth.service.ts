@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Request, Response } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
 import jwt from 'jsonwebtoken';
@@ -11,6 +10,13 @@ import { CacheService } from '../cache/cache.service';
 
 const SESSION_USER_TTL = 300;
 const SESSION_WORKSPACE_TTL = 300;
+
+interface SupabaseAuthUser {
+  id: string;
+  email?: string;
+  user_metadata?: Record<string, unknown>;
+  app_metadata?: Record<string, unknown>;
+}
 
 interface SupabaseJWTPayload {
   sub: string;
@@ -32,18 +38,17 @@ interface SupabaseJWTPayload {
 @Injectable()
 export class SupabaseAuthService extends AuthService {
   private readonly logger = new Logger(SupabaseAuthService.name);
-  private readonly supabase: SupabaseClient | null;
+  private readonly supabaseUrl: string | null;
+  private readonly supabaseServiceRoleKey: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
   ) {
     super();
-    this.supabase = env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY
-      ? createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-          auth: { autoRefreshToken: false, persistSession: false },
-        })
-      : null;
+    const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+    this.supabaseUrl = supabaseUrl ?? null;
+    this.supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY ?? null;
   }
 
   async signup(_input: SignupInput, _res: Response): Promise<SessionUser> {
@@ -60,29 +65,26 @@ export class SupabaseAuthService extends AuthService {
 
   async logout(req: Request, _res: Response): Promise<void> {
     const token = this.extractBearerToken(req);
-    if (!token || !this.supabase) return;
+    if (!token || !this.supabaseUrl || !this.supabaseServiceRoleKey) return;
     try {
-      const claims = jwt.decode(token) as SupabaseJWTPayload | null;
-      if (claims?.sub) {
-        await this.supabase.auth.signOut();
-      }
+      await fetch(`${this.supabaseUrl}/auth/v1/logout`, {
+        method: 'POST',
+        headers: {
+          apikey: this.supabaseServiceRoleKey,
+          authorization: `Bearer ${token}`,
+        },
+      });
     } catch {
-      // If decode fails, there's nothing to invalidate
+      // Best-effort remote sign-out; local cookies are cleared by the web app.
     }
   }
 
   async getSessionUser(req: Request): Promise<SessionUser | null> {
-    if (!env.SUPABASE_JWT_SECRET) return null;
     const token = this.extractBearerToken(req);
     if (!token) return null;
 
-    let claims: SupabaseJWTPayload;
-    try {
-      claims = jwt.verify(token, env.SUPABASE_JWT_SECRET, {
-        algorithms: ['HS256'],
-      }) as SupabaseJWTPayload;
-    } catch (err) {
-      this.logger.debug(`[supabase] token verify failed: ${(err as Error).message}`);
+    const claims = await this.resolveClaims(token);
+    if (!claims) {
       return null;
     }
 
@@ -107,6 +109,62 @@ export class SupabaseAuthService extends AuthService {
       this.logger.warn(`[supabase] session build failed: ${(err as Error).message}`);
       return null;
     }
+  }
+
+  private async resolveClaims(token: string): Promise<SupabaseJWTPayload | null> {
+    if (env.SUPABASE_JWT_SECRET) {
+      try {
+        return jwt.verify(token, env.SUPABASE_JWT_SECRET, {
+          algorithms: ['HS256'],
+        }) as SupabaseJWTPayload;
+      } catch (err) {
+        this.logger.debug(`[supabase] local token verify failed: ${(err as Error).message}`);
+      }
+    }
+
+    const user = await this.getSupabaseUser(token);
+    if (!user) {
+      return null;
+    }
+
+    return this.claimsFromSupabaseUser(user);
+  }
+
+  private async getSupabaseUser(token: string): Promise<SupabaseAuthUser | null> {
+    if (!this.supabaseUrl || !this.supabaseServiceRoleKey) return null;
+
+    const res = await fetch(`${this.supabaseUrl}/auth/v1/user`, {
+      headers: {
+        apikey: this.supabaseServiceRoleKey,
+        authorization: `Bearer ${token}`,
+      },
+    });
+    if (!res.ok) {
+      this.logger.debug(`[supabase] token introspection failed: HTTP ${res.status}`);
+      return null;
+    }
+
+    return (await res.json()) as SupabaseAuthUser;
+  }
+
+  private claimsFromSupabaseUser(user: SupabaseAuthUser): SupabaseJWTPayload {
+    return {
+      sub: user.id,
+      email: user.email,
+      aud: 'authenticated',
+      exp: 0,
+      user_metadata: {
+        full_name: asString(user.user_metadata?.full_name),
+        name: asString(user.user_metadata?.name),
+        avatar_url: asString(user.user_metadata?.avatar_url),
+      },
+      app_metadata: {
+        provider: asString(user.app_metadata?.provider),
+        providers: Array.isArray(user.app_metadata?.providers)
+          ? user.app_metadata.providers.filter((provider): provider is string => typeof provider === 'string')
+          : undefined,
+      },
+    };
   }
 
   private async buildSessionUser(
@@ -238,4 +296,8 @@ export class SupabaseAuthService extends AuthService {
     if (scheme?.toLowerCase() !== 'bearer' || !token) return null;
     return token;
   }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }

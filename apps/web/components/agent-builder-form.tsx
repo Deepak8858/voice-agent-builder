@@ -248,7 +248,7 @@ export function AgentBuilderForm() {
           <Sparkles className="h-4 w-4" />
           {generateMutation.isPending ? 'Starting generation…' : 'Generate Agent'}
         </Button>
-        {!isGenerating && draftSpec && (
+        {!isGenerating && Boolean(draftSpec) && (
           <p className="text-xs text-muted-foreground">Generation complete — preview in right panel.</p>
         )}
       </div>

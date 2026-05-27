@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BadRequestException } from '@nestjs/common';
 import { BillingService, ForbiddenPlanError } from './billing.service';
+import { env } from '../config/env';
 
 function makePrisma(overrides?: {
   subscription?: unknown;
   agentCount?: number;
   usageRecords?: unknown[];
   workspace?: { organizationId: string };
+  auditLog?: { create?: ReturnType<typeof vi.fn> };
 }) {
   const state = {
     subscription: overrides?.subscription ?? null,
@@ -33,6 +36,9 @@ function makePrisma(overrides?: {
       findMany: vi.fn(async () => state.usageRecords),
       create: vi.fn(async () => ({ id: 'ur-1' })),
     },
+    auditLog: overrides?.auditLog ?? {
+      create: vi.fn(async () => ({ id: 'audit-1' })),
+    },
   };
 }
 
@@ -51,7 +57,94 @@ describe('BillingService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Preserve original env values but allow override per test
+    Object.assign(env, {
+      STRIPE_SECRET_KEY: 'rk_test_123',
+      STRIPE_STARTER_PRICE_ID: 'price_starter',
+      STRIPE_GROWTH_PRICE_ID: 'price_growth',
+      STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
+      WEB_BASE_URL: 'https://app.voiceforge.test',
+    });
+    mockStripe = {
+      customers: { create: vi.fn(async () => ({ id: 'cus_new' })) },
+      checkout: { sessions: { create: vi.fn(async () => ({ url: 'https://checkout.stripe.com/c/session' })) } },
+      billingPortal: { sessions: { create: vi.fn(async () => ({ url: 'https://billing.stripe.com/session' })) } },
+    };
+  });
+
+  describe('createCheckoutSession', () => {
+    it('maps plan to server-owned price and enables production Checkout defaults', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        successPath: '/dashboard/billing?checkout=success',
+        cancelPath: '/dashboard/billing?checkout=cancel',
+      });
+
+      expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customer: 'cus_123',
+          mode: 'subscription',
+          line_items: [{ price: 'price_starter', quantity: 1 }],
+          automatic_tax: { enabled: true },
+          billing_address_collection: 'required',
+          tax_id_collection: { enabled: true },
+          success_url: 'https://app.voiceforge.test/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}',
+          cancel_url: 'https://app.voiceforge.test/dashboard/billing?checkout=cancel',
+          metadata: { organizationId: 'org-1', plan: 'starter' },
+          subscription_data: {
+            metadata: { organizationId: 'org-1', plan: 'starter' },
+          },
+        }),
+      );
+      expect(mockStripe.checkout.sessions.create.mock.calls[0][0]).not.toHaveProperty('payment_method_types');
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.checkout_started',
+            resourceType: 'subscription',
+          }),
+        }),
+      );
+    });
+
+    it('rejects unsafe checkout paths before calling Stripe', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        successPath: 'https://evil.example/success',
+        cancelPath: '/dashboard/billing',
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createPortalSession', () => {
+    it('builds the Customer Portal return URL from WEB_BASE_URL', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' });
+
+      expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith({
+        customer: 'cus_123',
+        return_url: 'https://app.voiceforge.test/dashboard/billing',
+      });
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.portal_opened',
+            resourceType: 'subscription',
+          }),
+        }),
+      );
+    });
   });
 
   describe('getSubscription', () => {
@@ -86,11 +179,11 @@ describe('BillingService', () => {
   });
 
   describe('checkFeatureGate', () => {
-    it('returns false for outbound on free plan', async () => {
+    it('returns true for outbound during the free trial allowance', async () => {
       const prisma = makePrisma({ subscription: { plan: 'free', status: 'active' } });
       const svc = makeService(prisma);
       const result = await svc.checkFeatureGate('org-fake', 'outbound');
-      expect(result).toBe(false);
+      expect(result).toBe(true);
     });
 
     it('returns true for outbound on starter plan', async () => {
@@ -128,7 +221,7 @@ describe('BillingService', () => {
         subscription: { plan: 'trialing', status: 'trialing', trialEnd: expiredTrial },
       });
       const svc = makeService(prisma);
-      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(false);
+      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(true);
       expect(await svc.checkFeatureGate('org-fake', 'analytics')).toBe(false);
       expect(await svc.checkFeatureGate('org-fake', 'white_label')).toBe(false);
     });
@@ -184,6 +277,18 @@ describe('BillingService', () => {
   });
 
   describe('enforceAgentLimit', () => {
+    it('counts only published agents when enforcing publish limits', async () => {
+      const prisma = makePrisma({
+        subscription: { plan: 'free', status: 'active' },
+        agentCount: 0,
+      });
+      const svc = makeService(prisma);
+      await expect(svc.enforceAgentLimit('org-fake')).resolves.toBeUndefined();
+      expect(prisma.agent.count).toHaveBeenCalledWith({
+        where: { workspace: { organizationId: 'org-fake' }, status: 'published' },
+      });
+    });
+
     it('throws ForbiddenPlanError when at limit (free, 1 agent)', async () => {
       const prisma = makePrisma({
         subscription: { plan: 'free', status: 'active' },
@@ -250,7 +355,7 @@ describe('BillingService', () => {
       const result = await svc.getWorkspaceUsage('ws-1');
       expect(result.workspaceId).toBe('ws-1');
       expect(result.usage.calls).toBe(0);
-      expect(result.limits.calls).toBe(0); // free plan has 0 outbound calls
+      expect(result.limits.calls).toBe(5); // free plan includes 5 trial outbound calls
     });
 
     it('sums up records by metric', async () => {

@@ -20,12 +20,16 @@ import {
 import { CurrentUser } from '../common/current-user.decorator';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import { CacheService } from '../cache/cache.service';
 import { CallsService } from './calls.service';
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId')
 export class CallsController {
-  constructor(private readonly calls: CallsService) {}
+  constructor(
+    private readonly calls: CallsService,
+    private readonly cache: CacheService,
+  ) {}
 
   @Post('agents/:agentId/test-session')
   async startTestSession(
@@ -99,8 +103,7 @@ export class CallsController {
     let closed = false;
     res.on('close', () => { closed = true; });
 
-    const cache = res.app.get('cache') as import('../cache/cache.service').CacheService;
-    const stream = cache.subscribe(`call:${callId}`);
+    const stream = this.cache.subscribe(`call:${callId}`);
     const reader = stream.getReader();
 
     try {
