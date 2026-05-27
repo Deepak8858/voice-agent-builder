@@ -70,14 +70,50 @@ jobs:
           host: ${{ env.VM_HOST }}
           username: ${{ env.VM_USER }}
           key: ${{ secrets.GCP_VM_SSH_KEY }}
+          script_stop: true
           script: |
-            cd ${{ env.DEPLOY_PATH }}
-            export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
-            git pull origin main
-            docker compose -f docker-compose.gcp.yml pull
-            docker compose -f docker-compose.gcp.yml up -d --remove-orphans
-            sleep 30
-            curl -sf --max-time 10 http://localhost:4000/api/v1/health && echo "API healthy" || echo "API check failed"
+            set -e
+            cd "${{ env.DEPLOY_PATH }}"
+
+            IMAGE_TAG="${{ steps.meta.outputs.image_tag }}"
+            COMPOSE_FILE="infra/docker/docker-compose.gcp.yml"
+            WEB_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-web:${IMAGE_TAG}"
+            API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-api:${IMAGE_TAG}"
+
+            test -f "${COMPOSE_FILE}"
+            sed -i -E "s|image: .*voiceforge-web:[^[:space:]]+|image: ${WEB_IMAGE}|" "${COMPOSE_FILE}"
+            sed -i -E "s|image: .*voiceforge-api:[^[:space:]]+|image: ${API_IMAGE}|" "${COMPOSE_FILE}"
+
+            docker compose -f "${COMPOSE_FILE}" pull web api
+            docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
+
+            for attempt in $(seq 1 24); do
+              if curl -sf --max-time 10 http://localhost:4000/api/v1/health >/dev/null; then
+                echo "API healthy"
+                break
+              fi
+              if [ "${attempt}" = "24" ]; then
+                docker compose -f "${COMPOSE_FILE}" logs api --tail=120
+                exit 1
+              fi
+              sleep 5
+            done
+
+            for attempt in $(seq 1 24); do
+              if curl -sf --max-time 10 http://localhost:3000/api/health >/dev/null; then
+                echo "Web healthy"
+                break
+              fi
+              if [ "${attempt}" = "24" ]; then
+                docker compose -f "${COMPOSE_FILE}" logs web --tail=120
+                exit 1
+              fi
+              sleep 5
+            done
+
+            docker compose -f "${COMPOSE_FILE}" restart nginx
+            curl -sf --max-time 10 https://vocal.devdeepak.me/api/v1/health >/dev/null
+            curl -sf --max-time 10 https://vocal.devdeepak.me >/dev/null
 
       - name: Run Prisma migration
         uses: appleboy/ssh-action@v1
@@ -85,6 +121,8 @@ jobs:
           host: ${{ env.VM_HOST }}
           username: ${{ env.VM_USER }}
           key: ${{ secrets.GCP_VM_SSH_KEY }}
+          script_stop: true
           script: |
-            cd ${{ env.DEPLOY_PATH }}
-            docker compose -f docker-compose.gcp.yml exec -T api npx prisma migrate deploy || echo "Migration may already be applied"
+            set -e
+            cd "${{ env.DEPLOY_PATH }}"
+            docker compose -f infra/docker/docker-compose.gcp.yml exec -T api npx prisma migrate deploy
