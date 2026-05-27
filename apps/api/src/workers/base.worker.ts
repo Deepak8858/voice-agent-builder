@@ -12,7 +12,7 @@ export abstract class BaseWorker<T extends object = object> implements OnModuleD
     private readonly queueService: QueueService,
     concurrency = 5,
   ) {
-    const connection = queueService.getConnection();
+    const connection = queueService.getBullMqConnection();
     this.worker = new Worker(queueName, this.processor.bind(this), {
       connection,
       concurrency,

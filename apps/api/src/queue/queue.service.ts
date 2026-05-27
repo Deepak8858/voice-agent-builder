@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { Queue } from 'bullmq';
+import { Queue, type ConnectionOptions } from 'bullmq';
 import IORedis, { type Redis, type RedisOptions } from 'ioredis';
 import { env } from '../config/env';
 
@@ -64,8 +64,14 @@ export class QueueService implements OnModuleDestroy {
     return this.connection;
   }
 
+  getBullMqConnection(): ConnectionOptions {
+    // Docker builds install dependencies without the lockfile, which can give BullMQ
+    // its own ioredis type copy. The runtime client is still the same compatible API.
+    return this.getConnection() as unknown as ConnectionOptions;
+  }
+
   queue(name: string): Queue {
-    const conn = this.getConnection();
+    const conn = this.getBullMqConnection();
     const existing = this.queues.get(name);
     if (existing) return existing;
     const q = new Queue(name, { connection: conn });
