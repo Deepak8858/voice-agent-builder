@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 const FlowNodeSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(['start', 'speak', 'ask-question', 'condition', 'tool-call', 'transfer', 'end']),
+  type: z.enum(['start', 'speak', 'ask_question', 'condition', 'tool_call', 'transfer', 'end']),
   data: z.record(z.unknown()),
   position: z.object({ x: z.number(), y: z.number() }).optional(),
 });
@@ -127,7 +127,7 @@ describe('UpdateFlowDtoSchema validation', () => {
   });
 
   it('should accept all valid node types', () => {
-    const validTypes = ['start', 'speak', 'ask-question', 'condition', 'tool-call', 'transfer', 'end'];
+    const validTypes = ['start', 'speak', 'ask_question', 'condition', 'tool_call', 'transfer', 'end'];
     for (const type of validTypes) {
       const result = UpdateFlowDtoSchema.safeParse({
         nodes: [{ id: '1', type, data: {} }],

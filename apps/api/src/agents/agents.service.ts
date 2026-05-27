@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -26,6 +26,27 @@ export interface ListAgentsResult {
   agents: AgentSummary[];
   fromCache: boolean;
 }
+
+export type FlowSaveNode = {
+  id: string;
+  type: string;
+  data: unknown;
+};
+
+export type FlowSaveEdge = {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+};
+
+export type UpdateFlowBody = {
+  nodes: FlowSaveNode[];
+  edges: FlowSaveEdge[];
+};
+
+type AgentFlow = NonNullable<AgentSpec['flow']>;
+type AgentFlowNode = AgentFlow['nodes'][number];
 
 @Injectable()
 export class AgentsService {
@@ -80,6 +101,7 @@ export class AgentsService {
     });
     if (!agent) throw new AgentNotFoundError(agentId);
     const activeVersion = agent.versions.find((v) => v.id === agent.activeVersionId) ?? null;
+    const activeSpec = agent.specJson ?? activeVersion?.specJson ?? null;
     return {
       ...this.toSummary(agent),
       versions: agent.versions.map((v) => ({
@@ -92,7 +114,7 @@ export class AgentsService {
         created_at: v.createdAt.toISOString(),
         note: v.note,
       })),
-      active_spec: activeVersion ? ((activeVersion.specJson as unknown) as AgentSpec) : null,
+      active_spec: activeSpec ? ((activeSpec as unknown) as AgentSpec) : null,
     };
   }
 
@@ -119,6 +141,7 @@ export class AgentsService {
           description: dto.description,
           industry: dto.industry,
           agentType: dto.agent_type,
+          ...(initialSpec ? { specJson: initialSpec as unknown as object } : {}),
           createdBy: actorUserId,
         },
       });
@@ -248,14 +271,39 @@ export class AgentsService {
       include: { versions: { orderBy: { versionNumber: 'desc' }, take: 1 } },
     });
     if (!agent) throw new AgentNotFoundError(agentId);
-    const latest = agent.versions[0];
-    if (!latest) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
+    const latest = agent.versions[0] ?? null;
+    const specToPublish = agent.specJson ?? latest?.specJson ?? null;
+    if (!specToPublish) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
 
     // Re-validate latest spec before publishing.
-    const parsed = AgentSpecSchema.safeParse(latest.specJson);
+    const parsed = AgentSpecSchema.safeParse(specToPublish);
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
 
-    let providerRuntimeId = latest.providerRuntimeId;
+    let versionToPublish = latest;
+    if (agent.specJson && (!latest || !jsonValuesEqual(agent.specJson, latest.specJson))) {
+      const nextNumber = (latest?.versionNumber ?? 0) + 1;
+      versionToPublish = await this.prisma.agentVersion.create({
+        data: {
+          agentId,
+          organizationId: agent.organizationId,
+          versionNumber: nextNumber,
+          specJson: parsed.data as unknown as object,
+          note: 'Published from builder draft',
+          createdBy: actorUserId,
+        },
+      });
+      await this.audit.log({
+        workspaceId,
+        actorUserId,
+        action: 'agent.version.create',
+        resourceType: 'agent_version',
+        resourceId: versionToPublish.id,
+        metadata: { version_number: nextNumber, source: 'publish_draft' },
+      });
+    }
+    if (!versionToPublish) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
+
+    let providerRuntimeId = versionToPublish.providerRuntimeId;
     let deploymentStatus: 'deployed' | 'failed' = 'deployed';
     let deployError: string | null = null;
     try {
@@ -263,7 +311,7 @@ export class AgentsService {
         await this.voice.updateAgent({
           workspaceId,
           agentId,
-          agentVersionId: latest.id,
+          agentVersionId: versionToPublish.id,
           spec: parsed.data,
           provider_runtime_id: providerRuntimeId,
         });
@@ -271,7 +319,7 @@ export class AgentsService {
         const created = await this.voice.createAgent({
           workspaceId,
           agentId,
-          agentVersionId: latest.id,
+          agentVersionId: versionToPublish.id,
           spec: parsed.data,
         });
         providerRuntimeId = created.provider_runtime_id;
@@ -285,11 +333,11 @@ export class AgentsService {
       where: { id: agentId },
       data: {
         status: deploymentStatus === 'deployed' ? 'published' : agent.status,
-        activeVersionId: deploymentStatus === 'deployed' ? latest.id : agent.activeVersionId,
+        activeVersionId: deploymentStatus === 'deployed' ? versionToPublish.id : agent.activeVersionId,
       },
     });
     await this.prisma.agentVersion.update({
-      where: { id: latest.id },
+      where: { id: versionToPublish.id },
       data: {
         deploymentStatus,
         provider: this.voice.name,
@@ -303,7 +351,7 @@ export class AgentsService {
       resourceType: 'agent',
       resourceId: agentId,
       metadata: {
-        version_id: latest.id,
+        version_id: versionToPublish.id,
         provider: this.voice.name,
         provider_runtime_id: providerRuntimeId,
         deployment_status: deploymentStatus,
@@ -340,23 +388,35 @@ export class AgentsService {
     workspaceId: string,
     agentId: string,
     actorUserId: string,
-    body: { nodes?: unknown[]; edges?: unknown[] },
+    body: UpdateFlowBody,
   ): Promise<AgentDetail> {
-    const agent = await this.prisma.agent.findFirstOrThrow({ where: { id: agentId, workspaceId } });
-    const spec = (agent.specJson ?? {}) as Record<string, unknown>;
-    const flowNodes = (body.nodes as Array<{ id: string; type: string; data: unknown }>).map((n) => ({
-      id: n.id,
-      type: n.type,
-      ...((n.data as Record<string, unknown>) ?? {}),
-    }));
-    spec['flow'] = {
-      nodes: flowNodes,
-      start_node_id: flowNodes.find((n) => n.type === 'start')?.id ?? flowNodes[0]?.id,
+    const agent = await this.prisma.agent.findFirstOrThrow({
+      where: { id: agentId, workspaceId },
+      include: { versions: { orderBy: { versionNumber: 'desc' } } },
+    });
+    const activeVersionSpec = agent.activeVersionId
+      ? agent.versions.find((v) => v.id === agent.activeVersionId)?.specJson
+      : null;
+    const baseSpec = agent.specJson ?? activeVersionSpec ?? agent.versions[0]?.specJson ?? null;
+    if (!baseSpec) {
+      throw new AgentSpecInvalidError({
+        reason: 'Agent has no Agent Spec JSON to attach a conversation flow to.',
+      });
+    }
+
+    const spec = {
+      ...((baseSpec as Record<string, unknown>) ?? {}),
+      flow: buildAgentFlow(body.nodes, body.edges),
     };
+
+    const parsed = AgentSpecSchema.safeParse(spec);
+    if (!parsed.success) {
+      throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
+    }
 
     await this.prisma.agent.update({
       where: { id: agentId },
-      data: { specJson: spec as Prisma.InputJsonValue },
+      data: { specJson: parsed.data as unknown as Prisma.InputJsonValue },
     });
     await this.audit.log({
       workspaceId,
@@ -393,4 +453,152 @@ export class AgentsService {
       updated_at: a.updatedAt.toISOString(),
     };
   }
+}
+
+function buildAgentFlow(nodes: FlowSaveNode[], edges: FlowSaveEdge[]): AgentFlow {
+  const outgoing = new Map<string, FlowSaveEdge[]>();
+  for (const edge of edges) {
+    const existing = outgoing.get(edge.source) ?? [];
+    existing.push(edge);
+    outgoing.set(edge.source, existing);
+  }
+
+  const flowNodes = nodes.map((node) => toAgentFlowNode(node, outgoing));
+  return {
+    nodes: flowNodes,
+    start_node_id: flowNodes.find((n) => n.type === 'start')?.id ?? flowNodes[0]?.id ?? '',
+  };
+}
+
+function toAgentFlowNode(
+  node: FlowSaveNode,
+  outgoing: Map<string, FlowSaveEdge[]>,
+): AgentFlowNode {
+  const data = asRecord(node.data);
+  const label = optionalString(data['label']);
+  const next = nextTarget(node.id, outgoing);
+  const base = {
+    id: node.id,
+    ...(label ? { label } : {}),
+  };
+
+  switch (normalizeFlowType(node.type)) {
+    case 'start':
+      return { ...base, type: 'start', ...(next ? { next } : {}) };
+    case 'speak':
+      return {
+        ...base,
+        type: 'speak',
+        text: stringValue(data['text']),
+        ...(next ? { next } : {}),
+      };
+    case 'ask_question':
+      return {
+        ...base,
+        type: 'ask_question',
+        question: stringValue(data['question']),
+        ...(optionalString(data['capture_field'])
+          ? { capture_field: optionalString(data['capture_field']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'condition':
+      return {
+        ...base,
+        type: 'condition',
+        expression: stringValue(data['expression']),
+        on_true: branchTarget(node.id, outgoing, 'true') ?? stringValue(data['on_true']),
+        on_false: branchTarget(node.id, outgoing, 'false') ?? stringValue(data['on_false']),
+      };
+    case 'knowledge_lookup':
+      return {
+        ...base,
+        type: 'knowledge_lookup',
+        ...(optionalString(data['query_field'])
+          ? { query_field: optionalString(data['query_field']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'tool_call':
+      return {
+        ...base,
+        type: 'tool_call',
+        tool_name: stringValue(data['tool_name']),
+        ...(asRecordOrNull(data['arguments']) ? { arguments: asRecord(data['arguments']) } : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'transfer':
+      return {
+        ...base,
+        type: 'transfer',
+        ...(optionalString(data['target_phone'])
+          ? { target_phone: optionalString(data['target_phone']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'send_message':
+      return {
+        ...base,
+        type: 'send_message',
+        channel: data['channel'] === 'email' ? 'email' : 'sms',
+        body: stringValue(data['body']),
+        ...(next ? { next } : {}),
+      };
+    case 'fallback':
+      return {
+        ...base,
+        type: 'fallback',
+        ...(optionalString(data['message']) ? { message: optionalString(data['message']) } : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'end':
+    default:
+      return { ...base, type: 'end' };
+  }
+}
+
+function normalizeFlowType(type: string): string {
+  if (type === 'ask-question') return 'ask_question';
+  if (type === 'tool-call') return 'tool_call';
+  return type;
+}
+
+function nextTarget(nodeId: string, outgoing: Map<string, FlowSaveEdge[]>): string | undefined {
+  const edges = outgoing.get(nodeId) ?? [];
+  const edge = edges.find((candidate) => !isConditionHandle(candidate.sourceHandle)) ?? edges[0];
+  return edge?.target;
+}
+
+function branchTarget(
+  nodeId: string,
+  outgoing: Map<string, FlowSaveEdge[]>,
+  branch: 'true' | 'false',
+): string | undefined {
+  return (outgoing.get(nodeId) ?? []).find((edge) => edge.sourceHandle === branch)?.target;
+}
+
+function isConditionHandle(handle: string | null | undefined): boolean {
+  return handle === 'true' || handle === 'false';
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return asRecordOrNull(value) ?? {};
+}
+
+function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }

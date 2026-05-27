@@ -16,12 +16,23 @@ import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CurrentUser } from '../common/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
-import { AgentsService } from './agents.service';
+import { AgentsService, type UpdateFlowBody } from './agents.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 const FlowNodeSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(['start', 'speak', 'ask-question', 'condition', 'tool-call', 'transfer', 'end']),
+  type: z.enum([
+    'start',
+    'speak',
+    'ask_question',
+    'condition',
+    'knowledge_lookup',
+    'tool_call',
+    'transfer',
+    'send_message',
+    'end',
+    'fallback',
+  ]),
   data: z.record(z.unknown()),
   position: z.object({ x: z.number(), y: z.number() }).optional(),
 });
@@ -30,8 +41,8 @@ const FlowEdgeSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
   target: z.string().min(1),
-  sourceHandle: z.string().optional(),
-  targetHandle: z.string().optional(),
+  sourceHandle: z.string().nullable().optional(),
+  targetHandle: z.string().nullable().optional(),
   type: z.string().optional(),
 });
 
@@ -164,11 +175,11 @@ export class AgentsController {
     return this.agents.pause(workspaceId, agentId, user.id);
   }
 
-  @Patch(':agentId/flow')
+  @Put(':agentId/flow')
   async updateFlow(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId') agentId: string,
-    @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: z.infer<typeof UpdateFlowDtoSchema>,
+    @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: UpdateFlowBody,
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.updateFlow(workspaceId, agentId, user.id, body);
@@ -319,7 +330,6 @@ export class PublicAgentsController {
   }
 
   private buildSampleTranscript(spec: Record<string, unknown>): Array<{ speaker: string; text: string }> {
-    const goals = (spec['goals'] as string[]) ?? [];
     const identity = (spec['identity'] as Record<string, unknown>) ?? {};
     const businessName = (identity['business_name'] as string) ?? 'our business';
 

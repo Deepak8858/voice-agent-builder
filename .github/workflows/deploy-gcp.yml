@@ -123,4 +123,4 @@ jobs:
           script: |
             set -e
             cd "${{ env.DEPLOY_PATH }}"
-            docker compose -f infra/docker/docker-compose.gcp.yml exec -T api npx prisma migrate deploy
+            docker compose -f infra/docker/docker-compose.gcp.yml exec -T api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma

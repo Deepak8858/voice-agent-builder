@@ -3,7 +3,7 @@ import type { AgentSpec } from '@voiceforge/shared';
 import { AgentsService } from './agents.service';
 import { AgentSpecInvalidError, AgentNotFoundError } from '../common/errors';
 
-function spec(): AgentSpec {
+function spec(overrides: Partial<AgentSpec> = {}): AgentSpec {
   return {
     schema_version: '1.0',
     name: 'Test',
@@ -30,13 +30,16 @@ function spec(): AgentSpec {
       consent_required_for_outbound: true,
     },
     analytics: { success_events: [] },
+    ...overrides,
   } as AgentSpec;
 }
 
 interface AgentRow {
   id: string;
   workspaceId: string;
+  organizationId?: string | null;
   status: string;
+  specJson?: unknown;
   activeVersionId: string | null;
   versions: Array<{
     id: string;
@@ -66,6 +69,21 @@ function makeAgentsServiceWith(opts: {
     if (v) Object.assign(v, data);
     return v;
   });
+  const versionCreate = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+    const created = {
+      id: 'v-created',
+      agentId: data.agentId as string,
+      versionNumber: data.versionNumber as number,
+      specJson: data.specJson,
+      deploymentStatus: 'not_deployed',
+      provider: null,
+      providerRuntimeId: null,
+      createdAt: new Date(),
+      note: (data.note as string | undefined) ?? null,
+    };
+    opts.initialAgent?.versions.unshift(created);
+    return created;
+  });
   const prisma = {
     agent: {
       findFirst: vi.fn(async () => opts.initialAgent),
@@ -73,6 +91,7 @@ function makeAgentsServiceWith(opts: {
       count: vi.fn(async () => 1),
     },
     agentVersion: {
+      create: versionCreate,
       update: versionUpdate,
     },
     workspace: {
@@ -105,7 +124,7 @@ function makeAgentsServiceWith(opts: {
   service.get = vi.fn(async () => ({
     id: opts.initialAgent?.id ?? 'a',
   })) as never;
-  return { service, prisma, voice, agentUpdate, versionUpdate, audit, cacheInvalidator };
+  return { service, prisma, voice, agentUpdate, versionCreate, versionUpdate, audit, cacheInvalidator };
 }
 
 describe('AgentsService.publish', () => {
@@ -227,6 +246,76 @@ describe('AgentsService.publish', () => {
       expect.objectContaining({ provider_runtime_id: 'mock_rt_existing' }),
     );
     expect(voice.createAgent).not.toHaveBeenCalled();
+  });
+
+  it('publishes draft flow edits by snapshotting agent.specJson into a new version', async () => {
+    const publishedSpec = spec();
+    const draftSpec = spec({
+      flow: {
+        start_node_id: 'start',
+        nodes: [
+          { id: 'start', type: 'start', next: 'end' },
+          { id: 'end', type: 'end' },
+        ],
+      },
+    });
+    const { service, voice, agentUpdate, versionCreate, versionUpdate } = makeAgentsServiceWith({
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        status: 'draft',
+        specJson: draftSpec,
+        activeVersionId: 'v1',
+        versions: [
+          {
+            id: 'v1',
+            agentId: 'a1',
+            versionNumber: 1,
+            specJson: publishedSpec as unknown,
+            deploymentStatus: 'deployed',
+            provider: 'mock',
+            providerRuntimeId: 'mock_rt_existing',
+            createdAt: new Date(),
+            note: null,
+          },
+        ],
+      },
+      voiceCreate: vi.fn(async () => ({ provider_runtime_id: 'mock_rt_draft' })),
+    });
+
+    await service.publish('w1', 'a1', 'u1');
+
+    expect(versionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentId: 'a1',
+          organizationId: 'org1',
+          versionNumber: 2,
+          specJson: draftSpec,
+        }),
+      }),
+    );
+    expect(voice.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentVersionId: 'v-created',
+        spec: draftSpec,
+      }),
+    );
+    expect(versionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'v-created' },
+        data: expect.objectContaining({
+          deploymentStatus: 'deployed',
+          providerRuntimeId: 'mock_rt_draft',
+        }),
+      }),
+    );
+    expect(agentUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'published', activeVersionId: 'v-created' }),
+      }),
+    );
   });
 
   it('voice provider failure: marks version failed, throws, leaves agent status unchanged', async () => {
