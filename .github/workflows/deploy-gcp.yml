@@ -70,7 +70,6 @@ jobs:
           host: ${{ env.VM_HOST }}
           username: ${{ env.VM_USER }}
           key: ${{ secrets.GCP_VM_SSH_KEY }}
-          script_stop: true
           script: |
             set -e
             cd "${{ env.DEPLOY_PATH }}"
@@ -81,8 +80,8 @@ jobs:
             API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-api:${IMAGE_TAG}"
 
             test -f "${COMPOSE_FILE}"
-            sed -i -E "s|image: .*voiceforge-web:[^[:space:]]+|image: ${WEB_IMAGE}|" "${COMPOSE_FILE}"
-            sed -i -E "s|image: .*voiceforge-api:[^[:space:]]+|image: ${API_IMAGE}|" "${COMPOSE_FILE}"
+            sudo sed -i -E "s|image: .*voiceforge-web:[^[:space:]]+|image: ${WEB_IMAGE}|" "${COMPOSE_FILE}"
+            sudo sed -i -E "s|image: .*voiceforge-api:[^[:space:]]+|image: ${API_IMAGE}|" "${COMPOSE_FILE}"
 
             docker compose -f "${COMPOSE_FILE}" pull web api
             docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
@@ -121,7 +120,6 @@ jobs:
           host: ${{ env.VM_HOST }}
           username: ${{ env.VM_USER }}
           key: ${{ secrets.GCP_VM_SSH_KEY }}
-          script_stop: true
           script: |
             set -e
             cd "${{ env.DEPLOY_PATH }}"
