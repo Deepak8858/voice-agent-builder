@@ -3,18 +3,18 @@
 import { useCallback } from 'react';
 import type { Node } from '@xyflow/react';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Save } from 'lucide-react';
+import { Loader2, Save } from 'lucide-react';
 
 interface NodeConfigPanelProps {
   node: Node | null;
   onChange: (nodeId: string, data: Record<string, unknown>) => void;
   onSave: () => void;
+  isSaving?: boolean;
 }
 
-export function NodeConfigPanel({ node, onChange, onSave }: NodeConfigPanelProps) {
+export function NodeConfigPanel({ node, onChange, onSave, isSaving = false }: NodeConfigPanelProps) {
   const handleChange = useCallback(
     (field: string, value: unknown) => {
       if (!node) return;
@@ -37,8 +37,8 @@ export function NodeConfigPanel({ node, onChange, onSave }: NodeConfigPanelProps
         <h3 className="text-sm font-semibold capitalize text-foreground">
           {node.type?.replace('_', ' ')}
         </h3>
-        <Button size="sm" onClick={onSave} className="gap-1">
-          <Save className="h-3.5 w-3.5" />
+        <Button size="sm" onClick={onSave} disabled={isSaving} className="gap-1">
+          {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
           Save
         </Button>
       </div>
@@ -105,6 +105,19 @@ export function NodeConfigPanel({ node, onChange, onSave }: NodeConfigPanelProps
           </label>
         )}
 
+        {node.type === 'knowledge_lookup' && (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Query field</span>
+            <Input
+              type="text"
+              className="font-mono text-xs"
+              value={(node.data?.query_field as string) ?? ''}
+              onChange={(e) => handleChange('query_field', e.target.value)}
+              placeholder="e.g. caller_question"
+            />
+          </label>
+        )}
+
         {node.type === 'transfer' && (
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">Transfer to (phone)</span>
@@ -113,6 +126,41 @@ export function NodeConfigPanel({ node, onChange, onSave }: NodeConfigPanelProps
               value={(node.data?.target_phone as string) ?? ''}
               onChange={(e) => handleChange('target_phone', e.target.value)}
               placeholder="+14155551212 or leave empty for human agent"
+            />
+          </label>
+        )}
+
+        {node.type === 'send_message' && (
+          <>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Channel</span>
+              <Input
+                type="text"
+                value={(node.data?.channel as string) ?? 'sms'}
+                onChange={(e) => handleChange('channel', e.target.value)}
+                placeholder="sms or email"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Message body</span>
+              <Textarea
+                rows={4}
+                value={(node.data?.body as string) ?? ''}
+                onChange={(e) => handleChange('body', e.target.value)}
+                placeholder="Message to send"
+              />
+            </label>
+          </>
+        )}
+
+        {node.type === 'fallback' && (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Fallback message</span>
+            <Textarea
+              rows={3}
+              value={(node.data?.message as string) ?? ''}
+              onChange={(e) => handleChange('message', e.target.value)}
+              placeholder="What should the agent say when it is unsure?"
             />
           </label>
         )}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Edge, Node } from '@xyflow/react';
@@ -15,6 +16,7 @@ interface FlowBuilderClientProps {
 
 export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBuilderClientProps) {
   const { call } = useApi();
+  const router = useRouter();
 
   const saveMutation = useMutation({
     mutationFn: async ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
@@ -23,7 +25,10 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
         body: JSON.stringify({ nodes, edges }),
       });
     },
-    onSuccess: () => toast.success('Flow saved.'),
+    onSuccess: () => {
+      toast.success('Flow saved.');
+      router.refresh();
+    },
     onError: (err: Error) => toast.error(err.message),
   });
 
@@ -39,6 +44,7 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
       <FlowBuilder
         initialNodes={initialFlow?.nodes}
         initialEdges={initialFlow?.edges}
+        isSaving={saveMutation.isPending}
         onSave={handleSave}
       />
     </div>

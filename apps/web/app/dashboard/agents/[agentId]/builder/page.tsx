@@ -16,7 +16,7 @@ import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
 import { PublishAgentButton } from '@/components/publish-agent-button';
 import { PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
-import type { Node, Edge } from '@xyflow/react';
+import { convertAgentFlowToReactFlow } from '@/components/flow-builder/flow-builder-model';
 import type { AgentDetail, SessionUser } from '@voiceforge/shared';
 import {
   ArrowLeft,
@@ -152,7 +152,7 @@ export default async function AgentBuilderPage({ params }: PageProps) {
               agentId={agent.id}
               initialFlow={
                 agent.active_spec?.flow
-                  ? convertFlowNodes(agent.active_spec.flow as { nodes: unknown[] })
+                  ? convertAgentFlowToReactFlow(agent.active_spec.flow)
                   : undefined
               }
               jsonContent={agent.active_spec ? JSON.stringify(agent.active_spec, null, 2) : undefined}
@@ -269,47 +269,6 @@ export default async function AgentBuilderPage({ params }: PageProps) {
       </div>
     </div>
   );
-}
-
-/**
- * Convert spec-style flow nodes (from AgentSpec) to React Flow nodes.
- * Spec nodes: { id, type, text, question, expression, on_true, on_false, ... }
- * React Flow nodes: { id, type, position, data }
- */
-function convertFlowNodes(flow: { nodes: unknown[] }): { nodes: Node[]; edges: Edge[] } {
-  const map: Record<string, Node> = {};
-  const edges: Edge[] = [];
-
-  for (const node of flow.nodes as Array<{ id: string; type: string; [key: string]: unknown }>) {
-    const rfNode: Node = {
-      id: node.id,
-      type: node.type === 'ask_question' ? 'ask_question'
-        : node.type === 'tool_call' ? 'tool_call'
-        : node.type === 'send_message' ? 'speak'
-        : node.type,
-      position: { x: Math.random() * 400 + 100, y: Object.keys(map).length * 150 },
-      data: {
-        label: node.type === 'start' ? 'Start' : node.type === 'end' ? 'End' : '',
-        ...Object.fromEntries(Object.entries(node).filter(([k]) => k !== 'id' && k !== 'type')),
-      },
-    };
-    map[node.id] = rfNode;
-  }
-
-  // Create edges from `next` / `on_true` / `on_false` fields
-  for (const node of flow.nodes as Array<{ id: string; next?: string; on_true?: string; on_false?: string }>) {
-    if (node.next && map[node.next]) {
-      edges.push({ id: `e-${node.id}-${node.next}`, source: node.id, target: node.next, animated: true });
-    }
-    if (node.on_true && map[node.on_true]) {
-      edges.push({ id: `e-${node.id}-true-${node.on_true}`, source: node.id, target: node.on_true, sourceHandle: 'true', animated: true });
-    }
-    if (node.on_false && map[node.on_false]) {
-      edges.push({ id: `e-${node.id}-false-${node.on_false}`, source: node.id, target: node.on_false, sourceHandle: 'false', animated: true });
-    }
-  }
-
-  return { nodes: Object.values(map), edges };
 }
 
 function humanize(value: string): string {

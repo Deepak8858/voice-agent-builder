@@ -5,6 +5,9 @@ import { StartNode } from './nodes/start-node';
 import { SpeakNode } from './nodes/speak-node';
 import { AskQuestionNode } from './nodes/ask-question-node';
 import { ConditionNode } from './nodes/condition-node';
+import { FallbackNode } from './nodes/fallback-node';
+import { KnowledgeLookupNode } from './nodes/knowledge-lookup-node';
+import { SendMessageNode } from './nodes/send-message-node';
 import { ToolCallNode } from './nodes/tool-call-node';
 import { TransferNode } from './nodes/transfer-node';
 import { EndNode } from './nodes/end-node';
@@ -14,8 +17,11 @@ export const NODE_PALETTE = [
   { type: 'speak', label: 'LLM Speak', icon: '💬', color: 'bg-blue-500/10 text-blue-600 border-blue-500/20' },
   { type: 'ask_question', label: 'Ask Question', icon: '❓', color: 'bg-violet-500/10 text-violet-600 border-violet-500/20' },
   { type: 'condition', label: 'Condition', icon: '🔀', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20' },
+  { type: 'knowledge_lookup', label: 'Knowledge', icon: '⌕', color: 'bg-cyan-500/10 text-cyan-700 border-cyan-500/20' },
   { type: 'tool_call', label: 'Tool Call', icon: '🔧', color: 'bg-orange-500/10 text-orange-600 border-orange-500/20' },
   { type: 'transfer', label: 'Transfer', icon: '📞', color: 'bg-red-500/10 text-red-600 border-red-500/20' },
+  { type: 'send_message', label: 'Send Message', icon: '✉', color: 'bg-teal-500/10 text-teal-700 border-teal-500/20' },
+  { type: 'fallback', label: 'Fallback', icon: '↩', color: 'bg-slate-500/10 text-slate-600 border-slate-500/20' },
   { type: 'end', label: 'End', icon: '■', color: 'bg-muted text-muted-foreground border-border' },
 ] as const;
 
@@ -24,8 +30,11 @@ export const NODE_TYPES: NodeTypes = {
   speak: SpeakNode,
   ask_question: AskQuestionNode,
   condition: ConditionNode,
+  knowledge_lookup: KnowledgeLookupNode,
   tool_call: ToolCallNode,
   transfer: TransferNode,
+  send_message: SendMessageNode,
+  fallback: FallbackNode,
   end: EndNode,
 };
 
