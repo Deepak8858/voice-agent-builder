@@ -1,0 +1,241 @@
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  AccessToken,
+  RoomAgentDispatch,
+  RoomConfiguration,
+  RoomServiceClient,
+  SipClient,
+  WebhookReceiver,
+} from 'livekit-server-sdk';
+import { AppError } from '../common/errors';
+import { env } from '../config/env';
+import type {
+  CreateDispatchRuleParams,
+  CreateInboundSipTrunkParams,
+  CreateOutboundCallParams,
+  CreateOutboundSipTrunkParams,
+  LiveKitDispatchRuleResult,
+  LiveKitOutboundCallResult,
+  LiveKitRoomResult,
+  LiveKitSipTrunkResult,
+} from './livekit.types';
+
+interface LiveKitClients {
+  sipClient?: Pick<
+    SipClient,
+    'createSipInboundTrunk' | 'createSipOutboundTrunk' | 'createSipDispatchRule' | 'createSipParticipant' | 'deleteSipTrunk' | 'deleteSipDispatchRule'
+  >;
+  roomClient?: Pick<RoomServiceClient, 'createRoom'>;
+}
+
+export const LIVEKIT_CLIENTS = Symbol('LIVEKIT_CLIENTS');
+
+@Injectable()
+export class LiveKitService {
+  private readonly logger = new Logger(LiveKitService.name);
+  private readonly sipClient?: LiveKitClients['sipClient'];
+  private readonly roomClient?: LiveKitClients['roomClient'];
+
+  constructor(@Optional() @Inject(LIVEKIT_CLIENTS) clients?: LiveKitClients) {
+    const resolvedClients = clients ?? {};
+    this.sipClient = resolvedClients.sipClient ?? this.buildSipClient();
+    this.roomClient = resolvedClients.roomClient ?? this.buildRoomClient();
+  }
+
+  get livekitSipHost(): string {
+    if (!env.LIVEKIT_SIP_HOST) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LIVEKIT_SIP_HOST is not configured.', 500);
+    }
+    return env.LIVEKIT_SIP_HOST.replace(/^sip:/, '');
+  }
+
+  async createRoomForCall(params: { roomName: string; metadata?: Record<string, unknown> }): Promise<LiveKitRoomResult> {
+    if (this.roomClient) {
+      await this.roomClient.createRoom({
+        name: params.roomName,
+        metadata: params.metadata ? JSON.stringify(params.metadata) : undefined,
+      });
+    }
+    return { roomName: params.roomName };
+  }
+
+  async createAccessToken(params: {
+    userId: string;
+    roomName: string;
+    identity: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<string> {
+    this.assertCredentials();
+    const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
+      identity: params.identity,
+      ttl: '15m',
+      metadata: JSON.stringify({ userId: params.userId, ...(params.metadata ?? {}) }),
+    });
+    token.addGrant({ roomJoin: true, room: params.roomName });
+    return token.toJwt();
+  }
+
+  async createInboundSipTrunk(params: CreateInboundSipTrunkParams): Promise<LiveKitSipTrunkResult> {
+    const client = this.requireSipClient();
+    const metadata = JSON.stringify({
+      workspaceId: params.workspaceId,
+      phoneNumberId: params.phoneNumberId,
+      provider: params.provider,
+      direction: 'inbound',
+    });
+    const result = await client.createSipInboundTrunk(
+      `VoiceForge ${params.provider} ${params.phoneNumberE164} inbound`,
+      [params.phoneNumberE164],
+      {
+        metadata,
+        ...(params.authUsername ? { authUsername: params.authUsername } : {}),
+        ...(params.authPassword ? { authPassword: params.authPassword } : {}),
+      },
+    );
+    return { trunkId: result.sipTrunkId };
+  }
+
+  async createOutboundSipTrunk(params: CreateOutboundSipTrunkParams): Promise<LiveKitSipTrunkResult> {
+    const client = this.requireSipClient();
+    const address = params.sipAddress ?? this.providerOutboundAddress(params.provider);
+    const result = await client.createSipOutboundTrunk(
+      `VoiceForge ${params.provider} ${params.phoneNumberE164} outbound`,
+      address,
+      [params.phoneNumberE164],
+      {
+        metadata: JSON.stringify({
+          workspaceId: params.workspaceId,
+          phoneNumberId: params.phoneNumberId,
+          provider: params.provider,
+          direction: 'outbound',
+        }),
+        transport: 0 as never,
+        ...(params.authUsername ? { authUsername: params.authUsername } : {}),
+        ...(params.authPassword ? { authPassword: params.authPassword } : {}),
+      },
+    );
+    return { trunkId: result.sipTrunkId };
+  }
+
+  async createDispatchRule(params: CreateDispatchRuleParams): Promise<LiveKitDispatchRuleResult> {
+    const client = this.requireSipClient();
+    const metadata = {
+      workspaceId: params.workspaceId,
+      phoneNumberId: params.phoneNumberId,
+      agentId: params.agentId,
+      ...(params.metadata ?? {}),
+    };
+    const result = await client.createSipDispatchRule(
+      { type: 'individual', roomPrefix: params.roomPrefix },
+      {
+        name: `VoiceForge dispatch ${params.phoneNumberId}`,
+        trunkIds: [params.trunkId],
+        metadata: JSON.stringify(metadata),
+        roomConfig: new RoomConfiguration({
+          agents: [
+            new RoomAgentDispatch({
+              agentName: params.agentName,
+              metadata: JSON.stringify(metadata),
+            }),
+          ],
+        }),
+      },
+    );
+    return { dispatchRuleId: result.sipDispatchRuleId };
+  }
+
+  async deleteSipTrunk(trunkId: string): Promise<void> {
+    await this.requireSipClient().deleteSipTrunk(trunkId);
+  }
+
+  async deleteDispatchRule(dispatchRuleId: string): Promise<void> {
+    await this.requireSipClient().deleteSipDispatchRule(dispatchRuleId);
+  }
+
+  async createOutboundCall(params: CreateOutboundCallParams): Promise<LiveKitOutboundCallResult> {
+    const result = await this.requireSipClient().createSipParticipant(
+      params.outboundTrunkId,
+      params.toNumber,
+      params.roomName,
+      {
+        fromNumber: params.fromNumber,
+        participantIdentity: `sip-${params.phoneNumberId}`,
+        participantMetadata: JSON.stringify({
+          phoneNumberId: params.phoneNumberId,
+          agentId: params.agentId,
+          direction: 'outbound',
+        }),
+        waitUntilAnswered: false,
+      },
+    );
+    return {
+      providerCallId: result.participantId ?? params.roomName,
+      roomName: params.roomName,
+      status: 'queued',
+    };
+  }
+
+  verifyWebhook(rawBody: string, authorization: string | undefined): unknown {
+    this.assertCredentials();
+    if (!authorization) {
+      throw new AppError('UNAUTHORIZED', 'Missing LiveKit webhook authorization.', 401);
+    }
+    const apiKey = env.LIVEKIT_API_KEY;
+    const apiSecret = env.LIVEKIT_API_SECRET;
+    if (!apiKey || !apiSecret) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LiveKit API credentials are not configured.', 500);
+    }
+    const receiver = new WebhookReceiver(apiKey, apiSecret);
+    return receiver.receive(rawBody, authorization);
+  }
+
+  private requireSipClient(): NonNullable<LiveKitClients['sipClient']> {
+    if (!this.sipClient) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LiveKit SIP is not configured.', 500);
+    }
+    return this.sipClient;
+  }
+
+  private buildSipClient(): SipClient | undefined {
+    if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
+      this.logger.warn('LiveKit env vars are not fully set; LiveKit SIP operations are disabled.');
+      return undefined;
+    }
+    return new SipClient(this.livekitHttpUrl(), env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+  }
+
+  private buildRoomClient(): RoomServiceClient | undefined {
+    if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) return undefined;
+    return new RoomServiceClient(this.livekitHttpUrl(), env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+  }
+
+  private assertCredentials(): void {
+    if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LiveKit API credentials are not configured.', 500);
+    }
+  }
+
+  private livekitHttpUrl(): string {
+    this.assertCredentials();
+    const url = env.LIVEKIT_URL;
+    if (!url) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LIVEKIT_URL is not configured.', 500);
+    }
+    return url.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
+  }
+
+  private providerOutboundAddress(provider: string): string {
+    const address =
+      provider === 'twilio'
+        ? env.TWILIO_SIP_DOMAIN
+        : process.env.VOBIZ_DEFAULT_SIP_DOMAIN;
+    if (!address) {
+      throw new AppError(
+        'LIVEKIT_NOT_CONFIGURED',
+        `Outbound SIP domain is not configured for ${provider}.`,
+        500,
+      );
+    }
+    return address.replace(/^sip:/, '');
+  }
+}

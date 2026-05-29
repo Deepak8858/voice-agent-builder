@@ -1,255 +1,642 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { SyncedProviderPhoneNumber } from '@voiceforge/shared';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import { useApi } from '@/lib/use-api';
-import { Phone, Plus, Trash2, Link, Unlink } from 'lucide-react';
+import {
+  CheckCircle2,
+  KeyRound,
+  Link,
+  Phone,
+  PlugZap,
+  RefreshCw,
+  Router,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
+
+type Provider = 'twilio' | 'vobiz';
+
+interface SessionUser {
+  active_workspace_id: string;
+}
+
+interface AgentSummary {
+  id: string;
+  name: string;
+}
+
+interface TelephonyConnection {
+  id: string;
+  provider: Provider;
+  display_name: string;
+  provider_account_id: string | null;
+  status: string;
+  last_sync_at: string | null;
+}
+
+type ProviderNumber = SyncedProviderPhoneNumber;
 
 interface PhoneNumber {
   id: string;
-  phoneNumber: string;
-  type: string;
+  provider: Provider;
+  provider_connection_id: string | null;
+  phone_number: string;
+  friendly_name: string | null;
   status: string;
-  agentId: string | null;
+  assigned_agent_id: string | null;
   agent?: { id: string; name: string } | null;
-  costPerMonth: number;
-  provisionedAt: string | null;
+  inbound_enabled: boolean;
+  outbound_enabled: boolean;
+  livekit: {
+    status: string;
+    sip_host: string;
+    inbound_trunk_id: string | null;
+    outbound_trunk_id: string | null;
+    dispatch_rule_id: string | null;
+  } | null;
+  provider_connection?: { id: string; displayName: string; status: string } | null;
+  last_synced_at: string | null;
+  created_at: string;
 }
 
-interface SessionUser { active_workspace_id: string; }
-interface AgentSummary { id: string; name: string; }
+interface ConnectForm {
+  provider: Provider;
+  displayName: string;
+  accountSid: string;
+  authToken: string;
+  vobizAuthId: string;
+  vobizAuthToken: string;
+  vobizCustomerAuthId: string;
+}
+
+interface ManualForm {
+  provider: Provider;
+  phoneNumber: string;
+  friendlyName: string;
+  providerAccountId: string;
+  providerNumberId: string;
+  sipTrunkId: string;
+  sipTrunkDomain: string;
+  outboundEnabled: boolean;
+}
+
+const emptyConnectForm: ConnectForm = {
+  provider: 'twilio',
+  displayName: '',
+  accountSid: '',
+  authToken: '',
+  vobizAuthId: '',
+  vobizAuthToken: '',
+  vobizCustomerAuthId: '',
+};
+
+const emptyManualForm: ManualForm = {
+  provider: 'vobiz',
+  phoneNumber: '',
+  friendlyName: '',
+  providerAccountId: '',
+  providerNumberId: '',
+  sipTrunkId: '',
+  sipTrunkDomain: '',
+  outboundEnabled: false,
+};
+
+const E164_PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
 export default function PhoneNumbersPage() {
   const { call } = useApi();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [connections, setConnections] = useState<TelephonyConnection[]>([]);
   const [numbers, setNumbers] = useState<PhoneNumber[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [showProvision, setShowProvision] = useState(false);
-  const [areaCode, setAreaCode] = useState('');
-  const [showByo, setShowByo] = useState(false);
-  const [byoNumber, setByoNumber] = useState('');
-  const [provisioning, setProvisioning] = useState(false);
+  const [providerNumbers, setProviderNumbers] = useState<ProviderNumber[]>([]);
+  const [selectedProviderNumbers, setSelectedProviderNumbers] = useState<Set<string>>(new Set());
+  const [phoneNumberOverrides, setPhoneNumberOverrides] = useState<Record<string, string>>({});
+  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
+  const [connectForm, setConnectForm] = useState<ConnectForm>(emptyConnectForm);
+  const [manualForm, setManualForm] = useState<ManualForm>(emptyManualForm);
+  const [panel, setPanel] = useState<'connect' | 'manual' | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async (activeWorkspaceId = workspaceId) => {
+    if (!activeWorkspaceId) return;
+    setLoading(true);
+    try {
+      const [connectionRes, numberRes, agentRes] = await Promise.all([
+        call<{ items: TelephonyConnection[] }>(`/workspaces/${activeWorkspaceId}/telephony/connections`),
+        call<{ items: PhoneNumber[] }>(`/workspaces/${activeWorkspaceId}/telephony/phone-numbers`),
+        call<{ items: AgentSummary[] }>(`/workspaces/${activeWorkspaceId}/agents`),
+      ]);
+      setConnections(connectionRes.items ?? []);
+      setNumbers(numberRes.items ?? []);
+      setAgents(agentRes.items ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [call, workspaceId]);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
       .then((me) => setWorkspaceId(me.active_workspace_id))
-      .catch(console.error);
+      .catch((err) => setError(err instanceof Error ? err.message : 'Could not load session'));
   }, [call]);
 
   useEffect(() => {
     if (!workspaceId) return;
-    Promise.all([
-      call<{ items: PhoneNumber[] }>(`/workspaces/${workspaceId}/phone-numbers`),
-      call<{ items: AgentSummary[] }>(`/workspaces/${workspaceId}/agents`),
-    ])
-      .then(([n, a]) => {
-        setNumbers(n.items ?? []);
-        setAgents(a.items ?? []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [workspaceId, call]);
+    const loadTimer = window.setTimeout(() => {
+      refresh(workspaceId).catch((err) => setError(err instanceof Error ? err.message : 'Could not load phone numbers'));
+    }, 0);
+    return () => window.clearTimeout(loadTimer);
+  }, [refresh, workspaceId]);
 
-  async function handleProvision(e: React.FormEvent) {
+  const stats = useMemo(() => {
+    const livekitReady = numbers.filter((number) => number.livekit?.status === 'configured').length;
+    const assigned = numbers.filter((number) => number.assigned_agent_id).length;
+    const pending = numbers.filter((number) => number.status === 'pending_verification').length;
+    return { livekitReady, assigned, pending };
+  }, [numbers]);
+
+  async function createConnection(e: React.FormEvent) {
     e.preventDefault();
-    if (!workspaceId || !areaCode) return;
-    setProvisioning(true);
+    if (!workspaceId) return;
+    setBusy('connect');
+    setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/phone-numbers/provision`, {
+      const credentials =
+        connectForm.provider === 'twilio'
+          ? {
+              provider: 'twilio',
+              accountSid: connectForm.accountSid,
+              authToken: connectForm.authToken,
+            }
+          : {
+              provider: 'vobiz',
+              authId: connectForm.vobizAuthId,
+              authToken: connectForm.vobizAuthToken,
+              ...(connectForm.vobizCustomerAuthId ? { customerAuthId: connectForm.vobizCustomerAuthId } : {}),
+            };
+      const connection = await call<TelephonyConnection>(`/workspaces/${workspaceId}/telephony/connections`, {
         method: 'POST',
-        body: JSON.stringify({ area_code: areaCode }),
+        body: JSON.stringify({
+          provider: connectForm.provider,
+          display_name: connectForm.displayName || providerLabel(connectForm.provider),
+          credentials,
+        }),
       });
-      setShowProvision(false);
-      setAreaCode('');
-      const res = await call<{ items: PhoneNumber[] }>(`/workspaces/${workspaceId}/phone-numbers`);
-      setNumbers(res.items ?? []);
+      setActiveConnectionId(connection.id);
+      await syncNumbers(connection.id);
+      await refresh();
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Connection failed');
     } finally {
-      setProvisioning(false);
+      setBusy(null);
     }
   }
 
-  async function handleByo(e: React.FormEvent) {
-    e.preventDefault();
-    if (!workspaceId || !byoNumber) return;
-    setProvisioning(true);
+  async function syncNumbers(connectionId: string) {
+    if (!workspaceId) return;
+    setBusy(`sync-${connectionId}`);
+    setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/phone-numbers/byo`, {
-        method: 'POST',
-        body: JSON.stringify({ phone_number: byoNumber }),
-      });
-      setShowByo(false);
-      setByoNumber('');
-      const res = await call<{ items: PhoneNumber[] }>(`/workspaces/${workspaceId}/phone-numbers`);
-      setNumbers(res.items ?? []);
+      const res = await call<{ items: ProviderNumber[] }>(
+        `/workspaces/${workspaceId}/telephony/connections/${connectionId}/sync-numbers`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      setProviderNumbers(res.items ?? []);
+      setSelectedProviderNumbers(new Set((res.items ?? []).map((number) => number.provider_number_id)));
+      setPhoneNumberOverrides({});
+      setActiveConnectionId(connectionId);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Number sync failed');
     } finally {
-      setProvisioning(false);
+      setBusy(null);
     }
   }
 
-  async function handleAssign(numberId: string, agentId: string) {
-    await call(`/workspaces/${workspaceId}/phone-numbers/${numberId}/assign`, {
-      method: 'PATCH',
-      body: JSON.stringify({ agent_id: agentId }),
-    });
-    const res = await call<{ items: PhoneNumber[] }>(`/workspaces/${workspaceId}/phone-numbers`);
-    setNumbers(res.items ?? []);
+  async function importSelectedNumbers() {
+    if (!workspaceId || !activeConnectionId) return;
+    const selected = providerNumbers.filter((number) => selectedProviderNumbers.has(number.provider_number_id));
+    if (!selected.length) return;
+    const invalid = selected.filter((number) => !E164_PHONE_PATTERN.test(importPhoneNumber(number)));
+    if (invalid.length) {
+      setError('Enter a valid E.164 phone number for each selected trunk before importing.');
+      return;
+    }
+    const importNumbers = selected.map((number) => ({
+      provider_number_id: number.provider_number_id,
+      phone_number: importPhoneNumber(number),
+      friendly_name: number.friendly_name ?? undefined,
+      capabilities: number.capabilities,
+      metadata: {
+        ...(number.metadata ?? {}),
+        ...(number.phone_number ? {} : { phoneNumberSource: 'manual_import' }),
+      },
+    }));
+    setBusy('import');
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/import`, {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: activeConnectionId,
+          numbers: importNumbers,
+        }),
+      });
+      setProviderNumbers([]);
+      setSelectedProviderNumbers(new Set());
+      setPhoneNumberOverrides({});
+      setPanel(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function handleRelease(numberId: string) {
-    if (!confirm('Release this phone number?')) return;
-    await call(`/workspaces/${workspaceId}/phone-numbers/${numberId}`, { method: 'DELETE' });
-    setNumbers((prev) => prev.filter((n) => n.id !== numberId));
+  function importPhoneNumber(number: ProviderNumber): string {
+    return (number.phone_number ?? phoneNumberOverrides[number.provider_number_id] ?? '').trim();
+  }
+
+  async function createManualNumber(e: React.FormEvent) {
+    e.preventDefault();
+    if (!workspaceId) return;
+    setBusy('manual');
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/manual`, {
+        method: 'POST',
+        body: JSON.stringify({
+          provider: manualForm.provider,
+          phone_number: manualForm.phoneNumber,
+          friendly_name: manualForm.friendlyName || undefined,
+          provider_account_id: manualForm.providerAccountId || undefined,
+          provider_number_id: manualForm.providerNumberId || undefined,
+          sip_trunk_id: manualForm.sipTrunkId || undefined,
+          sip_trunk_domain: manualForm.sipTrunkDomain || undefined,
+          outbound_enabled: manualForm.outboundEnabled,
+          inbound_enabled: true,
+        }),
+      });
+      setManualForm(emptyManualForm);
+      setPanel(null);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Manual setup failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function assignAgent(numberId: string, agentId: string) {
+    if (!workspaceId) return;
+    setBusy(`assign-${numberId}`);
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/assign-agent`, {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId || null }),
+      });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Assignment failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function configureLiveKit(numberId: string) {
+    if (!workspaceId) return;
+    setBusy(`livekit-${numberId}`);
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/configure-livekit`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'LiveKit configuration failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disconnect(numberId: string) {
+    if (!workspaceId || !confirm('Disconnect this phone number from VoiceForge?')) return;
+    setBusy(`delete-${numberId}`);
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}`, { method: 'DELETE' });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Disconnect failed');
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
         eyebrow="Telephony"
-        title="Phone numbers"
-        description="Provision Twilio numbers or bring your own, then assign each number to an agent for inbound and outbound calls."
+        title="Phone Numbers"
+        description="Connect Twilio or Vobiz numbers and route calls through LiveKit to GPT Realtime voice agents."
         actions={
           <>
-            <Button onClick={() => setShowProvision(true)} className="gap-2">
-              <Plus className="h-4 w-4" />
-              Provision number
+            <Button onClick={() => setPanel(panel === 'connect' ? null : 'connect')} className="gap-2">
+              <PlugZap className="h-4 w-4" />
+              Connect Number
             </Button>
-            <Button variant="outline" onClick={() => setShowByo(true)} className="gap-2">
-              <Phone className="h-4 w-4" />
-              Bring your own
+            <Button variant="outline" onClick={() => setPanel(panel === 'manual' ? null : 'manual')} className="gap-2">
+              <Router className="h-4 w-4" />
+              Manual SIP
             </Button>
           </>
         }
       >
-        <div className="grid gap-3 sm:grid-cols-3">
-          <StatCard
-            label="Numbers"
-            value={numbers.length}
-            description="Configured for this workspace"
-            icon={<Phone className="h-5 w-5" />}
-          />
-          <StatCard
-            label="Assigned"
-            value={numbers.filter((n) => n.agentId).length}
-            description="Linked to active agents"
-            icon={<Link className="h-5 w-5" />}
-            tone="success"
-          />
-          <StatCard
-            label="Monthly cost"
-            value={`$${numbers.reduce((sum, n) => sum + Number(n.costPerMonth), 0).toFixed(2)}`}
-            description="Estimated phone number spend"
-            tone="info"
-          />
+        <div className="grid gap-3 md:grid-cols-4">
+          <StatCard label="Numbers" value={numbers.length} description="Connected inventory" icon={<Phone className="h-5 w-5" />} />
+          <StatCard label="LiveKit" value={stats.livekitReady} description="SIP routes configured" icon={<Router className="h-5 w-5" />} tone="success" />
+          <StatCard label="Assigned" value={stats.assigned} description="Linked to agents" icon={<Link className="h-5 w-5" />} tone="info" />
+          <StatCard label="Pending" value={stats.pending} description="Need verification" icon={<ShieldCheck className="h-5 w-5" />} />
         </div>
       </PageHeader>
 
-      {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
+      {error && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
-
-      {showProvision && (
+      {panel === 'connect' && (
         <FormSection
-          title="Provision new number"
-          description="Search for an available number by area code and add it to the workspace."
+          title="Connect provider"
+          description="Validate provider credentials, sync owned numbers, then import the numbers this workspace should manage."
         >
-            <form onSubmit={handleProvision} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="flex flex-col gap-1">
-                <Label>Area code</Label>
+          <form onSubmit={createConnection} className="grid gap-4 lg:grid-cols-[180px_1fr_auto] lg:items-end">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <select
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={connectForm.provider}
+                onChange={(e) => setConnectForm((prev) => ({ ...prev, provider: e.target.value as Provider }))}
+              >
+                <option value="twilio">Twilio</option>
+                <option value="vobiz">Vobiz / Vobiz.ai</option>
+              </select>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label>Display name</Label>
                 <Input
-                  value={areaCode}
-                  onChange={(e) => setAreaCode(e.target.value)}
-                  placeholder="415"
-                  maxLength={3}
-                  className="w-24"
+                  value={connectForm.displayName}
+                  onChange={(e) => setConnectForm((prev) => ({ ...prev, displayName: e.target.value }))}
+                  placeholder={`${providerLabel(connectForm.provider)} production`}
                 />
               </div>
-              <Button type="submit" disabled={provisioning || areaCode.length !== 3}>
-                {provisioning ? 'Provisioning...' : 'Search & Buy'}
-              </Button>
-              <Button variant="outline" type="button" onClick={() => setShowProvision(false)}>Cancel</Button>
-            </form>
+              {connectForm.provider === 'twilio' ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Account SID</Label>
+                    <Input value={connectForm.accountSid} onChange={(e) => setConnectForm((prev) => ({ ...prev, accountSid: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Auth token</Label>
+                    <Input type="password" value={connectForm.authToken} onChange={(e) => setConnectForm((prev) => ({ ...prev, authToken: e.target.value }))} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label>Auth ID</Label>
+                    <Input value={connectForm.vobizAuthId} onChange={(e) => setConnectForm((prev) => ({ ...prev, vobizAuthId: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Auth token</Label>
+                    <Input type="password" value={connectForm.vobizAuthToken} onChange={(e) => setConnectForm((prev) => ({ ...prev, vobizAuthToken: e.target.value }))} />
+                  </div>
+                  <div className="space-y-2 md:col-span-3">
+                    <Label>Customer auth ID</Label>
+                    <Input value={connectForm.vobizCustomerAuthId} onChange={(e) => setConnectForm((prev) => ({ ...prev, vobizCustomerAuthId: e.target.value }))} placeholder="Optional for partner number inventory" />
+                  </div>
+                </>
+              )}
+            </div>
+            <Button type="submit" disabled={busy === 'connect'} className="gap-2">
+              <KeyRound className="h-4 w-4" />
+              {busy === 'connect' ? 'Connecting...' : 'Validate'}
+            </Button>
+          </form>
+
+          {connections.length > 0 && (
+            <div className="mt-5 flex flex-wrap gap-2">
+              {connections.map((connection) => (
+                <Button
+                  key={connection.id}
+                  type="button"
+                  variant={activeConnectionId === connection.id ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => syncNumbers(connection.id)}
+                  disabled={busy === `sync-${connection.id}`}
+                  className="gap-2"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {connection.display_name}
+                </Button>
+              ))}
+            </div>
+          )}
+
+          {providerNumbers.length > 0 && (
+            <div className="mt-5 overflow-hidden rounded-md border border-border">
+              <div className="grid grid-cols-[44px_minmax(180px,1fr)_140px_120px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                <span />
+                <span>Number</span>
+                <span>Provider ID</span>
+                <span>Voice</span>
+              </div>
+              {providerNumbers.map((number) => (
+                <div key={number.provider_number_id} className="grid grid-cols-[44px_minmax(180px,1fr)_140px_120px] items-center gap-2 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${number.friendly_name ?? number.provider_number_id}`}
+                    checked={selectedProviderNumbers.has(number.provider_number_id)}
+                    onChange={(e) => {
+                      setSelectedProviderNumbers((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(number.provider_number_id);
+                        else next.delete(number.provider_number_id);
+                        return next;
+                      });
+                    }}
+                  />
+                  <div className="min-w-0">
+                    {number.phone_number ? (
+                      <span className="font-mono">{number.phone_number}</span>
+                    ) : (
+                      <Input
+                        className="h-8 font-mono"
+                        inputMode="tel"
+                        pattern="^\+[1-9]\d{6,14}$"
+                        value={phoneNumberOverrides[number.provider_number_id] ?? ''}
+                        onChange={(e) => setPhoneNumberOverrides((prev) => ({ ...prev, [number.provider_number_id]: e.target.value }))}
+                        placeholder="+912271264217"
+                      />
+                    )}
+                    {number.friendly_name && (
+                      <p className="mt-1 truncate text-xs text-muted-foreground">{number.friendly_name}</p>
+                    )}
+                  </div>
+                  <span className="truncate text-xs text-muted-foreground">{number.provider_number_id}</span>
+                  <Badge variant="outline">{String(number.capabilities?.voice ?? true)}</Badge>
+                </div>
+              ))}
+              <div className="border-t border-border px-3 py-3">
+                <Button onClick={importSelectedNumbers} disabled={busy === 'import'} className="gap-2">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {busy === 'import' ? 'Importing...' : 'Import selected'}
+                </Button>
+              </div>
+            </div>
+          )}
         </FormSection>
       )}
 
-      {showByo && (
+      {panel === 'manual' && (
         <FormSection
-          title="Bring your own number"
-          description="Connect an existing phone number in E.164 format."
+          title="Manual SIP number"
+          description="Add a number or trunk first, then configure LiveKit and copy the SIP host into the provider console."
         >
-            <form onSubmit={handleByo} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="flex flex-col gap-1">
-                <Label>Phone number (E.164)</Label>
-                <Input
-                  value={byoNumber}
-                  onChange={(e) => setByoNumber(e.target.value)}
-                  placeholder="+14155551234"
-                />
-              </div>
-              <Button type="submit" disabled={provisioning || !byoNumber}>
-                {provisioning ? 'Adding...' : 'Add Number'}
+          <form onSubmit={createManualNumber} className="grid gap-4 md:grid-cols-3">
+            <div className="space-y-2">
+              <Label>Provider</Label>
+              <select
+                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={manualForm.provider}
+                onChange={(e) => setManualForm((prev) => ({ ...prev, provider: e.target.value as Provider }))}
+              >
+                <option value="vobiz">Vobiz / Vobiz.ai</option>
+                <option value="twilio">Twilio</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label>Phone number</Label>
+              <Input
+                value={manualForm.phoneNumber}
+                onChange={(e) => setManualForm((prev) => ({ ...prev, phoneNumber: e.target.value }))}
+                placeholder="+912271264217"
+                inputMode="tel"
+                pattern="^\+[1-9]\d{6,14}$"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Friendly name</Label>
+              <Input value={manualForm.friendlyName} onChange={(e) => setManualForm((prev) => ({ ...prev, friendlyName: e.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Provider account</Label>
+              <Input value={manualForm.providerAccountId} onChange={(e) => setManualForm((prev) => ({ ...prev, providerAccountId: e.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Provider number ID</Label>
+              <Input value={manualForm.providerNumberId} onChange={(e) => setManualForm((prev) => ({ ...prev, providerNumberId: e.target.value }))} placeholder="Optional" />
+            </div>
+            <div className="space-y-2">
+              <Label>SIP trunk ID</Label>
+              <Input value={manualForm.sipTrunkId} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkId: e.target.value }))} placeholder="trunk-console-1" />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label>Outbound SIP domain</Label>
+              <Input value={manualForm.sipTrunkDomain} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))} placeholder="trunk-id.sip.vobiz.ai" />
+            </div>
+            <label className="flex items-center gap-2 pt-8 text-sm">
+              <input type="checkbox" checked={manualForm.outboundEnabled} onChange={(e) => setManualForm((prev) => ({ ...prev, outboundEnabled: e.target.checked }))} />
+              Enable outbound
+            </label>
+            <div className="md:col-span-3">
+              <Button type="submit" disabled={busy === 'manual'}>
+                {busy === 'manual' ? 'Adding...' : 'Add manual number'}
               </Button>
-              <Button variant="outline" type="button" onClick={() => setShowByo(false)}>Cancel</Button>
-            </form>
+            </div>
+          </form>
         </FormSection>
       )}
 
-      {numbers.length > 0 ? (
+      {loading ? (
+        <p className="text-sm text-muted-foreground">Loading phone numbers...</p>
+      ) : numbers.length > 0 ? (
         <div className="grid grid-cols-1 gap-3">
-          {numbers.map((num) => (
-            <Card key={num.id}>
-              <CardContent className="flex items-center justify-between py-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+          {numbers.map((number) => (
+            <Card key={number.id}>
+              <CardContent className="grid gap-4 py-4 lg:grid-cols-[1fr_220px_260px] lg:items-center">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card">
                     <Phone className="h-4 w-4 text-primary" />
                   </div>
-                  <div>
-                    <p className="font-mono font-medium">{num.phoneNumber}</p>
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
-                      <StatusBadge status={num.type} className="text-xs" />
-                      <StatusBadge status={num.status} className="text-xs" />
-                      <span>${Number(num.costPerMonth).toFixed(2)}/mo</span>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-mono text-sm font-semibold">{number.phone_number}</p>
+                      <StatusBadge status={number.provider} />
+                      <StatusBadge status={number.status} />
                     </div>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
+                      {number.friendly_name || 'Unnamed number'} · {number.livekit?.sip_host ?? 'LiveKit not configured'}
+                    </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {num.agent ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">{num.agent.name}</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleAssign(num.id, '')}
-                        title="Unassign"
-                      >
-                        <Unlink className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ) : (
-                    <select
-                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                      onChange={(e) => {
-                        if (e.target.value) handleAssign(num.id, e.target.value);
-                      }}
-                      value=""
-                    >
-                      <option value="">Unassigned</option>
-                      {agents.map((a) => (
-                        <option key={a.id} value={a.id}>{a.name}</option>
-                      ))}
-                    </select>
-                  )}
-                  <Button variant="outline" size="sm" onClick={() => handleRelease(num.id)}>
-                    <Trash2 className="h-3 w-3" />
+
+                <select
+                  className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                  value={number.assigned_agent_id ?? ''}
+                  onChange={(e) => assignAgent(number.id, e.target.value)}
+                  disabled={busy === `assign-${number.id}`}
+                >
+                  <option value="">Unassigned</option>
+                  {agents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>{agent.name}</option>
+                  ))}
+                </select>
+
+                <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => configureLiveKit(number.id)}
+                    disabled={!number.assigned_agent_id || busy === `livekit-${number.id}`}
+                    className="gap-2"
+                  >
+                    <Router className="h-3.5 w-3.5" />
+                    {number.livekit ? 'Reconfigure' : 'Configure'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => disconnect(number.id)} disabled={busy === `delete-${number.id}`}>
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
+
+                {number.livekit && (
+                  <Textarea
+                    readOnly
+                    className="font-mono text-xs lg:col-span-3"
+                    value={[
+                      `SIP host: ${number.livekit.sip_host}`,
+                      `Inbound trunk: ${number.livekit.inbound_trunk_id ?? 'not created'}`,
+                      `Outbound trunk: ${number.livekit.outbound_trunk_id ?? 'not created'}`,
+                      `Dispatch rule: ${number.livekit.dispatch_rule_id ?? 'not created'}`,
+                    ].join('\n')}
+                  />
+                )}
               </CardContent>
             </Card>
           ))}
@@ -257,10 +644,14 @@ export default function PhoneNumbersPage() {
       ) : (
         <EmptyState
           icon={<Phone className="h-7 w-7" />}
-          title="No phone numbers yet"
-          description="Provision a managed number or bring your own number to start routing calls through your agents."
+          title="No phone numbers connected"
+          description="Connect Twilio or Vobiz inventory, or add a SIP-routed number manually."
         />
       )}
     </div>
   );
+}
+
+function providerLabel(provider: Provider): string {
+  return provider === 'twilio' ? 'Twilio' : 'Vobiz';
 }

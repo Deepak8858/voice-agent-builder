@@ -80,6 +80,7 @@ jobs:
             API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-api:${IMAGE_TAG}"
 
             test -f "${COMPOSE_FILE}"
+            gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${{ env.GCP_REGION }}-docker.pkg.dev"
             sudo sed -i -E "s|image: .*voiceforge-web:[^[:space:]]+|image: ${WEB_IMAGE}|" "${COMPOSE_FILE}"
             sudo sed -i -E "s|image: .*voiceforge-api:[^[:space:]]+|image: ${API_IMAGE}|" "${COMPOSE_FILE}"
 

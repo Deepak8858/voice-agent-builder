@@ -10,6 +10,7 @@ export * from './schemas/compliance';
 export * from './schemas/analytics';
 export * from './schemas/white-label';
 export * from './schemas/billing';
+export * from './schemas/telephony';
 export * from './billing/catalog';
 export * from './constants/templates';
 export * from './constants/industries';

@@ -1,0 +1,154 @@
+import { describe, expect, it } from 'vitest';
+import {
+  CRUD_PRIVILEGES,
+  validatePublicTableExposure,
+  type PublicTableExposurePolicy,
+  type PublicTableExposureSnapshot,
+} from './public-table-exposure-policy';
+
+const basePolicies: PublicTableExposurePolicy[] = [
+  {
+    tableName: 'users',
+    authenticated: ['SELECT'],
+    serviceRole: CRUD_PRIVILEGES,
+    anon: [],
+  },
+  {
+    tableName: 'contacts',
+    authenticated: [],
+    serviceRole: CRUD_PRIVILEGES,
+    anon: [],
+  },
+];
+
+function snapshot(
+  overrides: Partial<PublicTableExposureSnapshot> = {},
+): PublicTableExposureSnapshot {
+  return {
+    tables: [
+      { tableName: 'users', rowSecurity: true },
+      { tableName: 'contacts', rowSecurity: true },
+    ],
+    grants: [
+      { tableName: 'users', grantee: 'authenticated', privilege: 'SELECT' },
+      ...CRUD_PRIVILEGES.map((privilege) => ({
+        tableName: 'users',
+        grantee: 'service_role' as const,
+        privilege,
+      })),
+      ...CRUD_PRIVILEGES.map((privilege) => ({
+        tableName: 'contacts',
+        grantee: 'service_role' as const,
+        privilege,
+      })),
+    ],
+    policies: [
+      {
+        tableName: 'users',
+        roleNames: ['authenticated'],
+        command: 'SELECT',
+      },
+      {
+        tableName: 'contacts',
+        roleNames: ['service_role'],
+        command: 'ALL',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe('validatePublicTableExposure', () => {
+  it('fails when a public table is not classified by the exposure policy', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({
+        tables: [
+          { tableName: 'users', rowSecurity: true },
+          { tableName: 'contacts', rowSecurity: true },
+          { tableName: 'surprise_table', rowSecurity: true },
+        ],
+      }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'UNKNOWN_PUBLIC_TABLE',
+      tableName: 'surprise_table',
+      message:
+        'public.surprise_table is not listed in the Data API exposure policy.',
+    });
+  });
+
+  it('fails when a table has RLS disabled', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({
+        tables: [
+          { tableName: 'users', rowSecurity: true },
+          { tableName: 'contacts', rowSecurity: false },
+        ],
+      }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'RLS_DISABLED',
+      tableName: 'contacts',
+      message: 'public.contacts must have row level security enabled.',
+    });
+  });
+
+  it('fails when an authenticated exposure is missing its explicit grant', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({
+        grants: CRUD_PRIVILEGES.map((privilege) => ({
+          tableName: 'users',
+          grantee: 'service_role' as const,
+          privilege,
+        })),
+      }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'MISSING_GRANT',
+      tableName: 'users',
+      message: 'public.users is missing GRANT SELECT TO authenticated.',
+    });
+  });
+
+  it('fails when a role has an unexpected grant', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({
+        grants: [
+          ...snapshot().grants,
+          { tableName: 'contacts', grantee: 'anon', privilege: 'SELECT' },
+        ],
+      }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'UNEXPECTED_GRANT',
+      tableName: 'contacts',
+      message: 'public.contacts has unexpected GRANT SELECT TO anon.',
+    });
+  });
+
+  it('fails when an authenticated grant has no matching authenticated RLS policy', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({ policies: [] }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'MISSING_RLS_POLICY',
+      tableName: 'users',
+      message:
+        'public.users grants SELECT to authenticated but has no authenticated SELECT RLS policy.',
+    });
+  });
+
+  it('passes when every public table matches the intended exposure policy', () => {
+    expect(validatePublicTableExposure(snapshot(), basePolicies)).toEqual([]);
+  });
+});

@@ -18,6 +18,7 @@ import {
   LayoutDashboard,
   Bot,
   Phone,
+  PhoneCall,
   FileStack,
   BookOpen,
   Plug,
@@ -46,6 +47,7 @@ const navSections = [
     label: 'Operate',
     items: [
       { href: '/dashboard/calls', label: 'Call Logs', icon: Phone },
+      { href: '/dashboard/settings/phone-numbers', label: 'Phone Numbers', icon: PhoneCall },
       { href: '/dashboard/campaigns', label: 'Campaigns', icon: Sparkles },
       { href: '/dashboard/knowledge', label: 'Knowledge Base', icon: BookOpen },
       { href: '/dashboard/integrations', label: 'Integrations', icon: Plug },

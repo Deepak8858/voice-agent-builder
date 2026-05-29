@@ -60,6 +60,9 @@ model Organization {
   usageRecords  UsageRecord[]
   invites       OrgInvite[]
   agents        Agent[]
+  telephonyProviderConnections TelephonyProviderConnection[]
+  telephonyPhoneNumbers        TelephonyPhoneNumber[]
+  liveKitTelephonyConfigs      LiveKitTelephonyConfig[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -105,6 +108,10 @@ model Workspace {
   crmCredentials       WorkspaceCrmCredential[]
   crmRoutingRules      CrmRoutingRule[]
   twilioPhoneNumbers   TwilioPhoneNumber[]
+  telephonyProviderConnections TelephonyProviderConnection[]
+  telephonyPhoneNumbers        TelephonyPhoneNumber[]
+  liveKitTelephonyConfigs      LiveKitTelephonyConfig[]
+  telephonyWebhookEvents       TelephonyWebhookEvent[]
   outboundCampaigns    OutboundCampaign[]
   referralsMade        Referral[]              @relation("ReferrerWorkspace")
   referralsJoined      Referral[]              @relation("ReferredWorkspace")
@@ -198,6 +205,8 @@ model Agent {
   crmRoutingRules    CrmRoutingRule[]
   crmFanoutLogs      CrmFanoutLog[]
   twilioPhoneNumbers TwilioPhoneNumber[]
+  telephonyPhoneNumbers TelephonyPhoneNumber[]
+  liveKitTelephonyConfigs LiveKitTelephonyConfig[]
   outboundCampaigns  OutboundCampaign[]
 
   @@index([workspaceId])
@@ -318,6 +327,9 @@ model Call {
   status          String    @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
   provider        String    @default("")
   providerCallId  String?   @map("provider_call_id")
+  phoneNumberId   String?   @map("phone_number_id") @db.Uuid
+  livekitRoomName String?   @map("livekit_room_name")
+  livekitParticipantId String? @map("livekit_participant_id")
   fromNumber      String?   @map("from_number")
   toNumber        String?   @map("to_number")
   contactName     String?   @map("contact_name")
@@ -335,6 +347,7 @@ model Call {
 
   workspace        Workspace         @relation(fields: [workspaceId], references: [id])
   agent            Agent             @relation(fields: [agentId], references: [id])
+  phoneNumber      TelephonyPhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
   contact          Contact?          @relation(fields: [contactId], references: [id])
   events           CallEvent[]
   evaluation       CallEvaluation?
@@ -346,6 +359,7 @@ model Call {
   @@index([workspaceId, createdAt])
   @@index([organizationId])
   @@index([agentId, createdAt])
+  @@index([phoneNumberId])
   @@index([contactId])
   @@map("calls")
 }
@@ -857,6 +871,122 @@ model TwilioPhoneNumber {
   @@index([workspaceId])
   @@index([agentId])
   @@map("twilio_phone_numbers")
+}
+
+model TelephonyProviderConnection {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @map("workspace_id") @db.Uuid
+  organizationId       String   @map("organization_id") @db.Uuid
+  provider             String
+  displayName          String   @map("display_name")
+  providerAccountId    String?  @map("provider_account_id")
+  encryptedCredentials Json     @map("encrypted_credentials")
+  credentialVersion    Int      @default(1) @map("credential_version")
+  status               String   @default("connected")
+  lastVerifiedAt       DateTime? @map("last_verified_at")
+  lastSyncAt           DateTime? @map("last_sync_at")
+  metadata             Json?
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  phoneNumbers TelephonyPhoneNumber[]
+
+  @@index([workspaceId, provider])
+  @@index([organizationId])
+  @@map("telephony_provider_connections")
+}
+
+model TelephonyPhoneNumber {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @map("workspace_id") @db.Uuid
+  organizationId       String   @map("organization_id") @db.Uuid
+  providerConnectionId String?  @map("provider_connection_id") @db.Uuid
+  provider             String
+  providerNumberId     String?  @map("provider_number_id")
+  phoneNumberE164      String   @unique @map("phone_number_e164")
+  friendlyName         String?  @map("friendly_name")
+  capabilities         Json?    @map("capabilities_json")
+  status               String   @default("pending_verification")
+  assignedAgentId      String?  @map("assigned_agent_id") @db.Uuid
+  inboundEnabled       Boolean  @default(true) @map("inbound_enabled")
+  outboundEnabled      Boolean  @default(false) @map("outbound_enabled")
+  lastSyncedAt         DateTime? @map("last_synced_at")
+  providerMetadata     Json?    @map("provider_metadata_json")
+  sipTrunkId           String?  @map("sip_trunk_id")
+  verificationToken    String?  @map("verification_token")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  providerConnection TelephonyProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
+  assignedAgent      Agent? @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  livekitConfig      LiveKitTelephonyConfig?
+  calls              Call[]
+  webhookEvents      TelephonyWebhookEvent[]
+
+  @@index([workspaceId, provider])
+  @@index([organizationId])
+  @@index([providerConnectionId])
+  @@index([assignedAgentId])
+  @@map("telephony_phone_numbers")
+}
+
+model LiveKitTelephonyConfig {
+  id                         String   @id @default(uuid()) @db.Uuid
+  workspaceId                String   @map("workspace_id") @db.Uuid
+  organizationId             String   @map("organization_id") @db.Uuid
+  phoneNumberId              String   @unique @map("phone_number_id") @db.Uuid
+  agentId                    String   @map("agent_id") @db.Uuid
+  livekitRoomPrefix          String   @map("livekit_room_prefix")
+  livekitSipHost             String   @map("livekit_sip_host")
+  inboundTrunkId             String?  @map("inbound_trunk_id")
+  outboundTrunkId            String?  @map("outbound_trunk_id")
+  dispatchRuleId             String?  @map("dispatch_rule_id")
+  sipAuthUsernameEncrypted   Json?    @map("sip_auth_username_encrypted")
+  sipAuthPasswordEncrypted   Json?    @map("sip_auth_password_encrypted")
+  status                     String   @default("pending")
+  errorMessage               String?  @map("error_message")
+  createdAt                  DateTime @default(now()) @map("created_at")
+  updatedAt                  DateTime @updatedAt @map("updated_at")
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  phoneNumber  TelephonyPhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  agent        Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([organizationId])
+  @@index([agentId])
+  @@map("livekit_telephony_configs")
+}
+
+model TelephonyWebhookEvent {
+  id              String    @id @default(uuid()) @db.Uuid
+  provider        String
+  eventId         String    @map("event_id")
+  eventType       String    @map("event_type")
+  phoneNumberId   String?   @map("phone_number_id") @db.Uuid
+  callId          String?   @map("call_id") @db.Uuid
+  rawPayloadJson  Json      @map("raw_payload_json")
+  signatureValid  Boolean   @default(false) @map("signature_valid")
+  processedAt     DateTime? @map("processed_at")
+  status          String    @default("received")
+  errorMessage    String?   @map("error_message")
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  phoneNumber TelephonyPhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, eventId])
+  @@index([phoneNumberId])
+  @@index([callId])
+  @@index([workspaceId])
+  @@index([provider, eventType])
+  @@map("telephony_webhook_events")
 }
 
 // Outbound Campaigns

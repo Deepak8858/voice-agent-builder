@@ -16,6 +16,9 @@
     "db:generate": "npm run db:generate -w @voiceforge/api",
     "db:push": "npm run db:push -w @voiceforge/api",
     "db:seed": "npm run db:seed -w @voiceforge/api",
+    "db:verify": "npm run db:verify -w @voiceforge/api",
+    "db:role-check": "npm run db:role-check -w @voiceforge/api",
+    "db:enable-rls": "npm run db:enable-rls -w @voiceforge/api",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {

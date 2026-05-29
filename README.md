@@ -40,6 +40,20 @@ Package manager: **npm workspaces** (Node >= 20.11).
 Per `AGENTS.md`, all provider integrations go through adapter interfaces so
 production providers can be swapped in without changing business logic.
 
+## LiveKit BYO phone numbers
+
+VoiceForge now supports Twilio and Vobiz BYO phone-number routing through
+LiveKit SIP and OpenAI Realtime `gpt-realtime-2`.
+
+Start with:
+
+- `docs/byo-phone-numbers.md`
+- `docs/livekit-telephony.md`
+- `docs/twilio-setup.md`
+- `docs/vobiz-setup.md`
+
+Required backend env vars are documented in `.env.example`.
+
 ## Dev quickstart
 
 1. **Create a Supabase project** (free tier works). Grab:

@@ -39,6 +39,9 @@ import { TwilioModule } from './twilio-adapter/twilio.module';
 import { SettingsModule } from './settings/settings.module';
 import { ReferralModule } from './referral/referral.module';
 import { CalendarModule } from './calendar/calendar.module';
+import { LiveKitModule } from './livekit/livekit.module';
+import { SecurityModule } from './security/security.module';
+import { TelephonyModule } from './telephony/telephony.module';
 
 @Module({
   imports: [
@@ -49,6 +52,7 @@ import { CalendarModule } from './calendar/calendar.module';
     CacheModule,
     RateLimitModule,
     AuthModule,
+    SecurityModule,
     HealthModule,
     WorkspacesModule,
     TemplatesModule,
@@ -56,6 +60,8 @@ import { CalendarModule } from './calendar/calendar.module';
     LlmModule,
     AgentsModule,
     VoiceModule,
+    LiveKitModule,
+    TelephonyModule,
     EvaluationsModule,
     ComplianceModule,
     CallsModule,

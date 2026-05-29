@@ -1,22 +1,12 @@
-import 'dotenv/config';
+import './load-env';
 import { PrismaClient } from '@prisma/client';
+import {
+  REQUIRED_PUBLIC_TABLES,
+  validatePublicTableExposure,
+  type PublicTableExposureSnapshot,
+} from '../src/db/public-table-exposure-policy';
 
-const EXPECTED_TABLES = [
-  'users',
-  'organizations',
-  'workspaces',
-  'memberships',
-  'agents',
-  'agent_versions',
-  'agent_templates',
-  'knowledge_sources',
-  'knowledge_chunks',
-  'calls',
-  'call_events',
-  'call_evaluations',
-  'audit_logs',
-  'audit_reports',
-];
+const EXPECTED_TABLES = [...REQUIRED_PUBLIC_TABLES];
 
 async function main() {
   console.log('[db-verify] DATABASE_URL host:', new URL(process.env.DATABASE_URL!).host);
@@ -30,13 +20,21 @@ async function main() {
   console.log('[db-verify] pg version:', version[0]?.version?.split(' ').slice(0, 2).join(' '));
 
   // 2. Table inventory.
-  const rows = await prisma.$queryRaw<Array<{ table_name: string }>>`
-    SELECT table_name
-    FROM information_schema.tables
-    WHERE table_schema = 'public'
-    ORDER BY table_name
+  const rows = await prisma.$queryRaw<Array<{ tableName: string; rowSecurity: boolean }>>`
+    SELECT c.relname AS "tableName",
+           c.relrowsecurity AS "rowSecurity"
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_inherits i
+        WHERE i.inhrelid = c.oid
+      )
+    ORDER BY c.relname
   `;
-  const have = new Set(rows.map((r) => r.table_name));
+  const have = new Set(rows.map((r) => r.tableName));
   console.log(`[db-verify] tables in public schema: ${rows.length}`);
   for (const t of EXPECTED_TABLES) {
     console.log(`  ${have.has(t) ? '✓' : '✗'} ${t}`);
@@ -86,14 +84,8 @@ async function main() {
   for (const c of counts) console.log(`  ${c.n.toString().padStart(6, ' ')}  ${c.table}`);
 
   // 6. RLS status check.
-  const rls = await prisma.$queryRaw<Array<{ tablename: string; rowsecurity: boolean }>>`
-    SELECT tablename, rowsecurity
-    FROM pg_tables
-    WHERE schemaname = 'public'
-    ORDER BY tablename
-  `;
-  const rlsOn = rls.filter((r) => r.rowsecurity).map((r) => r.tablename);
-  const rlsOff = rls.filter((r) => !r.rowsecurity).map((r) => r.tablename);
+  const rlsOn = rows.filter((r) => r.rowSecurity).map((r) => r.tableName);
+  const rlsOff = rows.filter((r) => !r.rowSecurity).map((r) => r.tableName);
   console.log(`[db-verify] RLS enabled (${rlsOn.length}):`, rlsOn);
   console.log(`[db-verify] RLS disabled (${rlsOff.length}):`, rlsOff);
   if (rlsOff.length) {
@@ -101,7 +93,44 @@ async function main() {
     process.exit(1);
   }
 
-  // 7. Connection pool sanity.
+  // 7. Supabase Data API exposure policy.
+  const grants = await prisma.$queryRaw<PublicTableExposureSnapshot['grants']>`
+    SELECT table_name AS "tableName",
+           grantee::text AS "grantee",
+           privilege_type::text AS "privilege"
+    FROM information_schema.role_table_grants
+    WHERE table_schema = 'public'
+      AND grantee IN ('anon', 'authenticated', 'service_role')
+      AND privilege_type IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE')
+    ORDER BY table_name, grantee, privilege_type
+  `;
+  const policies = await prisma.$queryRaw<PublicTableExposureSnapshot['policies']>`
+    SELECT tablename AS "tableName",
+           roles::text[] AS "roleNames",
+           cmd::text AS "command"
+    FROM pg_policies
+    WHERE schemaname = 'public'
+    ORDER BY tablename, policyname
+  `;
+  const exposureFindings = validatePublicTableExposure({
+    tables: rows,
+    grants,
+    policies,
+  });
+  console.log(
+    `[db-verify] Data API exposure findings: ${exposureFindings.length}`,
+  );
+  for (const finding of exposureFindings) {
+    console.error(`  ${finding.code}: ${finding.message}`);
+  }
+  if (exposureFindings.length) {
+    console.error(
+      '[db-verify] FAIL — public table Data API grants/RLS do not match the exposure policy',
+    );
+    process.exit(1);
+  }
+
+  // 8. Connection pool sanity.
   const dbUrl = new URL(process.env.DATABASE_URL!);
   console.log('[db-verify] runtime pool:');
   console.log(`  host = ${dbUrl.host}`);

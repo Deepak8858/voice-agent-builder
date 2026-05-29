@@ -13,6 +13,9 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push --accept-data-loss",
     "db:seed": "node -r @swc-node/register prisma/seed.ts",
+    "db:verify": "tsx scripts/db-verify.ts",
+    "db:role-check": "tsx scripts/db-role-check.ts",
+    "db:enable-rls": "tsx scripts/db-enable-rls.ts",
     "clean": "rimraf dist"
   },
   "dependencies": {
@@ -38,14 +41,16 @@
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "libphonenumber-js": "^1.13.1",
+    "livekit-server-sdk": "2.15.3",
     "pdf-parse": "^1.1.1",
     "pino": "^10.3.1",
     "prom-client": "^15.1.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "stripe": "22.1.1",
-    "ws": "^8.18.2",
+    "twilio": "6.0.2",
     "uuid": "^10.0.0",
+    "ws": "^8.18.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {

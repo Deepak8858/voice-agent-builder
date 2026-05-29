@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { type Job } from 'bullmq';
 import { OrchestratorWorker } from './orchestrator.worker';
 
+vi.mock('bullmq', () => ({
+  Worker: vi.fn().mockImplementation(() => ({
+    on: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
 const mockPrisma = {
   agent: {
     update: vi.fn(),
@@ -29,6 +36,7 @@ const mockRouting = {
 
 const mockQueue = {
   getConnection: vi.fn().mockReturnValue({}),
+  getBullMqConnection: vi.fn().mockReturnValue({}),
 };
 
 describe('OrchestratorWorker', () => {

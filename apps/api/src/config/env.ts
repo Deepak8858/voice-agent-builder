@@ -34,8 +34,19 @@ const EnvSchema = z.object({
   TWILIO_TWIML_WEBHOOK_URL: z.string().optional(),
   TWILIO_STATUS_WEBHOOK_URL: z.string().optional(),
 
+  APP_BASE_URL: z.string().optional(),
+  LIVEKIT_URL: z.string().optional(),
+  LIVEKIT_API_KEY: z.string().optional(),
+  LIVEKIT_API_SECRET: z.string().optional(),
+  LIVEKIT_SIP_HOST: z.string().optional(),
+  LIVEKIT_WEBHOOK_SECRET: z.string().optional(),
+  LIVEKIT_ROOM_PREFIX: z.string().default('call'),
+  LIVEKIT_AGENT_NAME_PREFIX: z.string().default('voiceforge-agent'),
+  VOBIZ_WEBHOOK_SECRET: z.string().optional(),
+  VOBIZ_DEFAULT_SIP_DOMAIN: z.string().optional(),
+
   OPENAI_REALTIME_BASE_URL: z.string().default('https://api.openai.com/v1'),
-  OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime'),
+  OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime-2'),
   OPENAI_REALTIME_VOICE: z.string().default('marin'),
 
   DEEPGRAM_API_KEY: z.string().optional(),
