@@ -1,9 +1,12 @@
 import 'server-only';
+import { cookies } from 'next/headers';
 import type { ApiEnvelope } from '@voiceforge/shared';
-import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { buildApiContextHeaders } from './api-context-headers';
+import { extractSupabaseAccessToken } from './supabase/access-token';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 /**
  * Server-side API fetch. Used in Server Components and Route Handlers.
@@ -14,23 +17,17 @@ export async function apiFetch<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const cookieStore = await cookies();
+  const accessToken = extractSupabaseAccessToken(cookieStore.getAll(), SUPABASE_URL);
 
   const headers = new Headers(init.headers);
-  headers.set('content-type', 'application/json');
-  headers.set('x-internal-key', INTERNAL_API_KEY ?? '');
-  headers.set('x-requested-with', 'XMLHttpRequest');
-
-  if (user) {
-    if (session?.access_token) {
-      headers.set('authorization', `Bearer ${session.access_token}`);
-    }
+  const contextHeaders = buildApiContextHeaders(accessToken, {
+    internalApiKey: INTERNAL_API_KEY,
+    contentType: 'application/json',
+    requestedWith: 'XMLHttpRequest',
+  });
+  for (const [key, value] of Object.entries(contextHeaders)) {
+    headers.set(key, value);
   }
 
   const res = await fetch(`${API_BASE}${path}`, {

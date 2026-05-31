@@ -95,6 +95,8 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     const formData = new URLSearchParams({
       VoiceUrl: params.fallbackWebhookUrl.replace('/fallback/', '/voice/'),
       VoiceMethod: 'POST',
+      VoiceFallbackUrl: params.fallbackWebhookUrl,
+      VoiceFallbackMethod: 'POST',
       StatusCallback: params.statusCallbackUrl,
       StatusCallbackMethod: 'POST',
     });

@@ -66,7 +66,7 @@ export class StripeWebhookService {
         env.STRIPE_WEBHOOK_SECRET,
       );
     } catch (err) {
-      this.logger.error(`Webhook signature verification failed: ${err}`);
+      this.logger.warn(`Webhook signature verification failed: ${err}`);
       return { handled: false, message: 'Invalid signature', statusCode: 400 };
     }
 

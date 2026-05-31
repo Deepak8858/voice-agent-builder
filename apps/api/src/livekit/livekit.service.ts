@@ -225,14 +225,13 @@ export class LiveKitService {
   }
 
   private providerOutboundAddress(provider: string): string {
-    const address =
-      provider === 'twilio'
-        ? env.TWILIO_SIP_DOMAIN
-        : process.env.VOBIZ_DEFAULT_SIP_DOMAIN;
+    const address = provider === 'twilio' ? env.TWILIO_SIP_DOMAIN : null;
     if (!address) {
       throw new AppError(
         'LIVEKIT_NOT_CONFIGURED',
-        `Outbound SIP domain is not configured for ${provider}.`,
+        provider === 'vobiz'
+          ? 'Vobiz outbound SIP domain must be provided by the user for this trunk.'
+          : `Outbound SIP domain is not configured for ${provider}.`,
         500,
       );
     }

@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { env } from '../config/env';
 
@@ -84,7 +85,12 @@ function makeService(prisma: ReturnType<typeof makePrisma>, event: unknown) {
 }
 
 describe('StripeWebhookService production webhook handling', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
+    warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     Object.assign(env, {
       STRIPE_SECRET_KEY: 'rk_test_123',
       STRIPE_WEBHOOK_SECRET: 'whsec_test',
@@ -92,6 +98,11 @@ describe('StripeWebhookService production webhook handling', () => {
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
       STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
     });
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
   it('returns 400 metadata for invalid signatures', async () => {
@@ -112,6 +123,8 @@ describe('StripeWebhookService production webhook handling', () => {
     expect(result.handled).toBe(false);
     expect(result.statusCode).toBe(400);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Webhook signature verification failed'));
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it('processes subscription.created and syncs local subscription state', async () => {

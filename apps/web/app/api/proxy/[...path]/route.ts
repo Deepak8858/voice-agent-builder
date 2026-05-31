@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { cookies } from 'next/headers';
+import { buildApiContextHeaders } from '@/lib/api-context-headers';
+import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 const INTERNAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 function apiTarget(req: NextRequest, pathString: string): string {
   return `${INTERNAL_API_URL}${pathString}${req.nextUrl.search}`;
@@ -13,26 +16,15 @@ function apiTarget(req: NextRequest, pathString: string): string {
  * then forwards to NestJS with the internal key and Supabase bearer token.
  */
 async function getApiContextHeaders(contentType?: string) {
-  const supabase = await createServerSupabaseClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const cookieStore = await cookies();
+  const accessToken = extractSupabaseAccessToken(cookieStore.getAll(), SUPABASE_URL);
 
-  if (!user || !session?.access_token) return null;
+  if (!accessToken) return null;
 
-  const headers: Record<string, string> = {
-    'x-internal-key': INTERNAL_API_KEY ?? '',
-    authorization: `Bearer ${session.access_token}`,
-  };
-
-  if (contentType) {
-    headers['content-type'] = contentType;
-  }
-
-  return headers;
+  return buildApiContextHeaders(accessToken, {
+    internalApiKey: INTERNAL_API_KEY,
+    contentType,
+  });
 }
 
 export async function POST(

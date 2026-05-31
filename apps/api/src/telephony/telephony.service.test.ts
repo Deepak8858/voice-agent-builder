@@ -192,6 +192,74 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('rejects Twilio voice webhooks with invalid signatures before creating an inbound call', async () => {
+    const prisma = {
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(async () => ({
+          id: 'number-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'twilio',
+          providerConnectionId: 'connection-1',
+          phoneNumberE164: '+14155551234',
+          assignedAgentId: 'agent-1',
+          assignedAgent: { id: 'agent-1' },
+          livekitConfig: { livekitSipHost: 'tenant.sip.livekit.cloud' },
+          providerConnection: {
+            encryptedCredentials: { encrypted: true },
+          },
+          providerMetadata: null,
+        })),
+      },
+      call: {
+        create: vi.fn(),
+        findFirst: vi.fn(),
+      },
+    };
+    const signatureAdapter = {
+      validateWebhookSignature: vi.fn(async () => false),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn(() => signatureAdapter) } as never,
+      {
+        encryptJson: vi.fn(),
+        decryptJson: vi.fn(() => ({
+          provider: 'twilio',
+          accountSid: 'AC123',
+          authToken: 'auth-token',
+        })),
+      } as never,
+      { log: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {
+        buildFallbackTwiml: vi.fn(() => '<Response><Hangup/></Response>'),
+        buildLiveKitDialTwiml: vi.fn(() => '<Response><Dial><Sip>sip:tenant.sip.livekit.cloud</Sip></Dial></Response>'),
+      } as never,
+    );
+
+    await expect(
+      service.handleTwilioVoice(
+        'number-1',
+        { CallSid: 'CA123', From: '+14155559876', To: '+14155551234' },
+        {
+          headers: { 'x-twilio-signature': 'bad-signature' },
+          url: 'https://vocal.devdeepak.me/api/v1/telephony/twilio/voice/number-1',
+        },
+      ),
+    ).rejects.toMatchObject({ errorCode: 'UNAUTHORIZED' });
+
+    expect(signatureAdapter.validateWebhookSignature).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secret: 'auth-token',
+        url: 'https://vocal.devdeepak.me/api/v1/telephony/twilio/voice/number-1',
+      }),
+    );
+    expect(prisma.call.create).not.toHaveBeenCalled();
+  });
+
   it('keeps trunk-only Vobiz imports pending verification with the user-entered E.164 number', async () => {
     const createdAt = new Date('2026-05-29T00:00:00.000Z');
     const prisma = {
@@ -239,6 +307,7 @@ describe('TelephonyService', () => {
           capabilities: { voice: true, inbound: true, outbound: false },
           metadata: {
             sipTrunkId: 'trunk-console-1',
+            sipTrunkDomain: 'my-tenant',
             requiresPhoneNumber: true,
             phoneNumberSource: 'manual_import',
           },
@@ -254,6 +323,9 @@ describe('TelephonyService', () => {
           phoneNumberE164: '+912271264217',
           status: 'pending_verification',
           sipTrunkId: 'trunk-console-1',
+          providerMetadata: expect.objectContaining({
+            sipTrunkDomain: 'my-tenant.sip.vobiz.ai',
+          }),
         }),
       }),
     );
@@ -263,5 +335,55 @@ describe('TelephonyService', () => {
         status: 'pending_verification',
       }),
     );
+  });
+
+  it('rejects trunk-only Vobiz imports without the user-specific SIP domain', async () => {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      telephonyProviderConnection: {
+        findFirst: vi.fn(async () => ({
+          id: 'connection-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'vobiz',
+          status: 'connected',
+        })),
+      },
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.importNumbers('workspace-1', 'user-1', {
+        connection_id: 'connection-1',
+        numbers: [
+          {
+            provider_number_id: 'trunk-console-1',
+            phone_number: '+912271264217',
+            metadata: {
+              sipTrunkId: 'trunk-console-1',
+              requiresPhoneNumber: true,
+              phoneNumberSource: 'manual_import',
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/Vobiz outbound SIP domain/);
+
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
   });
 });

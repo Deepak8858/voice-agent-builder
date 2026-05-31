@@ -1,6 +1,8 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
+import { SupabaseAuthService } from '../auth/supabase-auth.service';
+import { env } from '../config/env';
 import { ForbiddenError, UnauthorizedError, WorkspaceNotFoundError } from './errors';
 import type { SessionUser } from '@voiceforge/shared';
 
@@ -12,12 +14,16 @@ import type { SessionUser } from '@voiceforge/shared';
  */
 @Injectable()
 export class WorkspaceGuard implements CanActivate {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly authService: SupabaseAuthService,
+  ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<Request & { user?: SessionUser }>();
-    const user = req.user;
+    const user = req.user ?? await this.resolveSessionUser(req);
     if (!user?.id) throw new UnauthorizedError();
+    req.user = user;
 
     const workspaceId = req.params['workspaceId'];
     if (!workspaceId) {
@@ -41,4 +47,22 @@ export class WorkspaceGuard implements CanActivate {
     };
     return true;
   }
+
+  private async resolveSessionUser(req: Request): Promise<SessionUser | null> {
+    const expected = env.INTERNAL_API_KEY;
+    const provided = headerString(req, 'x-internal-key');
+
+    if (!expected || !provided || provided !== expected) {
+      throw new UnauthorizedError();
+    }
+
+    return this.authService.getSessionUser(req);
+  }
+}
+
+function headerString(req: Request, key: string): string | null {
+  const v = req.headers[key];
+  if (typeof v === 'string' && v.length > 0) return v;
+  if (Array.isArray(v) && v[0]) return v[0];
+  return null;
 }

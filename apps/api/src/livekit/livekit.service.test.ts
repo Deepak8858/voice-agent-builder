@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { AppError } from '../common/errors';
 import { LiveKitService } from './livekit.service';
 
 describe('LiveKitService telephony operations', () => {
@@ -108,5 +109,22 @@ describe('LiveKitService telephony operations', () => {
         waitUntilAnswered: false,
       }),
     );
+  });
+
+  it('does not fall back to a global Vobiz SIP domain for outbound trunks', async () => {
+    const sipClient = {
+      createSipOutboundTrunk: vi.fn(),
+    };
+    const service = new LiveKitService({ sipClient: sipClient as never });
+
+    await expect(
+      service.createOutboundSipTrunk({
+        workspaceId: 'workspace-1',
+        phoneNumberId: 'number-1',
+        phoneNumberE164: '+14155551234',
+        provider: 'vobiz',
+      }),
+    ).rejects.toBeInstanceOf(AppError);
+    expect(sipClient.createSipOutboundTrunk).not.toHaveBeenCalled();
   });
 });

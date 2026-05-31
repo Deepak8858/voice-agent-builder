@@ -58,7 +58,13 @@ export class CallsService {
       agentVersionId: version.id,
     });
 
-    const transcript = await this.voice.getTranscript({ callId: session.test_session_id });
+    let transcript: { transcript: string; turns: Array<{ at_ms: number }> };
+    try {
+      transcript = await this.voice.getTranscript({ callId: session.test_session_id });
+    } catch {
+      transcript = { transcript: '', turns: [] };
+    }
+    const transcriptReady = transcript.transcript.trim().length > 0 || transcript.turns.length > 0;
 
     const ws = await this.prisma.workspace.findUniqueOrThrow({
       where: { id: workspaceId },
@@ -74,20 +80,23 @@ export class CallsService {
         agentId: agent.id,
         agentVersionId: version.id,
         direction: 'browser_test',
-        status: 'completed',
+        status: transcriptReady ? 'completed' : 'in_progress',
         provider: this.voice.name,
         providerCallId: session.test_session_id,
         contactName: dto.contact_name ?? 'Browser tester',
         startedAt: new Date(),
-        endedAt: new Date(),
-        durationSeconds: Math.ceil(
-          (transcript.turns.at(-1)?.at_ms ?? 0) / 1000,
-        ),
+        endedAt: transcriptReady ? new Date() : null,
+        durationSeconds: transcriptReady
+          ? Math.ceil((transcript.turns.at(-1)?.at_ms ?? 0) / 1000)
+          : null,
         transcriptText: transcript.transcript,
-        outcome: 'test_completed',
+        outcome: transcriptReady ? 'test_completed' : null,
         expiresAt,
         retentionDays: ws.retentionDays,
-        metadata: { test_session_id: session.test_session_id } as Prisma.InputJsonValue,
+        metadata: {
+          test_session_id: session.test_session_id,
+          transcript_status: transcriptReady ? 'available' : 'pending',
+        } as Prisma.InputJsonValue,
       },
     });
 

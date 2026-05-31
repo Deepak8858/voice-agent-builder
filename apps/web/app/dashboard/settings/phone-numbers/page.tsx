@@ -85,6 +85,7 @@ interface ManualForm {
   providerNumberId: string;
   sipTrunkId: string;
   sipTrunkDomain: string;
+  webhookSecret: string;
   outboundEnabled: boolean;
 }
 
@@ -106,6 +107,7 @@ const emptyManualForm: ManualForm = {
   providerNumberId: '',
   sipTrunkId: '',
   sipTrunkDomain: '',
+  webhookSecret: '',
   outboundEnabled: false,
 };
 
@@ -120,6 +122,7 @@ export default function PhoneNumbersPage() {
   const [providerNumbers, setProviderNumbers] = useState<ProviderNumber[]>([]);
   const [selectedProviderNumbers, setSelectedProviderNumbers] = useState<Set<string>>(new Set());
   const [phoneNumberOverrides, setPhoneNumberOverrides] = useState<Record<string, string>>({});
+  const [sipDomainOverrides, setSipDomainOverrides] = useState<Record<string, string>>({});
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [connectForm, setConnectForm] = useState<ConnectForm>(emptyConnectForm);
   const [manualForm, setManualForm] = useState<ManualForm>(emptyManualForm);
@@ -165,6 +168,11 @@ export default function PhoneNumbersPage() {
     const pending = numbers.filter((number) => number.status === 'pending_verification').length;
     return { livekitReady, assigned, pending };
   }, [numbers]);
+
+  const activeConnection = useMemo(
+    () => connections.find((connection) => connection.id === activeConnectionId) ?? null,
+    [connections, activeConnectionId],
+  );
 
   async function createConnection(e: React.FormEvent) {
     e.preventDefault();
@@ -215,6 +223,7 @@ export default function PhoneNumbersPage() {
       setProviderNumbers(res.items ?? []);
       setSelectedProviderNumbers(new Set((res.items ?? []).map((number) => number.provider_number_id)));
       setPhoneNumberOverrides({});
+      setSipDomainOverrides({});
       setActiveConnectionId(connectionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Number sync failed');
@@ -232,6 +241,16 @@ export default function PhoneNumbersPage() {
       setError('Enter a valid E.164 phone number for each selected trunk before importing.');
       return;
     }
+    const missingVobizDomains = selected.filter(
+      (number) =>
+        activeConnection?.provider === 'vobiz' &&
+        number.metadata?.requiresPhoneNumber === true &&
+        !importSipDomain(number),
+    );
+    if (missingVobizDomains.length) {
+      setError('Enter the unique Vobiz SIP prefix or full outbound SIP domain for each selected trunk.');
+      return;
+    }
     const importNumbers = selected.map((number) => ({
       provider_number_id: number.provider_number_id,
       phone_number: importPhoneNumber(number),
@@ -240,6 +259,7 @@ export default function PhoneNumbersPage() {
       metadata: {
         ...(number.metadata ?? {}),
         ...(number.phone_number ? {} : { phoneNumberSource: 'manual_import' }),
+        ...(importSipDomain(number) ? { sipTrunkDomain: importSipDomain(number) } : {}),
       },
     }));
     setBusy('import');
@@ -255,6 +275,7 @@ export default function PhoneNumbersPage() {
       setProviderNumbers([]);
       setSelectedProviderNumbers(new Set());
       setPhoneNumberOverrides({});
+      setSipDomainOverrides({});
       setPanel(null);
       await refresh();
     } catch (err) {
@@ -266,6 +287,13 @@ export default function PhoneNumbersPage() {
 
   function importPhoneNumber(number: ProviderNumber): string {
     return (number.phone_number ?? phoneNumberOverrides[number.provider_number_id] ?? '').trim();
+  }
+
+  function importSipDomain(number: ProviderNumber): string {
+    const fromProvider = typeof number.metadata?.sipTrunkDomain === 'string'
+      ? number.metadata.sipTrunkDomain
+      : '';
+    return (fromProvider || sipDomainOverrides[number.provider_number_id] || '').trim();
   }
 
   async function createManualNumber(e: React.FormEvent) {
@@ -284,6 +312,7 @@ export default function PhoneNumbersPage() {
           provider_number_id: manualForm.providerNumberId || undefined,
           sip_trunk_id: manualForm.sipTrunkId || undefined,
           sip_trunk_domain: manualForm.sipTrunkDomain || undefined,
+          webhook_secret: manualForm.webhookSecret || undefined,
           outbound_enabled: manualForm.outboundEnabled,
           inbound_enabled: true,
         }),
@@ -298,18 +327,25 @@ export default function PhoneNumbersPage() {
     }
   }
 
-  async function assignAgent(numberId: string, agentId: string) {
+  async function updateNumberSettings(
+    number: PhoneNumber,
+    patch: { agentId?: string | null; inboundEnabled?: boolean; outboundEnabled?: boolean },
+  ) {
     if (!workspaceId) return;
-    setBusy(`assign-${numberId}`);
+    setBusy(`assign-${number.id}`);
     setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/assign-agent`, {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${number.id}/assign-agent`, {
         method: 'POST',
-        body: JSON.stringify({ agent_id: agentId || null }),
+        body: JSON.stringify({
+          agent_id: patch.agentId !== undefined ? patch.agentId : number.assigned_agent_id ?? null,
+          inbound_enabled: patch.inboundEnabled ?? number.inbound_enabled,
+          outbound_enabled: patch.outboundEnabled ?? number.outbound_enabled,
+        }),
       });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Assignment failed');
+      setError(err instanceof Error ? err.message : 'Phone number update failed');
     } finally {
       setBusy(null);
     }
@@ -460,14 +496,15 @@ export default function PhoneNumbersPage() {
 
           {providerNumbers.length > 0 && (
             <div className="mt-5 overflow-hidden rounded-md border border-border">
-              <div className="grid grid-cols-[44px_minmax(180px,1fr)_140px_120px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+              <div className="grid grid-cols-[44px_minmax(180px,1fr)_minmax(180px,1fr)_140px_120px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
                 <span />
                 <span>Number</span>
+                <span>SIP domain</span>
                 <span>Provider ID</span>
                 <span>Voice</span>
               </div>
               {providerNumbers.map((number) => (
-                <div key={number.provider_number_id} className="grid grid-cols-[44px_minmax(180px,1fr)_140px_120px] items-center gap-2 px-3 py-2 text-sm">
+                <div key={number.provider_number_id} className="grid grid-cols-[44px_minmax(180px,1fr)_minmax(180px,1fr)_140px_120px] items-center gap-2 px-3 py-2 text-sm">
                   <input
                     type="checkbox"
                     aria-label={`Select ${number.friendly_name ?? number.provider_number_id}`}
@@ -496,6 +533,21 @@ export default function PhoneNumbersPage() {
                     )}
                     {number.friendly_name && (
                       <p className="mt-1 truncate text-xs text-muted-foreground">{number.friendly_name}</p>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    {activeConnection?.provider === 'vobiz' && number.metadata?.requiresPhoneNumber === true ? (
+                      <div className="flex items-center gap-1">
+                        <Input
+                          className="h-8 font-mono"
+                          value={sipDomainOverrides[number.provider_number_id] ?? ''}
+                          onChange={(e) => setSipDomainOverrides((prev) => ({ ...prev, [number.provider_number_id]: e.target.value }))}
+                          placeholder="unique-prefix"
+                        />
+                        <span className="shrink-0 text-xs text-muted-foreground">.sip.vobiz.ai</span>
+                      </div>
+                    ) : (
+                      <span className="truncate text-xs text-muted-foreground">{importSipDomain(number) || 'Not required'}</span>
                     )}
                   </div>
                   <span className="truncate text-xs text-muted-foreground">{number.provider_number_id}</span>
@@ -561,6 +613,10 @@ export default function PhoneNumbersPage() {
               <Label>Outbound SIP domain</Label>
               <Input value={manualForm.sipTrunkDomain} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))} placeholder="trunk-id.sip.vobiz.ai" />
             </div>
+            <div className="space-y-2">
+              <Label>Webhook secret</Label>
+              <Input type="password" value={manualForm.webhookSecret} onChange={(e) => setManualForm((prev) => ({ ...prev, webhookSecret: e.target.value }))} placeholder={manualForm.provider === 'twilio' ? 'Twilio Auth Token' : 'Optional'} />
+            </div>
             <label className="flex items-center gap-2 pt-8 text-sm">
               <input type="checkbox" checked={manualForm.outboundEnabled} onChange={(e) => setManualForm((prev) => ({ ...prev, outboundEnabled: e.target.checked }))} />
               Enable outbound
@@ -597,17 +653,39 @@ export default function PhoneNumbersPage() {
                   </div>
                 </div>
 
-                <select
-                  className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-                  value={number.assigned_agent_id ?? ''}
-                  onChange={(e) => assignAgent(number.id, e.target.value)}
-                  disabled={busy === `assign-${number.id}`}
-                >
-                  <option value="">Unassigned</option>
-                  {agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>{agent.name}</option>
-                  ))}
-                </select>
+                <div className="space-y-2">
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={number.assigned_agent_id ?? ''}
+                    onChange={(e) => updateNumberSettings(number, { agentId: e.target.value || null })}
+                    disabled={busy === `assign-${number.id}`}
+                  >
+                    <option value="">Unassigned</option>
+                    {agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>{agent.name}</option>
+                    ))}
+                  </select>
+                  <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={number.inbound_enabled}
+                        onChange={(e) => updateNumberSettings(number, { inboundEnabled: e.target.checked })}
+                        disabled={busy === `assign-${number.id}`}
+                      />
+                      Inbound
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={number.outbound_enabled}
+                        onChange={(e) => updateNumberSettings(number, { outboundEnabled: e.target.checked })}
+                        disabled={busy === `assign-${number.id}`}
+                      />
+                      Outbound
+                    </label>
+                  </div>
+                </div>
 
                 <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
                   <Button

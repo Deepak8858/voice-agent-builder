@@ -1,6 +1,7 @@
 import { Body, Controller, Headers, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Public } from '../common/decorators/public.decorator';
+import { env } from '../config/env';
 import { TelephonyService } from './telephony.service';
 
 @Public()
@@ -13,9 +14,15 @@ export class TelephonyWebhookController {
   async twilioVoice(
     @Param('phoneNumberId') phoneNumberId: string,
     @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() req: Request & { rawBody?: Buffer },
     @Res() res: Response,
   ) {
-    const twiml = await this.telephony.handleTwilioVoice(phoneNumberId, body);
+    const twiml = await this.telephony.handleTwilioVoice(phoneNumberId, body, {
+      headers,
+      rawBody: req.rawBody?.toString('utf8'),
+      url: externalRequestUrl(req),
+    });
     res.type('text/xml').send(twiml);
   }
 
@@ -24,8 +31,14 @@ export class TelephonyWebhookController {
   twilioStatus(
     @Param('phoneNumberId') phoneNumberId: string,
     @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('twilio', phoneNumberId, body);
+    return this.telephony.handleStatusWebhook('twilio', phoneNumberId, body, {
+      headers,
+      rawBody: req.rawBody?.toString('utf8'),
+      url: externalRequestUrl(req),
+    });
   }
 
   @Post('telephony/twilio/fallback/:phoneNumberId')
@@ -72,4 +85,8 @@ export class TelephonyWebhookController {
     const rawBody = req.rawBody?.toString('utf8') ?? JSON.stringify(req.body ?? {});
     return this.telephony.handleLiveKitWebhook(rawBody, authorization);
   }
+}
+
+function externalRequestUrl(req: Request): string {
+  return new URL(req.originalUrl ?? req.url, env.APP_BASE_URL ?? env.WEB_BASE_URL).toString();
 }

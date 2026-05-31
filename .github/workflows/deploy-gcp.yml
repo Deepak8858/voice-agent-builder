@@ -76,6 +76,7 @@ jobs:
 
             IMAGE_TAG="${{ steps.meta.outputs.image_tag }}"
             COMPOSE_FILE="infra/docker/docker-compose.gcp.yml"
+            export COMPOSE_PROJECT_NAME="docker"
             WEB_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-web:${IMAGE_TAG}"
             API_IMAGE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT }}/voiceforge-containers/voiceforge-api:${IMAGE_TAG}"
 
@@ -145,4 +146,5 @@ jobs:
           script: |
             set -e
             cd "${{ env.DEPLOY_PATH }}"
+            export COMPOSE_PROJECT_NAME="docker"
             docker compose -f infra/docker/docker-compose.gcp.yml exec -T api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
