@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { VobizProviderAdapter } from './vobiz.provider';
 
 describe('VobizProviderAdapter', () => {
@@ -122,5 +123,64 @@ describe('VobizProviderAdapter', () => {
       }),
     );
     expect(result.status).toBe('configured');
+  });
+
+  it('rejects unsigned webhooks when a Vobiz webhook secret is configured', async () => {
+    const adapter = new VobizProviderAdapter();
+
+    await expect(
+      adapter.validateWebhookSignature({
+        secret: 'vobiz-webhook-secret',
+        headers: {},
+        url: 'https://app.example.com/api/v1/telephony/vobiz/status/number-1',
+        body: { call_id: 'call-1', status: 'completed' },
+        rawBody: '{"call_id":"call-1","status":"completed"}',
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it('validates Vobiz HMAC signatures with timestamp and raw request body', async () => {
+    const adapter = new VobizProviderAdapter();
+    const secret = 'vobiz-webhook-secret';
+    const rawBody = '{"call_id":"call-1","status":"completed"}';
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac('sha256', secret)
+      .update(`${timestamp}.${rawBody}`)
+      .digest('hex');
+
+    await expect(
+      adapter.validateWebhookSignature({
+        secret,
+        headers: {
+          'x-vobiz-signature': signature,
+          'x-vobiz-timestamp': timestamp,
+        },
+        url: 'https://app.example.com/api/v1/telephony/vobiz/status/number-1',
+        body: { call_id: 'call-1', status: 'completed' },
+        rawBody,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('rejects Vobiz signatures that do not match the raw request body', async () => {
+    const adapter = new VobizProviderAdapter();
+    const secret = 'vobiz-webhook-secret';
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac('sha256', secret)
+      .update(`${timestamp}.{"call_id":"call-1","status":"completed"}`)
+      .digest('hex');
+
+    await expect(
+      adapter.validateWebhookSignature({
+        secret,
+        headers: {
+          'x-vobiz-signature': signature,
+          'x-vobiz-timestamp': timestamp,
+        },
+        url: 'https://app.example.com/api/v1/telephony/vobiz/status/number-1',
+        body: { call_id: 'call-1', status: 'failed' },
+        rawBody: '{"call_id":"call-1","status":"failed"}',
+      }),
+    ).resolves.toBe(false);
   });
 });

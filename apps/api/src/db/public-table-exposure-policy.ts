@@ -150,6 +150,14 @@ export function validatePublicTableExposure(
     const table = tableByName.get(tableName);
     const expected = policyByTable.get(tableName);
 
+    if (table && !table.rowSecurity) {
+      findings.push({
+        code: 'RLS_DISABLED',
+        tableName,
+        message: `public.${tableName} must have row level security enabled.`,
+      });
+    }
+
     if (!expected) {
       findings.push({
         code: 'UNKNOWN_PUBLIC_TABLE',
@@ -157,14 +165,6 @@ export function validatePublicTableExposure(
         message: `public.${tableName} is not listed in the Data API exposure policy.`,
       });
       continue;
-    }
-
-    if (table && !table.rowSecurity) {
-      findings.push({
-        code: 'RLS_DISABLED',
-        tableName,
-        message: `public.${tableName} must have row level security enabled.`,
-      });
     }
 
     for (const role of DATA_API_ROLES) {

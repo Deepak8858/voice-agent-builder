@@ -58,6 +58,7 @@ describe('BillingService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(env, {
+      BILLING_MODE: 'live',
       STRIPE_SECRET_KEY: 'rk_test_123',
       STRIPE_STARTER_PRICE_ID: 'price_starter',
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
@@ -71,7 +72,40 @@ describe('BillingService', () => {
     };
   });
 
+  describe('getBillingStatus', () => {
+    it('reports demo mode when live Stripe billing is disabled by env', () => {
+      Object.assign(env, { BILLING_MODE: 'demo' });
+      const prisma = makePrisma();
+      const svc = makeService(prisma);
+
+      expect(svc.getBillingStatus()).toEqual({
+        mode: 'demo',
+        liveCheckoutEnabled: false,
+        message:
+          'Live Stripe billing is disabled for this demo. Free trial limits remain active.',
+      });
+    });
+  });
+
   describe('createCheckoutSession', () => {
+    it('disables live checkout in demo billing mode without calling Stripe', async () => {
+      Object.assign(env, { BILLING_MODE: 'demo' });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        successPath: '/dashboard/billing?checkout=success',
+        cancelPath: '/dashboard/billing?checkout=cancel',
+      })).rejects.toMatchObject({
+        errorCode: 'BILLING_UNAVAILABLE',
+      });
+
+      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
     it('maps plan to server-owned price and enables production Checkout defaults', async () => {
       const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
@@ -125,6 +159,22 @@ describe('BillingService', () => {
   });
 
   describe('createPortalSession', () => {
+    it('disables the customer portal in demo billing mode without calling Stripe', async () => {
+      Object.assign(env, { BILLING_MODE: 'demo' });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+      ).rejects.toMatchObject({
+        errorCode: 'BILLING_UNAVAILABLE',
+      });
+
+      expect(mockStripe.billingPortal.sessions.create).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
     it('builds the Customer Portal return URL from WEB_BASE_URL', async () => {
       const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
       const svc = makeService(prisma);

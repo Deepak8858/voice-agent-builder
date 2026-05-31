@@ -8,6 +8,7 @@ import {
   getPlanById,
   getUpgradeTarget,
   isPaidPlan,
+  type BillingStatusDto,
   type CheckoutPlan,
   type PlanType,
   type SubscriptionDto,
@@ -60,6 +61,11 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     queryFn: () => call<SubscriptionDto | null>(`/workspaces/${workspaceId}/billing/subscription`),
   });
 
+  const billingStatus = useQuery({
+    queryKey: ['billing', 'status', workspaceId],
+    queryFn: () => call<BillingStatusDto>(`/workspaces/${workspaceId}/billing/status`),
+  });
+
   const usage = useQuery({
     queryKey: ['billing', 'usage', workspaceId],
     queryFn: () => call<WorkspaceUsageDto>(`/workspaces/${workspaceId}/billing/usage`),
@@ -84,6 +90,9 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const checkout = useMutation({
     mutationFn: async (targetPlan?: CheckoutPlan) => {
+      if (billingStatus.data?.liveCheckoutEnabled === false) {
+        throw new Error(billingStatus.data.message);
+      }
       const plan = targetPlan ?? upgradeTarget;
       if (!plan) throw new Error('No upgrade target available.');
       const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/checkout`, {
@@ -103,6 +112,9 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const portal = useMutation({
     mutationFn: async () => {
+      if (billingStatus.data?.liveCheckoutEnabled === false) {
+        throw new Error(billingStatus.data.message);
+      }
       const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/portal`, {
         method: 'POST',
         body: JSON.stringify({ returnPath: '/dashboard/billing' }),
@@ -119,9 +131,22 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
   const metrics = usage.data?.usage ?? {};
 
   const planLabel = planEntry?.name ?? plan;
+  const billingStatusLoading = billingStatus.isLoading;
+  const liveBillingEnabled = billingStatus.data?.liveCheckoutEnabled === true;
+  const billingActionsDisabled = billingStatusLoading || !liveBillingEnabled;
+  const billingMessage = billingStatus.data?.message;
 
   return (
     <div className="flex flex-col gap-8">
+      {!liveBillingEnabled ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+          <p className="font-medium">Demo billing mode</p>
+          <p className="mt-0.5 text-xs text-amber-800/90 dark:text-amber-100/80">
+            {billingMessage ?? 'Live Stripe checkout and customer portal actions are disabled. Free trial limits remain active.'}
+          </p>
+        </div>
+      ) : null}
+
       {!dismissedBanner && checkoutBanner === 'success' ? (
         <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm text-emerald-900 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100">
           <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-300" />
@@ -177,9 +202,13 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             {upgradeTarget && upgradeEntry ? (
               <Button
                 onClick={() => checkout.mutate(upgradeTarget)}
-                disabled={checkout.isPending}
+                disabled={checkout.isPending || billingActionsDisabled}
               >
-                {checkout.isPending
+                {billingStatusLoading
+                  ? 'Checking billing...'
+                  : !liveBillingEnabled
+                  ? 'Checkout disabled'
+                  : checkout.isPending
                   ? 'Redirecting…'
                   : `Upgrade to ${upgradeEntry.name}`}
               </Button>
@@ -188,10 +217,16 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
               <Button
                 variant="outline"
                 onClick={() => portal.mutate()}
-                disabled={portal.isPending}
+                disabled={portal.isPending || billingActionsDisabled}
                 className="gap-2"
               >
-                {portal.isPending ? 'Redirecting…' : 'Manage subscription'}
+                {billingStatusLoading
+                  ? 'Checking billing...'
+                  : !liveBillingEnabled
+                  ? 'Portal disabled'
+                  : portal.isPending
+                  ? 'Redirecting…'
+                  : 'Manage subscription'}
                 <ExternalLink className="h-3.5 w-3.5" />
               </Button>
             ) : null}
@@ -226,9 +261,15 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             <Button
               size="sm"
               onClick={() => checkout.mutate('starter')}
-              disabled={checkout.isPending}
+              disabled={checkout.isPending || billingActionsDisabled}
             >
-              {checkout.isPending ? 'Redirecting…' : `Upgrade to ${PLAN_CATALOG[1].name}`}
+              {billingStatusLoading
+                ? 'Checking billing...'
+                : !liveBillingEnabled
+                ? 'Checkout disabled'
+                : checkout.isPending
+                ? 'Redirecting…'
+                : `Upgrade to ${PLAN_CATALOG[1].name}`}
             </Button>
           </CardContent>
         </Card>

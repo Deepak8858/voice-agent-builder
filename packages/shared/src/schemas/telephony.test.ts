@@ -31,4 +31,18 @@ describe('telephony schemas', () => {
       }),
     ).toThrow(/E.164/);
   });
+
+  it('accepts a per-number webhook secret when importing provider inventory', () => {
+    expect(
+      ImportProviderPhoneNumberSchema.parse({
+        provider_number_id: 'trunk-console-1',
+        phone_number: '+912271264217',
+        webhook_secret: 'vobiz-webhook-secret',
+      }),
+    ).toEqual({
+      provider_number_id: 'trunk-console-1',
+      phone_number: '+912271264217',
+      webhook_secret: 'vobiz-webhook-secret',
+    });
+  });
 });

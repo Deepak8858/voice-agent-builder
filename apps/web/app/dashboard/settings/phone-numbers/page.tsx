@@ -123,6 +123,7 @@ export default function PhoneNumbersPage() {
   const [selectedProviderNumbers, setSelectedProviderNumbers] = useState<Set<string>>(new Set());
   const [phoneNumberOverrides, setPhoneNumberOverrides] = useState<Record<string, string>>({});
   const [sipDomainOverrides, setSipDomainOverrides] = useState<Record<string, string>>({});
+  const [importWebhookSecret, setImportWebhookSecret] = useState('');
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [connectForm, setConnectForm] = useState<ConnectForm>(emptyConnectForm);
   const [manualForm, setManualForm] = useState<ManualForm>(emptyManualForm);
@@ -224,6 +225,7 @@ export default function PhoneNumbersPage() {
       setSelectedProviderNumbers(new Set((res.items ?? []).map((number) => number.provider_number_id)));
       setPhoneNumberOverrides({});
       setSipDomainOverrides({});
+      setImportWebhookSecret('');
       setActiveConnectionId(connectionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Number sync failed');
@@ -251,11 +253,16 @@ export default function PhoneNumbersPage() {
       setError('Enter the unique Vobiz SIP prefix or full outbound SIP domain for each selected trunk.');
       return;
     }
+    if (activeConnection?.provider === 'vobiz' && !importWebhookSecret.trim()) {
+      setError('Enter the Vobiz webhook signing secret before importing selected numbers.');
+      return;
+    }
     const importNumbers = selected.map((number) => ({
       provider_number_id: number.provider_number_id,
       phone_number: importPhoneNumber(number),
       friendly_name: number.friendly_name ?? undefined,
       capabilities: number.capabilities,
+      webhook_secret: activeConnection?.provider === 'vobiz' ? importWebhookSecret.trim() : undefined,
       metadata: {
         ...(number.metadata ?? {}),
         ...(number.phone_number ? {} : { phoneNumberSource: 'manual_import' }),
@@ -276,6 +283,7 @@ export default function PhoneNumbersPage() {
       setSelectedProviderNumbers(new Set());
       setPhoneNumberOverrides({});
       setSipDomainOverrides({});
+      setImportWebhookSecret('');
       setPanel(null);
       await refresh();
     } catch (err) {
@@ -496,6 +504,22 @@ export default function PhoneNumbersPage() {
 
           {providerNumbers.length > 0 && (
             <div className="mt-5 overflow-hidden rounded-md border border-border">
+              {activeConnection?.provider === 'vobiz' ? (
+                <div className="border-b border-border bg-muted/20 px-3 py-3">
+                  <div className="max-w-xl space-y-2">
+                    <Label>Vobiz webhook signing secret</Label>
+                    <Input
+                      type="password"
+                      value={importWebhookSecret}
+                      onChange={(e) => setImportWebhookSecret(e.target.value)}
+                      placeholder="Required for signed callbacks"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Stored encrypted per imported number and required before Vobiz callbacks are accepted.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div className="grid grid-cols-[44px_minmax(180px,1fr)_minmax(180px,1fr)_140px_120px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
                 <span />
                 <span>Number</span>
@@ -614,8 +638,14 @@ export default function PhoneNumbersPage() {
               <Input value={manualForm.sipTrunkDomain} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))} placeholder="trunk-id.sip.vobiz.ai" />
             </div>
             <div className="space-y-2">
-              <Label>Webhook secret</Label>
-              <Input type="password" value={manualForm.webhookSecret} onChange={(e) => setManualForm((prev) => ({ ...prev, webhookSecret: e.target.value }))} placeholder={manualForm.provider === 'twilio' ? 'Twilio Auth Token' : 'Optional'} />
+              <Label>Webhook signing secret</Label>
+              <Input
+                type="password"
+                value={manualForm.webhookSecret}
+                onChange={(e) => setManualForm((prev) => ({ ...prev, webhookSecret: e.target.value }))}
+                placeholder={manualForm.provider === 'twilio' ? 'Twilio Auth Token' : 'Required for Vobiz'}
+                required={manualForm.provider === 'vobiz'}
+              />
             </div>
             <label className="flex items-center gap-2 pt-8 text-sm">
               <input type="checkbox" checked={manualForm.outboundEnabled} onChange={(e) => setManualForm((prev) => ({ ...prev, outboundEnabled: e.target.checked }))} />

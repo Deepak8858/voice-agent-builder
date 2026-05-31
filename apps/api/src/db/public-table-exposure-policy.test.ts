@@ -79,6 +79,31 @@ describe('validatePublicTableExposure', () => {
     });
   });
 
+  it('still reports RLS disabled when an unknown public table is discovered', () => {
+    const findings = validatePublicTableExposure(
+      snapshot({
+        tables: [
+          { tableName: 'users', rowSecurity: true },
+          { tableName: 'contacts', rowSecurity: true },
+          { tableName: 'surprise_table', rowSecurity: false },
+        ],
+      }),
+      basePolicies,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'UNKNOWN_PUBLIC_TABLE',
+      tableName: 'surprise_table',
+      message:
+        'public.surprise_table is not listed in the Data API exposure policy.',
+    });
+    expect(findings).toContainEqual({
+      code: 'RLS_DISABLED',
+      tableName: 'surprise_table',
+      message: 'public.surprise_table must have row level security enabled.',
+    });
+  });
+
   it('fails when a table has RLS disabled', () => {
     const findings = validatePublicTableExposure(
       snapshot({

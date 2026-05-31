@@ -1,4 +1,5 @@
 import type { ProviderCredentials } from '@voiceforge/shared';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { AppError } from '../../common/errors';
 import type {
   ConnectedPhoneNumber,
@@ -138,9 +139,19 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
   }
 
   async validateWebhookSignature(params: ValidateWebhookParams): Promise<boolean> {
-    if (!params.secret) return true;
-    const provided = header(params.headers, 'x-vobiz-signature') ?? header(params.headers, 'x-signature');
-    return Boolean(provided);
+    if (!params.secret) return false;
+    const provided = normalizeSignature(
+      header(params.headers, 'x-vobiz-signature') ?? header(params.headers, 'x-signature'),
+    );
+    if (!provided) return false;
+
+    const timestamp = header(params.headers, 'x-vobiz-timestamp');
+    const rawBody = params.rawBody ?? JSON.stringify(params.body ?? {});
+    if (timestamp) {
+      if (!isRecentVobizTimestamp(timestamp)) return false;
+      if (safeHexEqual(provided, hmacSha256(params.secret, `${timestamp}.${rawBody}`))) return true;
+    }
+    return safeHexEqual(provided, hmacSha256(params.secret, rawBody));
   }
 
   private mapNumber(number: VobizNumber): ProviderPhoneNumber {
@@ -190,6 +201,28 @@ function header(headers: Record<string, string | string[] | undefined>, name: st
   const value = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function hmacSha256(secret: string, payload: string): string {
+  return createHmac('sha256', secret).update(payload).digest('hex');
+}
+
+function normalizeSignature(value: string | null): string | null {
+  const normalized = value?.trim().replace(/^sha256=/i, '') ?? '';
+  return /^[a-f0-9]{64}$/i.test(normalized) ? normalized.toLowerCase() : null;
+}
+
+function isRecentVobizTimestamp(value: string): boolean {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return false;
+  const timestampMs = parsed > 10_000_000_000 ? parsed : parsed * 1000;
+  return Math.abs(Date.now() - timestampMs) <= 5 * 60 * 1000;
+}
+
+function safeHexEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function toE164OrNull(value: string | null | undefined): string | null {

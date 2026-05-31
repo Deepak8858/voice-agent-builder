@@ -21,6 +21,9 @@ export const SubscriptionStatusSchema = z.enum([
 ]);
 export type SubscriptionStatus = z.infer<typeof SubscriptionStatusSchema>;
 
+export const BillingModeSchema = z.enum(['demo', 'live']);
+export type BillingMode = z.infer<typeof BillingModeSchema>;
+
 export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 
@@ -134,6 +137,13 @@ export const WorkspaceUsageDtoSchema = z.object({
   usage: z.record(UsageTypeSchema, z.number().int()),
 });
 export type WorkspaceUsageDto = z.infer<typeof WorkspaceUsageDtoSchema>;
+
+export const BillingStatusDtoSchema = z.object({
+  mode: BillingModeSchema,
+  liveCheckoutEnabled: z.boolean(),
+  message: z.string(),
+});
+export type BillingStatusDto = z.infer<typeof BillingStatusDtoSchema>;
 
 export const StripeEventDtoSchema = z.object({
   id: z.string().uuid(),

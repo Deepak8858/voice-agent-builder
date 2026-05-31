@@ -260,6 +260,75 @@ describe('TelephonyService', () => {
     expect(prisma.call.create).not.toHaveBeenCalled();
   });
 
+  it('rejects Vobiz status webhooks without a valid per-number signature before updating calls', async () => {
+    const prisma = {
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(async () => ({
+          id: 'number-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'vobiz',
+          providerMetadata: {
+            webhookSecretEncrypted: { encrypted: true },
+          },
+          providerConnection: null,
+        })),
+      },
+      telephonyWebhookEvent: {
+        create: vi.fn(async () => ({ id: 'event-1' })),
+      },
+      call: {
+        findFirst: vi.fn(),
+        update: vi.fn(),
+      },
+    };
+    const signatureAdapter = {
+      validateWebhookSignature: vi.fn(async () => false),
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn(() => signatureAdapter) } as never,
+      {
+        encryptJson: vi.fn(),
+        decryptJson: vi.fn(() => ({ secret: 'vobiz-webhook-secret' })),
+      } as never,
+      audit as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.handleStatusWebhook(
+        'vobiz',
+        'number-1',
+        { call_id: 'call-1', status: 'completed' },
+        {
+          headers: {},
+          rawBody: '{"call_id":"call-1","status":"completed"}',
+          url: 'https://vocal.devdeepak.me/api/v1/telephony/vobiz/status/number-1',
+        },
+      ),
+    ).rejects.toMatchObject({ errorCode: 'UNAUTHORIZED' });
+
+    expect(signatureAdapter.validateWebhookSignature).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secret: 'vobiz-webhook-secret',
+        rawBody: '{"call_id":"call-1","status":"completed"}',
+        url: 'https://vocal.devdeepak.me/api/v1/telephony/vobiz/status/number-1',
+      }),
+    );
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'telephony.webhook.invalid_signature',
+        metadata: expect.objectContaining({ provider: 'vobiz' }),
+      }),
+    );
+  });
+
   it('keeps trunk-only Vobiz imports pending verification with the user-entered E.164 number', async () => {
     const createdAt = new Date('2026-05-29T00:00:00.000Z');
     const prisma = {
@@ -290,7 +359,12 @@ describe('TelephonyService', () => {
       prisma as never,
       {} as never,
       { adapterFor: vi.fn() } as never,
-      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      {
+        encryptJson: vi.fn((value: unknown) => ({
+          encrypted: (value as { secret?: string }).secret,
+        })),
+        decryptJson: vi.fn(),
+      } as never,
       audit as never,
       {} as never,
       {} as never,
@@ -305,6 +379,7 @@ describe('TelephonyService', () => {
           phone_number: '+912271264217',
           friendly_name: 'Console trunk',
           capabilities: { voice: true, inbound: true, outbound: false },
+          webhook_secret: 'vobiz-webhook-secret',
           metadata: {
             sipTrunkId: 'trunk-console-1',
             sipTrunkDomain: 'my-tenant',
@@ -325,6 +400,8 @@ describe('TelephonyService', () => {
           sipTrunkId: 'trunk-console-1',
           providerMetadata: expect.objectContaining({
             sipTrunkDomain: 'my-tenant.sip.vobiz.ai',
+            hasWebhookSecret: true,
+            webhookSecretEncrypted: { encrypted: 'vobiz-webhook-secret' },
           }),
         }),
       }),
@@ -383,6 +460,57 @@ describe('TelephonyService', () => {
         ],
       }),
     ).rejects.toThrow(/Vobiz outbound SIP domain/);
+
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects Vobiz imports without a per-number webhook secret', async () => {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      telephonyProviderConnection: {
+        findFirst: vi.fn(async () => ({
+          id: 'connection-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'vobiz',
+          status: 'connected',
+        })),
+      },
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(),
+        create: vi.fn(),
+      },
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      service.importNumbers('workspace-1', 'user-1', {
+        connection_id: 'connection-1',
+        numbers: [
+          {
+            provider_number_id: 'trunk-console-1',
+            phone_number: '+912271264217',
+            metadata: {
+              sipTrunkId: 'trunk-console-1',
+              requiresPhoneNumber: true,
+              phoneNumberSource: 'manual_import',
+              sipTrunkDomain: 'tenant.sip.vobiz.ai',
+            },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/webhook secret/);
 
     expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
   });

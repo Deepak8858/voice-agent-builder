@@ -139,10 +139,25 @@ alter default privileges for role postgres in schema public
   grant usage, select on sequences to service_role;
 
 grant execute on all functions in schema public to service_role;
-grant execute on function public.current_user_id() to authenticated;
-grant execute on function public.current_app_user_id() to authenticated;
-grant execute on function public.current_org_id() to authenticated;
-grant execute on function public.set_active_org(uuid, uuid) to service_role;
+
+do $$
+begin
+  if to_regprocedure('public.current_user_id()') is not null then
+    grant execute on function public.current_user_id() to authenticated;
+  end if;
+
+  if to_regprocedure('public.current_app_user_id()') is not null then
+    grant execute on function public.current_app_user_id() to authenticated;
+  end if;
+
+  if to_regprocedure('public.current_org_id()') is not null then
+    grant execute on function public.current_org_id() to authenticated;
+  end if;
+
+  if to_regprocedure('public.set_active_org(uuid, uuid)') is not null then
+    grant execute on function public.set_active_org(uuid, uuid) to service_role;
+  end if;
+end $$;
 
 -- Backend-only tables get an explicit service_role policy for auditability.
 do $$

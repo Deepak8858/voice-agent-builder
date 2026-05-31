@@ -54,8 +54,14 @@ export class TelephonyWebhookController {
   vobizInbound(
     @Param('phoneNumberId') phoneNumberId: string,
     @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body);
+    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body, {
+      headers,
+      rawBody: req.rawBody?.toString('utf8'),
+      url: externalRequestUrl(req),
+    });
   }
 
   @Post('telephony/vobiz/status/:phoneNumberId')
@@ -63,8 +69,14 @@ export class TelephonyWebhookController {
   vobizStatus(
     @Param('phoneNumberId') phoneNumberId: string,
     @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body);
+    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body, {
+      headers,
+      rawBody: req.rawBody?.toString('utf8'),
+      url: externalRequestUrl(req),
+    });
   }
 
   @Post('telephony/vobiz/verify/:phoneNumberId')
@@ -72,8 +84,14 @@ export class TelephonyWebhookController {
   vobizVerify(
     @Param('phoneNumberId') phoneNumberId: string,
     @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body);
+    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body, {
+      headers,
+      rawBody: req.rawBody?.toString('utf8'),
+      url: externalRequestUrl(req),
+    });
   }
 
   @Post('livekit/webhooks')

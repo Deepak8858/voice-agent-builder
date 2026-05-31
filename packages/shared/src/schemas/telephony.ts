@@ -74,6 +74,7 @@ export const ImportProviderPhoneNumberSchema = z
     phone_number: E164PhoneSchema,
     friendly_name: z.string().trim().max(120).optional(),
     capabilities: z.record(z.string(), z.unknown()).optional(),
+    webhook_secret: z.string().trim().min(8).max(255).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict();

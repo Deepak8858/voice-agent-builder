@@ -21,6 +21,12 @@ import { ProviderRegistry } from './providers/provider-registry';
 import type { ConnectedPhoneNumber, NormalizedCallStatus } from './providers/provider.types';
 import { TwilioProviderAdapter } from './providers/twilio.provider';
 
+type WebhookRequestContext = {
+  headers: Record<string, string | string[] | undefined>;
+  url: string;
+  rawBody?: string;
+};
+
 @Injectable()
 export class TelephonyService {
   constructor(
@@ -151,6 +157,14 @@ export class TelephonyService {
           400,
         );
       }
+      const webhookSecret = this.normalizeWebhookSecret(number.webhook_secret);
+      if (connection.provider === 'vobiz' && !webhookSecret) {
+        throw new AppError(
+          'VALIDATION_ERROR',
+          'Enter the per-number Vobiz webhook secret before importing.',
+          400,
+        );
+      }
       const existing = await this.prisma.telephonyPhoneNumber.findUnique({
         where: { phoneNumberE164: number.phone_number },
       });
@@ -170,6 +184,7 @@ export class TelephonyService {
         providerMetadata: {
           ...metadata,
           ...(sipTrunkDomain ? { sipTrunkDomain } : {}),
+          ...this.webhookSecretMetadata(webhookSecret),
         } as Prisma.InputJsonValue,
         status: this.importedNumberStatus(number.metadata),
         lastSyncedAt: new Date(),
@@ -216,6 +231,14 @@ export class TelephonyService {
         409,
       );
     }
+    const webhookSecret = this.normalizeWebhookSecret(dto.webhook_secret);
+    if (dto.provider === 'vobiz' && !webhookSecret) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'Enter the per-number Vobiz webhook secret before adding this number.',
+        400,
+      );
+    }
 
     const row = await this.prisma.telephonyPhoneNumber.create({
       data: {
@@ -233,10 +256,7 @@ export class TelephonyService {
         providerMetadata: {
           providerAccountId: dto.provider_account_id ?? null,
           sipTrunkDomain: this.normalizeSipTrunkDomain(dto.provider, dto.sip_trunk_domain),
-          hasWebhookSecret: Boolean(dto.webhook_secret),
-          webhookSecretEncrypted: dto.webhook_secret
-            ? this.encryption.encryptJson({ secret: dto.webhook_secret })
-            : null,
+          ...this.webhookSecretMetadata(webhookSecret),
         } as unknown as Prisma.InputJsonValue,
       },
     });
@@ -539,11 +559,7 @@ export class TelephonyService {
   async handleTwilioVoice(
     phoneNumberId: string,
     payload: Record<string, unknown>,
-    request?: {
-      headers: Record<string, string | string[] | undefined>;
-      url: string;
-      rawBody?: string;
-    },
+    request?: WebhookRequestContext,
   ): Promise<string> {
     const number = await this.prisma.telephonyPhoneNumber.findUnique({
       where: { id: phoneNumberId },
@@ -577,11 +593,7 @@ export class TelephonyService {
     provider: 'twilio' | 'vobiz',
     phoneNumberId: string,
     payload: Record<string, unknown>,
-    request?: {
-      headers: Record<string, string | string[] | undefined>;
-      url: string;
-      rawBody?: string;
-    },
+    request?: WebhookRequestContext,
   ) {
     if (provider === 'twilio') {
       const number = await this.prisma.telephonyPhoneNumber.findUnique({
@@ -590,6 +602,16 @@ export class TelephonyService {
       });
       if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
       await this.assertTwilioWebhookSignature(number, payload, request, 'call.status');
+    } else {
+      const number = await this.prisma.telephonyPhoneNumber.findUnique({
+        where: { id: phoneNumberId },
+        include: { providerConnection: true },
+      });
+      if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
+      if (number.provider !== 'vobiz') {
+        throw new AppError('TELEPHONY_NOT_FOUND', 'Vobiz phone number not found.', 404);
+      }
+      await this.assertVobizWebhookSignature(number, payload, request, 'call.status');
     }
     const normalized = this.normalizeStatus(provider, payload);
     await this.recordWebhookEvent(provider, normalized.eventId ?? normalized.providerCallId, 'call.status', phoneNumberId, payload, true);
@@ -630,13 +652,13 @@ export class TelephonyService {
     eventType: string,
   ): Promise<void> {
     if (!request) {
-      await this.recordInvalidWebhook(number, payload, eventType, 'missing_request_context');
+      await this.recordInvalidWebhook('twilio', number, payload, eventType, 'missing_request_context');
       throw new UnauthorizedError('Missing Twilio webhook signature context.');
     }
 
     const secret = this.twilioWebhookSecret(number);
     if (!secret) {
-      await this.recordInvalidWebhook(number, payload, eventType, 'missing_webhook_secret');
+      await this.recordInvalidWebhook('twilio', number, payload, eventType, 'missing_webhook_secret');
       throw new UnauthorizedError('Twilio webhook signing secret is not configured.');
     }
 
@@ -649,8 +671,43 @@ export class TelephonyService {
       rawBody: request.rawBody,
     });
     if (!valid) {
-      await this.recordInvalidWebhook(number, payload, eventType, 'invalid_signature');
+      await this.recordInvalidWebhook('twilio', number, payload, eventType, 'invalid_signature');
       throw new UnauthorizedError('Invalid Twilio webhook signature.');
+    }
+  }
+
+  private async assertVobizWebhookSignature(
+    number: {
+      id: string;
+      workspaceId: string;
+      providerMetadata?: Prisma.JsonValue | null;
+    },
+    payload: Record<string, unknown>,
+    request: WebhookRequestContext | undefined,
+    eventType: string,
+  ): Promise<void> {
+    if (!request) {
+      await this.recordInvalidWebhook('vobiz', number, payload, eventType, 'missing_request_context');
+      throw new UnauthorizedError('Missing Vobiz webhook signature context.');
+    }
+
+    const secret = this.storedWebhookSecret(number);
+    if (!secret) {
+      await this.recordInvalidWebhook('vobiz', number, payload, eventType, 'missing_webhook_secret');
+      throw new UnauthorizedError('Vobiz webhook signing secret is not configured.');
+    }
+
+    const adapter = this.registry.adapterFor('vobiz');
+    const valid = await adapter.validateWebhookSignature?.({
+      secret,
+      headers: request.headers,
+      url: request.url,
+      body: payload,
+      rawBody: request.rawBody,
+    });
+    if (!valid) {
+      await this.recordInvalidWebhook('vobiz', number, payload, eventType, 'invalid_signature');
+      throw new UnauthorizedError('Invalid Vobiz webhook signature.');
     }
   }
 
@@ -665,24 +722,31 @@ export class TelephonyService {
       return credentials.provider === 'twilio' ? credentials.authToken : null;
     }
 
+    return this.storedWebhookSecret(number);
+  }
+
+  private storedWebhookSecret(number: {
+    providerMetadata?: Prisma.JsonValue | null;
+  }): string | null {
     const metadata = this.objectMetadata(number.providerMetadata);
     const encryptedSecret = metadata.webhookSecretEncrypted;
-    if (encryptedSecret) {
-      const value = this.encryption.decryptJson<{ secret?: string }>(encryptedSecret);
-      return typeof value.secret === 'string' && value.secret ? value.secret : null;
-    }
-    return null;
+    if (!encryptedSecret) return null;
+    const value = this.encryption.decryptJson<{ secret?: string }>(encryptedSecret);
+    return typeof value.secret === 'string' && value.secret ? value.secret : null;
   }
 
   private async recordInvalidWebhook(
+    provider: 'twilio' | 'vobiz',
     number: { id: string; workspaceId: string },
     payload: Record<string, unknown>,
     eventType: string,
     reason: string,
   ): Promise<void> {
     await this.recordWebhookEvent(
-      'twilio',
-      this.twilioWebhookEventId(payload, eventType, number.id),
+      provider,
+      provider === 'twilio'
+        ? this.twilioWebhookEventId(payload, eventType, number.id)
+        : this.providerWebhookEventId(provider, payload, eventType, number.id),
       eventType,
       number.id,
       payload,
@@ -693,7 +757,7 @@ export class TelephonyService {
       action: 'telephony.webhook.invalid_signature',
       resourceType: 'telephony_phone_number',
       resourceId: number.id,
-      metadata: { provider: 'twilio', event_type: eventType, reason },
+      metadata: { provider, event_type: eventType, reason },
     })).catch(() => undefined);
   }
 
@@ -753,6 +817,19 @@ export class TelephonyService {
     if (callSid && status) return `${callSid}:${eventType}:${status}`;
     if (callSid) return `${callSid}:${eventType}`;
     return `twilio:${eventType}:${phoneNumberId}:${Date.now()}`;
+  }
+
+  private providerWebhookEventId(
+    provider: string,
+    payload: Record<string, unknown>,
+    eventType: string,
+    phoneNumberId: string,
+  ): string {
+    const eventId = String(payload.event_id ?? payload.id ?? '');
+    const callId = String(payload.call_id ?? payload.callId ?? '');
+    if (eventId) return `${provider}:${eventType}:${eventId}`;
+    if (callId) return `${provider}:${eventType}:${callId}`;
+    return `${provider}:${eventType}:${phoneNumberId}:${Date.now()}`;
   }
 
   private async recordWebhookEvent(
@@ -911,6 +988,20 @@ export class TelephonyService {
     return value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
+  }
+
+  private normalizeWebhookSecret(value: string | null | undefined): string | null {
+    const normalized = value?.trim() ?? '';
+    return normalized ? normalized : null;
+  }
+
+  private webhookSecretMetadata(secret: string | null): Record<string, unknown> {
+    return {
+      hasWebhookSecret: Boolean(secret),
+      webhookSecretEncrypted: secret
+        ? this.encryption.encryptJson({ secret })
+        : null,
+    };
   }
 
   private normalizeSipTrunkDomain(provider: string, value: string | null | undefined): string | null {

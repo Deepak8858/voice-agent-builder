@@ -2,7 +2,7 @@ import 'server-only';
 import Link from 'next/link';
 import { AlertTriangle } from 'lucide-react';
 import { apiFetch, ApiCallError } from '@/lib/api';
-import type { SessionUser, SubscriptionDto, SubscriptionStatus } from '@voiceforge/shared';
+import type { BillingStatusDto, SessionUser, SubscriptionDto, SubscriptionStatus } from '@voiceforge/shared';
 
 const PROBLEM_STATUSES = [
   'past_due',
@@ -66,6 +66,38 @@ export async function SubscriptionStatusBanner() {
   }
   const workspaceId = me?.active_workspace_id;
   if (!workspaceId) return null;
+
+  let billingStatus: BillingStatusDto | null = null;
+  try {
+    billingStatus = await apiFetch<BillingStatusDto>(
+      `/workspaces/${workspaceId}/billing/status`,
+    );
+  } catch (err) {
+    if (!(err instanceof ApiCallError)) throw err;
+  }
+  if (billingStatus?.liveCheckoutEnabled === false) {
+    return (
+      <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" />
+            <div className="min-w-0">
+              <p className="font-medium leading-5">Demo billing mode</p>
+              <p className="mt-0.5 text-xs leading-5 text-amber-800/90 dark:text-amber-100/80">
+                {billingStatus.message}
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/dashboard/billing"
+            className="inline-flex items-center justify-center rounded-md border border-amber-300 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-900/50 dark:text-amber-100 dark:hover:bg-amber-900/70"
+          >
+            View trial usage
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   let sub: SubscriptionDto | null = null;
   try {

@@ -45,6 +45,11 @@ export class BillingController {
     return this.billing.getSubscription(orgId);
   }
 
+  @Get('status')
+  getBillingStatus(): unknown {
+    return this.billing.getBillingStatus();
+  }
+
   @Get('usage')
   async getUsage(
     @Param('workspaceId') workspaceId: string,

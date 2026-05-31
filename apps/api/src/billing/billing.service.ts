@@ -9,6 +9,7 @@ import Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
 import type {
   CheckoutPlan,
+  BillingStatusDto,
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
   FeatureGate,
@@ -69,6 +70,9 @@ function hasControlCharacter(value: string): boolean {
   return Array.from(value).some((char) => char.charCodeAt(0) <= 31);
 }
 
+const DEMO_BILLING_MESSAGE =
+  'Live Stripe billing is disabled for this demo. Free trial limits remain active.';
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -86,6 +90,15 @@ export class BillingService {
   // -------------------------------------------------------------------------
   // Customer management
   // -------------------------------------------------------------------------
+
+  getBillingStatus(): BillingStatusDto {
+    const disabledMessage = this.liveBillingDisabledMessage();
+    return {
+      mode: env.BILLING_MODE,
+      liveCheckoutEnabled: !disabledMessage,
+      message: disabledMessage ?? 'Live Stripe checkout and customer portal actions are enabled.',
+    };
+  }
 
   async getOrCreateCustomer(organizationId: string): Promise<string> {
     const sub = await this.prisma.subscription.findUnique({
@@ -128,6 +141,7 @@ export class BillingService {
     organizationId: string,
     dto: CreateCheckoutSessionDto,
   ): Promise<{ url: string }> {
+    this.assertLiveBillingEnabled();
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     const priceId = this.getPriceIdForPlan(dto.plan);
@@ -160,6 +174,7 @@ export class BillingService {
     organizationId: string,
     dto: CreatePortalSessionDto,
   ): Promise<{ url: string }> {
+    this.assertLiveBillingEnabled();
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     const returnUrl = this.buildAppUrl(dto.returnPath);
@@ -185,6 +200,19 @@ export class BillingService {
       throw new InternalServerErrorException(`Stripe price ID is not configured for ${plan}.`);
     }
     return priceId;
+  }
+
+  private assertLiveBillingEnabled(): void {
+    const disabledMessage = this.liveBillingDisabledMessage();
+    if (disabledMessage) {
+      throw new BillingUnavailableError(disabledMessage);
+    }
+  }
+
+  private liveBillingDisabledMessage(): string | null {
+    if (env.BILLING_MODE === 'demo') return DEMO_BILLING_MESSAGE;
+    if (!this.stripe) return 'Live Stripe billing is not configured.';
+    return null;
   }
 
   private buildAppUrl(path: string): string {
@@ -438,5 +466,11 @@ export class BillingService {
 export class ForbiddenPlanError extends AppError {
   constructor(message: string) {
     super('PLAN_LIMIT_EXCEEDED' as ApiErrorCode, message, HttpStatus.FORBIDDEN);
+  }
+}
+
+export class BillingUnavailableError extends AppError {
+  constructor(message: string) {
+    super('BILLING_UNAVAILABLE' as ApiErrorCode, message, HttpStatus.SERVICE_UNAVAILABLE);
   }
 }
