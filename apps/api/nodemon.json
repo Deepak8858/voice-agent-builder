@@ -1,9 +1,9 @@
 {
   "env": {
-    "DOTENV_CONFIG_PATH": "../../.env"
+    "NODE_ENV": "development"
   },
   "watch": ["src", "../../packages/shared/src"],
   "ext": "ts,json",
   "ignore": ["**/*.test.ts", "dist", "node_modules"],
-  "exec": "node --enable-source-maps -r @swc-node/register src/main.ts"
+  "exec": "node --enable-source-maps -r @swc-node/register -r ./scripts/load-env.ts src/main.ts"
 }

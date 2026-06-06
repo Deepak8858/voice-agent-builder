@@ -29,6 +29,8 @@ import { QueueService } from '../queue/queue.service';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
 
+const CALL_LIST_TTL_SECONDS = 15;
+
 @Injectable()
 export class CallsService {
   constructor(
@@ -108,6 +110,7 @@ export class CallsService {
       resourceId: call.id,
       metadata: { agent_id: agent.id, version_id: version.id },
     });
+    await this.invalidateCallList(workspaceId, agent.id);
 
     return {
       call_id: call.id,
@@ -260,17 +263,24 @@ export class CallsService {
       eventType: 'call.started',
       payload: { direction: 'outbound', to_number: dto.to_number },
     });
+    await this.invalidateCallList(workspaceId, agent.id);
 
     return this.toSummary(call);
   }
 
   async list(workspaceId: string, agentId?: string): Promise<CallSummary[]> {
+    const key = this.callListKey(workspaceId, agentId);
+    const cached = await this.cache.get<CallSummary[]>(key);
+    if (cached !== null) return cached;
+
     const rows = await this.prisma.call.findMany({
       where: { workspaceId, ...(agentId ? { agentId } : {}) },
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
-    return rows.map((r) => this.toSummary(r));
+    const summaries = rows.map((r) => this.toSummary(r));
+    await this.cache.set(key, summaries, CALL_LIST_TTL_SECONDS);
+    return summaries;
   }
 
   /**
@@ -378,6 +388,7 @@ export class CallsService {
 
     // Phase 9: record usage
     await this.recordUsage(workspaceId, updated.id, updated.direction, durationSeconds);
+    await this.invalidateCallList(workspaceId, updated.agentId);
 
     return this.toSummary(updated);
   }
@@ -433,6 +444,7 @@ export class CallsService {
           metadata: (data as Prisma.InputJsonValue) ?? Prisma.JsonNull,
         },
       });
+      await this.invalidateCallList(call.workspaceId, call.agentId);
     }
 
     if (!call) return;
@@ -543,6 +555,7 @@ export class CallsService {
 
       // Phase 9: record usage for provider-driven call completion
       await this.recordUsage(call.workspaceId, updated.id, updated.direction, durationSeconds);
+      await this.invalidateCallList(updated.workspaceId, updated.agentId);
     }
   }
 
@@ -623,6 +636,17 @@ export class CallsService {
   private outboundDedupeKey(workspaceId: string, agentId: string, toNumber: string): string {
     const normalizedNumber = toNumber.replace(/[^+\dA-Za-z_-]/g, '_');
     return `calls:outbound:dedupe:${workspaceId}:${agentId}:${normalizedNumber}`;
+  }
+
+  private callListKey(workspaceId: string, agentId?: string): string {
+    return `calls:list:${workspaceId}:${agentId ?? 'all'}`;
+  }
+
+  private async invalidateCallList(workspaceId: string, agentId?: string | null): Promise<void> {
+    await Promise.all([
+      this.cache.del(this.callListKey(workspaceId)),
+      agentId ? this.cache.del(this.callListKey(workspaceId, agentId)) : Promise.resolve(),
+    ]);
   }
 
   private toSummary(c: {

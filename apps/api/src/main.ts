@@ -91,7 +91,15 @@ async function bootstrap() {
     });
   });
 
-  await app.listen(env.API_PORT ?? 4000, '0.0.0.0');
+  const server = await app.listen(env.API_PORT ?? 4000, '0.0.0.0');
+  const keepAliveTimeoutMs = Number(process.env.API_KEEP_ALIVE_TIMEOUT_MS ?? 65_000);
+  const headersTimeoutMs = Number(process.env.API_HEADERS_TIMEOUT_MS ?? keepAliveTimeoutMs + 5_000);
+  if ('keepAliveTimeout' in server) {
+    server.keepAliveTimeout = keepAliveTimeoutMs;
+  }
+  if ('headersTimeout' in server) {
+    server.headersTimeout = headersTimeoutMs;
+  }
   logger.info({ port: env.API_PORT ?? 4000, env: process.env.NODE_ENV ?? 'development', version: process.env.APP_VERSION ?? 'dev' }, 'VoiceForge API started');
 }
 

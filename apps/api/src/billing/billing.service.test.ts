@@ -226,6 +226,51 @@ describe('BillingService', () => {
         stripeCustomerId: 'cus_123',
       });
     });
+
+    it('caches subscription DTOs in Redis for repeated dashboard billing checks', async () => {
+      const sub = {
+        id: 'sub-1',
+        plan: 'growth',
+        status: 'active',
+        currentPeriodStart: new Date('2026-01-01'),
+        currentPeriodEnd: new Date('2026-01-31'),
+        cancelAtPeriodEnd: false,
+        trialEnd: null,
+        stripeCustomerId: 'cus_123',
+      };
+      const prisma = makePrisma({ subscription: sub });
+      const cache = {
+        get: vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({
+          id: 'sub-1',
+          plan: 'growth',
+          status: 'active',
+          currentPeriodStart: '2026-01-01T00:00:00.000Z',
+          currentPeriodEnd: '2026-01-31T00:00:00.000Z',
+          cancelAtPeriodEnd: false,
+          trialEnd: null,
+          stripeCustomerId: 'cus_123',
+        }),
+        set: vi.fn(async () => undefined),
+      };
+      const svc = new BillingService(prisma as never, cache as never);
+
+      await expect(svc.getSubscription('org-1')).resolves.toMatchObject({
+        id: 'sub-1',
+        plan: 'growth',
+      });
+      await expect(svc.getSubscription('org-1')).resolves.toMatchObject({
+        id: 'sub-1',
+        plan: 'growth',
+      });
+
+      expect(cache.get).toHaveBeenCalledWith('billing:subscription:org-1');
+      expect(cache.set).toHaveBeenCalledWith(
+        'billing:subscription:org-1',
+        expect.objectContaining({ id: 'sub-1', plan: 'growth' }),
+        60,
+      );
+      expect(prisma.subscription.findUnique).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('checkFeatureGate', () => {

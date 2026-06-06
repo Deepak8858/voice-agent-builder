@@ -1,0 +1,76 @@
+
+> voiceforge-ai@0.1.0 dev
+> concurrently -k -n api,web -c cyan,magenta "npm:dev -w @voiceforge/api" "npm:dev -w @voiceforge/web"
+
+[api] 
+[api] > @voiceforge/api@0.1.0 dev
+[api] > nodemon
+[api] 
+[web] 
+[web] > @voiceforge/web@0.1.0 dev
+[web] > next dev
+[web] 
+[api] [33m[nodemon] 3.1.14[39m
+[api] [33m[nodemon] to restart at any time, enter `rs`[39m
+[api] [33m[nodemon] watching path(s): src\**\* ..\..\packages\shared\src\**\*[39m
+[api] [33m[nodemon] watching extensions: ts,json[39m
+[api] [32m[nodemon] starting `node --enable-source-maps -r @swc-node/register src/main.ts`[39m
+[web] ▲ Next.js 16.2.4 (Turbopack)
+[web] - Local:         http://localhost:3000
+[web] - Network:       http://10.133.55.51:3000
+[web] - Environments: .env.local
+[web] ✓ Ready in 36.0s
+[web] ○ Compiling middleware ...
+[web] ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+[web] 
+[web]  GET / 200 in 8.1s (next.js: 3.7s, application-code: 4.4s)
+[api] H:\voice-agent-builder\node_modules\.pnpm\zod@3.25.76\node_modules\zod\v3\types.cjs:120
+[api]         throw result.error;
+[api]         ^
+[api] 
+[api] ZodError: [
+[api]   {
+[api]     "code": "invalid_type",
+[api]     "expected": "string",
+[api]     "received": "undefined",
+[api]     "path": [
+[api]       "REDIS_URL"
+[api]     ],
+[api]     "message": "Required"
+[api]   }
+[api] ]
+[api]     at Object.get error [as error] (H:\voice-agent-builder\node_modules\.pnpm\zod@3.25.76\node_modules\zod\v3\types.cjs:45:31)
+[api]     at ZodEffects.parse (H:\voice-agent-builder\node_modules\.pnpm\zod@3.25.76\node_modules\zod\v3\types.cjs:120:22)
+[api]     at Object.<anonymous> (H:\voice-agent-builder\apps\api\src\config\env.ts:134:23)
+[api]     at Module._compile (node:internal/modules/cjs/loader:1830:14)
+[api]     at Module._compile (H:\voice-agent-builder\node_modules\.pnpm\pirates@4.0.7\node_modules\pirates\lib\index.js:129:24)
+[api]     at node:internal/modules/cjs/loader:1961:10
+[api]     at Object.newLoader [as .ts] (H:\voice-agent-builder\node_modules\.pnpm\pirates@4.0.7\node_modules\pirates\lib\index.js:134:7)
+[api]     at Module.load (node:internal/modules/cjs/loader:1553:32)
+[api]     at Module._load (node:internal/modules/cjs/loader:1355:12)
+[api]     at wrapModuleLoad (node:internal/modules/cjs/loader:255:19) {
+[api]   issues: [
+[api]     {
+[api]       code: 'invalid_type',
+[api]       expected: 'string',
+[api]       received: 'undefined',
+[api]       path: [ 'REDIS_URL' ],
+[api]       message: 'Required'
+[api]     }
+[api]   ],
+[api]   addIssue: [Function (anonymous)],
+[api]   addIssues: [Function (anonymous)]
+[api] }
+[api] 
+[api] Node.js v24.15.0
+[api] [31m[nodemon] app crashed - waiting for file changes before starting...[39m
+[api] npm error Lifecycle script `dev` failed with error:
+[api] npm error code 4294967295
+[api] npm error path H:\voice-agent-builder\apps\api
+[api] npm error workspace @voiceforge/api@0.1.0
+[api] npm error location H:\voice-agent-builder\apps\api
+[api] npm error command failed
+[api] npm error command C:\WINDOWS\system32\cmd.exe /d /s /c nodemon
+[api] npm run dev -w @voiceforge/api exited with code 4294967295
+--> Sending SIGTERM to other processes..
+[web] npm run dev -w @voiceforge/web exited with code 1

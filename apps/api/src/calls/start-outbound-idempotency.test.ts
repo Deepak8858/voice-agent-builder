@@ -95,6 +95,7 @@ function makeService() {
   const cache = {
     acquireLock: vi.fn(async () => false),
     publish: vi.fn(async () => undefined),
+    del: vi.fn(async () => undefined),
   };
   const service = new CallsService(
     prisma as never,

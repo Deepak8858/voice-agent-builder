@@ -6,6 +6,7 @@ import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Edge, Node } from '@xyflow/react';
 import { FlowBuilder } from './flow-builder';
+import { convertReactFlowToAgentFlow, validateAgentFlow } from './flow-builder-model';
 import { useApi } from '@/lib/use-api';
 
 interface FlowBuilderClientProps {
@@ -34,6 +35,12 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
 
   const handleSave = useCallback(
     (nodes: Node[], edges: Edge[]) => {
+      const flow = convertReactFlowToAgentFlow(nodes, edges);
+      const issues = validateAgentFlow(flow);
+      if (issues.length > 0) {
+        toast.error(issues[0]);
+        return;
+      }
       saveMutation.mutate({ nodes, edges });
     },
     [saveMutation],

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/button';
 import {
@@ -145,6 +145,7 @@ function SidebarBrand() {
 
 function NavSections({ mobile = false }: { mobile?: boolean }) {
   const pathname = usePathname();
+  const router = useRouter();
   return (
     <nav className="flex flex-col gap-5" aria-label={mobile ? 'Mobile dashboard navigation' : 'Dashboard navigation'}>
       {navSections.map((section) => (
@@ -160,6 +161,9 @@ function NavSections({ mobile = false }: { mobile?: boolean }) {
               const link = (
                 <Link
                   href={item.href}
+                  prefetch
+                  onMouseEnter={() => router.prefetch(item.href)}
+                  onFocus={() => router.prefetch(item.href)}
                   className={cn(
                     'group flex min-h-10 items-center gap-3 rounded-xl px-3 py-2 text-sm transition-all',
                     active

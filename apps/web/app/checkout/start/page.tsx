@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { isDemoCheckoutFallback, type DemoCheckoutFallback } from '@/lib/billing-mode';
 import { CheckoutPlanSchema } from '@voiceforge/shared';
 
 /**
@@ -35,6 +36,7 @@ function CheckoutStartInner() {
     parsedPlan.success ? null : 'Missing or invalid plan id.',
   );
   const [pending, setPending] = useState(parsedPlan.success);
+  const [demoFallback, setDemoFallback] = useState<DemoCheckoutFallback | null>(null);
 
   useEffect(() => {
     if (!parsedPlan.success) return;
@@ -51,10 +53,15 @@ function CheckoutStartInner() {
         const data = (await res.json().catch(() => null)) as {
           url?: string;
           error?: string;
-        } | null;
+        } | DemoCheckoutFallback | null;
         if (cancelled) return;
         if (res.status === 401) {
           router.replace(`/sign-in?next=/checkout/start?plan=${plan}`);
+          return;
+        }
+        if (isDemoCheckoutFallback(data)) {
+          setDemoFallback(data);
+          setPending(false);
           return;
         }
         if (!res.ok || !data?.url) {
@@ -82,14 +89,29 @@ function CheckoutStartInner() {
   return (
     <div className="mx-auto flex min-h-[60dvh] max-w-md flex-col items-center justify-center px-6 py-16 text-center">
       <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
-        Taking you to checkout
+        {demoFallback ? 'Checkout is paused for demo' : 'Taking you to checkout'}
       </h1>
       {pending && !error ? (
         <p className="mt-3 text-sm text-muted-foreground">
           Redirecting you to Stripe to complete your purchase…
         </p>
       ) : null}
-      {error ? (
+      {demoFallback ? (
+        <>
+          <p className="mt-3 text-sm text-muted-foreground">{demoFallback.message}</p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <Button asChild>
+              <Link href={demoFallback.fallbackHref}>{demoFallback.fallbackLabel}</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link href="/pricing">Compare plans</Link>
+            </Button>
+            <Button asChild variant="ghost">
+              <a href={demoFallback.salesHref}>Contact sales</a>
+            </Button>
+          </div>
+        </>
+      ) : error ? (
         <>
           <p className="mt-3 text-sm text-destructive">{error}</p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">

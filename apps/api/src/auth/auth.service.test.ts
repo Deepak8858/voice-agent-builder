@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 import { SupabaseAuthService } from './supabase-auth.service';
+import { env } from '../config/env';
 
 // Mock dependencies
 const mockPrisma = {
@@ -74,6 +75,58 @@ describe('Session validation edge cases', () => {
       const tokenWithoutSub = jwt.sign({ email: 'test@example.com' }, 'secret');
       const decoded = jwt.decode(tokenWithoutSub) as { sub?: string };
       expect(decoded.sub).toBeUndefined();
+    });
+  });
+
+  describe('Supabase token claim cache', () => {
+    it('uses cached introspected claims without calling Supabase on repeated route clicks', async () => {
+      Object.assign(env, {
+        SUPABASE_JWT_SECRET: undefined,
+        SUPABASE_URL: 'https://voiceforge.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-key',
+      });
+      const token = jwt.sign(
+        { sub: 'auth-123', email: 'test@example.com' },
+        'untrusted-test-secret',
+        { expiresIn: '5m' },
+      );
+      const sessionUser = {
+        id: '11111111-1111-4111-8111-111111111111',
+        email: 'test@example.com',
+        name: null,
+        active_workspace_id: '22222222-2222-4222-8222-222222222222',
+        active_workspace_name: 'Demo Workspace',
+        active_workspace_role: 'owner',
+      };
+      const cache = {
+        get: vi.fn(async (key: string) => {
+          if (key.startsWith('session:claims:')) {
+            return {
+              sub: 'auth-123',
+              email: 'test@example.com',
+              aud: 'authenticated',
+              exp: Math.floor(Date.now() / 1000) + 300,
+            };
+          }
+          if (key === 'session:user:auth-123') return sessionUser;
+          return null;
+        }),
+        set: vi.fn(async () => undefined),
+      };
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('Supabase should not be called'));
+      const service = new SupabaseAuthService(mockPrisma as never, cache as never);
+
+      const req = {
+        headers: { authorization: `Bearer ${token}` },
+        res: { setHeader: vi.fn() },
+      };
+
+      await expect(service.getSessionUser(req as never)).resolves.toEqual(sessionUser);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      fetchSpy.mockRestore();
     });
   });
 

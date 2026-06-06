@@ -507,8 +507,8 @@ function toAgentFlowNode(
         ...base,
         type: 'condition',
         expression: stringValue(data['expression']),
-        on_true: branchTarget(node.id, outgoing, 'true') ?? stringValue(data['on_true']),
-        on_false: branchTarget(node.id, outgoing, 'false') ?? stringValue(data['on_false']),
+        on_true: branchTarget(node.id, outgoing, 'true') ?? '',
+        on_false: branchTarget(node.id, outgoing, 'false') ?? '',
       };
     case 'knowledge_lookup':
       return {

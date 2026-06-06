@@ -27,4 +27,29 @@ describe('env validation', () => {
 
     await expect(import('./env')).rejects.toThrow(/VOICE_WEBHOOK_SECRET/);
   });
+
+  it('parses WORKERS_ENABLED explicitly and defaults it off', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    });
+
+    let mod = await import('./env');
+    expect(mod.env.WORKERS_ENABLED).toBe(false);
+
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      WORKERS_ENABLED: 'true',
+    });
+
+    mod = await import('./env');
+    expect(mod.env.WORKERS_ENABLED).toBe(true);
+  });
 });

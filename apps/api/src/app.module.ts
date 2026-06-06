@@ -42,6 +42,7 @@ import { CalendarModule } from './calendar/calendar.module';
 import { LiveKitModule } from './livekit/livekit.module';
 import { SecurityModule } from './security/security.module';
 import { TelephonyModule } from './telephony/telephony.module';
+import { env } from './config/env';
 
 @Module({
   imports: [
@@ -67,7 +68,7 @@ import { TelephonyModule } from './telephony/telephony.module';
     CallsModule,
     ToolsModule,
     AnalyticsModule,
-    WorkersModule,
+    ...(env.WORKERS_ENABLED ? [WorkersModule] : []),
     WhiteLabelModule,
     StripeWebhookModule,
     BillingModule,

@@ -1,6 +1,13 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+const BooleanEnvSchema = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  }
+  return value;
+}, z.boolean());
+
 /**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
@@ -102,6 +109,7 @@ const EnvSchema = z.object({
 
   METRICS_SCRAPE_TOKEN: z.string().optional(),
   VOICE_WEBHOOK_SECRET: z.string().optional(),
+  WORKERS_ENABLED: BooleanEnvSchema.default(false),
 
   // Comma-separated list of allowed origins for CORS (no wildcards in production)
   ALLOWED_ORIGINS: z

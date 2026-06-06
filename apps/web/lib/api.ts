@@ -1,5 +1,6 @@
 import 'server-only';
 import { cookies } from 'next/headers';
+import { cache } from 'react';
 import type { ApiEnvelope } from '@voiceforge/shared';
 import { buildApiContextHeaders } from './api-context-headers';
 import { extractSupabaseAccessToken } from './supabase/access-token';
@@ -7,6 +8,10 @@ import { extractSupabaseAccessToken } from './supabase/access-token';
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+
+const cachedServerGet = cache(async (path: string, accessToken: string | null) =>
+  rawApiFetch<unknown>(path, {}, accessToken),
+);
 
 /**
  * Server-side API fetch. Used in Server Components and Route Handlers.
@@ -19,7 +24,25 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const cookieStore = await cookies();
   const accessToken = extractSupabaseAccessToken(cookieStore.getAll(), SUPABASE_URL);
+  const method = (init.method ?? 'GET').toUpperCase();
+  const cacheableGet =
+    method === 'GET' &&
+    !init.body &&
+    !init.headers &&
+    !init.signal;
 
+  if (cacheableGet) {
+    return (await cachedServerGet(path, accessToken)) as T;
+  }
+
+  return rawApiFetch<T>(path, init, accessToken);
+}
+
+async function rawApiFetch<T>(
+  path: string,
+  init: RequestInit,
+  accessToken: string | null,
+): Promise<T> {
   const headers = new Headers(init.headers);
   const contextHeaders = buildApiContextHeaders(accessToken, {
     internalApiKey: INTERNAL_API_KEY,

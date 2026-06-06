@@ -2,12 +2,28 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import type { AgentSpec } from '@voiceforge/shared';
 import { MVP_TEMPLATES } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../cache/cache.service';
+
+const TEMPLATE_CACHE_TTL_SECONDS = 300;
 
 @Injectable()
 export class TemplatesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
+  ) {}
 
   async list() {
+    const key = 'templates:list:public';
+    const cached = await this.cache.get<Awaited<ReturnType<TemplatesService['loadList']>>>(key);
+    if (cached !== null) return cached;
+
+    const result = await this.loadList();
+    await this.cache.set(key, result, TEMPLATE_CACHE_TTL_SECONDS);
+    return result;
+  }
+
+  private async loadList() {
     const rows = await this.prisma.agentTemplate.findMany({
       where: { isPublic: true },
       orderBy: { name: 'asc' },

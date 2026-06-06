@@ -1,22 +1,11 @@
 import type { Edge, Node, XYPosition } from '@xyflow/react';
+import type { AgentSpec } from '@voiceforge/shared';
 
 const NODE_X = 120;
 const NODE_Y_START = 40;
 const NODE_Y_GAP = 160;
 
-type AgentFlowNode = {
-  id: string;
-  type: string;
-  next?: string;
-  on_true?: string;
-  on_false?: string;
-  [key: string]: unknown;
-};
-
-type AgentFlow = {
-  start_node_id?: string;
-  nodes: AgentFlowNode[];
-};
+export type AgentFlow = NonNullable<AgentSpec['flow']>;
 
 export function buildNodeData(type: string): Record<string, unknown> {
   switch (type) {
@@ -25,7 +14,7 @@ export function buildNodeData(type: string): Record<string, unknown> {
     case 'ask_question':
       return { question: 'Ask...', capture_field: '' };
     case 'condition':
-      return { expression: '', on_true: '', on_false: '' };
+      return { expression: '' };
     case 'knowledge_lookup':
       return { query_field: '' };
     case 'tool_call':
@@ -80,7 +69,11 @@ export function convertAgentFlowToReactFlow(flow: AgentFlow): { nodes: Node[]; e
       position: { x: NODE_X, y: NODE_Y_START + index * NODE_Y_GAP },
       data: {
         label: node.type === 'start' ? 'Start' : node.type === 'end' ? 'End' : '',
-        ...Object.fromEntries(Object.entries(node).filter(([key]) => key !== 'id' && key !== 'type')),
+        ...Object.fromEntries(
+          Object.entries(node).filter(
+            ([key]) => !['id', 'type', 'next', 'on_true', 'on_false'].includes(key),
+          ),
+        ),
       },
     });
   });
@@ -94,31 +87,214 @@ export function convertAgentFlowToReactFlow(flow: AgentFlow): { nodes: Node[]; e
         animated: true,
       });
     }
-    if (node.on_true && nodeMap.has(node.on_true)) {
-      edges.push({
-        id: `e-${node.id}-true-${node.on_true}`,
-        source: node.id,
-        target: node.on_true,
-        sourceHandle: 'true',
-        animated: true,
-      });
-    }
-    if (node.on_false && nodeMap.has(node.on_false)) {
-      edges.push({
-        id: `e-${node.id}-false-${node.on_false}`,
-        source: node.id,
-        target: node.on_false,
-        sourceHandle: 'false',
-        animated: true,
-      });
+    if (node.type === 'condition') {
+      if (node.on_true && nodeMap.has(node.on_true)) {
+        edges.push({
+          id: `e-${node.id}-true-${node.on_true}`,
+          source: node.id,
+          target: node.on_true,
+          sourceHandle: 'true',
+          animated: true,
+        });
+      }
+      if (node.on_false && nodeMap.has(node.on_false)) {
+        edges.push({
+          id: `e-${node.id}-false-${node.on_false}`,
+          source: node.id,
+          target: node.on_false,
+          sourceHandle: 'false',
+          animated: true,
+        });
+      }
     }
   }
 
   return { nodes: [...nodeMap.values()], edges };
 }
 
+export function convertReactFlowToAgentFlow(nodes: Node[], edges: Edge[]): AgentFlow {
+  const outgoing = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    const existing = outgoing.get(edge.source) ?? [];
+    existing.push(edge);
+    outgoing.set(edge.source, existing);
+  }
+
+  const flowNodes = nodes.map((node) => toAgentFlowNode(node, outgoing));
+  return {
+    start_node_id: flowNodes.find((node) => node.type === 'start')?.id ?? flowNodes[0]?.id ?? '',
+    nodes: flowNodes,
+  };
+}
+
+export function validateAgentFlow(flow: AgentFlow): string[] {
+  const issues: string[] = [];
+  const ids = new Set(flow.nodes.map((node) => node.id));
+
+  if (flow.nodes.length < 2) {
+    issues.push('Flow must include at least two nodes.');
+  }
+  if (!ids.has(flow.start_node_id)) {
+    issues.push(`Start node "${flow.start_node_id}" is missing from the flow.`);
+  }
+  if (!flow.nodes.some((node) => node.type === 'end')) {
+    issues.push('Flow must include an end node.');
+  }
+
+  for (const node of flow.nodes) {
+    collectTargetIssue(issues, ids, node.id, node.next, 'next');
+    if (node.type === 'condition') {
+      collectTargetIssue(issues, ids, node.id, node.on_true, 'true branch');
+      collectTargetIssue(issues, ids, node.id, node.on_false, 'false branch');
+    }
+  }
+
+  return issues;
+}
+
+function toAgentFlowNode(
+  node: Node,
+  outgoing: Map<string, Edge[]>,
+): AgentFlow['nodes'][number] {
+  const data = asRecord(node.data);
+  const label = optionalString(data['label']);
+  const next = nextTarget(node.id, outgoing);
+  const base = {
+    id: node.id,
+    ...(label ? { label } : {}),
+  };
+
+  switch (normalizeVisualNodeType(node.type ?? 'end')) {
+    case 'start':
+      return { ...base, type: 'start', ...(next ? { next } : {}) };
+    case 'speak':
+      return {
+        ...base,
+        type: 'speak',
+        text: stringValue(data['text']),
+        ...(next ? { next } : {}),
+      };
+    case 'ask_question':
+      return {
+        ...base,
+        type: 'ask_question',
+        question: stringValue(data['question']),
+        ...(optionalString(data['capture_field'])
+          ? { capture_field: optionalString(data['capture_field']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'condition':
+      return {
+        ...base,
+        type: 'condition',
+        expression: stringValue(data['expression']),
+        on_true: branchTarget(node.id, outgoing, 'true') ?? '',
+        on_false: branchTarget(node.id, outgoing, 'false') ?? '',
+      };
+    case 'knowledge_lookup':
+      return {
+        ...base,
+        type: 'knowledge_lookup',
+        ...(optionalString(data['query_field'])
+          ? { query_field: optionalString(data['query_field']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'tool_call':
+      return {
+        ...base,
+        type: 'tool_call',
+        tool_name: stringValue(data['tool_name']),
+        ...(asRecordOrNull(data['arguments']) ? { arguments: asRecord(data['arguments']) } : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'transfer':
+      return {
+        ...base,
+        type: 'transfer',
+        ...(optionalString(data['target_phone'])
+          ? { target_phone: optionalString(data['target_phone']) }
+          : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'send_message':
+      return {
+        ...base,
+        type: 'send_message',
+        channel: data['channel'] === 'email' ? 'email' : 'sms',
+        body: stringValue(data['body']),
+        ...(next ? { next } : {}),
+      };
+    case 'fallback':
+      return {
+        ...base,
+        type: 'fallback',
+        ...(optionalString(data['message']) ? { message: optionalString(data['message']) } : {}),
+        ...(next ? { next } : {}),
+      };
+    case 'end':
+    default:
+      return { ...base, type: 'end' };
+  }
+}
+
 function normalizeVisualNodeType(type: string): string {
   if (type === 'ask-question') return 'ask_question';
   if (type === 'tool-call') return 'tool_call';
   return type;
+}
+
+function nextTarget(nodeId: string, outgoing: Map<string, Edge[]>): string | undefined {
+  const edges = outgoing.get(nodeId) ?? [];
+  const edge = edges.find((candidate) => !isConditionHandle(candidate.sourceHandle)) ?? edges[0];
+  return edge?.target;
+}
+
+function branchTarget(
+  nodeId: string,
+  outgoing: Map<string, Edge[]>,
+  branch: 'true' | 'false',
+): string | undefined {
+  return (outgoing.get(nodeId) ?? []).find((edge) => edge.sourceHandle === branch)?.target;
+}
+
+function isConditionHandle(handle: string | null | undefined): boolean {
+  return handle === 'true' || handle === 'false';
+}
+
+function collectTargetIssue(
+  issues: string[],
+  ids: Set<string>,
+  nodeId: string,
+  target: string | undefined,
+  label: string,
+): void {
+  if (target === undefined) return;
+  if (target.trim().length === 0) {
+    issues.push(`Node "${nodeId}" ${label} target is empty.`);
+    return;
+  }
+  if (!ids.has(target)) {
+    const prefix = label.includes('branch') ? 'Condition node' : 'Node';
+    issues.push(`${prefix} "${nodeId}" ${label} points to missing node "${target}".`);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return asRecordOrNull(value) ?? {};
+}
+
+function asRecordOrNull(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

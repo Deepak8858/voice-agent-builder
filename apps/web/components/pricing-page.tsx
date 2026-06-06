@@ -4,6 +4,11 @@ import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import {
+  isDemoCheckoutFallback,
+  type DemoCheckoutFallback,
+  type WebBillingMode,
+} from '@/lib/billing-mode';
 import { Check, ArrowRight, Zap } from 'lucide-react';
 import {
   PLAN_CATALOG,
@@ -20,6 +25,7 @@ const SALES_EMAIL =
 interface PricingPageProps {
   isAuthenticated?: boolean;
   currentPlan?: PlanType | null;
+  billingMode?: WebBillingMode;
 }
 
 interface ResolvedCta {
@@ -64,14 +70,20 @@ function CheckIcon({ value }: { value: boolean | string }) {
   return <span className="text-xs text-muted-foreground">{value}</span>;
 }
 
-async function startStripeCheckout(plan: CheckoutPlan): Promise<string> {
+async function startStripeCheckout(plan: CheckoutPlan): Promise<string | DemoCheckoutFallback> {
   const res = await fetch('/api/billing/checkout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ plan }),
     credentials: 'include',
   });
-  const data = (await res.json().catch(() => null)) as { url?: string; error?: string } | null;
+  const data = (await res.json().catch(() => null)) as
+    | { url?: string; error?: string }
+    | DemoCheckoutFallback
+    | null;
+  if (isDemoCheckoutFallback(data)) {
+    return data;
+  }
   if (!res.ok || !data?.url) {
     throw new Error(data?.error ?? `Checkout failed with status ${res.status}.`);
   }
@@ -81,16 +93,28 @@ async function startStripeCheckout(plan: CheckoutPlan): Promise<string> {
   return data.url;
 }
 
-export function PricingPage({ isAuthenticated = false, currentPlan = null }: PricingPageProps) {
+export function PricingPage({
+  isAuthenticated = false,
+  currentPlan = null,
+  billingMode = 'live',
+}: PricingPageProps) {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checkoutFallback, setCheckoutFallback] = useState<DemoCheckoutFallback | null>(null);
+  const isDemoBilling = billingMode === 'demo';
 
   const handleCheckout = useCallback(async (plan: CheckoutPlan) => {
     setLoadingPlan(plan);
     setError(null);
+    setCheckoutFallback(null);
     try {
-      const url = await startStripeCheckout(plan);
-      window.location.assign(url);
+      const result = await startStripeCheckout(plan);
+      if (typeof result === 'string') {
+        window.location.assign(result);
+        return;
+      }
+      setCheckoutFallback(result);
+      setLoadingPlan(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Checkout failed.');
       setLoadingPlan(null);
@@ -119,6 +143,19 @@ export function PricingPage({ isAuthenticated = false, currentPlan = null }: Pri
         if (!isCheckoutPlan(plan.id)) {
           return { label: plan.cta, variant: 'default', disabled: true };
         }
+        if (isDemoBilling) {
+          return isAuthenticated
+            ? {
+                label: 'Continue in demo',
+                variant: plan.highlight ? 'default' : 'outline',
+                href: '/dashboard/billing',
+              }
+            : {
+                label: 'Start free trial',
+                variant: plan.highlight ? 'default' : 'outline',
+                href: '/sign-up',
+              };
+        }
         if (!isAuthenticated) {
           return {
             label: plan.cta,
@@ -136,7 +173,7 @@ export function PricingPage({ isAuthenticated = false, currentPlan = null }: Pri
           onClick: () => handleCheckout(plan.id as CheckoutPlan),
         };
       },
-    [currentPlan, isAuthenticated, handleCheckout],
+    [currentPlan, isAuthenticated, isDemoBilling, handleCheckout],
   );
 
   return (
@@ -153,6 +190,15 @@ export function PricingPage({ isAuthenticated = false, currentPlan = null }: Pri
         <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
           Start free. No credit card required. Scale as you grow.
         </p>
+        {isDemoBilling ? (
+          <div className="mx-auto mt-6 max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+            <p className="font-medium">Stripe checkout is paused during account review.</p>
+            <p className="mt-1 text-xs">
+              Free trial and demo workspaces remain available. Paid plan checkout will reopen when live
+              billing is re-enabled.
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {/* Plan cards */}
@@ -160,6 +206,20 @@ export function PricingPage({ isAuthenticated = false, currentPlan = null }: Pri
         {error ? (
           <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
             {error}
+          </div>
+        ) : null}
+        {checkoutFallback ? (
+          <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+            <p className="font-medium">Checkout is paused</p>
+            <p className="mt-1 text-xs">{checkoutFallback.message}</p>
+            <div className="mt-3 flex flex-wrap gap-3 text-xs font-medium">
+              <a className="underline underline-offset-4" href={checkoutFallback.fallbackHref}>
+                {checkoutFallback.fallbackLabel}
+              </a>
+              <a className="underline underline-offset-4" href={checkoutFallback.salesHref}>
+                Contact sales
+              </a>
+            </div>
           </div>
         ) : null}
         <div className="mx-auto max-w-6xl grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'crypto';
 import type { Request, Response } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
 import jwt from 'jsonwebtoken';
@@ -10,6 +11,7 @@ import { CacheService } from '../cache/cache.service';
 
 const SESSION_USER_TTL = 300;
 const SESSION_WORKSPACE_TTL = 300;
+const TOKEN_CLAIMS_TTL = 60;
 
 interface SupabaseAuthUser {
   id: string;
@@ -122,12 +124,20 @@ export class SupabaseAuthService extends AuthService {
       }
     }
 
+    const claimsKey = this.claimsCacheKey(token);
+    const cachedClaims = await this.cache.get<SupabaseJWTPayload>(claimsKey);
+    if (cachedClaims && this.claimsAreFresh(cachedClaims)) {
+      return cachedClaims;
+    }
+
     const user = await this.getSupabaseUser(token);
     if (!user) {
       return null;
     }
 
-    return this.claimsFromSupabaseUser(user);
+    const claims = this.claimsFromSupabaseUser(user, token);
+    await this.cache.set(claimsKey, claims, this.claimsTtlSeconds(claims));
+    return claims;
   }
 
   private async getSupabaseUser(token: string): Promise<SupabaseAuthUser | null> {
@@ -147,12 +157,19 @@ export class SupabaseAuthService extends AuthService {
     return (await res.json()) as SupabaseAuthUser;
   }
 
-  private claimsFromSupabaseUser(user: SupabaseAuthUser): SupabaseJWTPayload {
+  private claimsFromSupabaseUser(user: SupabaseAuthUser, token: string): SupabaseJWTPayload {
+    const decoded = jwt.decode(token) as Partial<SupabaseJWTPayload> | null;
+    const exp =
+      typeof decoded?.exp === 'number'
+        ? decoded.exp
+        : Math.floor(Date.now() / 1000) + TOKEN_CLAIMS_TTL;
+    const aud = typeof decoded?.aud === 'string' ? decoded.aud : 'authenticated';
+
     return {
       sub: user.id,
       email: user.email,
-      aud: 'authenticated',
-      exp: 0,
+      aud,
+      ...(typeof decoded?.role === 'string' ? { role: decoded.role } : {}),
       user_metadata: {
         full_name: asString(user.user_metadata?.full_name),
         name: asString(user.user_metadata?.name),
@@ -164,7 +181,26 @@ export class SupabaseAuthService extends AuthService {
           ? user.app_metadata.providers.filter((provider): provider is string => typeof provider === 'string')
           : undefined,
       },
+      exp,
     };
+  }
+
+  private claimsCacheKey(token: string): string {
+    return `session:claims:${this.tokenHash(token)}`;
+  }
+
+  private tokenHash(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private claimsAreFresh(claims: SupabaseJWTPayload): boolean {
+    return claims.exp > Math.floor(Date.now() / 1000);
+  }
+
+  private claimsTtlSeconds(claims: SupabaseJWTPayload): number {
+    const secondsUntilExpiry = claims.exp - Math.floor(Date.now() / 1000);
+    if (secondsUntilExpiry <= 0) return 1;
+    return Math.max(1, Math.min(TOKEN_CLAIMS_TTL, secondsUntilExpiry));
   }
 
   private async buildSessionUser(

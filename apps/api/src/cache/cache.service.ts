@@ -21,9 +21,21 @@ export class CacheService {
     return key.startsWith(this.prefix) ? key : `${this.prefix}${key}`;
   }
 
+  private connectionReady(): boolean {
+    return this.getReadyConnection() !== null;
+  }
+
+  private getReadyConnection(): ReturnType<QueueService['getConnection']> | null {
+    const conn = typeof this.queue.getExistingConnection === 'function'
+      ? this.queue.getExistingConnection()
+      : this.queue.getConnection();
+    return conn?.status === 'ready' ? conn : null;
+  }
+
   async get<T>(key: string): Promise<T | null> {
     try {
-      const raw = await this.queue.getConnection().get(this.k(key));
+      if (!this.connectionReady()) return null;
+      const raw = await this.getReadyConnection()!.get(this.k(key));
       return raw === null ? null : (JSON.parse(raw) as T);
     } catch (err) {
       this.logger.debug(`[cache.get:${key}] ${(err as Error).message}`);
@@ -34,7 +46,8 @@ export class CacheService {
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     const payload = JSON.stringify(value);
     try {
-      const conn = this.queue.getConnection();
+      if (!this.connectionReady()) return;
+      const conn = this.getReadyConnection()!;
       if (ttlSeconds && ttlSeconds > 0) {
         await conn.set(this.k(key), payload, 'EX', ttlSeconds);
       } else {
@@ -47,7 +60,8 @@ export class CacheService {
 
   async del(key: string): Promise<void> {
     try {
-      await this.queue.getConnection().del(this.k(key));
+      if (!this.connectionReady()) return;
+      await this.getReadyConnection()!.del(this.k(key));
     } catch (err) {
       this.logger.debug(`[cache.del:${key}] ${(err as Error).message}`);
     }
@@ -55,9 +69,8 @@ export class CacheService {
 
   async acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
     try {
-      const result = await this.queue
-        .getConnection()
-        .set(this.k(key), '1', 'EX', ttlSeconds, 'NX');
+      if (!this.connectionReady()) return false;
+      const result = await this.getReadyConnection()!.set(this.k(key), '1', 'EX', ttlSeconds, 'NX');
       return result === 'OK';
     } catch (err) {
       this.logger.debug(`[cache.acquireLock:${key}] ${(err as Error).message}`);
@@ -87,7 +100,8 @@ export class CacheService {
    */
   async incr(key: string, ttlSeconds?: number): Promise<number> {
     try {
-      const conn = this.queue.getConnection();
+      if (!this.connectionReady()) return 1;
+      const conn = this.getReadyConnection()!;
       const fullKey = this.k(key);
       const pipeline = conn.pipeline();
       pipeline.incr(fullKey);
@@ -109,8 +123,9 @@ export class CacheService {
    */
   async publish(channel: string, message: unknown): Promise<void> {
     try {
+      if (!this.connectionReady()) return;
       const payload = typeof message === 'string' ? message : JSON.stringify(message);
-      await this.queue.getConnection().publish(channel, payload);
+      await this.getReadyConnection()!.publish(channel, payload);
     } catch (err) {
       this.logger.debug(`[cache.publish:${channel}] ${(err as Error).message}`);
     }

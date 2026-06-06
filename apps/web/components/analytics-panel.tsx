@@ -49,7 +49,9 @@ const RANGE_DAYS: Record<RangeOption, number> = {
 
 function buildRangeDays(days: number) {
   const to = new Date();
+  to.setUTCHours(23, 59, 59, 999);
   const from = new Date(to.getTime() - days * 24 * 60 * 60 * 1000);
+  from.setUTCHours(0, 0, 0, 0);
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
@@ -77,11 +79,6 @@ const OUTCOME_COLORS = [
   '#f59e0b', // amber (no-answer)
   '#ef4444', // red (failed)
   '#94a3b8', // slate (other)
-];
-
-const PIE_AGENTS = [
-  '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6',
-  '#14b8a6', '#f97316', '#ec4899', '#06b6d4', '#84cc16',
 ];
 
 export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {

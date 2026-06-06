@@ -71,6 +71,34 @@ describe('AgentSpecSchema', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects flow edges that point at missing nodes', () => {
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      flow: {
+        start_node_id: 'start',
+        nodes: [
+          { id: 'start', type: 'start', next: 'ask' },
+          {
+            id: 'ask',
+            type: 'ask_question',
+            question: 'How can I help?',
+            next: 'missing-node',
+          },
+          {
+            id: 'branch',
+            type: 'condition',
+            expression: "intent === 'urgent'",
+            on_true: 'end',
+            on_false: 'missing-node',
+          },
+          { id: 'end', type: 'end' },
+        ],
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it('rejects unknown agent_type', () => {
     const parsed = AgentSpecSchema.safeParse({ ...minimal, agent_type: 'cold_sales' });
     expect(parsed.success).toBe(false);

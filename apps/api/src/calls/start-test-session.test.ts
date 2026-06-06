@@ -77,7 +77,7 @@ function makeService(overrides?: {
     {} as never,
     {} as never,
     {} as never,
-    {} as never,
+    { del: vi.fn(async () => undefined) } as never,
   );
 
   return { service, prisma, audit, voice };

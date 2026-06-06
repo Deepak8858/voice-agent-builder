@@ -221,9 +221,53 @@ export const AgentSpecSchema = z
           message: 'Flow must contain at least one `end` node.',
         });
       }
+      spec.flow.nodes.forEach((node, index) => {
+        checkFlowTarget(ctx, ids, node.next, ['flow', 'nodes', index, 'next'], 'next');
+        if (node.type === 'condition') {
+          checkFlowTarget(
+            ctx,
+            ids,
+            node.on_true,
+            ['flow', 'nodes', index, 'on_true'],
+            'true branch',
+          );
+          checkFlowTarget(
+            ctx,
+            ids,
+            node.on_false,
+            ['flow', 'nodes', index, 'on_false'],
+            'false branch',
+          );
+        }
+      });
     }
   });
 
 export type AgentSpec = z.infer<typeof AgentSpecSchema>;
 
 export const AGENT_SPEC_SCHEMA_VERSION = '1.0' as const;
+
+function checkFlowTarget(
+  ctx: z.RefinementCtx,
+  ids: Set<string>,
+  target: string | undefined,
+  path: Array<string | number>,
+  label: string,
+): void {
+  if (target === undefined) return;
+  if (target.trim().length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Flow ${label} target must not be empty.`,
+    });
+    return;
+  }
+  if (!ids.has(target)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: `Flow ${label} target does not reference a node in flow.nodes.`,
+    });
+  }
+}

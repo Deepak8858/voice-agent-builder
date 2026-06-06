@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import type { WebBillingMode } from '@/lib/billing-mode';
 import { TrendingUp, X, Sparkles, Zap, Building2 } from 'lucide-react';
 
 interface UpgradeModalProps {
@@ -24,7 +25,12 @@ interface UpgradeModalProps {
   currentPlan?: string;
   /** Called when user clicks upgrade */
   onUpgrade?: () => void;
+  /** Demo mode keeps users away from paused Stripe checkout */
+  billingMode?: WebBillingMode;
 }
+
+const SALES_EMAIL =
+  process.env.NEXT_PUBLIC_SALES_EMAIL ?? 'sales@voiceforge.ai';
 
 const LIMIT_LABELS: Record<string, string> = {
   calls: 'outbound calls',
@@ -59,9 +65,12 @@ export function UpgradeModal({
   limitType,
   currentPlan = 'free',
   onUpgrade,
+  billingMode = 'live',
 }: UpgradeModalProps) {
   const recommendation = PLAN_RECOMMENDATIONS[currentPlan] ?? PLAN_RECOMMENDATIONS['free'];
   const limitLabel = limitType ? LIMIT_LABELS[limitType] ?? limitType : null;
+  const isDemoBilling = billingMode === 'demo';
+  const salesHref = `mailto:${SALES_EMAIL}?subject=VoiceForge%20paid%20plan%20activation`;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -73,12 +82,18 @@ export function UpgradeModal({
                 <TrendingUp className="h-5 w-5 text-chart-2" />
               </div>
               <div>
-                <DialogTitle>You&apos;ve hit your limit</DialogTitle>
-                {limitLabel && (
+                <DialogTitle>
+                  {isDemoBilling ? 'Checkout is paused' : "You've hit your limit"}
+                </DialogTitle>
+                {isDemoBilling ? (
+                  <DialogDescription className="mt-0.5">
+                    Stripe checkout is paused during account review. Free trial and demo workspaces remain available.
+                  </DialogDescription>
+                ) : limitLabel ? (
                   <DialogDescription className="mt-0.5">
                     Upgrade to continue making {limitLabel}.
                   </DialogDescription>
-                )}
+                ) : null}
               </div>
             </div>
             <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0">
@@ -138,15 +153,30 @@ export function UpgradeModal({
               )}
             </div>
           </div>
+          {isDemoBilling ? (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+              Paid plan activation is temporarily unavailable through Stripe. Contact sales for assisted setup,
+              or continue using the free trial/demo limits.
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-2">
-          <Button onClick={onUpgrade} className="w-full gap-2">
-            Upgrade to {recommendation.plan}
-            <TrendingUp className="h-4 w-4" />
-          </Button>
+          {isDemoBilling ? (
+            <Button asChild className="w-full gap-2">
+              <a href={salesHref}>
+                Contact sales
+                <TrendingUp className="h-4 w-4" />
+              </a>
+            </Button>
+          ) : (
+            <Button onClick={onUpgrade} className="w-full gap-2">
+              Upgrade to {recommendation.plan}
+              <TrendingUp className="h-4 w-4" />
+            </Button>
+          )}
           <Button variant="ghost" onClick={onClose} className="w-full">
-            Maybe later
+            {isDemoBilling ? 'Continue in demo' : 'Maybe later'}
           </Button>
         </div>
       </DialogContent>

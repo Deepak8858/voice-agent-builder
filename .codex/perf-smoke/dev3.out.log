@@ -1,0 +1,42 @@
+
+> voiceforge-ai@0.1.0 dev
+> concurrently -k -n api,web -c cyan,magenta "npm:dev -w @voiceforge/api" "npm:dev -w @voiceforge/web"
+
+[api] 
+[api] > @voiceforge/api@0.1.0 dev
+[api] > nodemon
+[api] 
+[web] 
+[web] > @voiceforge/web@0.1.0 dev
+[web] > next dev
+[web] 
+[api] [33m[nodemon] 3.1.14[39m
+[api] [33m[nodemon] to restart at any time, enter `rs`[39m
+[api] [33m[nodemon] watching path(s): src\**\* ..\..\packages\shared\src\**\*[39m
+[api] [33m[nodemon] watching extensions: ts,json[39m
+[api] [32m[nodemon] starting `node --enable-source-maps -r @swc-node/register -r ./scripts/load-env.ts src/main.ts`[39m
+[web] ⚠ Port 3000 is in use by process 8212, using available port 3001 instead.
+[web] ▲ Next.js 16.2.4 (Turbopack)
+[web] - Local:         http://localhost:3001
+[web] - Network:       http://10.133.55.51:3001
+[web] - Environments: .env.local
+[web] ✓ Ready in 2.8s
+[web] ⨯ Another next dev server is already running.
+[web] 
+[web] - Local:        http://localhost:3000
+[web] - PID:          8212
+[web] - Dir:          H:\voice-agent-builder\apps\web
+[web] - Log:          .next\dev\logs\next-development.log
+[web] 
+[web] Run taskkill /PID 8212 /F to stop it.
+[web] [?25h
+[web] npm error Lifecycle script `dev` failed with error:
+[web] npm error code 1
+[web] npm error path H:\voice-agent-builder\apps\web
+[web] npm error workspace @voiceforge/web@0.1.0
+[web] npm error location H:\voice-agent-builder\apps\web
+[web] npm error command failed
+[web] npm error command C:\WINDOWS\system32\cmd.exe /d /s /c next dev
+[web] npm run dev -w @voiceforge/web exited with code 1
+--> Sending SIGTERM to other processes..
+[api] npm run dev -w @voiceforge/api exited with code 1

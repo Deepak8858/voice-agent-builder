@@ -3,8 +3,8 @@ import path from 'node:path';
 import { config } from 'dotenv';
 
 const envPaths = [
-  path.resolve(process.cwd(), '.env'),
   path.resolve(__dirname, '../../../.env'),
+  path.resolve(process.cwd(), '.env'),
 ];
 
 for (const envPath of envPaths) {

@@ -22,6 +22,7 @@ import type {
 import { PLAN_LIMITS as SHARED_PLAN_LIMITS } from '@voiceforge/shared';
 import type { ApiErrorCode } from '@voiceforge/shared';
 import { AppError } from '../common/errors';
+import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -72,13 +73,20 @@ function hasControlCharacter(value: string): boolean {
 
 const DEMO_BILLING_MESSAGE =
   'Live Stripe billing is disabled for this demo. Free trial limits remain active.';
+const SUBSCRIPTION_CACHE_TTL_SECONDS = 60;
+const NO_SUBSCRIPTION = '__none__';
+
+type CachedSubscription = SubscriptionDto | typeof NO_SUBSCRIPTION;
 
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
   private readonly stripe: StripeClient | null;
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache?: CacheService,
+  ) {
     this.stripe = env.STRIPE_SECRET_KEY
       ? (new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia' }) as unknown as StripeClient)
       : null;
@@ -255,11 +263,19 @@ export class BillingService {
   // -------------------------------------------------------------------------
 
   async getSubscription(organizationId: string): Promise<SubscriptionDto | null> {
+    const cacheKey = `billing:subscription:${organizationId}`;
+    const cached = await this.cache?.get<CachedSubscription>(cacheKey);
+    if (cached === NO_SUBSCRIPTION) return null;
+    if (cached) return cached;
+
     const sub = await this.prisma.subscription.findUnique({
       where: { organizationId },
     });
-    if (!sub) return null;
-    return {
+    if (!sub) {
+      await this.cache?.set(cacheKey, NO_SUBSCRIPTION, SUBSCRIPTION_CACHE_TTL_SECONDS);
+      return null;
+    }
+    const dto: SubscriptionDto = {
       id: sub.id,
       plan: sub.plan as PlanType,
       status: sub.status as SubscriptionStatus,
@@ -269,6 +285,8 @@ export class BillingService {
       trialEnd: sub.trialEnd?.toISOString() ?? null,
       stripeCustomerId: sub.stripeCustomerId,
     };
+    await this.cache?.set(cacheKey, dto, SUBSCRIPTION_CACHE_TTL_SECONDS);
+    return dto;
   }
 
   // -------------------------------------------------------------------------

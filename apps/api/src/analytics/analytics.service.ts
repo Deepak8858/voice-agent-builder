@@ -12,6 +12,7 @@ import type {
   WorkspaceMetrics,
 } from '@voiceforge/shared';
 import { SUCCESS_OUTCOMES } from '@voiceforge/shared';
+import { CacheService } from '../cache/cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface ResolvedRange {
@@ -35,10 +36,14 @@ export interface TimeseriesResponse {
 }
 
 const DEFAULT_WINDOW_DAYS = 30;
+const ANALYTICS_CACHE_TTL_SECONDS = 30;
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cache?: CacheService,
+  ) {}
 
   // --- ingestion --------------------------------------------------------
 
@@ -109,6 +114,9 @@ export class AnalyticsService {
     workspaceId: string,
     query: MetricsRangeQuery,
   ): Promise<WorkspaceMetrics> {
+    const cached = await this.getCached<WorkspaceMetrics>('workspace', workspaceId, query);
+    if (cached) return cached;
+
     const range = this.resolveRange(query);
 
     const calls = await this.prisma.call.findMany({
@@ -152,7 +160,7 @@ export class AnalyticsService {
 
     const activeAgents = new Set(calls.map((c) => c.agentId)).size;
 
-    return {
+    const result: WorkspaceMetrics = {
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       total_calls: totalCalls,
       total_minutes: Math.round((totalSeconds / 60) * 100) / 100,
@@ -165,6 +173,8 @@ export class AnalyticsService {
         .sort((a, b) => b.count - a.count),
       agents_active: activeAgents,
     };
+    await this.setCached('workspace', workspaceId, query, result);
+    return result;
   }
 
   // --- agent metrics ----------------------------------------------------
@@ -173,6 +183,9 @@ export class AnalyticsService {
     workspaceId: string,
     query: MetricsRangeQuery,
   ): Promise<AgentMetricsResponse> {
+    const cached = await this.getCached<AgentMetricsResponse>('agents', workspaceId, query);
+    if (cached) return cached;
+
     const range = this.resolveRange(query);
 
     const agents = await this.prisma.agent.findMany({
@@ -244,10 +257,12 @@ export class AnalyticsService {
       });
     }
 
-    return {
+    const result: AgentMetricsResponse = {
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       agents: rows.sort((a, b) => b.total_calls - a.total_calls),
     };
+    await this.setCached('agents', workspaceId, query, result);
+    return result;
   }
 
   // --- compliance metrics ----------------------------------------------
@@ -256,6 +271,9 @@ export class AnalyticsService {
     workspaceId: string,
     query: MetricsRangeQuery,
   ): Promise<ComplianceMetrics> {
+    const cached = await this.getCached<ComplianceMetrics>('compliance', workspaceId, query);
+    if (cached) return cached;
+
     const range = this.resolveRange(query);
 
     const blockedChecks = await this.prisma.complianceCheck.findMany({
@@ -289,7 +307,7 @@ export class AnalyticsService {
       },
     });
 
-    return {
+    const result: ComplianceMetrics = {
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       blocked_calls: blockedChecks.length,
       block_reasons: [...reasonCounts.entries()]
@@ -299,6 +317,8 @@ export class AnalyticsService {
       dnc_hits: dncHits,
       missing_consent: missingConsent,
     };
+    await this.setCached('compliance', workspaceId, query, result);
+    return result;
   }
 
   // --- timeseries metrics -------------------------------------------------
@@ -307,6 +327,9 @@ export class AnalyticsService {
     workspaceId: string,
     query: MetricsRangeQuery,
   ): Promise<TimeseriesResponse> {
+    const cached = await this.getCached<TimeseriesResponse>('timeseries', workspaceId, query);
+    if (cached) return cached;
+
     const range = this.resolveRange(query);
     const totalDays = Math.ceil(
       (range.to.getTime() - range.from.getTime()) / (24 * 60 * 60 * 1000),
@@ -357,14 +380,14 @@ export class AnalyticsService {
     }
 
     // Fill in empty buckets so the chart renders a continuous line
-    const result: TimeseriesDataPoint[] = [];
+    const points: TimeseriesDataPoint[] = [];
     const cursor = new Date(range.from);
     while (cursor <= range.to) {
       const key =
         granularity === 'daily'
           ? cursor.toISOString().slice(0, 10)
           : getWeekKey(cursor);
-      result.push(buckets.get(key) ?? {
+      points.push(buckets.get(key) ?? {
         date: key,
         calls: 0,
         completed: 0,
@@ -375,11 +398,49 @@ export class AnalyticsService {
       cursor.setDate(cursor.getDate() + (granularity === 'daily' ? 1 : 7));
     }
 
-    return {
+    const result: TimeseriesResponse = {
       range: { from: range.from.toISOString(), to: range.to.toISOString() },
       granularity,
-      data: result,
+      data: points,
     };
+    await this.setCached('timeseries', workspaceId, query, result);
+    return result;
+  }
+
+  private async getCached<T>(
+    kind: string,
+    workspaceId: string,
+    query: MetricsRangeQuery,
+  ): Promise<T | null> {
+    if (!this.cache) return null;
+    return this.cache.get<T>(this.analyticsCacheKey(kind, workspaceId, query));
+  }
+
+  private async setCached<T>(
+    kind: string,
+    workspaceId: string,
+    query: MetricsRangeQuery,
+    value: T,
+  ): Promise<void> {
+    if (!this.cache) return;
+    await this.cache.set(
+      this.analyticsCacheKey(kind, workspaceId, query),
+      value,
+      ANALYTICS_CACHE_TTL_SECONDS,
+    );
+  }
+
+  private analyticsCacheKey(
+    kind: string,
+    workspaceId: string,
+    query: MetricsRangeQuery,
+  ): string {
+    const params = new URLSearchParams();
+    if (query.from) params.set('from', query.from);
+    if (query.to) params.set('to', query.to);
+    if (query.agent_id) params.set('agent_id', query.agent_id);
+    const suffix = params.toString() || 'default';
+    return `analytics:${kind}:${workspaceId}:${suffix}`;
   }
 
   // --- improvement suggestions -----------------------------------------

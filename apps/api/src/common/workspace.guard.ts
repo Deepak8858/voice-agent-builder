@@ -2,9 +2,18 @@ import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseAuthService } from '../auth/supabase-auth.service';
+import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import { ForbiddenError, UnauthorizedError, WorkspaceNotFoundError } from './errors';
 import type { SessionUser } from '@voiceforge/shared';
+
+const WORKSPACE_ACCESS_TTL_SECONDS = 300;
+
+interface CachedWorkspaceAccess {
+  id: string;
+  name: string;
+  role: SessionUser['active_workspace_role'];
+}
 
 /**
  * Workspace-scoped auth check. The InternalAuthGuard runs first and
@@ -17,6 +26,7 @@ export class WorkspaceGuard implements CanActivate {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: SupabaseAuthService,
+    private readonly cache: CacheService,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -31,7 +41,22 @@ export class WorkspaceGuard implements CanActivate {
       return true;
     }
 
-    const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    const accessKey = this.workspaceAccessKey(workspaceId, user.id);
+    const cached = await this.cache.get<CachedWorkspaceAccess>(accessKey);
+    if (cached) {
+      req.user = {
+        ...user,
+        active_workspace_id: cached.id,
+        active_workspace_name: cached.name,
+        active_workspace_role: cached.role,
+      };
+      return true;
+    }
+
+    const ws = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { id: true, name: true },
+    });
     if (!ws) throw new WorkspaceNotFoundError(workspaceId);
 
     const membership = await this.prisma.membership.findUnique({
@@ -39,11 +64,18 @@ export class WorkspaceGuard implements CanActivate {
     });
     if (!membership) throw new ForbiddenError('You are not a member of this workspace.');
 
+    const role = membership.role as SessionUser['active_workspace_role'];
+    await this.cache.set<CachedWorkspaceAccess>(
+      accessKey,
+      { id: ws.id, name: ws.name, role },
+      WORKSPACE_ACCESS_TTL_SECONDS,
+    );
+
     req.user = {
       ...user,
       active_workspace_id: ws.id,
       active_workspace_name: ws.name,
-      active_workspace_role: membership.role as SessionUser['active_workspace_role'],
+      active_workspace_role: role,
     };
     return true;
   }
@@ -57,6 +89,10 @@ export class WorkspaceGuard implements CanActivate {
     }
 
     return this.authService.getSessionUser(req);
+  }
+
+  private workspaceAccessKey(workspaceId: string, userId: string): string {
+    return `workspace:access:${workspaceId}:${userId}`;
   }
 }
 

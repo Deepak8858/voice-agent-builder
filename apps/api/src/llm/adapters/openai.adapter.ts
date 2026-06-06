@@ -66,7 +66,7 @@ export class OpenAiLlmAdapter implements LlmAgentGenerator {
           max_tokens: 1,
           messages: [{ role: 'user', content: 'hi' }],
         }),
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(1_000),
       });
       return res.ok ? 'ok' : 'unavailable';
     } catch {
