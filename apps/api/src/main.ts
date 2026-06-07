@@ -71,6 +71,7 @@ async function bootstrap() {
   // OTel auto-instruments HTTP, Express, and Prisma; configure OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector
   const express = require('express');
   app.use(express.json({
+    type: ['application/json', 'application/*+json', 'application/webhook+json'],
     verify: (_req: Record<string, unknown>, _res: Record<string, unknown>, buf: Buffer) => {
       (_req as { rawBody: Buffer }).rawBody = buf;
     },

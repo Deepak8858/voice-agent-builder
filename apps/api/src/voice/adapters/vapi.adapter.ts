@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
+import { formatFlowInstructions } from './agent-spec-prompt';
 import type { AgentSpec } from '@voiceforge/shared';
 import type {
   BrowserTestSessionResult,
@@ -105,6 +106,7 @@ function buildSystemPrompt(spec: AgentSpec): string {
     );
     parts.push('When a workflow step requires an external action, use the matching tool name exactly as listed.');
   }
+  parts.push(...formatFlowInstructions(spec));
   return parts.join('\n');
 }
 

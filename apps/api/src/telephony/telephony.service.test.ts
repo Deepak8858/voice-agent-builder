@@ -192,6 +192,50 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('blocks free workspaces from using BYO LiveKit outbound calling', async () => {
+    const prisma = makePrisma();
+    const livekit = {
+      createOutboundCall: vi.fn(async () => ({
+        providerCallId: 'participant-1',
+        roomName: 'room-1',
+        status: 'queued',
+      })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const billing = {
+      checkFeatureGate: vi.fn(async (organizationId: string, gate: string) => {
+        expect(organizationId).toBe('org-1');
+        return gate !== 'byo_telephony';
+      }),
+      canStartOutboundCall: vi.fn(async () => ({ allowed: true, remaining: 10, limit: 100 })),
+    };
+    const compliance = {
+      check: vi.fn(),
+      attachCheckToCall: vi.fn(),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      billing as never,
+      compliance as never,
+      {} as never,
+    );
+
+    await expect(
+      service.startOutboundCall('workspace-1', 'user-1', {
+        phone_number_id: 'number-1',
+        to_number: '+14155559876',
+        metadata: { purpose: 'appointment_reminder' },
+      }),
+    ).rejects.toThrow(/Vapi calling only/);
+
+    expect(compliance.check).not.toHaveBeenCalled();
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+  });
+
   it('rejects Twilio voice webhooks with invalid signatures before creating an inbound call', async () => {
     const prisma = {
       telephonyPhoneNumber: {
@@ -325,6 +369,85 @@ describe('TelephonyService', () => {
       expect.objectContaining({
         action: 'telephony.webhook.invalid_signature',
         metadata: expect.objectContaining({ provider: 'vobiz' }),
+      }),
+    );
+  });
+
+  it('links LiveKit webhooks to calls and updates SIP call status', async () => {
+    const startedAt = new Date('2026-06-07T10:00:00.000Z');
+    const prisma = {
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
+      },
+      telephonyWebhookEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'webhook-1', ...data })),
+      },
+      call: {
+        findFirst: vi.fn(async () => ({
+          id: 'call-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          startedAt,
+          endedAt: null,
+        })),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'call-1', ...data })),
+      },
+      callEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'event-1', ...data })),
+      },
+    };
+    const livekit = {
+      verifyWebhook: vi.fn(() => ({
+        id: 'lk-event-1',
+        event: 'participant_joined',
+        room: { name: 'call-number-1-outbound-123' },
+        participant: {
+          sid: 'PA_123',
+          metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+          attributes: { 'sip.callStatus': 'ringing' },
+        },
+      })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(service.handleLiveKitWebhook('{"id":"lk-event-1"}', 'Bearer token')).resolves.toEqual({
+      processed: true,
+      event: 'participant_joined',
+    });
+
+    expect(prisma.telephonyWebhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'livekit',
+          eventId: 'lk-event-1',
+          eventType: 'participant_joined',
+          phoneNumberId: 'number-1',
+          callId: 'call-1',
+          workspaceId: 'workspace-1',
+        }),
+      }),
+    );
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'ringing', livekitParticipantId: 'PA_123' }),
+      }),
+    );
+    expect(prisma.callEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          callId: 'call-1',
+          eventType: 'livekit.participant_joined',
+        }),
       }),
     );
   });

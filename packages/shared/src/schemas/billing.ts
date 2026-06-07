@@ -36,7 +36,7 @@ export const PLAN_LIMITS = {
     agents: 1,
     outboundCalls: 5,    // 5 trial calls (consumable, not monthly)
     minutes: 10,          // 10 trial minutes (consumable, not monthly)
-    tools: 2,
+    tools: 0,
     workspaces: 1,
     contacts: 50,
     complianceBlocks: 10,
@@ -186,5 +186,7 @@ export const FeatureGateSchema = z.enum([
   'bulk_import',
   'analytics',
   'multiple_workspaces',
+  'tools',
+  'byo_telephony',
 ]);
 export type FeatureGate = z.infer<typeof FeatureGateSchema>;

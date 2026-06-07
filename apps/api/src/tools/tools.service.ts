@@ -12,6 +12,7 @@ import type {
   WebhookConfig,
 } from '@voiceforge/shared';
 import { AuditService } from '../audit/audit.service';
+import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import {
   AgentNotFoundError,
   ToolExecutionFailedError,
@@ -45,6 +46,7 @@ export class ToolsService {
     private readonly webhookExecutor: WebhookExecutor,
     private readonly googleCalendarExecutor: GoogleCalendarExecutor,
     private readonly crmExecutor?: CrmExecutor,
+    private readonly billing?: BillingService,
   ) {
     this.executors = new Map<string, ToolExecutor>([
       ['webhook', webhookExecutor],
@@ -84,6 +86,8 @@ export class ToolsService {
     actorUserId: string,
     dto: CreateToolDto,
   ): Promise<ToolDetail> {
+    await this.assertToolsAllowed(workspaceId);
+
     if (dto.agent_id) {
       const agent = await this.prisma.agent.findFirst({
         where: { id: dto.agent_id, workspaceId },
@@ -189,6 +193,7 @@ export class ToolsService {
     if (!tool.enabled) {
       throw new ToolExecutionFailedError(`Tool ${tool.name} is disabled.`);
     }
+    await this.assertToolsAllowed(workspaceId);
 
     const validation = validateToolInput(
       tool.inputSchema as Parameters<typeof validateToolInput>[0],
@@ -292,6 +297,17 @@ export class ToolsService {
     if (body == null) return Prisma.JsonNull;
     if (typeof body === 'string') return { text: body };
     return body as Prisma.InputJsonValue;
+  }
+
+  private async assertToolsAllowed(workspaceId: string): Promise<void> {
+    if (typeof this.billing?.checkFeatureGate !== 'function') return;
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+    const allowed = await this.billing.checkFeatureGate(organizationId, 'tools');
+    if (!allowed) {
+      throw new ForbiddenPlanError(
+        'Integration tools require a paid plan. Free workspaces can use Vapi calling without external tools.',
+      );
+    }
   }
 
   private toSummary(row: {

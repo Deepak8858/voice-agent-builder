@@ -399,6 +399,10 @@ export class BillingService {
         return plan !== 'free';
       case 'multiple_workspaces':
         return limits.workspaces !== 1;
+      case 'tools':
+        return plan !== 'free' && limits.tools !== 0;
+      case 'byo_telephony':
+        return plan !== 'free';
       default:
         return false;
     }

@@ -143,7 +143,7 @@ function makeAgentsServiceWith(opts: {
   service.get = vi.fn(async () => ({
     id: opts.initialAgent?.id ?? 'a',
   })) as never;
-  return { service, prisma, voice, agentUpdate, versionCreate, versionUpdate, audit, cacheInvalidator };
+  return { service, prisma, voice, agentUpdate, versionCreate, versionUpdate, audit, cacheInvalidator, billing };
 }
 
 describe('AgentsService.publish', () => {
@@ -239,7 +239,7 @@ describe('AgentsService.publish', () => {
   });
 
   it('re-publish: calls voice.updateAgent when provider_runtime_id already set', async () => {
-    const { service, voice } = makeAgentsServiceWith({
+    const { service, voice, billing } = makeAgentsServiceWith({
       initialAgent: {
         id: 'a1',
         workspaceId: 'w1',
@@ -265,6 +265,37 @@ describe('AgentsService.publish', () => {
       expect.objectContaining({ provider_runtime_id: 'mock_rt_existing' }),
     );
     expect(voice.createAgent).not.toHaveBeenCalled();
+    expect(billing.enforceAgentLimit).not.toHaveBeenCalled();
+  });
+
+  it('re-publish: does not block an already-published agent when the plan is at its agent limit', async () => {
+    const { service, billing, voice } = makeAgentsServiceWith({
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        status: 'published',
+        activeVersionId: 'v2',
+        versions: [
+          {
+            id: 'v2',
+            agentId: 'a1',
+            versionNumber: 2,
+            specJson: spec() as unknown,
+            deploymentStatus: 'deployed',
+            provider: 'mock',
+            providerRuntimeId: 'mock_rt_existing',
+            createdAt: new Date(),
+            note: null,
+          },
+        ],
+      },
+    });
+    billing.enforceAgentLimit.mockRejectedValue(new Error('plan limit'));
+
+    await expect(service.publish('w1', 'a1', 'u1')).resolves.toBeDefined();
+
+    expect(billing.enforceAgentLimit).not.toHaveBeenCalled();
+    expect(voice.updateAgent).toHaveBeenCalledTimes(1);
   });
 
   it('free plan publishes with the Vapi provider from the registry', async () => {

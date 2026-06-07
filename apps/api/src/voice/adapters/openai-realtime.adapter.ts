@@ -4,6 +4,7 @@ import type { AgentSpec } from '@voiceforge/shared';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
 import { PrismaService } from '../../prisma/prisma.service';
+import { formatFlowInstructions } from './agent-spec-prompt';
 import type {
   BrowserTestSessionResult,
   CreateBrowserTestSessionInput,
@@ -93,6 +94,7 @@ function buildInstructions(spec: AgentSpec): string {
     );
     lines.push('Call tools only with validated arguments that match their JSON schemas.');
   }
+  lines.push(...formatFlowInstructions(spec));
 
   return lines.join('\n');
 }

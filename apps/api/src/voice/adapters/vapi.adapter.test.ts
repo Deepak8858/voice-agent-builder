@@ -88,6 +88,33 @@ describe('VapiVoiceAdapter', () => {
       expect(body.metadata.voiceforge_agent_version_id).toBe('v-meta');
     });
 
+    it('includes visual builder flow steps in the assistant prompt', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-flow' }));
+
+      await adapter.createAgent({
+        workspaceId: 'ws-flow',
+        agentId: 'ag-flow',
+        agentVersionId: 'v-flow',
+        spec: makeSpec({
+          flow: {
+            start_node_id: 'start',
+            nodes: [
+              { id: 'start', type: 'start', next: 'ask_name' },
+              { id: 'ask_name', type: 'ask_question', question: 'May I have your name?', capture_field: 'full_name', next: 'save' },
+              { id: 'save', type: 'tool_call', tool_name: 'google_calendar.book_slot', next: 'end' },
+              { id: 'end', type: 'end' },
+            ],
+          },
+        }),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
+      expect(body.model.systemPrompt).toContain('Conversation flow');
+      expect(body.model.systemPrompt).toContain('ask "May I have your name?"');
+      expect(body.model.systemPrompt).toContain('call tool google_calendar.book_slot');
+    });
+
     it('does not send speakingRate for Vapi voices because the assistant API rejects it', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-voice' }));
 

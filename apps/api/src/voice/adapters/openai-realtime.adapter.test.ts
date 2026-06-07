@@ -114,6 +114,15 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
           },
         },
       ],
+      flow: {
+        start_node_id: 'start',
+        nodes: [
+          { id: 'start', type: 'start', next: 'ask_slot' },
+          { id: 'ask_slot', type: 'ask_question', question: 'What time works for you?', capture_field: 'preferred_time', next: 'book' },
+          { id: 'book', type: 'tool_call', tool_name: 'google_calendar_booking', next: 'end' },
+          { id: 'end', type: 'end' },
+        ],
+      },
     });
     mockPrisma.agentVersion.findUnique.mockResolvedValue({
       providerRuntimeId: 'openai_rt_v1',
@@ -145,9 +154,11 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
       expect.objectContaining({
         type: 'realtime',
         model: 'gpt-realtime',
-        instructions: expect.stringContaining('Acme Dental'),
+        instructions: expect.stringContaining('Conversation flow'),
       }),
     );
+    expect(body.session.instructions).toContain('ask "What time works for you?"');
+    expect(body.session.instructions).toContain('call tool google_calendar_booking');
     expect(body.session.audio.output.voice).toBe('marin');
     expect(body.session.tool_choice).toBe('auto');
     expect(body.session.tools).toEqual([

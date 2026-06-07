@@ -63,6 +63,7 @@ export class TelephonyService {
 
   async createConnection(workspaceId: string, actorUserId: string, dto: CreateTelephonyConnectionDto) {
     const workspace = await this.workspace(workspaceId);
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
     const adapter = this.registry.adapterFor(dto.provider);
     const validation = await adapter.validateCredentials(dto.credentials);
     if (!validation.valid) {
@@ -107,6 +108,8 @@ export class TelephonyService {
   }
 
   async syncNumbers(workspaceId: string, connectionId: string, actorUserId: string) {
+    const workspace = await this.workspace(workspaceId);
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
     const connection = await this.connection(workspaceId, connectionId);
     const credentials = this.encryption.decryptJson<ProviderCredentials>(connection.encryptedCredentials);
     const numbers = await this.registry.adapterFor(connection.provider as never).listPhoneNumbers(credentials);
@@ -136,8 +139,9 @@ export class TelephonyService {
   }
 
   async importNumbers(workspaceId: string, actorUserId: string, dto: ImportPhoneNumbersDto) {
-    const connection = await this.connection(workspaceId, dto.connection_id);
     const workspace = await this.workspace(workspaceId);
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
+    const connection = await this.connection(workspaceId, dto.connection_id);
     const created = [];
     for (const number of dto.numbers) {
       const metadata = this.objectMetadata(number.metadata);
@@ -221,6 +225,7 @@ export class TelephonyService {
 
   async createManualNumber(workspaceId: string, actorUserId: string, dto: ManualPhoneNumberDto) {
     const workspace = await this.workspace(workspaceId);
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
     const existing = await this.prisma.telephonyPhoneNumber.findUnique({
       where: { phoneNumberE164: dto.phone_number },
     });
@@ -286,6 +291,7 @@ export class TelephonyService {
 
   async assignAgent(workspaceId: string, numberId: string, actorUserId: string, dto: AssignPhoneNumberAgentDto) {
     const number = await this.number(workspaceId, numberId);
+    await this.assertByoTelephonyAllowed(number.organizationId);
     if (dto.agent_id) {
       await this.agent(workspaceId, dto.agent_id);
     }
@@ -314,6 +320,7 @@ export class TelephonyService {
       include: { providerConnection: true, livekitConfig: true },
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
+    await this.assertByoTelephonyAllowed(number.organizationId);
     if (!number.assignedAgentId) {
       throw new AppError('VALIDATION_ERROR', 'Assign an agent before configuring LiveKit.', 400);
     }
@@ -457,6 +464,7 @@ export class TelephonyService {
       where: { id: workspaceId },
       select: { organizationId: true, retentionDays: true },
     });
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
     const featureAllowed = await this.billing.checkFeatureGate(workspace.organizationId, 'outbound');
     if (!featureAllowed) {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
@@ -632,7 +640,19 @@ export class TelephonyService {
     const parsed = this.livekit.verifyWebhook(rawBody, authorization) as Record<string, unknown>;
     const eventType = String(parsed.event ?? parsed.type ?? 'livekit.unknown');
     const eventId = String(parsed.id ?? `${eventType}:${parsed.createdAt ?? Date.now()}`);
-    await this.recordWebhookEvent('livekit', eventId, eventType, null, parsed, true);
+    const context = await this.liveKitWebhookContext(parsed);
+    await this.recordWebhookEvent(
+      'livekit',
+      eventId,
+      eventType,
+      context.phoneNumberId,
+      parsed,
+      true,
+      context.call?.id ?? null,
+    );
+    if (context.call) {
+      await this.updateCallFromLiveKitWebhook(context.call, eventType, parsed, context.participantId);
+    }
     return { processed: true, event: eventType };
   }
 
@@ -839,6 +859,7 @@ export class TelephonyService {
     phoneNumberId: string | null,
     payload: Record<string, unknown>,
     signatureValid: boolean,
+    callId: string | null = null,
   ) {
     if (!eventId) return null;
     const phoneNumber = phoneNumberId
@@ -854,6 +875,7 @@ export class TelephonyService {
           eventId,
           eventType,
           phoneNumberId,
+          callId,
           workspaceId: phoneNumber?.workspaceId ?? null,
           rawPayloadJson: payload as Prisma.InputJsonValue,
           signatureValid,
@@ -871,6 +893,16 @@ export class TelephonyService {
       where: { id: workspaceId },
       select: { id: true, organizationId: true },
     });
+  }
+
+  private async assertByoTelephonyAllowed(organizationId: string): Promise<void> {
+    if (typeof this.billing?.checkFeatureGate !== 'function') return;
+    const allowed = await this.billing.checkFeatureGate(organizationId, 'byo_telephony');
+    if (!allowed) {
+      throw new ForbiddenPlanError(
+        'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use Vapi calling only.',
+      );
+    }
   }
 
   private async connection(workspaceId: string, connectionId: string) {
@@ -990,6 +1022,104 @@ export class TelephonyService {
       : {};
   }
 
+  private async liveKitWebhookContext(payload: Record<string, unknown>): Promise<{
+    call: {
+      id: string;
+      workspaceId: string;
+      organizationId: string | null;
+      startedAt: Date | null;
+      endedAt: Date | null;
+    } | null;
+    phoneNumberId: string | null;
+    participantId: string | null;
+  }> {
+    const room = this.objectMetadata(payload.room);
+    const participant = this.objectMetadata(payload.participant);
+    const participantMetadata = parseJsonObject(participant.metadata);
+    const roomName = stringValue(room.name ?? payload.room_name ?? payload.roomName);
+    const participantId = stringValue(participant.sid ?? participant.identity ?? payload.participant_id);
+    const phoneNumberId =
+      stringValue(participantMetadata.phoneNumberId) ??
+      extractPhoneNumberIdFromRoom(roomName);
+
+    const call = roomName || participantId
+      ? await this.prisma.call.findFirst({
+          where: {
+            OR: [
+              ...(roomName ? [{ livekitRoomName: roomName }] : []),
+              ...(participantId ? [{ providerCallId: participantId }] : []),
+            ],
+          },
+          select: {
+            id: true,
+            workspaceId: true,
+            organizationId: true,
+            startedAt: true,
+            endedAt: true,
+          },
+        })
+      : null;
+
+    return { call, phoneNumberId: phoneNumberId ?? null, participantId: participantId ?? null };
+  }
+
+  private async updateCallFromLiveKitWebhook(
+    call: {
+      id: string;
+      workspaceId: string;
+      organizationId: string | null;
+      startedAt: Date | null;
+      endedAt: Date | null;
+    },
+    eventType: string,
+    payload: Record<string, unknown>,
+    participantId: string | null,
+  ): Promise<void> {
+    const normalizedStatus = this.liveKitStatus(eventType, payload);
+    const endedAt = normalizedStatus.terminal && !call.endedAt ? new Date() : null;
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: {
+        status: normalizedStatus.status,
+        ...(participantId ? { livekitParticipantId: participantId } : {}),
+        ...(endedAt ? { endedAt } : {}),
+        ...(endedAt && call.startedAt
+          ? { durationSeconds: Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000)) }
+          : {}),
+      },
+    });
+    await this.prisma.callEvent.create({
+      data: {
+        callId: call.id,
+        workspaceId: call.workspaceId,
+        organizationId: call.organizationId,
+        eventType: `livekit.${eventType}`,
+        payload: payload as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private liveKitStatus(
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): { status: string; terminal: boolean } {
+    const participant = this.objectMetadata(payload.participant);
+    const attributes = this.objectMetadata(participant.attributes);
+    const sipStatus = stringValue(attributes['sip.callStatus'])?.toLowerCase();
+    const rawStatus = sipStatus ?? eventType.toLowerCase();
+    const map: Record<string, { status: string; terminal: boolean }> = {
+      dialing: { status: 'queued', terminal: false },
+      ringing: { status: 'ringing', terminal: false },
+      automation: { status: 'in_progress', terminal: false },
+      active: { status: 'in_progress', terminal: false },
+      hangup: { status: 'completed', terminal: true },
+      participant_joined: { status: 'in_progress', terminal: false },
+      participant_left: { status: 'completed', terminal: true },
+      room_finished: { status: 'completed', terminal: true },
+    };
+    return map[rawStatus] ?? { status: 'in_progress', terminal: false };
+  }
+
   private normalizeWebhookSecret(value: string | null | undefined): string | null {
     const normalized = value?.trim() ?? '';
     return normalized ? normalized : null;
@@ -1064,4 +1194,29 @@ export class TelephonyService {
 
 function cryptoRandomToken(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function extractPhoneNumberIdFromRoom(roomName: string | null): string | null {
+  if (!roomName) return null;
+  const match = roomName.match(/^call-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i);
+  return match?.[1] ?? null;
 }

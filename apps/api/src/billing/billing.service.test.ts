@@ -310,6 +310,16 @@ describe('BillingService', () => {
       expect(await svc.checkFeatureGate('org-fake', 'api_access')).toBe(true);
     });
 
+    it('keeps tools and BYO telephony behind paid plans', async () => {
+      const free = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+      const starter = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      expect(await free.checkFeatureGate('org-fake', 'tools')).toBe(false);
+      expect(await free.checkFeatureGate('org-fake', 'byo_telephony')).toBe(false);
+      expect(await starter.checkFeatureGate('org-fake', 'tools')).toBe(true);
+      expect(await starter.checkFeatureGate('org-fake', 'byo_telephony')).toBe(true);
+    });
+
     it('treats expired trialing as free plan for feature gates', async () => {
       const expiredTrial = new Date(Date.now() - 86400000); // yesterday
       const prisma = makePrisma({

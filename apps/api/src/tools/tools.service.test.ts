@@ -37,7 +37,7 @@ interface InvocationRow {
   requestPayload: Prisma.JsonValue;
 }
 
-function makeService(opts: { tool?: ToolRow | null }) {
+function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
   const prisma = {
@@ -86,14 +86,18 @@ function makeService(opts: { tool?: ToolRow | null }) {
   const crm = {
     createContact: vi.fn(),
   };
+  const billing = {
+    checkFeatureGate: vi.fn(async () => opts.toolsAllowed ?? true),
+  };
   const service = new ToolsService(
     prisma as never,
     audit as never,
     executor as never,
     calendar as never,
     crm as never,
+    billing as never,
   );
-  return { service, prisma, audit, executor, calendar, crm, invocations };
+  return { service, prisma, audit, executor, calendar, crm, billing, invocations };
 }
 
 const baseTool: ToolRow = {
@@ -129,6 +133,14 @@ describe('ToolsService.invoke', () => {
     await expect(
       service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'a' } }),
     ).rejects.toBeInstanceOf(ToolExecutionFailedError);
+  });
+
+  it('blocks tool invocation on free plans', async () => {
+    const { service, executor } = makeService({ tool: baseTool, toolsAllowed: false });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' } }),
+    ).rejects.toThrow(/paid plan/);
+    expect(executor.execute).not.toHaveBeenCalled();
   });
 
   it('rejects invalid input against schema', async () => {

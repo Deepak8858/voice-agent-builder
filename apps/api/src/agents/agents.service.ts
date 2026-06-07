@@ -277,13 +277,15 @@ export class AgentsService {
       where: { id: workspaceId },
       select: { organizationId: true },
     });
-    await this.billing.enforceAgentLimit(ws.organizationId);
 
     const agent = await this.prisma.agent.findFirst({
       where: { id: agentId, workspaceId },
       include: { versions: { orderBy: { versionNumber: 'desc' }, take: 1 } },
     });
     if (!agent) throw new AgentNotFoundError(agentId);
+    if (agent.status !== 'published') {
+      await this.billing.enforceAgentLimit(ws.organizationId);
+    }
     const latest = agent.versions[0] ?? null;
     const specToPublish = agent.specJson ?? latest?.specJson ?? null;
     if (!specToPublish) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
