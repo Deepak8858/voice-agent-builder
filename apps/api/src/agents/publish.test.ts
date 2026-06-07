@@ -95,12 +95,14 @@ function makeAgentsServiceWith(opts: {
       count: vi.fn(async () => 1),
     },
     agentVersion: {
+      findFirst: vi.fn(async () => opts.initialAgent?.versions[0] ?? null),
       create: versionCreate,
       update: versionUpdate,
     },
     workspace: {
       findUniqueOrThrow: vi.fn(async () => ({ id: 'w1', organizationId: 'org1' })),
     },
+    organizationIdFor: vi.fn(async () => 'org1'),
   };
   const audit = { log: vi.fn(async () => {}) };
   const generator = { generate: vi.fn() };
@@ -469,5 +471,80 @@ describe('AgentsService.publish', () => {
         data: expect.objectContaining({ status: 'draft' }),
       }),
     );
+  });
+});
+
+describe('AgentsService.createVersion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('promotes a saved version to the active draft spec', async () => {
+    const oldSpec = spec({ name: 'Old spec' });
+    const nextSpec = spec({
+      name: 'Updated spec',
+      tools: [
+        {
+          name: 'record_survey_feedback_crm',
+          description: 'Create a CRM contact from survey feedback.',
+          requires_confirmation: true,
+          permissions: ['crm'],
+          input_schema: {
+            type: 'object',
+            required: ['full_name'],
+            properties: {
+              full_name: { type: 'string' },
+            },
+          },
+        },
+      ],
+    });
+    const { service, agentUpdate, versionCreate, cacheInvalidator } = makeAgentsServiceWith({
+      initialAgent: {
+        id: 'agent-1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        status: 'draft',
+        specJson: oldSpec,
+        activeVersionId: 'v1',
+        versions: [
+          {
+            id: 'v1',
+            agentId: 'agent-1',
+            versionNumber: 1,
+            specJson: oldSpec,
+            deploymentStatus: 'not_deployed',
+            provider: null,
+            providerRuntimeId: null,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            note: null,
+          },
+        ],
+      },
+    });
+
+    await service.createVersion('w1', 'agent-1', 'user-1', {
+      spec: nextSpec,
+      note: 'Updated in builder spec editor',
+    });
+
+    expect(versionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentId: 'agent-1',
+          organizationId: 'org1',
+          versionNumber: 2,
+          specJson: nextSpec,
+        }),
+      }),
+    );
+    expect(agentUpdate).toHaveBeenCalledWith({
+      where: { id: 'agent-1' },
+      data: {
+        specJson: nextSpec,
+        activeVersionId: 'v-created',
+      },
+    });
+    expect(cacheInvalidator.invalidateAgentList).toHaveBeenCalledWith('w1');
   });
 });

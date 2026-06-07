@@ -250,6 +250,14 @@ export class AgentsService {
       },
     });
 
+    await this.prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        specJson: parsed.data as unknown as object,
+        activeVersionId: created.id,
+      },
+    });
+
     await this.audit.log({
       workspaceId,
       actorUserId,
@@ -258,6 +266,8 @@ export class AgentsService {
       resourceId: created.id,
       metadata: { version_number: nextNumber },
     });
+
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
 
     return this.get(workspaceId, agentId);
   }
