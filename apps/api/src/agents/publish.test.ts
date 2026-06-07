@@ -59,6 +59,10 @@ function makeAgentsServiceWith(opts: {
   voiceCreate?: () => Promise<{ provider_runtime_id: string }>;
   voiceUpdate?: () => Promise<void>;
   voiceName?: string;
+  subscriptionPlan?: 'free' | 'starter' | 'growth' | 'enterprise';
+  voiceRegistry?: {
+    forPlan: ReturnType<typeof vi.fn>;
+  };
 }) {
   const agentUpdate = vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
     if (opts.initialAgent) Object.assign(opts.initialAgent, data);
@@ -109,7 +113,19 @@ function makeAgentsServiceWith(opts: {
   };
   const cache = { get: vi.fn(async () => null), set: vi.fn(async () => {}), del: vi.fn(async () => {}) };
   const cacheInvalidator = { invalidateAgentList: vi.fn(async () => {}) };
-  const billing = { enforceAgentLimit: vi.fn(async () => {}) };
+  const billing = {
+    enforceAgentLimit: vi.fn(async () => {}),
+    getSubscription: vi.fn(async () => ({
+      id: 'sub-1',
+      plan: opts.subscriptionPlan ?? 'free',
+      status: 'active',
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      trialEnd: null,
+      stripeCustomerId: null,
+    })),
+  };
   const service = new AgentsService(
     prisma as never,
     audit as never,
@@ -119,6 +135,7 @@ function makeAgentsServiceWith(opts: {
     cache as never,
     cacheInvalidator as never,
     billing as never,
+    opts.voiceRegistry as never,
   );
   // Override `get` so we don't need the secondary findFirst with versions loader.
   service.get = vi.fn(async () => ({
@@ -246,6 +263,100 @@ describe('AgentsService.publish', () => {
       expect.objectContaining({ provider_runtime_id: 'mock_rt_existing' }),
     );
     expect(voice.createAgent).not.toHaveBeenCalled();
+  });
+
+  it('free plan publishes with the Vapi provider from the registry', async () => {
+    const vapi = {
+      name: 'vapi',
+      createAgent: vi.fn(async () => ({ provider_runtime_id: 'vapi_rt_1' })),
+      updateAgent: vi.fn(async () => {}),
+    };
+    const voiceRegistry = {
+      forPlan: vi.fn(() => vapi),
+    };
+    const { service, versionUpdate } = makeAgentsServiceWith({
+      subscriptionPlan: 'free',
+      voiceRegistry,
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        status: 'draft',
+        activeVersionId: null,
+        versions: [
+          {
+            id: 'v1',
+            agentId: 'a1',
+            versionNumber: 1,
+            specJson: spec() as unknown,
+            deploymentStatus: 'not_deployed',
+            provider: null,
+            providerRuntimeId: null,
+            createdAt: new Date(),
+            note: null,
+          },
+        ],
+      },
+    });
+
+    await service.publish('w1', 'a1', 'u1');
+
+    expect(voiceRegistry.forPlan).toHaveBeenCalledWith('free');
+    expect(vapi.createAgent).toHaveBeenCalledTimes(1);
+    expect(versionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'vapi',
+          providerRuntimeId: 'vapi_rt_1',
+        }),
+      }),
+    );
+  });
+
+  it('paid plan publishes with the premium Realtime provider from the registry', async () => {
+    const realtime = {
+      name: 'openai-realtime',
+      createAgent: vi.fn(async () => ({ provider_runtime_id: 'openai_rt_1' })),
+      updateAgent: vi.fn(async () => {}),
+    };
+    const voiceRegistry = {
+      forPlan: vi.fn(() => realtime),
+    };
+    const { service, versionUpdate } = makeAgentsServiceWith({
+      subscriptionPlan: 'growth',
+      voiceRegistry,
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        status: 'draft',
+        activeVersionId: null,
+        versions: [
+          {
+            id: 'v1',
+            agentId: 'a1',
+            versionNumber: 1,
+            specJson: spec() as unknown,
+            deploymentStatus: 'not_deployed',
+            provider: null,
+            providerRuntimeId: null,
+            createdAt: new Date(),
+            note: null,
+          },
+        ],
+      },
+    });
+
+    await service.publish('w1', 'a1', 'u1');
+
+    expect(voiceRegistry.forPlan).toHaveBeenCalledWith('growth');
+    expect(realtime.createAgent).toHaveBeenCalledTimes(1);
+    expect(versionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'openai-realtime',
+          providerRuntimeId: 'openai_rt_1',
+        }),
+      }),
+    );
   });
 
   it('publishes draft flow edits by snapshotting agent.specJson into a new version', async () => {

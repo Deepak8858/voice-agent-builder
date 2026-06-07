@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { Node } from '@xyflow/react';
 import {
   buildNodeData,
+  buildDefaultAgentFlow,
   convertReactFlowToAgentFlow,
   convertAgentFlowToReactFlow,
   createFlowNode,
@@ -28,6 +29,54 @@ assert.equal(getSelectedNode(updated, 'ask')?.data.question, 'New question');
 assert.equal(getSelectedNode(updated, null), null);
 assert.deepEqual(buildNodeData('send_message'), { channel: 'sms', body: '' });
 assert.deepEqual(createFlowNode('tool_call', { x: 12, y: 34 }).data, { tool_name: '' });
+
+const defaultFlow = buildDefaultAgentFlow({
+  schema_version: '1.0',
+  name: 'Scheduler',
+  industry: 'dental',
+  agent_type: 'inbound_receptionist',
+  language: 'en',
+  voice: { tone: 'warm', allow_interruptions: true },
+  identity: { business_name: 'Acme Dental', agent_name: 'Ava' },
+  goals: ['book appointments'],
+  required_fields: [
+    { key: 'full_name', type: 'string', required: true },
+    { key: 'phone', type: 'phone', required: true },
+  ],
+  conversation_rules: {
+    ask_one_question_at_a_time: true,
+    confirm_critical_information: true,
+    do_not_make_up_answers: true,
+    fallback_to_human_when_unsure: true,
+    first_message: 'Thanks for calling Acme Dental.',
+  },
+  knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
+  tools: [
+    {
+      name: 'google_calendar_booking',
+      description: 'Books appointments.',
+      requires_confirmation: true,
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+  ],
+  handoff: { enabled: true, conditions: ['caller_requests_human'] },
+  compliance: {
+    ai_disclosure_required: true,
+    recording_notice_required: false,
+    opt_out_enabled: true,
+    consent_required_for_outbound: true,
+  },
+  analytics: { success_events: [] },
+});
+
+assert.equal(defaultFlow.start_node_id, 'start');
+assert.deepEqual(
+  defaultFlow.nodes.map((node) => node.type),
+  ['start', 'speak', 'ask_question', 'ask_question', 'tool_call', 'end'],
+);
+assert.equal(defaultFlow.nodes[0].next, 'greeting');
+assert.equal((defaultFlow.nodes[4] as { tool_name?: string }).tool_name, 'google_calendar_booking');
+assert.deepEqual(validateAgentFlow(defaultFlow), []);
 
 const converted = convertAgentFlowToReactFlow({
   start_node_id: 'start',

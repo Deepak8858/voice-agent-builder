@@ -22,6 +22,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { validateToolInput } from './input-validator';
 import { WebhookExecutor } from './webhook-executor';
 import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
+import { CrmExecutor, type CrmContactArgs, type CrmProvider } from './crm-executor';
 
 export interface ToolExecutor {
   readonly name: string;
@@ -43,6 +44,7 @@ export class ToolsService {
     private readonly audit: AuditService,
     private readonly webhookExecutor: WebhookExecutor,
     private readonly googleCalendarExecutor: GoogleCalendarExecutor,
+    private readonly crmExecutor?: CrmExecutor,
   ) {
     this.executors = new Map<string, ToolExecutor>([
       ['webhook', webhookExecutor],
@@ -50,6 +52,12 @@ export class ToolsService {
       ['http_get', webhookExecutor],
       [googleCalendarExecutor.name, googleCalendarExecutor],
     ]);
+    if (crmExecutor) {
+      this.executors.set('crm', {
+        name: 'crm',
+        execute: async (params, config) => this.executeCrmTool(params, config),
+      });
+    }
   }
 
   async list(workspaceId: string, agentId?: string | null): Promise<ToolSummary[]> {
@@ -343,6 +351,26 @@ export class ToolsService {
       };
     }
 
+    if (row.toolType === 'crm') {
+      const cfg = (row.config ?? {}) as {
+        provider?: string;
+        api_key?: string;
+        base_url?: string;
+        object_type?: string;
+      };
+      const { api_key, ...publicCfg } = cfg;
+      return {
+        ...this.toSummary(row),
+        config: {
+          provider: crmProvider(publicCfg.provider) ?? 'generic',
+          object_type: publicCfg.object_type ?? 'contact',
+          ...(publicCfg.base_url ? { base_url: publicCfg.base_url } : {}),
+          api_key_set: Boolean(api_key),
+        },
+        input_schema: row.inputSchema as ToolDetail['input_schema'],
+      };
+    }
+
     const cfg = (row.config ?? {}) as WebhookConfig & { hmac_secret?: string };
     const { hmac_secret, ...publicCfg } = cfg;
     return {
@@ -401,4 +429,42 @@ export class ToolsService {
       response_body: row.responseBody ?? null,
     };
   }
+
+  private async executeCrmTool(
+    params: Record<string, unknown>,
+    config: Record<string, string>,
+  ): Promise<ToolCallResult> {
+    if (!this.crmExecutor) {
+      return { success: false, error: 'CRM executor is not configured.' };
+    }
+    const provider = crmProvider(config.provider);
+    if (!provider) {
+      return { success: false, error: 'CRM provider must be pipedrive, hubspot, salesforce, or generic.' };
+    }
+    const fullName = stringParam(params.full_name) ?? stringParam(params.name);
+    if (!fullName) {
+      return { success: false, error: 'full_name is required.' };
+    }
+    const args: CrmContactArgs = { full_name: fullName };
+    const phone = stringParam(params.phone);
+    const email = stringParam(params.email);
+    const notes = stringParam(params.notes);
+    const company = stringParam(params.company);
+    if (phone) args.phone = phone;
+    if (email) args.email = email;
+    if (notes) args.notes = notes;
+    if (company) args.company = company;
+    const result = await this.crmExecutor.createContact(provider, config, args);
+    return { success: true, result };
+  }
+}
+
+function crmProvider(value: unknown): CrmProvider | null {
+  return value === 'pipedrive' || value === 'hubspot' || value === 'salesforce' || value === 'generic'
+    ? value
+    : null;
+}
+
+function stringParam(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }

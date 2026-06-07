@@ -14,6 +14,7 @@ import {
   type Node,
   type OnConnect,
 } from '@xyflow/react';
+import type { ToolSummary } from '@voiceforge/shared';
 import '@xyflow/react/dist/style.css';
 import { Loader2, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -42,6 +43,7 @@ interface FlowBuilderProps {
   agentId?: string;
   initialNodes?: Node[];
   initialEdges?: Edge[];
+  availableTools?: ToolSummary[];
   isSaving?: boolean;
   onSave?: (nodes: Node[], edges: Edge[]) => void;
 }
@@ -54,7 +56,13 @@ export function FlowBuilder(props: FlowBuilderProps) {
   );
 }
 
-function FlowBuilderCanvas({ initialNodes, initialEdges, isSaving = false, onSave }: FlowBuilderProps) {
+function FlowBuilderCanvas({
+  initialNodes,
+  initialEdges,
+  availableTools = [],
+  isSaving = false,
+  onSave,
+}: FlowBuilderProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes ?? INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState((initialEdges ?? []) as Edge[]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -149,6 +157,7 @@ function FlowBuilderCanvas({ initialNodes, initialEdges, isSaving = false, onSav
       <div className="w-72 flex-shrink-0 overflow-y-auto border-l border-border bg-sidebar">
         <NodeConfigPanel
           node={selectedNode}
+          availableTools={availableTools}
           onChange={handleConfigChange}
           onSave={handleSave}
           isSaving={isSaving}

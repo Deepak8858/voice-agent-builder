@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { TwilioVoiceAdapter } from '../twilio-adapter/twilio.adapter';
 import { OpenAIRealtimeVoiceAdapter } from './adapters/openai-realtime.adapter';
 import { VapiVoiceAdapter } from './adapters/vapi.adapter';
+import { VoiceProviderRegistry } from './voice-provider.registry';
 
 export const VOICE_PROVIDER_TOKEN = Symbol.for('VOICE_PROVIDER_TOKEN');
 
@@ -49,12 +50,19 @@ export const resolveVoiceProviderForTest = resolveVoiceProvider;
     VapiVoiceAdapter,
     TwilioVoiceAdapter,
     OpenAIRealtimeVoiceAdapter,
+    VoiceProviderRegistry,
     {
       provide: VOICE_PROVIDER_TOKEN,
       inject: [VapiVoiceAdapter, TwilioVoiceAdapter, OpenAIRealtimeVoiceAdapter],
       useFactory: resolveVoiceProvider,
     },
   ],
-  exports: [VOICE_PROVIDER_TOKEN, TwilioVoiceAdapter, OpenAIRealtimeVoiceAdapter],
+  exports: [
+    VOICE_PROVIDER_TOKEN,
+    VoiceProviderRegistry,
+    VapiVoiceAdapter,
+    TwilioVoiceAdapter,
+    OpenAIRealtimeVoiceAdapter,
+  ],
 })
 export class VoiceModule {}

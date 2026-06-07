@@ -97,6 +97,28 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
 
   it('creates a realtime client secret for browser test sessions when OPENAI_API_KEY is set', async () => {
     envState.OPENAI_API_KEY = 'test-key';
+    const specWithTools = makeSpec({
+      tools: [
+        {
+          name: 'google_calendar_booking',
+          description: 'Finds free slots and creates calendar events.',
+          requires_confirmation: true,
+          input_schema: {
+            type: 'object',
+            properties: {
+              operation: { type: 'string', enum: ['find_free_slot', 'create_event'] },
+              start_iso: { type: 'string' },
+              end_iso: { type: 'string' },
+            },
+            required: ['operation'],
+          },
+        },
+      ],
+    });
+    mockPrisma.agentVersion.findUnique.mockResolvedValue({
+      providerRuntimeId: 'openai_rt_v1',
+      specJson: specWithTools,
+    });
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -127,6 +149,15 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
       }),
     );
     expect(body.session.audio.output.voice).toBe('marin');
+    expect(body.session.tool_choice).toBe('auto');
+    expect(body.session.tools).toEqual([
+      {
+        type: 'function',
+        name: 'google_calendar_booking',
+        description: 'Finds free slots and creates calendar events.',
+        parameters: specWithTools.tools[0]!.input_schema,
+      },
+    ]);
   });
 
   it('returns a mock browser test session and scripted transcript when credentials are unavailable', async () => {

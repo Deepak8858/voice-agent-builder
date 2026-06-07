@@ -2,9 +2,10 @@
 
 import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Edge, Node } from '@xyflow/react';
+import type { ToolSummary } from '@voiceforge/shared';
 import { FlowBuilder } from './flow-builder';
 import { convertReactFlowToAgentFlow, validateAgentFlow } from './flow-builder-model';
 import { useApi } from '@/lib/use-api';
@@ -18,6 +19,11 @@ interface FlowBuilderClientProps {
 export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBuilderClientProps) {
   const { call } = useApi();
   const router = useRouter();
+
+  const toolsQuery = useQuery({
+    queryKey: ['flow-builder-tools', workspaceId, agentId],
+    queryFn: () => call<{ items: ToolSummary[] }>(`/workspaces/${workspaceId}/tools`),
+  });
 
   const saveMutation = useMutation({
     mutationFn: async ({ nodes, edges }: { nodes: Node[]; edges: Edge[] }) => {
@@ -51,6 +57,7 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
       <FlowBuilder
         initialNodes={initialFlow?.nodes}
         initialEdges={initialFlow?.edges}
+        availableTools={(toolsQuery.data?.items ?? []).filter((tool) => tool.enabled)}
         isSaving={saveMutation.isPending}
         onSave={handleSave}
       />

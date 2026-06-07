@@ -87,6 +87,64 @@ describe('VapiVoiceAdapter', () => {
       expect(body.metadata.voiceforge_workspace_id).toBe('ws-meta');
       expect(body.metadata.voiceforge_agent_version_id).toBe('v-meta');
     });
+
+    it('does not send speakingRate for Vapi voices because the assistant API rejects it', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-voice' }));
+
+      await adapter.createAgent({
+        workspaceId: 'ws-voice',
+        agentId: 'ag-voice',
+        agentVersionId: 'v-voice',
+        spec: makeSpec({
+          voice: {
+            voice_id: 'female-1',
+            tone: 'friendly',
+            allow_interruptions: true,
+            speaking_rate: 1.15,
+            language_configs: {
+              en: { voice_id: 'female-2', speaking_rate: 0.9 },
+            },
+          },
+        }),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
+      expect(body.voice).toEqual({
+        provider: 'vapi',
+        voiceId: 'female-2',
+      });
+      expect(body.voice.speakingRate).toBeUndefined();
+    });
+  });
+
+  describe('updateAgent', () => {
+    it('does not patch speakingRate for Vapi voices', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      await adapter.updateAgent({
+        workspaceId: 'ws-voice',
+        agentId: 'ag-voice',
+        agentVersionId: 'v-voice',
+        provider_runtime_id: 'asst-1',
+        spec: makeSpec({
+          voice: {
+            voice_id: 'female-1',
+            tone: 'friendly',
+            allow_interruptions: true,
+            speaking_rate: 1.15,
+          },
+        }),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
+      expect(body.voice).toEqual({
+        provider: 'vapi',
+        voiceId: 'female-1',
+      });
+      expect(body.voice.speakingRate).toBeUndefined();
+    });
   });
 
   describe('startOutboundCall', () => {

@@ -87,8 +87,23 @@ function buildInstructions(spec: AgentSpec): string {
   if (spec.compliance.opt_out_enabled) {
     lines.push('If the caller asks to stop, opt out, or not be called, acknowledge and end politely.');
   }
+  if (spec.tools.length > 0) {
+    lines.push(
+      `Use available tools for external actions: ${spec.tools.map((tool) => tool.name).join(', ')}.`,
+    );
+    lines.push('Call tools only with validated arguments that match their JSON schemas.');
+  }
 
   return lines.join('\n');
+}
+
+function buildRealtimeTools(spec: AgentSpec): Array<Record<string, unknown>> {
+  return spec.tools.map((tool) => ({
+    type: 'function',
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema,
+  }));
 }
 
 function buildSessionConfig(spec: AgentSpec): Record<string, unknown> {
@@ -96,6 +111,8 @@ function buildSessionConfig(spec: AgentSpec): Record<string, unknown> {
     type: 'realtime',
     model: env.OPENAI_REALTIME_MODEL,
     instructions: buildInstructions(spec),
+    tools: buildRealtimeTools(spec),
+    tool_choice: 'auto',
     output_modalities: ['audio'],
     audio: {
       input: {

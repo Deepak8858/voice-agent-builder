@@ -7,6 +7,56 @@ const NODE_Y_GAP = 160;
 
 export type AgentFlow = NonNullable<AgentSpec['flow']>;
 
+export function buildDefaultAgentFlow(spec: AgentSpec): AgentFlow {
+  const usedIds = new Set<string>();
+  const nodes: AgentFlow['nodes'] = [
+    { id: uniqueNodeId('start', usedIds), type: 'start', label: 'Start' },
+  ];
+
+  const appendNode = (node: AgentFlow['nodes'][number]) => {
+    const previous = nodes[nodes.length - 1];
+    if (previous && previous.type !== 'end') {
+      previous.next = node.id;
+    }
+    nodes.push(node);
+  };
+
+  if (spec.conversation_rules.first_message) {
+    appendNode({
+      id: uniqueNodeId('greeting', usedIds),
+      type: 'speak',
+      label: 'Greeting',
+      text: spec.conversation_rules.first_message,
+    });
+  }
+
+  for (const field of spec.required_fields) {
+    appendNode({
+      id: uniqueNodeId(`ask-${field.key}`, usedIds),
+      type: 'ask_question',
+      label: field.description ?? `Capture ${field.key}`,
+      question: field.description ?? `Please provide ${humanizeField(field.key)}.`,
+      capture_field: field.key,
+    });
+  }
+
+  for (const tool of spec.tools) {
+    appendNode({
+      id: uniqueNodeId(`tool-${tool.name}`, usedIds),
+      type: 'tool_call',
+      label: tool.name,
+      tool_name: tool.name,
+    });
+  }
+
+  appendNode({ id: uniqueNodeId('end', usedIds), type: 'end', label: 'End' });
+
+  return {
+    start_node_id: 'start',
+    nodes,
+  };
+}
+
 export function buildNodeData(type: string): Record<string, unknown> {
   switch (type) {
     case 'speak':
@@ -297,4 +347,23 @@ function stringValue(value: unknown): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function uniqueNodeId(raw: string, used: Set<string>): string {
+  const base = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'node';
+  let candidate = base;
+  let index = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function humanizeField(value: string): string {
+  return value.replace(/_/g, ' ');
 }

@@ -172,6 +172,9 @@ describe('AgentsService.updateFlow', () => {
         })),
         update,
       },
+      integrationTool: {
+        findMany: vi.fn(async () => []),
+      },
     };
     const service = makeAgentsService(prisma);
     service.get = vi.fn(async () => ({ id: 'a1' })) as never;
@@ -217,5 +220,83 @@ describe('AgentsService.updateFlow', () => {
         { id: 'end', type: 'end' },
       ],
     });
+  });
+
+  it('adds referenced workspace integration tools to Agent Spec tools when saving flow', async () => {
+    const baseSpec = spec();
+    const update = vi.fn(async ({ data }: { data: { specJson: unknown } }) => ({
+      id: 'a1',
+      specJson: data.specJson,
+    }));
+    const prisma = {
+      agent: {
+        findFirstOrThrow: vi.fn(async () => ({
+          id: 'a1',
+          workspaceId: 'w1',
+          specJson: baseSpec,
+          activeVersionId: null,
+          versions: [],
+        })),
+        update,
+      },
+      integrationTool: {
+        findMany: vi.fn(async () => [
+          {
+            name: 'google_calendar_booking',
+            description: 'Books appointments on Google Calendar.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                operation: { type: 'string' },
+                start_iso: { type: 'string' },
+              },
+              required: ['operation'],
+            },
+            toolType: 'google_calendar',
+          },
+        ]),
+      },
+    };
+    const service = makeAgentsService(prisma);
+    service.get = vi.fn(async () => ({ id: 'a1' })) as never;
+
+    await service.updateFlow('w1', 'a1', 'u1', {
+      nodes: [
+        { id: 'start', type: 'start', data: {} },
+        { id: 'tool', type: 'tool_call', data: { tool_name: 'google_calendar_booking' } },
+        { id: 'end', type: 'end', data: {} },
+      ],
+      edges: [
+        { id: 'e-start-tool', source: 'start', target: 'tool' },
+        { id: 'e-tool-end', source: 'tool', target: 'end' },
+      ],
+    });
+
+    const savedSpec = update.mock.calls[0]?.[0].data.specJson as AgentSpec;
+    expect(prisma.integrationTool.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: 'w1',
+          enabled: true,
+          name: { in: ['google_calendar_booking'] },
+        }),
+      }),
+    );
+    expect(savedSpec.tools).toEqual([
+      {
+        name: 'google_calendar_booking',
+        description: 'Books appointments on Google Calendar.',
+        requires_confirmation: true,
+        input_schema: {
+          type: 'object',
+          properties: {
+            operation: { type: 'string' },
+            start_iso: { type: 'string' },
+          },
+          required: ['operation'],
+        },
+        permissions: ['google_calendar'],
+      },
+    ]);
   });
 });

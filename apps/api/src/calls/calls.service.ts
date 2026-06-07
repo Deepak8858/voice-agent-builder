@@ -28,6 +28,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
+import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 
 const CALL_LIST_TTL_SECONDS = 15;
 
@@ -44,6 +45,7 @@ export class CallsService {
     private readonly queue: QueueService,
     private readonly retention: RetentionService,
     private readonly cache: CacheService,
+    private readonly voiceRegistry?: VoiceProviderRegistry,
   ) {}
 
   async startTestSession(
@@ -52,9 +54,13 @@ export class CallsService {
     actorUserId: string,
     dto: StartTestSessionDto,
   ): Promise<TestSessionResult> {
-    const { agent, version } = await this.resolveAgentVersion(workspaceId, agentId, dto.agent_version_id);
+    const { agent, version, voice } = await this.resolveAgentVersion(
+      workspaceId,
+      agentId,
+      dto.agent_version_id,
+    );
 
-    const session = await this.voice.createBrowserTestSession({
+    const session = await voice.createBrowserTestSession({
       workspaceId,
       agentId: agent.id,
       agentVersionId: version.id,
@@ -62,7 +68,7 @@ export class CallsService {
 
     let transcript: { transcript: string; turns: Array<{ at_ms: number }> };
     try {
-      transcript = await this.voice.getTranscript({ callId: session.test_session_id });
+      transcript = await voice.getTranscript({ callId: session.test_session_id });
     } catch {
       transcript = { transcript: '', turns: [] };
     }
@@ -83,7 +89,7 @@ export class CallsService {
         agentVersionId: version.id,
         direction: 'browser_test',
         status: transcriptReady ? 'completed' : 'in_progress',
-        provider: this.voice.name,
+        provider: voice.name,
         providerCallId: session.test_session_id,
         contactName: dto.contact_name ?? 'Browser tester',
         startedAt: new Date(),
@@ -151,7 +157,7 @@ export class CallsService {
       return this.toSummary(recentDuplicate);
     }
 
-    const { agent, version } = await this.resolveAgentVersion(
+    const { agent, version, voice } = await this.resolveAgentVersion(
       workspaceId,
       agentId,
       dto.agent_version_id,
@@ -207,7 +213,7 @@ export class CallsService {
       return this.toSummary(duplicateAfterLock);
     }
 
-    const result = await this.voice.startOutboundCall({
+    const result = await voice.startOutboundCall({
       workspaceId,
       agentId: agent.id,
       agentVersionId: version.id,
@@ -228,7 +234,7 @@ export class CallsService {
         contactId: checkResult.contact_id,
         direction: 'outbound',
         status: result.status,
-        provider: this.voice.name,
+        provider: voice.name,
         providerCallId: result.provider_call_id,
         toNumber: dto.to_number,
         fromNumber: dto.from_number ?? null,
@@ -314,11 +320,13 @@ export class CallsService {
     if (call.transcriptText && call.status === 'completed') {
       // Reconstruct turns from persisted transcript if available
       // This avoids re-fetching from Vapi on every GET
-      const t = await this.voice.getTranscript({ callId: call.providerCallId ?? call.id });
+      const voice = this.voiceForProviderName(call.provider);
+      const t = await voice.getTranscript({ callId: call.providerCallId ?? call.id });
       turns = t.turns;
     } else if (call.providerCallId) {
       try {
-        const t = await this.voice.getTranscript({ callId: call.providerCallId });
+        const voice = this.voiceForProviderName(call.provider);
+        const t = await voice.getTranscript({ callId: call.providerCallId });
         turns = t.turns;
       } catch {
         turns = [];
@@ -343,7 +351,8 @@ export class CallsService {
 
     if (call.providerCallId) {
       try {
-        await this.voice.endCall({ callId: call.providerCallId, reason: 'user_requested' });
+        const voice = this.voiceForProviderName(call.provider);
+        await voice.endCall({ callId: call.providerCallId, reason: 'user_requested' });
       } catch {
         // continue; we still mark the row as ended
       }
@@ -483,7 +492,8 @@ export class CallsService {
       let finalTranscriptText = transcriptText;
       if (!transcriptText && call.providerCallId) {
         try {
-          const t = await this.voice.getTranscript({ callId: call.providerCallId });
+          const voice = this.voiceForProviderName(call.provider);
+          const t = await voice.getTranscript({ callId: call.providerCallId });
           finalTranscriptText = t.transcript;
         } catch {
           // best-effort: transcript fetch failed, continue without
@@ -581,9 +591,10 @@ export class CallsService {
 
     // Lazily ensure a runtime agent exists on the provider side.
     // Only call createAgent if providerRuntimeId not yet persisted (idempotent on provider side).
+    const voice = await this.voiceForVersion(workspaceId, version);
     if (!version.providerRuntimeId) {
       try {
-        await this.voice.createAgent({
+        await voice.createAgent({
           workspaceId,
           agentId: agent.id,
           agentVersionId: version.id,
@@ -598,7 +609,34 @@ export class CallsService {
       }
     }
 
-    return { agent, version };
+    return { agent, version, voice };
+  }
+
+  private voiceForProviderName(provider: string | null | undefined): VoiceRuntimeProvider {
+    return this.voiceRegistry?.byName(provider) ?? this.voice;
+  }
+
+  private async voiceForVersion(
+    workspaceId: string,
+    version: { provider?: string | null },
+  ): Promise<VoiceRuntimeProvider> {
+    if (version.provider) return this.voiceForProviderName(version.provider);
+    if (!this.voiceRegistry) return this.voice;
+
+    const ws = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    const subscription = await this.billing.getSubscription(ws.organizationId);
+    let plan = subscription?.plan ?? 'free';
+    if (
+      subscription?.status === 'trialing' &&
+      subscription.trialEnd &&
+      new Date(subscription.trialEnd) < new Date()
+    ) {
+      plan = 'free';
+    }
+    return this.voiceRegistry.forPlan(plan);
   }
 
   private async recordUsage(

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const ToolTypeSchema = z.enum(['webhook', 'http_get', 'http_post', 'google_calendar']);
+export const ToolTypeSchema = z.enum(['webhook', 'http_get', 'http_post', 'google_calendar', 'crm']);
 export type ToolType = z.infer<typeof ToolTypeSchema>;
 
 export const ToolInvocationStatusSchema = z.enum(['pending', 'success', 'failed']);
@@ -25,7 +25,16 @@ const GoogleCalendarConfigSchema = z.object({
 });
 export type GoogleCalendarConfig = z.infer<typeof GoogleCalendarConfigSchema>;
 
-const ToolConfigSchema = z.union([WebhookConfigSchema, GoogleCalendarConfigSchema]);
+const CrmProviderSchema = z.enum(['pipedrive', 'hubspot', 'salesforce', 'generic']);
+const CrmConfigSchema = z.object({
+  provider: CrmProviderSchema,
+  api_key: z.string().min(1).optional(),
+  base_url: z.string().url().optional(),
+  object_type: z.string().min(1).default('contact'),
+});
+export type CrmConfig = z.infer<typeof CrmConfigSchema>;
+
+const ToolConfigSchema = z.union([WebhookConfigSchema, GoogleCalendarConfigSchema, CrmConfigSchema]);
 
 const JsonSchemaShape = z
   .object({
@@ -50,6 +59,7 @@ export const CreateToolDtoSchema = z.discriminatedUnion('tool_type', [
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_get'), config: WebhookConfigSchema }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_post'), config: WebhookConfigSchema }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_calendar'), config: GoogleCalendarConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('crm'), config: CrmConfigSchema }),
 ]);
 export type CreateToolDto = z.infer<typeof CreateToolDtoSchema>;
 
@@ -89,8 +99,12 @@ const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema.omit({
   client_secret_set: z.boolean(),
 });
 
+const PublicCrmConfigSchema = CrmConfigSchema.omit({ api_key: true }).extend({
+  api_key_set: z.boolean(),
+});
+
 export const ToolDetailSchema = ToolSummarySchema.extend({
-  config: z.union([PublicWebhookConfigSchema, PublicGoogleCalendarConfigSchema]),
+  config: z.union([PublicWebhookConfigSchema, PublicGoogleCalendarConfigSchema, PublicCrmConfigSchema]),
   input_schema: JsonSchemaShape,
 });
 export type ToolDetail = z.infer<typeof ToolDetailSchema>;

@@ -63,7 +63,7 @@ const TOOL_PRESETS: ToolPreset[] = [
     label: 'CRM contact',
     description: 'Send a qualified caller or lead into HubSpot, Salesforce, Pipedrive, or a CRM webhook.',
     icon: Contact,
-    toolType: 'webhook',
+    toolType: 'crm',
     name: 'create_crm_contact',
     url: 'https://example.com/api/crm/contacts',
     method: 'POST',
@@ -182,6 +182,9 @@ export default function NewToolPage() {
   const [refreshToken, setRefreshToken] = useState('');
   const [googleClientId, setGoogleClientId] = useState('');
   const [googleClientSecret, setGoogleClientSecret] = useState('');
+  const [crmProvider, setCrmProvider] = useState('hubspot');
+  const [crmApiKey, setCrmApiKey] = useState('');
+  const [crmBaseUrl, setCrmBaseUrl] = useState('');
 
   function applyPreset(preset: ToolPreset) {
     setToolType(preset.toolType);
@@ -207,7 +210,7 @@ export default function NewToolPage() {
   const create = useMutation({
     mutationFn: async () => {
       if (!workspaceId) throw new Error('No workspace');
-      const headers = toolType === 'google_calendar' ? {} : tryParseJson('Headers', headersText);
+      const headers = toolType === 'google_calendar' || toolType === 'crm' ? {} : tryParseJson('Headers', headersText);
       const inputSchema = tryParseJson('Input schema', schemaText);
       const config = toolType === 'google_calendar'
         ? {
@@ -216,7 +219,14 @@ export default function NewToolPage() {
           client_secret: googleClientSecret || undefined,
           calendar_id: calendarId || 'primary',
         }
-        : {
+        : toolType === 'crm'
+          ? {
+            provider: crmProvider,
+            api_key: crmApiKey || undefined,
+            base_url: crmBaseUrl || undefined,
+            object_type: 'contact',
+          }
+          : {
           url,
           method,
           headers,
@@ -348,6 +358,7 @@ export default function NewToolPage() {
                 <option value="http_post">HTTP POST</option>
                 <option value="http_get">HTTP GET</option>
                 <option value="google_calendar">Google Calendar</option>
+                <option value="crm">CRM contact</option>
               </select>
             </div>
           </CardContent>
@@ -402,6 +413,56 @@ export default function NewToolPage() {
                     onChange={(e) => setGoogleClientSecret(e.target.value)}
                   />
                 </div>
+              </div>
+            </CardContent>
+          </Card>
+        ) : toolType === 'crm' ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Contact className="h-4 w-4 text-primary" />
+                CRM connection
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <div>
+                <Label>Provider</Label>
+                <select
+                  className="mt-1.5 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={crmProvider}
+                  onChange={(e) => setCrmProvider(e.target.value)}
+                >
+                  <option value="hubspot">HubSpot</option>
+                  <option value="salesforce">Salesforce</option>
+                  <option value="pipedrive">Pipedrive</option>
+                  <option value="generic">Generic CRM webhook</option>
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="crm_api_key">API key or access token</Label>
+                <Input
+                  id="crm_api_key"
+                  className="mt-1.5"
+                  type="password"
+                  value={crmApiKey}
+                  onChange={(e) => setCrmApiKey(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="crm_base_url">
+                  {crmProvider === 'generic'
+                    ? 'Webhook URL'
+                    : crmProvider === 'salesforce'
+                      ? 'Salesforce instance URL'
+                      : 'Base URL (optional)'}
+                </Label>
+                <Input
+                  id="crm_base_url"
+                  className="mt-1.5"
+                  value={crmBaseUrl}
+                  onChange={(e) => setCrmBaseUrl(e.target.value)}
+                  placeholder={crmProvider === 'generic' ? 'https://crm.example.com/contacts' : 'https://instance.example.com'}
+                />
               </div>
             </CardContent>
           </Card>
@@ -502,7 +563,13 @@ export default function NewToolPage() {
       <div className="flex items-center gap-2">
         <Button
           onClick={() => create.mutate()}
-          disabled={create.isPending || !workspaceId || (toolType === 'google_calendar' && !refreshToken)}
+          disabled={
+            create.isPending ||
+            !workspaceId ||
+            (toolType === 'google_calendar' && !refreshToken) ||
+            (toolType === 'crm' && crmProvider !== 'generic' && !crmApiKey) ||
+            (toolType === 'crm' && (crmProvider === 'generic' || crmProvider === 'salesforce') && !crmBaseUrl)
+          }
           className="gap-2"
         >
           <Save className="h-4 w-4" />

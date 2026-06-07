@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AppError } from '../../common/errors';
 import { env } from '../../config/env';
@@ -97,6 +97,14 @@ function buildSystemPrompt(spec: AgentSpec): string {
       'If the caller asks to stop, opt out, do not call, or remove from list, acknowledge and end the call politely.',
     );
   }
+  if (spec.tools.length > 0) {
+    parts.push(
+      `Available tools: ${spec.tools
+        .map((tool) => `${tool.name} (${tool.description})`)
+        .join('; ')}.`,
+    );
+    parts.push('When a workflow step requires an external action, use the matching tool name exactly as listed.');
+  }
   return parts.join('\n');
 }
 
@@ -161,7 +169,6 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
 
     const voiceOverrides = spec.voice.language_configs?.[spec.language];
     const voiceId = voiceOverrides?.voice_id ?? spec.voice.voice_id ?? 'Clara';
-    const speakingRate = voiceOverrides?.speaking_rate ?? spec.voice.speaking_rate;
 
     const assistantPayload: Record<string, unknown> = {
       name: spec.name,
@@ -173,7 +180,6 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       voice: {
         provider: 'vapi',
         voiceId,
-        ...(speakingRate ? { speakingRate } : {}),
       },
       firstMessage: spec.conversation_rules.first_message,
       metadata: {
@@ -210,12 +216,12 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
       patch.firstMessage = spec.conversation_rules.first_message;
     }
 
-    // voice is mutable
-    if (spec.voice.voice_id || spec.voice.speaking_rate) {
+    // voice is mutable. Vapi's `provider: "vapi"` voice schema rejects
+    // `speakingRate`; keep pacing in the provider-neutral spec/prompt only.
+    if (spec.voice.voice_id) {
       patch.voice = {
         provider: 'vapi',
-        ...(spec.voice.voice_id ? { voiceId: spec.voice.voice_id } : {}),
-        ...(spec.voice.speaking_rate ? { speakingRate: spec.voice.speaking_rate } : {}),
+        voiceId: spec.voice.voice_id,
       };
     }
 

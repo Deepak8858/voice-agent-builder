@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
+  AgentTool,
   AgentSpec,
   AgentSummary,
   CreateAgentDto,
@@ -20,6 +21,7 @@ import { CacheService } from '../cache/cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
+import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 import { BillingService } from '../billing/billing.service';
 
 export interface ListAgentsResult {
@@ -61,6 +63,7 @@ export class AgentsService {
     private readonly cache: CacheService,
     private readonly cacheInvalidator: CacheInvalidator,
     private readonly billing: BillingService,
+    private readonly voiceRegistry?: VoiceProviderRegistry,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -276,11 +279,20 @@ export class AgentsService {
     if (!specToPublish) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
 
     // Re-validate latest spec before publishing.
-    const parsed = AgentSpecSchema.safeParse(specToPublish);
+    const parsedBase = AgentSpecSchema.safeParse(specToPublish);
+    if (!parsedBase.success) {
+      throw new AgentSpecInvalidError({ issues: parsedBase.error.flatten() });
+    }
+    const specWithTools = await this.mergeReferencedIntegrationTools(
+      workspaceId,
+      agentId,
+      parsedBase.data,
+    );
+    const parsed = AgentSpecSchema.safeParse(specWithTools);
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
 
     let versionToPublish = latest;
-    if (agent.specJson && (!latest || !jsonValuesEqual(agent.specJson, latest.specJson))) {
+    if (agent.specJson && (!latest || !jsonValuesEqual(parsed.data, latest.specJson))) {
       const nextNumber = (latest?.versionNumber ?? 0) + 1;
       versionToPublish = await this.prisma.agentVersion.create({
         data: {
@@ -303,12 +315,17 @@ export class AgentsService {
     }
     if (!versionToPublish) throw new AgentSpecInvalidError({ reason: 'No versions to publish.' });
 
+    const voice =
+      versionToPublish.providerRuntimeId && versionToPublish.provider
+        ? this.voiceRegistry?.byName(versionToPublish.provider) ?? this.voice
+        : await this.voiceForOrganization(ws.organizationId);
+
     let providerRuntimeId = versionToPublish.providerRuntimeId;
     let deploymentStatus: 'deployed' | 'failed' = 'deployed';
     let deployError: string | null = null;
     try {
       if (providerRuntimeId) {
-        await this.voice.updateAgent({
+        await voice.updateAgent({
           workspaceId,
           agentId,
           agentVersionId: versionToPublish.id,
@@ -316,7 +333,7 @@ export class AgentsService {
           provider_runtime_id: providerRuntimeId,
         });
       } else {
-        const created = await this.voice.createAgent({
+        const created = await voice.createAgent({
           workspaceId,
           agentId,
           agentVersionId: versionToPublish.id,
@@ -340,7 +357,7 @@ export class AgentsService {
       where: { id: versionToPublish.id },
       data: {
         deploymentStatus,
-        provider: this.voice.name,
+        provider: voice.name,
         providerRuntimeId,
       },
     });
@@ -352,7 +369,7 @@ export class AgentsService {
       resourceId: agentId,
       metadata: {
         version_id: versionToPublish.id,
-        provider: this.voice.name,
+        provider: voice.name,
         provider_runtime_id: providerRuntimeId,
         deployment_status: deploymentStatus,
         ...(deployError ? { error: deployError } : {}),
@@ -404,10 +421,10 @@ export class AgentsService {
       });
     }
 
-    const spec = {
+    const spec = await this.mergeReferencedIntegrationTools(workspaceId, agentId, {
       ...((baseSpec as Record<string, unknown>) ?? {}),
       flow: buildAgentFlow(body.nodes, body.edges),
-    };
+    });
 
     const parsed = AgentSpecSchema.safeParse(spec);
     if (!parsed.success) {
@@ -426,6 +443,65 @@ export class AgentsService {
       resourceId: agentId,
     });
     return this.get(workspaceId, agentId);
+  }
+
+  private async voiceForOrganization(organizationId: string): Promise<VoiceRuntimeProvider> {
+    if (!this.voiceRegistry) return this.voice;
+    const subscription = await this.billing.getSubscription(organizationId);
+    let plan = subscription?.plan ?? 'free';
+    if (
+      subscription?.status === 'trialing' &&
+      subscription.trialEnd &&
+      new Date(subscription.trialEnd) < new Date()
+    ) {
+      plan = 'free';
+    }
+    return this.voiceRegistry.forPlan(plan);
+  }
+
+  private async mergeReferencedIntegrationTools(
+    workspaceId: string,
+    agentId: string,
+    spec: AgentSpec | Record<string, unknown>,
+  ): Promise<AgentSpec | Record<string, unknown>> {
+    const flow = (spec as AgentSpec).flow;
+    const toolNames = new Set(
+      (flow?.nodes ?? [])
+        .filter((node) => node.type === 'tool_call')
+        .map((node) => (node.type === 'tool_call' ? node.tool_name.trim() : ''))
+        .filter(Boolean),
+    );
+    if (toolNames.size === 0) return spec;
+
+    const rows = await this.prisma.integrationTool.findMany({
+      where: {
+        workspaceId,
+        enabled: true,
+        name: { in: [...toolNames] },
+        OR: [{ agentId: null }, { agentId }],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (rows.length === 0) return spec;
+
+    const merged = new Map<string, AgentTool>();
+    const existingTools = Array.isArray((spec as AgentSpec).tools)
+      ? ((spec as AgentSpec).tools as AgentTool[])
+      : [];
+    for (const tool of existingTools) {
+      merged.set(tool.name, tool);
+    }
+    for (const row of rows) {
+      merged.set(row.name, {
+        name: row.name,
+        description: row.description,
+        requires_confirmation: true,
+        input_schema: row.inputSchema as AgentTool['input_schema'],
+        permissions: [row.toolType],
+      });
+    }
+
+    return { ...spec, tools: [...merged.values()] };
   }
 
   private toSummary(a: {

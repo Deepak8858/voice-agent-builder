@@ -83,13 +83,17 @@ function makeService(opts: { tool?: ToolRow | null }) {
     name: 'google_calendar',
     execute: vi.fn(),
   };
+  const crm = {
+    createContact: vi.fn(),
+  };
   const service = new ToolsService(
     prisma as never,
     audit as never,
     executor as never,
     calendar as never,
+    crm as never,
   );
-  return { service, prisma, audit, executor, calendar, invocations };
+  return { service, prisma, audit, executor, calendar, crm, invocations };
 }
 
 const baseTool: ToolRow = {
@@ -197,6 +201,38 @@ describe('ToolsService.invoke', () => {
     expect(calendar.execute).toHaveBeenCalledWith(
       { operation: 'create_event' },
       { refresh_token: 'refresh-token', calendar_id: 'primary' },
+    );
+  });
+
+  it('invokes the CRM executor when configured', async () => {
+    const { service, executor, crm } = makeService({
+      tool: {
+        ...baseTool,
+        toolType: 'crm',
+        config: { provider: 'hubspot', api_key: 'hs-key' },
+        inputSchema: {
+          type: 'object',
+          properties: { full_name: { type: 'string' } },
+          required: ['full_name'],
+        },
+      },
+    });
+    crm.createContact.mockResolvedValue({
+      contact_id: 'crm_1',
+      status: 'created',
+      provider: 'hubspot',
+    });
+
+    const result = await service.invoke('w1', 'tool_1', 'u1', {
+      arguments: { full_name: 'Ada Lovelace', phone: '+15551234567' },
+    });
+
+    expect(result.status).toBe('success');
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(crm.createContact).toHaveBeenCalledWith(
+      'hubspot',
+      { provider: 'hubspot', api_key: 'hs-key' },
+      { full_name: 'Ada Lovelace', phone: '+15551234567' },
     );
   });
 });

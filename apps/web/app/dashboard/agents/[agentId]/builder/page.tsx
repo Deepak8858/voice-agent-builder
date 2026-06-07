@@ -16,7 +16,10 @@ import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
 import { PublishAgentButton } from '@/components/publish-agent-button';
 import { PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
-import { convertAgentFlowToReactFlow } from '@/components/flow-builder/flow-builder-model';
+import {
+  buildDefaultAgentFlow,
+  convertAgentFlowToReactFlow,
+} from '@/components/flow-builder/flow-builder-model';
 import type { AgentDetail, SessionUser } from '@voiceforge/shared';
 import {
   ArrowLeft,
@@ -49,7 +52,10 @@ export default async function AgentBuilderPage({ params }: PageProps) {
 
   const workspaceId = me.active_workspace_id ?? '';
   const latestVersion = agent.versions[0];
-  const flowNodeCount = agent.active_spec?.flow?.nodes.length ?? 0;
+  const builderFlow = agent.active_spec
+    ? convertAgentFlowToReactFlow(agent.active_spec.flow ?? buildDefaultAgentFlow(agent.active_spec))
+    : undefined;
+  const flowNodeCount = builderFlow?.nodes.length ?? 0;
   const toolCount = agent.active_spec?.tools.length ?? 0;
   const knowledgeMode = agent.active_spec?.knowledge.retrieval_mode ?? 'none';
 
@@ -151,9 +157,7 @@ export default async function AgentBuilderPage({ params }: PageProps) {
               workspaceId={workspaceId}
               agentId={agent.id}
               initialFlow={
-                agent.active_spec?.flow
-                  ? convertAgentFlowToReactFlow(agent.active_spec.flow)
-                  : undefined
+                builderFlow
               }
               jsonContent={agent.active_spec ? JSON.stringify(agent.active_spec, null, 2) : undefined}
             />

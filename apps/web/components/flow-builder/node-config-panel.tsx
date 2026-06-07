@@ -2,6 +2,7 @@
 
 import { useCallback } from 'react';
 import type { Node } from '@xyflow/react';
+import type { ToolSummary } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
@@ -9,12 +10,19 @@ import { Loader2, Save } from 'lucide-react';
 
 interface NodeConfigPanelProps {
   node: Node | null;
+  availableTools?: ToolSummary[];
   onChange: (nodeId: string, data: Record<string, unknown>) => void;
   onSave: () => void;
   isSaving?: boolean;
 }
 
-export function NodeConfigPanel({ node, onChange, onSave, isSaving = false }: NodeConfigPanelProps) {
+export function NodeConfigPanel({
+  node,
+  availableTools = [],
+  onChange,
+  onSave,
+  isSaving = false,
+}: NodeConfigPanelProps) {
   const handleChange = useCallback(
     (field: string, value: unknown) => {
       if (!node) return;
@@ -93,16 +101,35 @@ export function NodeConfigPanel({ node, onChange, onSave, isSaving = false }: No
         )}
 
         {node.type === 'tool_call' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Tool name</span>
-            <Input
-              type="text"
-              className="font-mono text-xs"
-              value={(node.data?.tool_name as string) ?? ''}
-              onChange={(e) => handleChange('tool_name', e.target.value)}
-              placeholder="e.g. google_calendar.book_slot"
-            />
-          </label>
+          <div className="flex flex-col gap-3">
+            {availableTools.length > 0 ? (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-muted-foreground">Created tool</span>
+                <select
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={(node.data?.tool_name as string) ?? ''}
+                  onChange={(e) => handleChange('tool_name', e.target.value)}
+                >
+                  <option value="">Select a tool</option>
+                  {availableTools.map((tool) => (
+                    <option key={tool.id} value={tool.name}>
+                      {tool.name} ({tool.tool_type})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium text-muted-foreground">Tool name</span>
+              <Input
+                type="text"
+                className="font-mono text-xs"
+                value={(node.data?.tool_name as string) ?? ''}
+                onChange={(e) => handleChange('tool_name', e.target.value)}
+                placeholder="e.g. google_calendar_booking"
+              />
+            </label>
+          </div>
         )}
 
         {node.type === 'knowledge_lookup' && (
