@@ -142,6 +142,7 @@ jobs:
           key: ${{ secrets.GCP_VM_SSH_KEY }}
           target: ${{ env.DEPLOY_PATH }}
           source: infra/docker/docker-compose.gcp.yml,infra/nginx/nginx.conf
+          overwrite: true
 
       - name: Deploy to VM
         uses: appleboy/ssh-action@v1
