@@ -134,6 +134,19 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
 
+      - name: Prepare VM deployment path
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ env.VM_HOST }}
+          username: ${{ env.VM_USER }}
+          key: ${{ secrets.GCP_VM_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            DEPLOY_USER="$(id -un)"
+            DEPLOY_GROUP="$(id -gn)"
+            sudo mkdir -p "${{ env.DEPLOY_PATH }}/infra/docker" "${{ env.DEPLOY_PATH }}/infra/nginx"
+            sudo chown -R "${DEPLOY_USER}:${DEPLOY_GROUP}" "${{ env.DEPLOY_PATH }}/infra/docker" "${{ env.DEPLOY_PATH }}/infra/nginx"
+
       - name: Sync deployment files to VM
         uses: appleboy/scp-action@v0.1.7
         with:
