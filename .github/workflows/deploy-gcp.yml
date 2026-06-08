@@ -145,6 +145,7 @@ jobs:
             DEPLOY_USER="$(id -un)"
             DEPLOY_GROUP="$(id -gn)"
             sudo mkdir -p "${{ env.DEPLOY_PATH }}/infra/docker" "${{ env.DEPLOY_PATH }}/infra/nginx"
+            sudo rm -rf "${{ env.DEPLOY_PATH }}/infra/docker/infra"
             sudo chown -R "${DEPLOY_USER}:${DEPLOY_GROUP}" "${{ env.DEPLOY_PATH }}/infra/docker" "${{ env.DEPLOY_PATH }}/infra/nginx"
 
       - name: Sync deployment files to VM
