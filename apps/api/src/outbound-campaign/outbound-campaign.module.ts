@@ -3,12 +3,12 @@ import { OutboundCampaignService } from './outbound-campaign.service';
 import { OutboundCampaignController } from './outbound-campaign.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { QueueModule } from '../queue/queue.module';
-import { TwilioModule } from '../twilio-adapter/twilio.module';
+import { WorkspaceGuard } from '../common/workspace.guard';
 
 @Module({
-  imports: [PrismaModule, QueueModule, TwilioModule],
+  imports: [PrismaModule, QueueModule],
   controllers: [OutboundCampaignController],
-  providers: [OutboundCampaignService],
+  providers: [OutboundCampaignService, WorkspaceGuard],
   exports: [OutboundCampaignService],
 })
 export class OutboundCampaignModule {}

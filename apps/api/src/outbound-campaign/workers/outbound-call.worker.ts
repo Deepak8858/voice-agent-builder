@@ -1,14 +1,15 @@
 import { BaseWorker } from '../../workers/base.worker';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { QueueService } from '../../queue/queue.service';
-import { TwilioVoiceAdapter } from '../../twilio-adapter/twilio.adapter';
 import { OutboundCampaignService } from '../outbound-campaign.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { CallsService } from '../../calls/calls.service';
+import { OUTBOUND_CAMPAIGN_QUEUE } from '../outbound-campaign.queue';
 
 interface OutboundCallJob {
   campaignId: string;
   agentId: string;
   workspaceId: string;
+  actorUserId: string;
   to: string;
   contactName?: string;
   customData?: Record<string, string>;
@@ -18,49 +19,28 @@ interface OutboundCallJob {
 export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
   constructor(
     queueService: QueueService,
-    private readonly twilioAdapter: TwilioVoiceAdapter,
+    private readonly calls: CallsService,
     private readonly campaigns: OutboundCampaignService,
-    private readonly prisma: PrismaService,
   ) {
-    super('outbound_call', queueService, 5);
+    super(OUTBOUND_CAMPAIGN_QUEUE, queueService, 5);
   }
 
   async processor(job: { data: OutboundCallJob }): Promise<void> {
-    const { campaignId, agentId, workspaceId, to, contactName, customData } = job.data;
-
-    // Get active version for this agent
-    const agent = await this.prisma.agent.findFirst({
-      where: { id: agentId },
-      select: { activeVersionId: true },
-    });
+    const { campaignId, agentId, workspaceId, actorUserId, to, contactName, customData } = job.data;
 
     try {
-      const result = await this.twilioAdapter.startOutboundCall({
-        workspaceId,
-        agentId,
-        agentVersionId: agent?.activeVersionId ?? '',
-        toNumber: to,
-        contactName,
-        metadata: { campaignId, ...customData },
-      });
-
-      // Create call record
-      await this.prisma.call.create({
-        data: {
-          workspaceId,
-          agentId,
-          direction: 'outbound',
-          status: 'queued',
-          provider: 'twilio',
-          providerCallId: result.provider_call_id,
-          toNumber: to,
-          contactName,
-          metadata: { campaignId, ...customData },
+      const call = await this.calls.startOutboundCall(workspaceId, agentId, actorUserId, {
+        to_number: to,
+        contact_name: contactName,
+        metadata: {
+          campaign_id: campaignId,
+          ...customData,
+          purpose: 'outbound_campaign',
         },
       });
 
       await this.campaigns.incrementStat(campaignId, 'in_progress');
-      this.logger.log(`Outbound call queued: ${result.provider_call_id} to ${to}`);
+      this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
     } catch (err) {
       this.logger.error(`Outbound call failed for ${to}: ${(err as Error).message}`);
       await this.campaigns.incrementStat(campaignId, 'failed');

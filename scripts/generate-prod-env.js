@@ -19,6 +19,11 @@ env = env.replace(/^WEB_PORT=.*/m, 'WEB_PORT=3000');
 
 // Redis: docker-compose provides a local redis service
 env = env.replace(/^REDIS_URL=.*/m, 'REDIS_URL=redis://redis:6379');
+if (/^WORKERS_ENABLED=.*/m.test(env)) {
+  env = env.replace(/^WORKERS_ENABLED=.*/m, 'WORKERS_ENABLED=true');
+} else {
+  env = env.replace(/^REDIS_URL=.*/m, 'REDIS_URL=redis://redis:6379\nWORKERS_ENABLED=true');
+}
 
 // Security secrets
 env = env.replace(/^JWT_SECRET=.*/m, `JWT_SECRET=${jwtSecret}`);

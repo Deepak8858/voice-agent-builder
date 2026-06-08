@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
-import { AppError } from '../common/errors';
+import { AgentNotFoundError, AppError } from '../common/errors';
 import type { Prisma } from '@prisma/client';
+import { OUTBOUND_CAMPAIGN_QUEUE } from './outbound-campaign.queue';
+import { AuditService } from '../audit/audit.service';
 
 export interface CampaignContact {
   phone: string;
@@ -18,6 +20,7 @@ export class OutboundCampaignService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
+    private readonly audit: AuditService,
   ) {}
 
   async list(workspaceId: string) {
@@ -29,6 +32,7 @@ export class OutboundCampaignService {
 
   async create(
     workspaceId: string,
+    actorUserId: string,
     dto: {
       agent_id: string;
       name: string;
@@ -36,7 +40,13 @@ export class OutboundCampaignService {
       schedule?: Record<string, unknown>;
     },
   ) {
-    return this.prisma.outboundCampaign.create({
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: dto.agent_id, workspaceId },
+      select: { id: true },
+    });
+    if (!agent) throw new AgentNotFoundError(dto.agent_id);
+
+    const campaign = await this.prisma.outboundCampaign.create({
       data: {
         workspaceId,
         agentId: dto.agent_id,
@@ -46,10 +56,24 @@ export class OutboundCampaignService {
         status: 'draft',
       },
     });
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'campaign.create',
+      resourceType: 'outbound_campaign',
+      resourceId: campaign.id,
+      metadata: {
+        agent_id: dto.agent_id,
+        contact_count: dto.contacts.length,
+      },
+    });
+    return campaign;
   }
 
-  async start(campaignId: string) {
-    const campaign = await this.prisma.outboundCampaign.findUnique({ where: { id: campaignId } });
+  async start(workspaceId: string, campaignId: string, actorUserId: string) {
+    const campaign = await this.prisma.outboundCampaign.findFirst({
+      where: { id: campaignId, workspaceId },
+    });
     if (!campaign) throw new AppError('NOT_FOUND', 'Campaign not found', 404);
     if (campaign.status !== 'draft' && campaign.status !== 'paused') {
       throw new AppError('INVALID_STATUS', `Cannot start campaign in ${campaign.status} status`, 400);
@@ -65,28 +89,51 @@ export class OutboundCampaignService {
 
     const contacts = (campaign.contacts as unknown as CampaignContact[]) ?? [];
     for (const contact of contacts) {
-      await this.queue.enqueue('outbound.call', 'call', {
+      await this.queue.enqueue(OUTBOUND_CAMPAIGN_QUEUE, 'call', {
         campaignId,
         agentId: campaign.agentId,
         workspaceId: campaign.workspaceId,
+        actorUserId,
         to: contact.phone,
         contactName: contact.full_name,
         customData: contact.custom_data,
       });
     }
 
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'campaign.start',
+      resourceType: 'outbound_campaign',
+      resourceId: campaignId,
+      metadata: {
+        agent_id: campaign.agentId,
+        contact_count: contacts.length,
+      },
+    });
+
     this.logger.log(`Campaign ${campaignId} started with ${contacts.length} contacts`);
   }
 
-  async pause(campaignId: string) {
-    await this.prisma.outboundCampaign.update({
-      where: { id: campaignId },
+  async pause(workspaceId: string, campaignId: string, actorUserId: string) {
+    const result = await this.prisma.outboundCampaign.updateMany({
+      where: { id: campaignId, workspaceId },
       data: { status: 'paused' },
+    });
+    if (result.count === 0) throw new AppError('NOT_FOUND', 'Campaign not found', 404);
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'campaign.pause',
+      resourceType: 'outbound_campaign',
+      resourceId: campaignId,
     });
   }
 
-  async getStats(campaignId: string) {
-    const campaign = await this.prisma.outboundCampaign.findUnique({ where: { id: campaignId } });
+  async getStats(workspaceId: string, campaignId: string) {
+    const campaign = await this.prisma.outboundCampaign.findFirst({
+      where: { id: campaignId, workspaceId },
+    });
     return campaign?.stats;
   }
 
@@ -101,9 +148,6 @@ export class OutboundCampaignService {
     if (!campaign) return;
     const stats = campaign.stats as Record<string, number>;
     stats[field] = (stats[field] ?? 0) + 1;
-    if (field === 'in_progress') {
-      stats['in_progress'] = Math.max(0, stats['in_progress'] - 1);
-    }
     await this.prisma.outboundCampaign.update({
       where: { id: campaignId },
       data: { stats },

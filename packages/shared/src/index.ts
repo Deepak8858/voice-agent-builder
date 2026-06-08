@@ -5,6 +5,7 @@ export * from './schemas/agent';
 export * from './schemas/api';
 export * from './schemas/knowledge';
 export * from './schemas/call';
+export * from './schemas/campaign';
 export * from './schemas/tools';
 export * from './schemas/compliance';
 export * from './schemas/analytics';

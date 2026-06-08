@@ -12,12 +12,14 @@ import { TwilioModule } from '../twilio-adapter/twilio.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { OutboundCampaignModule } from '../outbound-campaign/outbound-campaign.module';
 import { CrmRoutingModule } from '../crm-routing/crm-routing.module';
+import { CallsModule } from '../calls/calls.module';
 
 @Module({
   imports: [
     AnalyticsModule,
     LlmModule,
     QueueModule,
+    CallsModule,
     TwilioModule,
     PrismaModule,
     OutboundCampaignModule,

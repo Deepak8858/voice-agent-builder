@@ -64,6 +64,7 @@ services:
       NODE_ENV: production
       API_PORT: 4000
       REDIS_URL: redis://redis:6379
+      WORKERS_ENABLED: ${WORKERS_ENABLED:-true}
     depends_on:
       redis:
         condition: service_healthy
