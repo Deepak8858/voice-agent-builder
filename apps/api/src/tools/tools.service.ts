@@ -25,6 +25,8 @@ import { WebhookExecutor } from './webhook-executor';
 import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
 import { CrmExecutor, type CrmContactArgs, type CrmProvider } from './crm-executor';
 
+type ToolCrmProvider = Exclude<CrmProvider, 'generic_webhook'>;
+
 export interface ToolExecutor {
   readonly name: string;
   execute(params: Record<string, unknown>, config: Record<string, string>): Promise<ToolCallResult>;
@@ -475,7 +477,7 @@ export class ToolsService {
   }
 }
 
-function crmProvider(value: unknown): CrmProvider | null {
+function crmProvider(value: unknown): ToolCrmProvider | null {
   return value === 'pipedrive' || value === 'hubspot' || value === 'salesforce' || value === 'generic'
     ? value
     : null;

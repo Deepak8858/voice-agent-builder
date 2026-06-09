@@ -60,6 +60,21 @@ describe('CrmExecutor', () => {
       expect(result.provider).toBe('hubspot');
     });
 
+    it('uses bearer authorization for HubSpot private app or OAuth tokens', async () => {
+      const fetch = mockFetch({ id: 'hs-123' });
+      const executor = new CrmExecutor();
+
+      await executor.createContact('hubspot', { api_key: 'hs-token' }, {
+        full_name: 'Bob Charlie',
+        email: 'bob@example.com',
+      });
+
+      const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.hubapi.com/crm/v3/objects/contacts');
+      expect(url).not.toContain('hapikey=');
+      expect(init.headers).toMatchObject({ Authorization: 'Bearer hs-token' });
+    });
+
     it('throws CrmAuthError when api_key missing', async () => {
       const executor = new CrmExecutor();
       await expect(
@@ -101,6 +116,18 @@ describe('CrmExecutor', () => {
       const body = JSON.parse(init.body as string);
       expect(body.name).toBe('Dan');
       expect(body.phone).toBe('+10000000000');
+    });
+
+    it('accepts the workspace CRM generic_webhook provider alias', async () => {
+      mockFetch({ id: 'gen-2' });
+      const executor = new CrmExecutor();
+
+      const result = await executor.createContact('generic_webhook', {
+        base_url: 'https://my-crm.example.com/api/contacts',
+      }, { full_name: 'Eve' });
+
+      expect(result.contact_id).toBe('gen-2');
+      expect(result.provider).toBe('generic_webhook');
     });
 
     it('throws CrmAuthError when base_url missing', async () => {

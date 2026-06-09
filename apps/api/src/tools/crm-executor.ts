@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-export type CrmProvider = 'pipedrive' | 'hubspot' | 'salesforce' | 'generic';
+export type CrmProvider = 'pipedrive' | 'hubspot' | 'salesforce' | 'generic' | 'generic_webhook';
 
 export interface CrmConfig {
   api_key?: string;
@@ -61,7 +61,9 @@ export class CrmExecutor {
       case 'salesforce':
         return this.salesforceCreate(config, args);
       case 'generic':
-        return this.genericCreate(config, args);
+        return this.genericCreate(config, args, 'generic');
+      case 'generic_webhook':
+        return this.genericCreate(config, args, 'generic_webhook');
     }
   }
 
@@ -107,7 +109,7 @@ export class CrmExecutor {
     const lastName = nameParts.slice(1).join(' ');
 
     const response = await this.httpPost(
-      `https://api.hubapi.com/crm/v3/objects/contacts?hapikey=${apiKey}`,
+      'https://api.hubapi.com/crm/v3/objects/contacts',
       {
         properties: {
           firstname: firstName,
@@ -118,6 +120,7 @@ export class CrmExecutor {
           notes_last_updated: args.notes ?? '',
         },
       },
+      { Authorization: `Bearer ${apiKey}` },
     );
 
     const data = response as { id?: string };
@@ -161,7 +164,11 @@ export class CrmExecutor {
     };
   }
 
-  private async genericCreate(config: CrmConfig, args: CrmContactArgs): Promise<CrmResult> {
+  private async genericCreate(
+    config: CrmConfig,
+    args: CrmContactArgs,
+    provider: 'generic' | 'generic_webhook',
+  ): Promise<CrmResult> {
     const url = config.base_url;
     if (!url) throw new CrmAuthError('Generic CRM requires a base_url');
     if (isUrlBlocked(url)) throw new CrmAuthError('CRM base_url resolves to a blocked address.');
@@ -178,7 +185,7 @@ export class CrmExecutor {
     return {
       contact_id: data?.id ?? 'unknown',
       status: 'created',
-      provider: 'generic',
+      provider,
     };
   }
 

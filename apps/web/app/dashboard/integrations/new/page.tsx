@@ -11,7 +11,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useApi } from '@/lib/use-api';
-import { CalendarDays, Contact, MessageSquare, Plug, Save, Ticket, Webhook, X } from 'lucide-react';
+import {
+  getConnectionPreset,
+  type ConnectionProviderId,
+} from '@/lib/integration-presets';
+import { CalendarDays, Contact, ExternalLink, MessageSquare, Plug, Save, Ticket, Webhook, X } from 'lucide-react';
 
 const DEFAULT_INPUT_SCHEMA = `{
   "type": "object",
@@ -207,6 +211,11 @@ export default function NewToolPage() {
     queryFn: () => call<{ items: AgentSummary[] }>(`/workspaces/${workspaceId}/agents`),
   });
 
+  const calendarPreset = getConnectionPreset('google_calendar');
+  const crmPreset = getConnectionPreset(
+    (crmProvider === 'generic' ? 'generic_webhook' : crmProvider) as ConnectionProviderId,
+  );
+
   const create = useMutation({
     mutationFn: async () => {
       if (!workspaceId) throw new Error('No workspace');
@@ -373,6 +382,16 @@ export default function NewToolPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
+              <div className="rounded-md border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                <p className="font-medium text-foreground">{calendarPreset.auth.label}</p>
+                <p className="mt-1">{calendarPreset.auth.summary}</p>
+                <Button asChild variant="outline" size="sm" className="mt-3 gap-2">
+                  <a href={calendarPreset.docsUrl} target="_blank" rel="noopener">
+                    OAuth setup guide
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </Button>
+              </div>
               <div>
                 <Label htmlFor="calendar_id">Calendar ID</Label>
                 <Input
@@ -384,7 +403,7 @@ export default function NewToolPage() {
                 />
               </div>
               <div>
-                <Label htmlFor="refresh_token">Refresh token</Label>
+                <Label htmlFor="refresh_token">Refresh token (manual fallback)</Label>
                 <Input
                   id="refresh_token"
                   className="mt-1.5"
@@ -425,6 +444,16 @@ export default function NewToolPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
+              <div className="rounded-md border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                <p className="font-medium text-foreground">{crmPreset.auth.label}</p>
+                <p className="mt-1">{crmPreset.auth.summary}</p>
+                <Button asChild variant="outline" size="sm" className="mt-3 gap-2">
+                  <a href={crmPreset.docsUrl} target="_blank" rel="noopener">
+                    Setup guide
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </Button>
+              </div>
               <div>
                 <Label>Provider</Label>
                 <select
@@ -438,16 +467,24 @@ export default function NewToolPage() {
                   <option value="generic">Generic CRM webhook</option>
                 </select>
               </div>
-              <div>
-                <Label htmlFor="crm_api_key">API key or access token</Label>
-                <Input
-                  id="crm_api_key"
-                  className="mt-1.5"
-                  type="password"
-                  value={crmApiKey}
-                  onChange={(e) => setCrmApiKey(e.target.value)}
-                />
-              </div>
+              {crmProvider !== 'generic' ? (
+                <div>
+                  <Label htmlFor="crm_api_key">
+                    {crmProvider === 'hubspot'
+                      ? 'Private app access token'
+                      : crmProvider === 'pipedrive'
+                        ? 'API token'
+                        : 'Access token'}
+                  </Label>
+                  <Input
+                    id="crm_api_key"
+                    className="mt-1.5"
+                    type="password"
+                    value={crmApiKey}
+                    onChange={(e) => setCrmApiKey(e.target.value)}
+                  />
+                </div>
+              ) : null}
               <div>
                 <Label htmlFor="crm_base_url">
                   {crmProvider === 'generic'

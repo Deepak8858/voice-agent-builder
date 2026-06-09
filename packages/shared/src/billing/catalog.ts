@@ -62,7 +62,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
       agents: '1 agent',
       minutes: '10 trial minutes',
       outboundCalls: '5 trial calls',
-      tools: '2 tools',
+      tools: '0 tools',
       workspaces: '1 workspace',
       contacts: '50 contacts',
       advancedCompliance: false,

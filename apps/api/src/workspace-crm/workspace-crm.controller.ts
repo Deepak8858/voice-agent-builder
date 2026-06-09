@@ -1,6 +1,19 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import type {
+  CreateWorkspaceCrmCredentialDto,
+  UpdateWorkspaceCrmCredentialDto,
+} from './workspace-crm.schemas';
+import {
+  CreateWorkspaceCrmCredentialDtoSchema,
+  UpdateWorkspaceCrmCredentialDtoSchema,
+} from './workspace-crm.schemas';
+import type { SessionUser } from '@voiceforge/shared';
+import { CurrentUser } from '../common/current-user.decorator';
+import { WorkspaceGuard } from '../common/workspace.guard';
+import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { WorkspaceCrmService } from './workspace-crm.service';
 
+@UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/crm-credentials')
 export class WorkspaceCrmController {
   constructor(private readonly crm: WorkspaceCrmService) {}
@@ -14,26 +27,29 @@ export class WorkspaceCrmController {
   @Post()
   async create(
     @Param('workspaceId') workspaceId: string,
-    @Body() body: { provider: string; credentials: Record<string, string>; config?: Record<string, unknown> },
+    @Body(new ZodValidationPipe(CreateWorkspaceCrmCredentialDtoSchema)) body: CreateWorkspaceCrmCredentialDto,
+    @CurrentUser() user: SessionUser,
   ) {
-    return this.crm.create(workspaceId, body);
+    return this.crm.create(workspaceId, user.id, body);
   }
 
   @Patch(':credentialId')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Param('credentialId') credentialId: string,
-    @Body() body: { credentials?: Record<string, string>; config?: Record<string, unknown>; status?: string },
+    @Body(new ZodValidationPipe(UpdateWorkspaceCrmCredentialDtoSchema)) body: UpdateWorkspaceCrmCredentialDto,
+    @CurrentUser() user: SessionUser,
   ) {
-    return this.crm.update(workspaceId, credentialId, body);
+    return this.crm.update(workspaceId, credentialId, user.id, body);
   }
 
   @Delete(':credentialId')
   async delete(
     @Param('workspaceId') workspaceId: string,
     @Param('credentialId') credentialId: string,
+    @CurrentUser() user: SessionUser,
   ) {
-    await this.crm.delete(workspaceId, credentialId);
+    await this.crm.delete(workspaceId, credentialId, user.id);
     return { success: true };
   }
 
@@ -41,7 +57,8 @@ export class WorkspaceCrmController {
   async test(
     @Param('workspaceId') workspaceId: string,
     @Param('credentialId') credentialId: string,
+    @CurrentUser() user: SessionUser,
   ) {
-    return this.crm.test(workspaceId, credentialId);
+    return this.crm.test(workspaceId, credentialId, user.id);
   }
 }

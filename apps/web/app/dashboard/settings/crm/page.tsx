@@ -9,14 +9,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useApi } from '@/lib/use-api';
-import { Database, Plus, Trash2, TestTube, CheckCircle, XCircle, ExternalLink } from 'lucide-react';
+import {
+  getConnectionPreset,
+  getConnectionPresets,
+  type ConnectionProviderId,
+} from '@/lib/integration-presets';
+import { Database, Plus, Trash2, TestTube, CheckCircle, ExternalLink } from 'lucide-react';
 
-const CRM_PROVIDERS = [
-  { id: 'pipedrive', name: 'Pipedrive', docsUrl: 'https://developers.pipedrive.com' },
-  { id: 'hubspot', name: 'HubSpot', docsUrl: 'https://developers.hubspot.com' },
-  { id: 'salesforce', name: 'Salesforce', docsUrl: 'https://developer.salesforce.com' },
-  { id: 'generic_webhook', name: 'Generic Webhook', docsUrl: '' },
-];
+const CRM_PROVIDERS = getConnectionPresets().filter((preset) => preset.category === 'crm');
 
 interface CrmCredential {
   id: string;
@@ -41,6 +41,7 @@ export default function CrmSettingsPage() {
   const [formApiKey, setFormApiKey] = useState('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [saving, setSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
@@ -61,9 +62,13 @@ export default function CrmSettingsPage() {
     e.preventDefault();
     if (!workspaceId || !formProvider) return;
     setSaving(true);
+    setErrorMessage(null);
     try {
-      const credentials: Record<string, string> = { api_key: formApiKey };
-      if (formBaseUrl) credentials.base_url = formBaseUrl;
+      const credentials: Record<string, string> =
+        formProvider === 'generic_webhook'
+          ? { base_url: formBaseUrl }
+          : { api_key: formApiKey };
+      if (formBaseUrl && formProvider !== 'generic_webhook') credentials.base_url = formBaseUrl;
       await call(`/workspaces/${workspaceId}/crm-credentials`, {
         method: 'POST',
         body: JSON.stringify({ provider: formProvider, credentials }),
@@ -76,13 +81,16 @@ export default function CrmSettingsPage() {
       setCredentials(res.items ?? []);
     } catch (err) {
       console.error(err);
+      setErrorMessage(err instanceof Error ? err.message : 'Connection could not be saved.');
     } finally {
       setSaving(false);
     }
   }
 
   async function handleTest(id: string) {
-    await call(`/workspaces/${workspaceId}/crm-credentials/${id}/test`, { method: 'POST' });
+    setErrorMessage(null);
+    const result = await call<{ success: boolean; error?: string }>(`/workspaces/${workspaceId}/crm-credentials/${id}/test`, { method: 'POST' });
+    if (!result.success && result.error) setErrorMessage(result.error);
     const res = await call<{ items: CrmCredential[] }>(`/workspaces/${workspaceId}/crm-credentials`);
     setCredentials(res.items ?? []);
   }
@@ -95,6 +103,7 @@ export default function CrmSettingsPage() {
 
   const connected = credentials.filter((c) => c.status === 'active');
   const unconfigured = CRM_PROVIDERS.filter((p) => !credentials.some((c) => c.provider === p.id));
+  const selectedPreset = formProvider ? getConnectionPreset(formProvider as ConnectionProviderId) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -113,6 +122,11 @@ export default function CrmSettingsPage() {
 
         <TabsContent value="credentials" className="flex flex-col gap-4">
           {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
+          {errorMessage ? (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              {errorMessage}
+            </div>
+          ) : null}
 
           {connected.length > 0 && (
             <div className="grid grid-cols-1 gap-3">
@@ -134,6 +148,12 @@ export default function CrmSettingsPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        <Button asChild variant="outline" size="sm">
+                          <a href={meta?.docsUrl ?? '#'} target="_blank" rel="noopener">
+                            <ExternalLink className="h-3 w-3" />
+                            Docs
+                          </a>
+                        </Button>
                         <Button variant="outline" size="sm" onClick={() => handleTest(cred.id)}>
                           <TestTube className="h-3 w-3" />
                           Test
@@ -154,28 +174,39 @@ export default function CrmSettingsPage() {
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Add Connection</p>
               {unconfigured.map((p) => (
                 <Card key={p.id}>
-                  <CardContent className="flex items-center justify-between py-4">
-                    <div className="flex items-center gap-3">
+                  <CardContent className="flex flex-col gap-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-3">
                       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted">
                         <Database className="h-4 w-4 text-muted-foreground" />
                       </div>
                       <div>
-                        <p className="font-medium">{p.name}</p>
-                        {p.docsUrl && (
-                          <a href={p.docsUrl} target="_blank" rel="noopener" className="text-xs text-muted-foreground flex items-center gap-1 hover:underline">
-                            Docs <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-medium">{p.name}</p>
+                          <Badge variant="outline">
+                            {p.auth.recommended === 'oauth' ? 'OAuth recommended' : 'Webhook'}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+                          {p.description} {p.auth.summary}
+                        </p>
                       </div>
                     </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => { setFormProvider(p.id); setShowForm(true); }}
-                    >
-                      <Plus className="h-3 w-3" />
-                      Connect
-                    </Button>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button asChild variant="outline" size="sm">
+                        <a href={p.docsUrl} target="_blank" rel="noopener">
+                          <ExternalLink className="h-3 w-3" />
+                          Setup guide
+                        </a>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { setFormProvider(p.id); setShowForm(true); }}
+                      >
+                        <Plus className="h-3 w-3" />
+                        Manual connect
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               ))}
@@ -185,36 +216,67 @@ export default function CrmSettingsPage() {
           {showForm && (
             <Card>
               <CardHeader>
-                <CardTitle>Configure {CRM_PROVIDERS.find((p) => p.id === formProvider)?.name}</CardTitle>
+                <CardTitle>Configure {selectedPreset?.name}</CardTitle>
               </CardHeader>
               <CardContent>
                 <form onSubmit={handleSave} className="flex flex-col gap-4">
-                  <div>
-                    <Label>API Key</Label>
-                    <Input
-                      className="mt-1"
-                      type="password"
-                      value={formApiKey}
-                      onChange={(e) => setFormApiKey(e.target.value)}
-                      placeholder="pk_xxxx..."
-                      required
-                    />
-                  </div>
-                  {formProvider === 'generic_webhook' && (
+                  {selectedPreset ? (
+                    <div className="rounded-md border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
+                      <p className="font-medium text-foreground">{selectedPreset.manualFallback.label}</p>
+                      <p className="mt-1">{selectedPreset.manualFallback.summary}</p>
+                    </div>
+                  ) : null}
+                  {formProvider !== 'generic_webhook' && (
                     <div>
-                      <Label>Webhook URL</Label>
+                      <Label>
+                        {formProvider === 'hubspot'
+                          ? 'Private app access token'
+                          : formProvider === 'pipedrive'
+                            ? 'API token'
+                            : 'Access token'}
+                      </Label>
                       <Input
                         className="mt-1"
-                        value={formBaseUrl}
-                        onChange={(e) => setFormBaseUrl(e.target.value)}
-                        placeholder="https://your-webhook.example.com/contacts"
+                        type="password"
+                        value={formApiKey}
+                        onChange={(e) => setFormApiKey(e.target.value)}
+                        placeholder={
+                          formProvider === 'hubspot'
+                            ? 'pat-...'
+                            : formProvider === 'pipedrive'
+                              ? 'Pipedrive API token'
+                              : 'Salesforce bearer token'
+                        }
                         required
                       />
                     </div>
                   )}
+                  <div>
+                    <Label>
+                      {formProvider === 'generic_webhook'
+                        ? 'Webhook URL'
+                        : formProvider === 'salesforce'
+                          ? 'Salesforce instance URL'
+                          : 'Base URL (optional)'}
+                    </Label>
+                    <Input
+                      className="mt-1"
+                      type="url"
+                      value={formBaseUrl}
+                      onChange={(e) => setFormBaseUrl(e.target.value)}
+                      placeholder={
+                        formProvider === 'generic_webhook'
+                          ? 'https://your-crm.example.com/contacts'
+                          : formProvider === 'salesforce'
+                            ? 'https://your-domain.my.salesforce.com'
+                            : 'https://api.example.com'
+                      }
+                      required={formProvider === 'generic_webhook' || formProvider === 'salesforce'}
+                    />
+                  </div>
                   <div className="flex items-center gap-2">
                     <Button type="submit" disabled={saving}>
-                      {saving ? 'Saving...' : 'Save & Test'}
+                      {saving ? 'Saving...' : 'Save connection'}
                     </Button>
                     <Button variant="outline" type="button" onClick={() => setShowForm(false)}>
                       Cancel

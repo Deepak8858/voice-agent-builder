@@ -4,9 +4,10 @@ import { CrmFanOutService } from './crm-fanout.service';
 import { CrmRoutingController } from './crm-routing.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ToolsModule } from '../tools/tools.module';
+import { SecurityModule } from '../security/security.module';
 
 @Module({
-  imports: [PrismaModule, ToolsModule],
+  imports: [PrismaModule, ToolsModule, SecurityModule],
   controllers: [CrmRoutingController],
   providers: [CrmRoutingService, CrmFanOutService],
   exports: [CrmRoutingService, CrmFanOutService],

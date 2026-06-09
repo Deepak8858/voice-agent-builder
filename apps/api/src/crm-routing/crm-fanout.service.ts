@@ -2,6 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CrmRoutingService, type FanOutResult } from './crm-routing.service';
 import { CrmExecutor, type CrmContactArgs } from '../tools/crm-executor';
+import type { CrmProvider } from '../tools/crm-executor';
+import { AppError } from '../common/errors';
+import { EncryptionService } from '../security/encryption.service';
 
 @Injectable()
 export class CrmFanOutService {
@@ -11,6 +14,7 @@ export class CrmFanOutService {
     private readonly prisma: PrismaService,
     private readonly routing: CrmRoutingService,
     private readonly crmExecutor: CrmExecutor,
+    private readonly encryption: EncryptionService,
   ) {}
 
   async fanOutContact(
@@ -36,7 +40,7 @@ export class CrmFanOutService {
       if (creds) {
         try {
           const res = await this.crmExecutor.createContact(
-            primaryRule.provider as 'pipedrive' | 'hubspot' | 'salesforce',
+            this.executorProvider(primaryRule.provider),
             creds,
             contactData,
           );
@@ -57,7 +61,7 @@ export class CrmFanOutService {
       }
       try {
         const res = await this.crmExecutor.createContact(
-          rule.provider as 'pipedrive' | 'hubspot' | 'salesforce',
+          this.executorProvider(rule.provider),
           creds,
           contactData,
         );
@@ -84,6 +88,26 @@ export class CrmFanOutService {
       where: { workspaceId_provider: { workspaceId, provider } },
     });
     if (!cred || cred.status !== 'active') return null;
-    return cred.credentials as Record<string, string>;
+    return this.readCredentials(cred.credentials);
+  }
+
+  private executorProvider(provider: string): CrmProvider {
+    return provider === 'generic_webhook' ? 'generic' : (provider as CrmProvider);
+  }
+
+  private readCredentials(value: unknown): Record<string, string> {
+    if (this.isEncryptedEnvelope(value)) {
+      return this.encryption.decryptJson<Record<string, string>>(value);
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, string>;
+    }
+    throw new AppError('INTERNAL_ERROR', 'CRM credentials are malformed.', 500);
+  }
+
+  private isEncryptedEnvelope(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false;
+    const maybe = value as Record<string, unknown>;
+    return maybe.v === 1 && maybe.alg === 'aes-256-gcm';
   }
 }

@@ -2,6 +2,8 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -9,6 +11,7 @@ import {
   type DemoCheckoutFallback,
   type WebBillingMode,
 } from '@/lib/billing-mode';
+import { estimatePlan, formatEstimateReason, type PricingEstimateInput } from '@/lib/pricing-estimator';
 import { Check, ArrowRight, Zap } from 'lucide-react';
 import {
   PLAN_CATALOG,
@@ -53,7 +56,7 @@ const FEATURE_COMPARISON = [
   { feature: 'Agents', free: '1', starter: '3', growth: '10', enterprise: 'Unlimited' },
   { feature: 'Outbound calls', free: '5 trial', starter: '100/mo', growth: '500/mo', enterprise: 'Unlimited' },
   { feature: 'Workspaces', free: '1', starter: '2', growth: '5', enterprise: 'Unlimited' },
-  { feature: 'Tools per agent', free: '2', starter: '5', growth: '20', enterprise: 'Unlimited' },
+  { feature: 'Tools per agent', free: '0', starter: '5', growth: '20', enterprise: 'Unlimited' },
   { feature: 'Contacts', free: '50', starter: '500', growth: '5,000', enterprise: 'Unlimited' },
   { feature: 'White-label', free: false, starter: 'Subdomain', growth: 'Custom domain', enterprise: 'Custom domain' },
   { feature: 'API access', free: false, starter: true, growth: true, enterprise: true },
@@ -101,7 +104,23 @@ export function PricingPage({
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [checkoutFallback, setCheckoutFallback] = useState<DemoCheckoutFallback | null>(null);
+  const [estimateInput, setEstimateInput] = useState<PricingEstimateInput>({
+    agents: 2,
+    minutes: 250,
+    outboundCalls: 80,
+    tools: 3,
+    workspaces: 1,
+    contacts: 400,
+  });
   const isDemoBilling = billingMode === 'demo';
+  const estimate = useMemo(() => estimatePlan(estimateInput), [estimateInput]);
+
+  function updateEstimate(key: keyof PricingEstimateInput, value: string) {
+    setEstimateInput((current) => ({
+      ...current,
+      [key]: Number(value),
+    }));
+  }
 
   const handleCheckout = useCallback(async (plan: CheckoutPlan) => {
     setLoadingPlan(plan);
@@ -287,6 +306,60 @@ export function PricingPage({
               </Card>
             );
           })}
+        </div>
+      </div>
+
+      <div className="px-6">
+        <div className="mx-auto max-w-6xl">
+          <Card>
+            <CardHeader>
+              <CardTitle>Plan estimator</CardTitle>
+              <CardDescription>
+                Estimate a plan from expected usage. The calculation uses the same limits enforced by billing.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-6 lg:grid-cols-[1fr_280px]">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {([
+                  ['agents', 'Agents'],
+                  ['minutes', 'Voice minutes'],
+                  ['outboundCalls', 'Outbound calls'],
+                  ['tools', 'Integration tools'],
+                  ['workspaces', 'Workspaces'],
+                  ['contacts', 'Contacts'],
+                ] as const).map(([key, label]) => (
+                  <div key={key}>
+                    <Label htmlFor={`estimate-${key}`}>{label}</Label>
+                    <Input
+                      id={`estimate-${key}`}
+                      className="mt-1.5"
+                      type="number"
+                      min={0}
+                      value={estimateInput[key]}
+                      onChange={(event) => updateEstimate(key, event.target.value)}
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-md border bg-muted/30 p-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  Recommended plan
+                </p>
+                <div className="mt-3 flex items-baseline gap-2">
+                  <span className="text-2xl font-semibold">{estimate.planName}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {estimate.monthlyPriceUsd === null ? 'Custom' : `${estimate.priceLabel}/month`}
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{formatEstimateReason(estimate)}</p>
+                {estimate.exceeded.length > 0 ? (
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    Enterprise is recommended because these limits need custom capacity: {estimate.exceeded.join(', ')}.
+                  </p>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
