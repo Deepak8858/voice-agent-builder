@@ -13,6 +13,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { OutboundCampaignModule } from '../outbound-campaign/outbound-campaign.module';
 import { CrmRoutingModule } from '../crm-routing/crm-routing.module';
 import { CallsModule } from '../calls/calls.module';
+import { TelephonyModule } from '../telephony/telephony.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CallsModule } from '../calls/calls.module';
     PrismaModule,
     OutboundCampaignModule,
     CrmRoutingModule,
+    TelephonyModule,
   ],
   providers: [
     EvaluationWorker,

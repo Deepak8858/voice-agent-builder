@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { SyncedProviderPhoneNumber } from '@voiceforge/shared';
+import { UpgradeModal } from '@/components/upgrade-modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -9,6 +11,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
+import { getBillingMode } from '@/lib/billing-mode';
+import { getPlanLimitRedirect, type PlanLimitRedirect } from '@/lib/plan-limit';
 import { useApi } from '@/lib/use-api';
 import {
   CheckCircle2,
@@ -114,6 +118,7 @@ const emptyManualForm: ManualForm = {
 const E164_PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
 export default function PhoneNumbersPage() {
+  const router = useRouter();
   const { call } = useApi();
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [connections, setConnections] = useState<TelephonyConnection[]>([]);
@@ -131,6 +136,18 @@ export default function PhoneNumbersPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [planLimit, setPlanLimit] = useState<PlanLimitRedirect | null>(null);
+  const billingMode = useMemo(() => getBillingMode(), []);
+
+  const handleApiError = useCallback((err: unknown, fallbackMessage: string) => {
+    const redirect = getPlanLimitRedirect(err);
+    if (redirect) {
+      setPlanLimit(redirect);
+      setError(redirect.message);
+      return;
+    }
+    setError(err instanceof Error ? err.message : fallbackMessage);
+  }, []);
 
   const refresh = useCallback(async (activeWorkspaceId = workspaceId) => {
     if (!activeWorkspaceId) return;
@@ -206,7 +223,7 @@ export default function PhoneNumbersPage() {
       await syncNumbers(connection.id);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
+      handleApiError(err, 'Connection failed');
     } finally {
       setBusy(null);
     }
@@ -228,7 +245,7 @@ export default function PhoneNumbersPage() {
       setImportWebhookSecret('');
       setActiveConnectionId(connectionId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Number sync failed');
+      handleApiError(err, 'Number sync failed');
     } finally {
       setBusy(null);
     }
@@ -287,7 +304,7 @@ export default function PhoneNumbersPage() {
       setPanel(null);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed');
+      handleApiError(err, 'Import failed');
     } finally {
       setBusy(null);
     }
@@ -329,7 +346,7 @@ export default function PhoneNumbersPage() {
       setPanel(null);
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Manual setup failed');
+      handleApiError(err, 'Manual setup failed');
     } finally {
       setBusy(null);
     }
@@ -353,7 +370,7 @@ export default function PhoneNumbersPage() {
       });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Phone number update failed');
+      handleApiError(err, 'Phone number update failed');
     } finally {
       setBusy(null);
     }
@@ -370,7 +387,7 @@ export default function PhoneNumbersPage() {
       });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'LiveKit configuration failed');
+      handleApiError(err, 'LiveKit configuration failed');
     } finally {
       setBusy(null);
     }
@@ -384,7 +401,7 @@ export default function PhoneNumbersPage() {
       await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}`, { method: 'DELETE' });
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Disconnect failed');
+      handleApiError(err, 'Disconnect failed');
     } finally {
       setBusy(null);
     }
@@ -392,6 +409,18 @@ export default function PhoneNumbersPage() {
 
   return (
     <div className="flex flex-col gap-8">
+      <UpgradeModal
+        open={Boolean(planLimit)}
+        onClose={() => setPlanLimit(null)}
+        limitType={planLimit?.limitType}
+        currentPlan={planLimit?.currentPlan}
+        billingMode={billingMode}
+        onUpgrade={() => {
+          const path = planLimit?.upgradePath ?? '/dashboard/billing';
+          setPlanLimit(null);
+          router.push(path);
+        }}
+      />
       <PageHeader
         eyebrow="Telephony"
         title="Phone Numbers"

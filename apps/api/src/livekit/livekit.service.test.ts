@@ -111,6 +111,47 @@ describe('LiveKitService telephony operations', () => {
     );
   });
 
+  it('explicitly dispatches the assigned voice agent before dialing an outbound SIP participant', async () => {
+    const sipClient = {
+      createSipParticipant: vi.fn(async () => ({ participantId: 'sip-participant-1' })),
+    };
+    const agentDispatchClient = {
+      createDispatch: vi.fn(async () => ({ id: 'dispatch-1' })),
+    };
+    const service = new LiveKitService({
+      sipClient: sipClient as never,
+      agentDispatchClient: agentDispatchClient as never,
+    } as never);
+
+    await service.createOutboundCall({
+      phoneNumberId: 'number-1',
+      agentId: 'agent-1',
+      agentName: 'voiceforge-agent-agent-1',
+      outboundTrunkId: 'trunk-out-1',
+      toNumber: '+14155559876',
+      fromNumber: '+14155551234',
+      roomName: 'call-number-1-outbound-abc',
+      metadata: { workspaceId: 'workspace-1', model: 'gpt-realtime-2' },
+    } as never);
+
+    expect(agentDispatchClient.createDispatch).toHaveBeenCalledWith(
+      'call-number-1-outbound-abc',
+      'voiceforge-agent-agent-1',
+      {
+        metadata: JSON.stringify({
+          phoneNumberId: 'number-1',
+          agentId: 'agent-1',
+          direction: 'outbound',
+          workspaceId: 'workspace-1',
+          model: 'gpt-realtime-2',
+        }),
+      },
+    );
+    expect(agentDispatchClient.createDispatch.mock.invocationCallOrder[0]).toBeLessThan(
+      sipClient.createSipParticipant.mock.invocationCallOrder[0],
+    );
+  });
+
   it('does not fall back to a global Vobiz SIP domain for outbound trunks', async () => {
     const sipClient = {
       createSipOutboundTrunk: vi.fn(),

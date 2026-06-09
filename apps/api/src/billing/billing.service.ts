@@ -486,8 +486,8 @@ export class BillingService {
 }
 
 export class ForbiddenPlanError extends AppError {
-  constructor(message: string) {
-    super('PLAN_LIMIT_EXCEEDED' as ApiErrorCode, message, HttpStatus.FORBIDDEN);
+  constructor(message: string, details?: Record<string, unknown>) {
+    super('PLAN_LIMIT_EXCEEDED' as ApiErrorCode, message, HttpStatus.FORBIDDEN, details);
   }
 }
 

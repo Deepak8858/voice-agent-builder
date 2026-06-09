@@ -27,6 +27,14 @@ type WebhookRequestContext = {
   rawBody?: string;
 };
 
+const BILLING_UPGRADE_PATH = '/dashboard/billing';
+
+const BYO_TELEPHONY_PLAN_LIMIT_DETAILS = {
+  limitType: 'byo_telephony',
+  currentPlan: 'free',
+  upgradePath: BILLING_UPGRADE_PATH,
+} as const;
+
 @Injectable()
 export class TelephonyService {
   constructor(
@@ -520,10 +528,18 @@ export class TelephonyService {
     const result = await this.livekit.createOutboundCall({
       phoneNumberId: number.id,
       agentId: number.assignedAgentId,
+      agentName: `${env.LIVEKIT_AGENT_NAME_PREFIX ?? 'voiceforge-agent'}-${number.assignedAgentId}`,
       outboundTrunkId: number.livekitConfig.outboundTrunkId,
       toNumber: dto.to_number,
       fromNumber: number.phoneNumberE164,
       roomName,
+      metadata: {
+        workspaceId,
+        phoneNumberId: number.id,
+        provider: number.provider,
+        model: env.OPENAI_REALTIME_MODEL,
+        purpose,
+      },
     });
     const expiresAt = new Date(new Date().getTime() + workspace.retentionDays * 24 * 60 * 60 * 1000);
     const call = await this.prisma.call.create({
@@ -901,6 +917,7 @@ export class TelephonyService {
     if (!allowed) {
       throw new ForbiddenPlanError(
         'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use Vapi calling only.',
+        BYO_TELEPHONY_PLAN_LIMIT_DETAILS,
       );
     }
   }

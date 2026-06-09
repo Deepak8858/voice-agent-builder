@@ -20,9 +20,12 @@ const campaigns = {
   incrementStat: vi.fn(),
 };
 const prisma = {
-  agent: {
+  telephonyPhoneNumber: {
     findFirst: vi.fn(),
   },
+};
+const telephony = {
+  startOutboundCall: vi.fn(),
 };
 
 describe('OutboundCallWorker', () => {
@@ -33,7 +36,12 @@ describe('OutboundCallWorker', () => {
       status: 'queued',
       provider: 'vapi',
     });
-    prisma.agent.findFirst.mockResolvedValue({ activeVersionId: 'version-1' });
+    telephony.startOutboundCall.mockResolvedValue({
+      call_id: 'call-1',
+      provider_call_id: 'participant-1',
+      room_name: 'room-1',
+    });
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
   });
 
   it('starts campaign calls through the compliance-checked CallsService path', async () => {
@@ -42,6 +50,7 @@ describe('OutboundCallWorker', () => {
       calls as never,
       campaigns as never,
       prisma as never,
+      telephony as never,
     );
 
     await worker.processor({
@@ -65,6 +74,45 @@ describe('OutboundCallWorker', () => {
         purpose: 'outbound_campaign',
       },
     });
+    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
+  });
+
+  it('uses an assigned outbound BYO telephony number for campaign calls when available', async () => {
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'phone-number-1',
+      provider: 'vobiz',
+    });
+    const worker = new (OutboundCallWorker as any)(
+      queue as never,
+      calls as never,
+      campaigns as never,
+      prisma as never,
+      telephony as never,
+    );
+
+    await worker.processor({
+      data: {
+        campaignId: 'camp-1',
+        agentId: 'agent-1',
+        workspaceId: 'ws-1',
+        actorUserId: 'user-1',
+        to: '+15551111111',
+        contactName: 'Alice',
+        customData: { source: 'csv' },
+      },
+    } as never);
+
+    expect(telephony.startOutboundCall).toHaveBeenCalledWith('ws-1', 'user-1', {
+      phone_number_id: 'phone-number-1',
+      to_number: '+15551111111',
+      contact_name: 'Alice',
+      metadata: {
+        campaign_id: 'camp-1',
+        source: 'csv',
+        purpose: 'outbound_campaign',
+      },
+    });
+    expect(calls.startOutboundCall).not.toHaveBeenCalled();
     expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
   });
 });

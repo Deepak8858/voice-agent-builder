@@ -50,8 +50,10 @@ export interface CreateDispatchRuleParams {
 export interface CreateOutboundCallParams {
   phoneNumberId: string;
   agentId: string;
+  agentName?: string;
   outboundTrunkId: string;
   toNumber: string;
   fromNumber: string;
   roomName: string;
+  metadata?: Record<string, unknown>;
 }

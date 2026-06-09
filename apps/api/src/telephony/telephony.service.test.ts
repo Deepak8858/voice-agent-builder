@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ForbiddenPlanError } from '../billing/billing.service';
 import { ComplianceBlockedError } from '../common/errors';
 import { TelephonyService } from './telephony.service';
 
@@ -233,6 +234,58 @@ describe('TelephonyService', () => {
     ).rejects.toThrow(/Vapi calling only/);
 
     expect(compliance.check).not.toHaveBeenCalled();
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+  });
+
+  it('returns plan upgrade details when BYO LiveKit calling is blocked on free plan', async () => {
+    const prisma = makePrisma();
+    const livekit = {
+      createOutboundCall: vi.fn(async () => ({
+        providerCallId: 'participant-1',
+        roomName: 'room-1',
+        status: 'queued',
+      })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const billing = {
+      checkFeatureGate: vi.fn(async (_organizationId: string, gate: string) => gate !== 'byo_telephony'),
+      canStartOutboundCall: vi.fn(async () => ({ allowed: true, remaining: 10, limit: 100 })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      billing as never,
+      { check: vi.fn(), attachCheckToCall: vi.fn() } as never,
+      {} as never,
+    );
+
+    let thrown: unknown;
+    try {
+      await service.startOutboundCall('workspace-1', 'user-1', {
+        phone_number_id: 'number-1',
+        to_number: '+14155559876',
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(ForbiddenPlanError);
+    expect((thrown as ForbiddenPlanError).details).toEqual({
+      limitType: 'byo_telephony',
+      currentPlan: 'free',
+      upgradePath: '/dashboard/billing',
+    });
+    expect((thrown as ForbiddenPlanError).getResponse()).toMatchObject({
+      code: 'PLAN_LIMIT_EXCEEDED',
+      details: {
+        limitType: 'byo_telephony',
+        currentPlan: 'free',
+        upgradePath: '/dashboard/billing',
+      },
+    });
     expect(livekit.createOutboundCall).not.toHaveBeenCalled();
   });
 

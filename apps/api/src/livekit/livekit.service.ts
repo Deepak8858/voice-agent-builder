@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   AccessToken,
+  AgentDispatchClient,
   RoomAgentDispatch,
   RoomConfiguration,
   RoomServiceClient,
@@ -26,6 +27,7 @@ interface LiveKitClients {
     'createSipInboundTrunk' | 'createSipOutboundTrunk' | 'createSipDispatchRule' | 'createSipParticipant' | 'deleteSipTrunk' | 'deleteSipDispatchRule'
   >;
   roomClient?: Pick<RoomServiceClient, 'createRoom'>;
+  agentDispatchClient?: Pick<AgentDispatchClient, 'createDispatch'>;
 }
 
 export const LIVEKIT_CLIENTS = Symbol('LIVEKIT_CLIENTS');
@@ -35,11 +37,13 @@ export class LiveKitService {
   private readonly logger = new Logger(LiveKitService.name);
   private readonly sipClient?: LiveKitClients['sipClient'];
   private readonly roomClient?: LiveKitClients['roomClient'];
+  private readonly agentDispatchClient?: LiveKitClients['agentDispatchClient'];
 
   constructor(@Optional() @Inject(LIVEKIT_CLIENTS) clients?: LiveKitClients) {
     const resolvedClients = clients ?? {};
     this.sipClient = resolvedClients.sipClient ?? this.buildSipClient();
     this.roomClient = resolvedClients.roomClient ?? this.buildRoomClient();
+    this.agentDispatchClient = resolvedClients.agentDispatchClient ?? this.buildAgentDispatchClient();
   }
 
   get livekitSipHost(): string {
@@ -153,6 +157,17 @@ export class LiveKitService {
   }
 
   async createOutboundCall(params: CreateOutboundCallParams): Promise<LiveKitOutboundCallResult> {
+    const participantMetadata = {
+      phoneNumberId: params.phoneNumberId,
+      agentId: params.agentId,
+      direction: 'outbound',
+      ...(params.metadata ?? {}),
+    };
+    if (params.agentName) {
+      await this.requireAgentDispatchClient().createDispatch(params.roomName, params.agentName, {
+        metadata: JSON.stringify(participantMetadata),
+      });
+    }
     const result = await this.requireSipClient().createSipParticipant(
       params.outboundTrunkId,
       params.toNumber,
@@ -160,11 +175,7 @@ export class LiveKitService {
       {
         fromNumber: params.fromNumber,
         participantIdentity: `sip-${params.phoneNumberId}`,
-        participantMetadata: JSON.stringify({
-          phoneNumberId: params.phoneNumberId,
-          agentId: params.agentId,
-          direction: 'outbound',
-        }),
+        participantMetadata: JSON.stringify(participantMetadata),
         waitUntilAnswered: false,
       },
     );
@@ -196,6 +207,13 @@ export class LiveKitService {
     return this.sipClient;
   }
 
+  private requireAgentDispatchClient(): NonNullable<LiveKitClients['agentDispatchClient']> {
+    if (!this.agentDispatchClient) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LiveKit agent dispatch is not configured.', 500);
+    }
+    return this.agentDispatchClient;
+  }
+
   private buildSipClient(): SipClient | undefined {
     if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) {
       this.logger.warn('LiveKit env vars are not fully set; LiveKit SIP operations are disabled.');
@@ -207,6 +225,11 @@ export class LiveKitService {
   private buildRoomClient(): RoomServiceClient | undefined {
     if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) return undefined;
     return new RoomServiceClient(this.livekitHttpUrl(), env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
+  }
+
+  private buildAgentDispatchClient(): AgentDispatchClient | undefined {
+    if (!env.LIVEKIT_URL || !env.LIVEKIT_API_KEY || !env.LIVEKIT_API_SECRET) return undefined;
+    return new AgentDispatchClient(this.livekitHttpUrl(), env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
   }
 
   private assertCredentials(): void {

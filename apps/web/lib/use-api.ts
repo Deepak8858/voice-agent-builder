@@ -9,6 +9,7 @@ export interface LimitExceededError extends Error {
   code: 'LIMIT_EXCEEDED';
   limitType?: string;
   currentPlan?: string;
+  upgradePath?: string;
 }
 
 /**
@@ -41,6 +42,7 @@ export function useApi() {
           err.code = 'LIMIT_EXCEEDED';
           err.limitType = body.error.details?.limitType as string | undefined;
           err.currentPlan = body.error.details?.currentPlan as string | undefined;
+          err.upgradePath = body.error.details?.upgradePath as string | undefined;
           setLimitExceeded({ type: err.limitType, plan: err.currentPlan });
           throw err;
         }
