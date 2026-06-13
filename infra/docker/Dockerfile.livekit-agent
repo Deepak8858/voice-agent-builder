@@ -18,7 +18,8 @@ COPY apps/api/package*.json ./apps/api/
 COPY packages/shared ./packages/shared
 COPY apps/api/prisma ./apps/api/prisma
 
-RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/livekit-agent/package.json
+RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/livekit-agent/package.json && \
+    sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/api/package.json
 RUN rm -f package-lock.json pnpm-lock.yaml
 RUN npm install --ignore-scripts --no-audit --no-fund
 

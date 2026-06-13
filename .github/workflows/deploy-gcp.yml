@@ -54,6 +54,12 @@ jobs:
       - name: Typecheck workspaces
         run: pnpm -r --if-present run typecheck
 
+      - name: Lint workspaces
+        run: pnpm -r --if-present run lint
+
+      - name: Test workspaces
+        run: pnpm -r --if-present run test
+
   build-and-deploy:
     name: Build and deploy
     runs-on: ubuntu-latest
