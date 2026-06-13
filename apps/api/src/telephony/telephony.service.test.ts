@@ -101,7 +101,7 @@ describe('TelephonyService', () => {
         phoneNumberId: 'number-1',
         agentId: 'agent-1',
         trunkId: 'trunk-in-1',
-        agentName: 'voiceforge-agent-agent-1',
+        agentName: 'voiceforge-agent',
         metadata: expect.objectContaining({ model: 'gpt-realtime-2' }),
       }),
     );
@@ -189,6 +189,56 @@ describe('TelephonyService', () => {
         action: 'telephony.outbound_call.blocked',
         resourceType: 'compliance_check',
         resourceId: 'check-1',
+      }),
+    );
+  });
+
+  it('dispatches the generic LiveKit voice agent for outbound calls and passes the assigned agent id in metadata', async () => {
+    const prisma = makePrisma();
+    const livekit = {
+      createOutboundCall: vi.fn(async () => ({
+        providerCallId: 'participant-1',
+        roomName: 'room-1',
+        status: 'queued',
+      })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const billing = {
+      checkFeatureGate: vi.fn(async () => true),
+      canStartOutboundCall: vi.fn(async () => ({ allowed: true, remaining: 10, limit: 100 })),
+    };
+    const compliance = {
+      check: vi.fn(async () => ({ id: 'check-1', status: 'passed', reasons: [], contact_id: 'contact-1' })),
+      attachCheckToCall: vi.fn(async () => undefined),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      audit as never,
+      billing as never,
+      compliance as never,
+      {} as never,
+    );
+
+    await service.startOutboundCall('workspace-1', 'user-1', {
+      phone_number_id: 'number-1',
+      to_number: '+14155559876',
+      metadata: { purpose: 'outbound_campaign' },
+    });
+
+    expect(livekit.createOutboundCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'agent-1',
+        agentName: 'voiceforge-agent',
+        metadata: expect.objectContaining({
+          workspaceId: 'workspace-1',
+          phoneNumberId: 'number-1',
+          provider: 'twilio',
+          purpose: 'outbound_campaign',
+        }),
       }),
     );
   });

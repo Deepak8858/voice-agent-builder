@@ -134,6 +134,19 @@ jobs:
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
 
+      - name: Build LiveKit agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile.livekit-agent
+          push: true
+          provenance: false
+          tags: |
+            ${{ steps.meta.outputs.registry }}/voiceforge-livekit-agent:${{ steps.meta.outputs.image_tag }}
+            ${{ steps.meta.outputs.registry }}/voiceforge-livekit-agent:latest
+          cache-from: type=gha,scope=livekit-agent
+          cache-to: type=gha,scope=livekit-agent,mode=max
+
       - name: Prepare VM deployment path
         uses: appleboy/ssh-action@v1
         with:
@@ -185,7 +198,7 @@ jobs:
 
             gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${{ env.GCP_REGION }}-docker.pkg.dev"
 
-            docker compose -f "${COMPOSE_FILE}" pull web api
+            docker compose -f "${COMPOSE_FILE}" pull web api api-worker livekit-agent
             docker compose -f "${COMPOSE_FILE}" run --rm --no-deps api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
             docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
 

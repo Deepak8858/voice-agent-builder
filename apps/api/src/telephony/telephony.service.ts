@@ -361,7 +361,7 @@ export class TelephonyService {
       agentId: agent.id,
       trunkId: inbound.trunkId,
       roomPrefix,
-      agentName: `${env.LIVEKIT_AGENT_NAME_PREFIX ?? 'voiceforge-agent'}-${agent.id}`,
+      agentName: env.LIVEKIT_AGENT_NAME,
       metadata: {
         provider: number.provider,
         direction: 'inbound',
@@ -528,7 +528,7 @@ export class TelephonyService {
     const result = await this.livekit.createOutboundCall({
       phoneNumberId: number.id,
       agentId: number.assignedAgentId,
-      agentName: `${env.LIVEKIT_AGENT_NAME_PREFIX ?? 'voiceforge-agent'}-${number.assignedAgentId}`,
+      agentName: env.LIVEKIT_AGENT_NAME,
       outboundTrunkId: number.livekitConfig.outboundTrunkId,
       toNumber: dto.to_number,
       fromNumber: number.phoneNumberE164,

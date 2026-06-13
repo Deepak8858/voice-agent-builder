@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { Play, Pause, Mic2 } from 'lucide-react';
 
 interface DemoAudioPlayerProps {
@@ -20,7 +20,13 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function DemoAudioPlayer({
+export function DemoAudioPlayer(props: DemoAudioPlayerProps) {
+  const playerKey = `${props.src ?? 'missing'}-${props.duration ?? 30}`;
+
+  return <DemoAudioPlayerInner key={playerKey} {...props} />;
+}
+
+function DemoAudioPlayerInner({
   src,
   label = 'See it in action',
   caption = 'AI-generated call · Real voice agent · No humans involved',
@@ -31,32 +37,6 @@ export function DemoAudioPlayer({
   const [totalDuration, setTotalDuration] = useState(duration);
   const [audioUnavailable, setAudioUnavailable] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    setIsPlaying(false);
-    setCurrentTime(0);
-    setTotalDuration(duration);
-    setAudioUnavailable(false);
-
-    if (audioRef.current && src) {
-      audioRef.current.onloadedmetadata = () => {
-        setTotalDuration(audioRef.current?.duration ?? duration);
-      };
-      audioRef.current.onended = () => {
-        setIsPlaying(false);
-        setCurrentTime(0);
-      };
-      audioRef.current.ontimeupdate = () => {
-        setCurrentTime(audioRef.current?.currentTime ?? 0);
-      };
-      audioRef.current.onerror = () => {
-        setIsPlaying(false);
-        setCurrentTime(0);
-        setAudioUnavailable(true);
-      };
-    }
-  }, [src, duration]);
 
   const togglePlay = async () => {
     if (!src || audioUnavailable) return;
@@ -79,33 +59,52 @@ export function DemoAudioPlayer({
 
   if (!src || audioUnavailable) {
     return (
-      <div className="relative mx-auto max-w-2xl mt-8">
-        <div className="relative flex items-center gap-4 rounded-2xl border border-border/50 bg-card/80 p-4 opacity-60">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+      <div className="relative mx-auto mt-8 w-full max-w-2xl min-w-0">
+        <div className="relative flex min-w-0 items-center gap-4 rounded-md border border-[#d7d0c3] bg-[#fbf6ea] p-4 opacity-70">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-[#e8f2df] text-[#23594f]">
             <Mic2 className="h-5 w-5" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium truncate text-muted-foreground">{label}</p>
-            <p className="text-xs text-muted-foreground mt-1">
+            <p className="text-sm font-medium truncate text-[#51615a]">{label}</p>
+            <p className="text-xs text-[#66736c] mt-1">
               {src ? 'Audio preview unavailable' : 'Demo audio coming soon'}
             </p>
           </div>
-          <span className="shrink-0 text-xs text-muted-foreground font-mono">
+          <span className="shrink-0 text-xs text-[#66736c] font-mono">
             0:00 / 0:30
           </span>
         </div>
-        <p className="mt-2 text-center text-xs text-muted-foreground">{caption}</p>
+        <p className="mt-2 text-center text-xs text-[#66736c]">{caption}</p>
       </div>
     );
   }
 
   return (
-    <div className="relative mx-auto max-w-2xl mt-8">
-      <audio ref={audioRef} src={src} preload="metadata" />
-      <div className="relative flex items-center gap-4 rounded-2xl border border-border/50 bg-card/80 p-4">
+    <div className="relative mx-auto mt-8 w-full max-w-2xl min-w-0">
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onLoadedMetadata={() => {
+          setTotalDuration(audioRef.current?.duration ?? duration);
+        }}
+        onEnded={() => {
+          setIsPlaying(false);
+          setCurrentTime(0);
+        }}
+        onTimeUpdate={() => {
+          setCurrentTime(audioRef.current?.currentTime ?? 0);
+        }}
+        onError={() => {
+          setIsPlaying(false);
+          setCurrentTime(0);
+          setAudioUnavailable(true);
+        }}
+      />
+      <div className="relative flex min-w-0 items-center gap-4 rounded-md border border-[#d7d0c3] bg-[#fbf6ea] p-4">
         <button
           onClick={togglePlay}
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors"
+          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-[#07130f] text-[#fbf5e7] shadow-lg shadow-[#07130f]/15 transition-colors hover:bg-[#23594f]"
           aria-label={isPlaying ? 'Pause' : 'Play'}
         >
           {isPlaying ? (
@@ -115,19 +114,19 @@ export function DemoAudioPlayer({
           )}
         </button>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{label}</p>
-          <div className="mt-2 h-1 rounded-full bg-muted overflow-hidden">
+          <p className="text-sm font-medium truncate text-[#07130f]">{label}</p>
+          <div className="mt-2 h-1 overflow-hidden rounded-full bg-[#d7d0c3]">
             <div
-              className="h-full bg-primary transition-all duration-300"
+              className="h-full bg-[#bfff4a] transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
         </div>
-        <span className="shrink-0 text-xs text-muted-foreground font-mono">
+        <span className="shrink-0 text-xs text-[#66736c] font-mono">
           {formatTime(currentTime)} / {formatTime(totalDuration)}
         </span>
       </div>
-      <p className="mt-2 text-center text-xs text-muted-foreground">{caption}</p>
+      <p className="mt-2 text-center text-xs text-[#66736c]">{caption}</p>
     </div>
   );
 }

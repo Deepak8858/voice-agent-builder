@@ -35,17 +35,28 @@ export function HeaderAuth() {
   }
 
   if (loading) {
-    return <div className="h-9 w-20 animate-pulse rounded-md bg-accent" />;
+    return <div className="h-9 w-20 animate-pulse rounded-md bg-white/10" />;
   }
 
   if (!user) {
     return (
       <>
         <Link href="/sign-in">
-          <Button variant="ghost" size="sm">Sign in</Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-[#e5eee7] hover:bg-white/10 hover:text-white"
+          >
+            Sign in
+          </Button>
         </Link>
         <Link href="/sign-up">
-          <Button size="sm">Sign up</Button>
+          <Button
+            size="sm"
+            className="bg-[#bfff4a] text-[#07130f] shadow-sm shadow-[#bfff4a]/15 hover:bg-[#d9ff8a]"
+          >
+            Sign up
+          </Button>
         </Link>
       </>
     );
@@ -57,7 +68,11 @@ export function HeaderAuth() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-2 text-[#e5eee7] hover:bg-white/10 hover:text-white"
+        >
           <Avatar className="h-6 w-6">
             <AvatarFallback className="text-xs">{initial}</AvatarFallback>
           </Avatar>

@@ -48,6 +48,7 @@ const EnvSchema = z.object({
   LIVEKIT_SIP_HOST: z.string().optional(),
   LIVEKIT_WEBHOOK_SECRET: z.string().optional(),
   LIVEKIT_ROOM_PREFIX: z.string().default('call'),
+  LIVEKIT_AGENT_NAME: z.string().default('voiceforge-agent'),
   LIVEKIT_AGENT_NAME_PREFIX: z.string().default('voiceforge-agent'),
   VOBIZ_WEBHOOK_SECRET: z.string().optional(),
   VOBIZ_DEFAULT_SIP_DOMAIN: z.string().optional(),

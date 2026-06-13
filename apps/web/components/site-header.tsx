@@ -29,14 +29,14 @@ export function SiteHeader() {
   if (pathname?.startsWith('/dashboard')) return null;
 
   return (
-    <header className="sticky top-0 z-50 overflow-x-hidden border-b border-orange-200/80 bg-[#fff7ed]/95 shadow-sm shadow-orange-950/5 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 overflow-x-hidden border-b border-white/10 bg-[#06130f]/95 text-[#fbf5e7] shadow-lg shadow-black/20 backdrop-blur-xl">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 md:px-8">
         <Link
           href="/"
-          className="group flex shrink-0 items-center gap-2.5 font-semibold tracking-tight text-stone-950"
+          className="group flex shrink-0 items-center gap-2.5 font-semibold tracking-tight text-[#fbf5e7]"
           aria-label="VoiceForge home"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-md border border-orange-200 bg-white text-orange-700 shadow-sm transition group-hover:border-orange-300 group-hover:bg-orange-50">
+          <span className="flex h-9 w-9 items-center justify-center rounded-md border border-[#bfff4a]/30 bg-[#bfff4a]/10 text-[#bfff4a] shadow-sm transition group-hover:border-[#bfff4a]/60 group-hover:bg-[#bfff4a]/15">
             <Logo size={21} />
           </span>
           <span className="font-serif text-xl leading-none">VoiceForge</span>
@@ -44,7 +44,7 @@ export function SiteHeader() {
 
         <nav
           aria-label="Primary navigation"
-          className="hidden min-w-0 items-center gap-1 rounded-md border border-orange-200 bg-white/75 p-1 text-sm shadow-sm lg:flex"
+          className="hidden min-w-0 items-center gap-1 rounded-md border border-white/10 bg-white/[0.06] p-1 text-sm shadow-sm lg:flex"
         >
           {navLinks.map((link) => (
             <Link
@@ -52,8 +52,8 @@ export function SiteHeader() {
               href={link.href}
               className={`inline-flex h-9 items-center gap-1.5 rounded px-3 font-medium transition ${
                 isCurrent(pathname, link.href)
-                  ? 'bg-orange-100 text-orange-800'
-                  : 'text-stone-700 hover:bg-orange-50 hover:text-orange-800'
+                  ? 'bg-[#bfff4a] text-[#07130f]'
+                  : 'text-[#dbe7dd] hover:bg-white/10 hover:text-white'
               }`}
             >
               {link.label}
@@ -69,16 +69,16 @@ export function SiteHeader() {
 
       <nav
         aria-label="Primary navigation mobile"
-        className="grid grid-cols-1 gap-2 border-t border-orange-100 px-4 pb-3 pt-2 text-sm sm:grid-cols-4 md:px-8 lg:hidden"
+        className="flex gap-2 overflow-x-auto border-t border-white/10 px-4 pb-3 pt-2 text-sm md:px-8 lg:hidden"
       >
         {navLinks.map((link) => (
           <Link
             key={link.href}
             href={link.href}
-            className={`inline-flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-md border px-3 font-medium transition ${
+            className={`inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md border px-3 font-medium transition ${
               isCurrent(pathname, link.href)
-                ? 'border-orange-300 bg-orange-100 text-orange-800'
-                : 'border-orange-200 bg-white/75 text-stone-700 hover:bg-orange-50 hover:text-orange-800'
+                ? 'border-[#bfff4a] bg-[#bfff4a] text-[#07130f]'
+                : 'border-white/10 bg-white/[0.06] text-[#dbe7dd] hover:bg-white/10 hover:text-white'
             }`}
           >
             {link.label}

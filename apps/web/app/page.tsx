@@ -1,5 +1,6 @@
 import Image from 'next/image';
 import Link from 'next/link';
+import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DemoAudioPlayer } from '@/components/demo-audio-player';
 import {
@@ -12,8 +13,6 @@ import {
   Clock3,
   Database,
   FileJson2,
-  GitBranch,
-  Headphones,
   LockKeyhole,
   Mic2,
   Paintbrush,
@@ -28,128 +27,181 @@ const demoSharePath =
   process.env.NEXT_PUBLIC_DEMO_SHARE_PATH ??
   '/a/ai-receptionist-62c5fb9c-330c-488a-84d9-05d1cc6672aa';
 
-const heroStats = [
-  { value: '5 min', label: 'from prompt to test call' },
-  { value: 'JSON', label: 'spec-first agent contract' },
-  { value: '100%', label: 'workspace-scoped records' },
-  { value: 'Mock + real', label: 'provider adapter path' },
-];
+type IconItem = {
+  icon: LucideIcon;
+  title: string;
+  body: string;
+};
 
-const proofPoints = [
-  {
-    icon: FileJson2,
-    title: 'Agent Spec JSON',
-    body: 'Voice, goals, tools, knowledge, handoff rules, analytics, and compliance are generated into one reviewable contract.',
-  },
-  {
-    icon: ShieldCheck,
-    title: 'Compliance gates',
-    body: 'Outbound checks cover consent, call windows, opt-outs, DNC/DND, AI disclosure, and recording notice before a call runs.',
-  },
-  {
-    icon: Building2,
-    title: 'Tenant-safe SaaS',
-    body: 'Organizations, workspaces, agency clients, roles, calls, knowledge, and settings stay scoped to the customer workspace.',
-  },
-  {
-    icon: SlidersHorizontal,
-    title: 'Provider adapters',
-    body: 'Mock runtime first, with the same deployment surface ready for Vapi, Retell, and future voice providers.',
-  },
+const heroStats = [
+  { value: '5 min', label: 'from plain prompt to mock call' },
+  { value: 'Spec', label: 'Agent JSON before every publish' },
+  { value: '0', label: 'outbound calls before compliance checks' },
+  { value: 'Multi', label: 'provider adapter runtime path' },
 ];
 
 const workflowSteps = [
   {
     step: '01',
     icon: Mic2,
-    title: 'Describe the business',
-    body: 'Start with plain language: industry, caller needs, handoff rules, booking flow, and systems the agent should use.',
+    title: 'Describe the caller experience',
+    body: 'Capture the business, caller intents, transfer rules, knowledge sources, and systems the agent may touch.',
   },
   {
     step: '02',
-    icon: GitBranch,
-    title: 'Review the generated spec',
-    body: 'Inspect the Agent Spec JSON and visual flow before publishing so prompts, tools, and policies are never hidden magic.',
+    icon: FileJson2,
+    title: 'Review the generated contract',
+    body: 'VoiceForge produces Agent Spec JSON with goals, tools, compliance policy, analytics, and handoff behavior.',
   },
   {
     step: '03',
     icon: PhoneCall,
-    title: 'Run a test call',
-    body: 'Use the mock voice runtime to capture a transcript, outcome, and events before connecting real telephony.',
+    title: 'Run the mock call lab',
+    body: 'Test a realistic call, transcript, event stream, and outcome before connecting any live telephony provider.',
   },
   {
     step: '04',
     icon: BarChart3,
-    title: 'Publish and monitor',
-    body: 'Share the public demo page, watch calls, analyze outcomes, and manage client branding from one workspace.',
+    title: 'Publish, monitor, improve',
+    body: 'Ship a demo page, track calls, inspect transcripts, tune versions, and give clients a branded workspace.',
   },
 ];
 
 const productCapabilities = [
-  'Prompt-to-agent generation with Zod-validated schema output',
-  'Visual flow editing for questions, transfers, tools, and endings',
-  'Knowledge sources and agent-scoped retrieval for business context',
-  'Audit logs around critical actions and publish operations',
-  'Call transcripts, events, outcomes, minutes, and cost estimates',
+  'Natural-language generation with Zod-validated Agent Spec output',
+  'Visual flow editing for questions, transfers, tools, knowledge, and endings',
+  'Agent-scoped knowledge sources for business-specific retrieval',
+  'Versioning, publish controls, and audit logs around critical actions',
+  'Call transcripts, events, outcomes, minutes, and usage analytics',
 ];
 
-const productionControls = [
+const proofPoints: IconItem[] = [
+  {
+    icon: FileJson2,
+    title: 'Agent Spec JSON',
+    body: 'The agent is governed by a reviewable contract, not hidden prompt strings scattered across runtime code.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Compliance gates',
+    body: 'Consent, call windows, opt-outs, DNC/DND, AI disclosure, and recording notice run before outbound execution.',
+  },
+  {
+    icon: Building2,
+    title: 'Workspace isolation',
+    body: 'Organizations, workspaces, clients, agents, calls, knowledge, and settings stay tenant scoped.',
+  },
+  {
+    icon: SlidersHorizontal,
+    title: 'Provider adapters',
+    body: 'Mock runtime comes first, with the same product surface ready for Vapi, Retell, Twilio, and future providers.',
+  },
+];
+
+const productionControls: IconItem[] = [
   {
     icon: LockKeyhole,
     title: 'Permissioned tools',
-    body: 'Tool calls are validated, scoped, logged, and designed to be idempotent where the action allows it.',
+    body: 'Tool calls are validated, authorized, logged, and idempotent where the action allows it.',
   },
   {
     icon: Database,
     title: 'Postgres source of truth',
-    body: 'Agent versions, workspaces, calls, knowledge, compliance records, and billing usage stay in structured data.',
+    body: 'Agent versions, workspaces, calls, compliance records, knowledge, and billing usage stay structured.',
   },
   {
     icon: Paintbrush,
     title: 'White-label delivery',
-    body: 'Agency teams can create client workspaces, configure branding, and hand off a focused client dashboard.',
+    body: 'Agencies can ship client dashboards with brand colors, logos, isolated users, and focused analytics.',
   },
 ];
 
-const integrations = ['Supabase', 'PostgreSQL', 'Vapi', 'Retell', 'Twilio-ready', 'OpenAI-ready'];
+const transcriptLines = [
+  { speaker: 'Agent', text: 'Thanks for calling Smile Dental. Are you calling to book, reschedule, or ask about an emergency?' },
+  { speaker: 'Caller', text: 'I need a cleaning next week, preferably morning.' },
+  { speaker: 'Agent', text: 'I can help with that. I found two morning openings and can confirm the best one.' },
+];
+
+const integrationRows = [
+  ['Supabase', 'PostgreSQL', 'Zod schemas'],
+  ['Mock voice runtime', 'Vapi adapter', 'Retell-ready'],
+  ['Audit logs', 'Compliance checks', 'White-label workspaces'],
+];
+
+function Eyebrow({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${className}`}>
+      {children}
+    </p>
+  );
+}
+
+function SectionHeading({
+  eyebrow,
+  title,
+  body,
+  dark = false,
+}: {
+  eyebrow: string;
+  title: string;
+  body: string;
+  dark?: boolean;
+}) {
+  return (
+    <div className="min-w-0 max-w-3xl">
+      <Eyebrow className={dark ? 'text-[#bfff4a]' : 'text-[#23594f]'}>{eyebrow}</Eyebrow>
+      <h2
+        className={`mt-4 break-words font-serif text-4xl leading-[1.02] tracking-normal md:text-5xl ${
+          dark ? 'text-[#fbf5e7]' : 'text-[#07130f]'
+        }`}
+      >
+        {title}
+      </h2>
+      <p className={`mt-5 break-words text-lg leading-8 ${dark ? 'text-[#cdd8cf]' : 'text-[#51615a]'}`}>
+        {body}
+      </p>
+    </div>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex flex-1 flex-col overflow-x-hidden bg-[#fff8f1] text-[#1f130b]">
-      <section className="relative isolate overflow-hidden bg-[#241105] text-white">
+    <div className="flex flex-1 flex-col overflow-x-hidden bg-[#f3efe5] text-[#07130f]">
+      <section className="relative isolate overflow-hidden bg-[#06130f] text-[#fbf5e7]">
         <Image
           src="/images/voiceforge-builder-preview.png"
-          alt="VoiceForge builder showing prompt-to-Agent-Spec workflow"
+          alt="VoiceForge builder showing the prompt-to-Agent-Spec workflow"
           fill
           priority
           sizes="100vw"
-          className="object-cover object-right-top opacity-20 md:opacity-[0.34]"
+          className="object-cover object-[64%_16%] opacity-35 mix-blend-luminosity"
         />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_82%_18%,rgba(249,115,22,0.28),transparent_30%),linear-gradient(90deg,#241105_0%,rgba(36,17,5,0.96)_40%,rgba(67,28,7,0.78)_74%,rgba(154,52,18,0.28)_100%)]" />
-        <div className="absolute inset-x-0 bottom-0 h-32 bg-[linear-gradient(180deg,rgba(36,17,5,0),#241105)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(90deg,#06130f_0%,rgba(6,19,15,0.96)_35%,rgba(6,19,15,0.72)_64%,rgba(6,19,15,0.48)_100%)]" />
+        <div className="absolute inset-0 opacity-35 [background-image:linear-gradient(rgba(191,255,74,0.12)_1px,transparent_1px),linear-gradient(90deg,rgba(114,228,255,0.1)_1px,transparent_1px)] [background-size:72px_72px]" />
+        <div className="absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(6,19,15,0),#f3efe5)]" />
 
-        <div className="relative mx-auto flex min-h-[720px] w-full max-w-7xl flex-col justify-center px-6 py-20 md:min-h-[760px] md:px-8">
-          <div className="w-full max-w-3xl">
-            <div className="inline-flex items-center gap-2 rounded-md border border-orange-300/30 bg-orange-500/15 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-orange-100 backdrop-blur">
+        <div className="relative mx-auto flex min-h-[68svh] w-full max-w-7xl flex-col justify-center px-6 py-12 md:px-8 md:py-14">
+          <div className="max-w-4xl pt-6">
+            <div className="inline-flex items-center gap-2 rounded-md border border-[#bfff4a]/30 bg-[#bfff4a]/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-[#d9ff8a] backdrop-blur">
               <Radio className="h-3.5 w-3.5" />
-              Production-first voice AI SaaS
+              Spec-first voice AI operating system
             </div>
 
-            <h1 className="mt-8 max-w-[11ch] break-words text-4xl font-semibold leading-[1.04] tracking-normal text-white sm:max-w-4xl sm:text-6xl lg:text-7xl">
-              AI voice agents for real customer calls
+            <h1 className="mt-7 max-w-[11ch] font-serif text-6xl leading-[0.9] tracking-normal text-[#fbf5e7] sm:text-7xl md:text-8xl lg:text-[7.5rem]">
+              VoiceForge AI
             </h1>
 
-            <p className="mt-6 max-w-[29ch] text-lg leading-8 text-slate-200 sm:max-w-2xl md:text-xl">
-              VoiceForge AI turns a natural-language brief into a workspace-scoped voice
-              agent with a validated spec, mock call testing, compliance checks,
-              transcripts, analytics, and white-label client delivery.
+            <p className="mt-6 max-w-3xl text-xl leading-8 text-[#dfe8dd] md:text-2xl md:leading-9">
+              Build voice agents from natural language, govern every behavior with
+              Agent Spec JSON, test the call before it goes live, and hand clients a
+              branded workspace they can trust.
             </p>
 
-            <div className="mt-9 flex w-full max-w-[22rem] flex-col gap-3 sm:max-w-none sm:flex-row">
+            <div className="mt-8 flex w-full max-w-[23rem] flex-col gap-3 sm:max-w-none sm:flex-row">
               <Button
                 asChild
                 size="lg"
-                className="h-12 w-full bg-orange-400 px-6 text-[#211005] shadow-lg shadow-orange-950/35 hover:bg-orange-300 sm:w-auto"
+                className="h-12 w-full border border-[#d9ff8a]/70 bg-[#bfff4a] px-6 text-[#07130f] shadow-lg shadow-[#bfff4a]/15 hover:bg-[#d9ff8a] sm:w-auto"
               >
                 <Link href="/sign-up">
                   Start building
@@ -160,117 +212,109 @@ export default function Home() {
                 asChild
                 size="lg"
                 variant="outline"
-                className="h-12 w-full border-orange-200/35 bg-white/10 px-6 text-white hover:bg-orange-300/15 hover:text-white sm:w-auto"
+                className="h-12 w-full border-white/25 bg-white/10 px-6 text-white backdrop-blur hover:bg-white/15 hover:text-white sm:w-auto"
               >
                 <Link href="#demo-call">
-                  Listen to sample call
+                  Hear the demo call
                   <AudioLines className="h-4 w-4" />
                 </Link>
               </Button>
             </div>
           </div>
 
-          <div className="mt-16 grid w-full max-w-5xl grid-cols-1 gap-px overflow-hidden rounded-lg border border-orange-200/20 bg-orange-200/15 sm:grid-cols-2 md:grid-cols-4">
+        </div>
+      </section>
+
+      <section className="relative z-10 -mt-6 px-6 pb-14 md:px-8">
+        <div className="mx-auto w-full max-w-7xl">
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-white/15 bg-[#07130f] shadow-2xl shadow-[#07130f]/18 md:grid-cols-4">
             {heroStats.map((stat) => (
-              <div key={stat.label} className="min-w-0 bg-[#241105]/76 p-4 backdrop-blur">
-                <p className="text-xl font-semibold text-white">{stat.value}</p>
-                <p className="mt-1 break-words text-xs leading-5 text-slate-300">{stat.label}</p>
+              <div key={stat.label} className="min-w-0 bg-[#0b1d17] p-4 text-[#fbf5e7]">
+                <p className="text-2xl font-semibold">{stat.value}</p>
+                <p className="mt-1 text-xs leading-5 text-[#c6d3c9]">{stat.label}</p>
               </div>
             ))}
           </div>
+
+          <div className="mt-3 grid gap-3 rounded-md border border-[#cfd8ca] bg-[#fbf6ea] p-3 shadow-xl shadow-[#07130f]/8 md:grid-cols-[0.8fr_1.2fr] md:items-center">
+            <div className="flex items-center gap-3 rounded-md bg-[#07130f] px-4 py-3 text-[#fbf5e7]">
+              <BadgeCheck className="h-5 w-5 text-[#bfff4a]" />
+              <span className="text-sm font-semibold">Built around the first working demo</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-sm font-medium text-[#394840] sm:grid-cols-5">
+              <span>Prompt</span>
+              <span>Spec JSON</span>
+              <span>Mock call</span>
+              <span>Analytics</span>
+              <span>White label</span>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="border-b border-orange-200 bg-white px-6 py-4 md:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-3 text-sm text-slate-600 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-2 font-medium text-slate-900">
-            <BadgeCheck className="h-4 w-4 text-orange-700" />
-            Built around the MVP flow in the product docs
-          </div>
-          <div className="grid w-full min-w-0 grid-cols-2 gap-x-4 gap-y-2 sm:flex sm:flex-wrap sm:gap-x-5">
-            <span className="min-w-0">Prompt to spec</span>
-            <span className="min-w-0">Test call</span>
-            <span className="min-w-0">Publish share page</span>
-            <span className="min-w-0">Analytics</span>
-            <span className="min-w-0">White label</span>
-          </div>
-        </div>
-      </section>
-
-      <section id="workflow" className="px-6 py-20 md:px-8 md:py-28">
-        <div className="mx-auto max-w-7xl">
-          <div className="max-w-3xl">
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-700">
-              From promise to product
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal text-slate-950 md:text-5xl">
-              A landing page that matches the actual production flow.
-            </h2>
-            <p className="mt-5 text-lg leading-8 text-slate-600">
-              The page now sells what the app can demonstrate: generate an agent,
-              review the contract, test a call, publish a public share page, and
-              monitor the result without bypassing tenant or compliance rules.
-            </p>
-          </div>
+      <section id="workflow" className="scroll-mt-32 px-6 pb-20 pt-8 md:scroll-mt-24 md:px-8 md:pb-28">
+        <div className="mx-auto w-full max-w-7xl">
+          <SectionHeading
+            eyebrow="From brief to live workflow"
+            title="A landing page that shows the product moving."
+            body="VoiceForge is not a prompt wrapper. It is a controlled build, test, publish, and monitor loop for teams that need voice agents to survive real customer calls."
+          />
 
           <div className="mt-12 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             {workflowSteps.map((item) => (
               <div
                 key={item.step}
-                className="rounded-lg border border-orange-200 bg-white p-6 shadow-sm shadow-orange-950/5 transition duration-200 hover:-translate-y-0.5 hover:border-orange-300 hover:shadow-md"
+                className="group rounded-lg border border-[#d7d0c3] bg-[#fffaf0] p-6 shadow-sm shadow-[#07130f]/5 transition duration-200 hover:-translate-y-1 hover:border-[#23594f]/40 hover:shadow-xl hover:shadow-[#07130f]/10"
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#241105] text-orange-100">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#07130f] text-[#bfff4a] transition group-hover:bg-[#23594f]">
                     <item.icon className="h-5 w-5" />
                   </div>
-                  <span className="font-mono text-xs font-medium text-orange-500">
-                    {item.step}
-                  </span>
+                  <span className="font-mono text-xs font-medium text-[#23594f]">{item.step}</span>
                 </div>
-                <h3 className="mt-5 text-lg font-semibold text-slate-950">{item.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-slate-600">{item.body}</p>
+                <h3 className="mt-5 text-lg font-semibold text-[#07130f]">{item.title}</h3>
+                <p className="mt-3 text-sm leading-6 text-[#56635d]">{item.body}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      <section id="product" className="border-y border-orange-200 bg-[#fff2df] px-6 py-20 md:px-8 md:py-28">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:items-center">
-          <div className="overflow-hidden rounded-lg border border-orange-200 bg-white shadow-xl shadow-orange-950/10">
-            <div className="flex items-center gap-2 border-b border-orange-100 bg-orange-50 px-4 py-3">
-              <span className="h-2.5 w-2.5 rounded-full bg-orange-500" />
-              <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
-              <span className="h-2.5 w-2.5 rounded-full bg-stone-400" />
-              <span className="ml-3 truncate font-mono text-xs text-stone-600">
-                app.voiceforge.ai/dashboard/agents/new
-              </span>
+      <section id="product" className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28">
+        <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+          <div className="relative min-w-0">
+            <div className="absolute -left-4 -top-4 hidden h-28 w-28 border-l border-t border-[#bfff4a]/40 md:block" />
+            <div className="overflow-hidden rounded-lg border border-white/15 bg-[#f7f3ea] shadow-2xl shadow-black/30">
+              <div className="flex items-center gap-2 border-b border-[#ddd4c5] bg-[#eee7da] px-4 py-3">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#ff6a3d]" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[#bfff4a]" />
+                <span className="h-2.5 w-2.5 rounded-full bg-[#72e4ff]" />
+                <span className="ml-3 truncate font-mono text-xs text-[#51615a]">
+                  app.voiceforge.ai/dashboard/agents/new
+                </span>
+              </div>
+              <Image
+                src="/images/voiceforge-builder-preview.png"
+                alt="VoiceForge dashboard for creating a new AI voice agent"
+                width={1043}
+                height={552}
+                className="h-auto w-full"
+                sizes="(min-width: 1024px) 58vw, 100vw"
+              />
             </div>
-            <Image
-              src="/images/voiceforge-builder-preview.png"
-              alt="VoiceForge dashboard for creating a new AI voice agent"
-              width={1043}
-              height={552}
-              className="h-auto w-full"
-              sizes="(min-width: 1024px) 56vw, 100vw"
-            />
           </div>
 
           <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-700">
-              Product surface
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal text-slate-950 md:text-5xl">
-              Show the builder, not a fantasy dashboard.
-            </h2>
-            <p className="mt-5 text-lg leading-8 text-slate-600">
-              Prospects see the same system they will use: a workspace app for
-              building, versioning, testing, publishing, and operating voice agents.
-            </p>
+            <SectionHeading
+              eyebrow="Product surface"
+              title="Show the builder, then prove the guardrails."
+              body="The page now leads with the working system: prompt generation, versioned specs, mock calls, publish controls, transcripts, analytics, and client branding."
+              dark
+            />
             <ul className="mt-8 space-y-4">
               {productCapabilities.map((capability) => (
-                <li key={capability} className="flex gap-3 text-sm leading-6 text-slate-700">
-                  <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-orange-700" />
+                <li key={capability} className="flex gap-3 text-sm leading-6 text-[#d6dfd8]">
+                  <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[#bfff4a]" />
                   <span>{capability}</span>
                 </li>
               ))}
@@ -279,67 +323,52 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="compliance" className="bg-white px-6 py-20 md:px-8 md:py-28">
-        <div className="mx-auto max-w-7xl">
-          <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:items-end">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-700">
-                Real-world controls
-              </p>
-              <h2 className="mt-4 text-4xl font-semibold tracking-normal text-slate-950 md:text-5xl">
-                Built for teams that cannot ship unsafe calls.
-              </h2>
-            </div>
-            <p className="text-lg leading-8 text-slate-600">
-              VoiceForge positions the landing page around the engineering rules in
-              the repo: scoped data, validated specs, permissioned tools, adapters,
-              auditability, and compliance checks before outbound execution.
-            </p>
-          </div>
-
-          <div className="mt-12 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {proofPoints.map((point) => (
-              <div key={point.title} className="rounded-lg border border-orange-200 bg-orange-50/60 p-6">
-                <div className="flex h-10 w-10 items-center justify-center rounded-md bg-white text-orange-700 shadow-sm">
-                  <point.icon className="h-5 w-5" />
+      <section id="compliance" className="scroll-mt-32 bg-[#f3efe5] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28">
+        <div className="mx-auto w-full max-w-7xl">
+          <div className="grid gap-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-end">
+            <SectionHeading
+              eyebrow="Real-world controls"
+              title="Built for calls that have legal, brand, and revenue consequences."
+              body="Every promise on the page maps back to an engineering rule: validated specs, scoped data, permissioned tools, adapter boundaries, audit logs, and compliance checks before outbound execution."
+            />
+            <div className="grid gap-3 sm:grid-cols-2">
+              {proofPoints.map((point) => (
+                <div key={point.title} className="rounded-lg border border-[#d7d0c3] bg-[#fffaf0] p-5">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#07130f] text-[#bfff4a]">
+                    <point.icon className="h-5 w-5" />
+                  </div>
+                  <h3 className="mt-5 text-base font-semibold text-[#07130f]">{point.title}</h3>
+                  <p className="mt-3 text-sm leading-6 text-[#56635d]">{point.body}</p>
                 </div>
-                <h3 className="mt-5 text-base font-semibold text-slate-950">{point.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-slate-600">{point.body}</p>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
+          <div className="mt-12 grid gap-4 md:grid-cols-3">
             {productionControls.map((item) => (
-              <div key={item.title} className="rounded-lg border border-orange-200 bg-white p-6">
-                <item.icon className="h-6 w-6 text-orange-700" />
-                <h3 className="mt-4 text-base font-semibold text-slate-950">{item.title}</h3>
-                <p className="mt-3 text-sm leading-6 text-slate-600">{item.body}</p>
+              <div key={item.title} className="rounded-lg border border-[#cad5ca] bg-white p-6">
+                <item.icon className="h-6 w-6 text-[#23594f]" />
+                <h3 className="mt-4 text-base font-semibold text-[#07130f]">{item.title}</h3>
+                <p className="mt-3 text-sm leading-6 text-[#56635d]">{item.body}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      <section id="demo-call" className="border-y border-orange-950 bg-[#241105] px-6 py-20 text-white md:px-8 md:py-28">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-200">
-              Public demo
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal md:text-5xl">
-              A real sample call path, with a share page fallback.
-            </h2>
-            <p className="mt-5 text-lg leading-8 text-slate-300">
-              The landing page now points at the same WAV asset used by published
-              public agents. If a share page cannot load audio, the demo player falls
-              back gracefully instead of showing a broken promise.
-            </p>
+      <section id="demo-call" className="scroll-mt-32 bg-[#fbf6ea] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28">
+        <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
+          <div className="min-w-0">
+            <SectionHeading
+              eyebrow="Public demo"
+              title="Let prospects hear the product before they read the docs."
+              body="The demo call section connects the marketing story to the same WAV asset used by published public agents, then frames the transcript and outcome signals buyers expect."
+            />
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button
                 asChild
                 size="lg"
-                className="h-12 bg-orange-400 px-6 text-[#211005] hover:bg-orange-300"
+                className="h-12 bg-[#07130f] px-6 text-[#fbf5e7] hover:bg-[#23594f]"
               >
                 <Link href={demoSharePath}>
                   Open share demo
@@ -350,7 +379,7 @@ export default function Home() {
                 asChild
                 size="lg"
                 variant="outline"
-                className="h-12 border-orange-200/30 bg-white/10 px-6 text-white hover:bg-orange-300/15 hover:text-white"
+                className="h-12 border-[#23594f]/30 bg-white px-6 text-[#07130f] hover:bg-[#e8f2df] hover:text-[#07130f]"
               >
                 <Link href="/sign-up">
                   Create your agent
@@ -360,15 +389,15 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-orange-200/15 bg-white/[0.06] p-6 shadow-2xl shadow-black/30">
-            <div className="flex items-center justify-between gap-4 border-b border-orange-200/15 pb-4">
+          <div className="min-w-0 rounded-lg border border-[#d7d0c3] bg-white p-6 shadow-xl shadow-[#07130f]/8">
+            <div className="flex flex-col gap-4 border-b border-[#e1dacd] pb-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-sm font-semibold text-white">Smile Dental Receptionist</p>
-                <p className="mt-1 text-xs text-slate-400">Published demo agent</p>
+                <p className="text-sm font-semibold text-[#07130f]">Smile Dental Receptionist</p>
+                <p className="mt-1 text-xs text-[#66736c]">Published demo agent</p>
               </div>
-              <div className="flex items-center gap-2 rounded-md bg-orange-400/15 px-3 py-1.5 text-xs font-medium text-orange-100">
+              <div className="inline-flex w-fit items-center gap-2 rounded-md bg-[#e8f2df] px-3 py-1.5 text-xs font-medium text-[#23594f]">
                 <Clock3 className="h-3.5 w-3.5" />
-                30 sec
+                30 sec sample
               </div>
             </div>
 
@@ -378,69 +407,60 @@ export default function Home() {
               caption="Generated sample call audio"
             />
 
-            <div className="mt-8 grid gap-3 text-sm text-slate-300 sm:grid-cols-3">
-              <div className="rounded-md border border-orange-200/15 bg-black/20 p-4">
-                <Headphones className="h-5 w-5 text-orange-200" />
-                <p className="mt-3 font-medium text-white">Natural greeting</p>
-              </div>
-              <div className="rounded-md border border-orange-200/15 bg-black/20 p-4">
-                <FileJson2 className="h-5 w-5 text-orange-200" />
-                <p className="mt-3 font-medium text-white">Spec-backed flow</p>
-              </div>
-              <div className="rounded-md border border-orange-200/15 bg-black/20 p-4">
-                <BarChart3 className="h-5 w-5 text-orange-200" />
-                <p className="mt-3 font-medium text-white">Transcript ready</p>
-              </div>
+            <div className="mt-8 space-y-3">
+              {transcriptLines.map((line) => (
+                <div key={`${line.speaker}-${line.text}`} className="grid gap-2 rounded-md border border-[#e1dacd] bg-[#fbf6ea] p-4 sm:grid-cols-[5rem_1fr]">
+                  <span className="font-mono text-xs font-medium uppercase text-[#23594f]">
+                    {line.speaker}
+                  </span>
+                  <p className="text-sm leading-6 text-[#394840]">{line.text}</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       </section>
 
-      <section id="agencies" className="bg-[#fff8f1] px-6 py-20 md:px-8 md:py-28">
-        <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-700">
-              Agency-ready
-            </p>
-            <h2 className="mt-4 text-4xl font-semibold tracking-normal text-slate-950 md:text-5xl">
-              Sell voice agents without rebuilding the operating layer.
-            </h2>
-            <p className="mt-5 text-lg leading-8 text-slate-600">
-              Workspaces, client ownership, branding, usage, and analytics are part
-              of the product story, so the landing page speaks to agencies and
-              internal operators instead of only hobby demos.
-            </p>
-          </div>
+      <section id="agencies" className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28">
+        <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
+          <SectionHeading
+            eyebrow="Agency-ready"
+            title="Sell voice agents without rebuilding the operating layer."
+            body="VoiceForge gives agencies and internal operators the pieces that usually delay launch: client isolation, branded delivery, usage visibility, provider choice, and compliance-first operations."
+            dark
+          />
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="rounded-lg border border-orange-200 bg-white p-6 shadow-sm shadow-orange-950/5">
-              <Paintbrush className="h-6 w-6 text-orange-700" />
-              <h3 className="mt-5 text-lg font-semibold text-slate-950">White-label control</h3>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
-                Brand client dashboards with custom colors, logos, and workspace-specific
-                settings.
+            <div className="rounded-lg border border-white/15 bg-white/[0.06] p-6">
+              <Paintbrush className="h-6 w-6 text-[#bfff4a]" />
+              <h3 className="mt-5 text-lg font-semibold text-[#fbf5e7]">White-label control</h3>
+              <p className="mt-3 text-sm leading-6 text-[#cdd8cf]">
+                Configure logos, colors, workspace settings, and client-facing pages without
+                forking the product.
               </p>
             </div>
-            <div className="rounded-lg border border-orange-200 bg-white p-6 shadow-sm shadow-orange-950/5">
-              <Building2 className="h-6 w-6 text-orange-700" />
-              <h3 className="mt-5 text-lg font-semibold text-slate-950">Client isolation</h3>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
-                Client users only see their workspace, calls, agents, knowledge, and
-                analytics.
+            <div className="rounded-lg border border-white/15 bg-white/[0.06] p-6">
+              <Building2 className="h-6 w-6 text-[#72e4ff]" />
+              <h3 className="mt-5 text-lg font-semibold text-[#fbf5e7]">Client isolation</h3>
+              <p className="mt-3 text-sm leading-6 text-[#cdd8cf]">
+                Client users only see their workspace, calls, agents, knowledge, analytics,
+                and settings.
               </p>
             </div>
-            <div className="rounded-lg border border-orange-200 bg-white p-6 shadow-sm shadow-orange-950/5 sm:col-span-2">
-              <p className="text-sm font-medium uppercase tracking-[0.18em] text-orange-700">
-                Integration path
-              </p>
-              <div className="mt-5 flex flex-wrap gap-2">
-                {integrations.map((integration) => (
-                  <span
-                    key={integration}
-                    className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-stone-700"
-                  >
-                    {integration}
-                  </span>
+            <div className="rounded-lg border border-white/15 bg-white/[0.06] p-6 sm:col-span-2">
+              <Eyebrow className="text-[#bfff4a]">Integration path</Eyebrow>
+              <div className="mt-5 grid gap-3">
+                {integrationRows.map((row) => (
+                  <div key={row.join('-')} className="grid gap-2 sm:grid-cols-3">
+                    {row.map((integration) => (
+                      <span
+                        key={integration}
+                        className="rounded-md border border-white/15 bg-black/20 px-3 py-2 text-sm font-medium text-[#e5eee7]"
+                      >
+                        {integration}
+                      </span>
+                    ))}
+                  </div>
                 ))}
               </div>
             </div>
@@ -448,13 +468,11 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="bg-[#211005] px-6 py-16 text-white md:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-8 md:flex-row md:items-center md:justify-between">
-          <div className="max-w-2xl">
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-orange-200">
-              VoiceForge AI
-            </p>
-            <h2 className="mt-3 text-3xl font-semibold tracking-normal md:text-4xl">
+      <section className="bg-[#f3efe5] px-6 py-16 md:px-8">
+        <div className="mx-auto grid w-full max-w-7xl gap-8 rounded-lg border border-[#cfd8ca] bg-[#fbf6ea] p-6 shadow-xl shadow-[#07130f]/8 md:grid-cols-[1fr_auto] md:items-center md:p-8">
+          <div className="max-w-3xl">
+            <Eyebrow className="text-[#23594f]">VoiceForge AI</Eyebrow>
+            <h2 className="mt-3 font-serif text-4xl leading-tight text-[#07130f] md:text-5xl">
               Build the first agent, test the first call, then ship it to a real workspace.
             </h2>
           </div>
@@ -462,7 +480,7 @@ export default function Home() {
             <Button
               asChild
               size="lg"
-              className="h-12 bg-orange-400 px-6 text-[#211005] hover:bg-orange-300"
+              className="h-12 bg-[#07130f] px-6 text-[#fbf5e7] hover:bg-[#23594f]"
             >
               <Link href="/sign-up">
                 Get started free
@@ -473,7 +491,7 @@ export default function Home() {
               asChild
               size="lg"
               variant="outline"
-              className="h-12 border-orange-200/30 bg-white/10 px-6 text-white hover:bg-orange-300/15 hover:text-white"
+              className="h-12 border-[#23594f]/30 bg-white px-6 text-[#07130f] hover:bg-[#e8f2df] hover:text-[#07130f]"
             >
               <Link href="/sign-in">Sign in</Link>
             </Button>
@@ -481,44 +499,44 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="border-t border-orange-200 bg-white px-6 py-10 md:px-8">
-        <div className="mx-auto flex max-w-7xl flex-col gap-5 md:flex-row md:items-center md:justify-between">
+      <footer className="border-t border-[#d7d0c3] bg-[#fbf6ea] px-6 py-10 md:px-8">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="font-semibold text-slate-950">VoiceForge AI</p>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="font-serif text-xl text-[#07130f]">VoiceForge AI</p>
+            <p className="mt-1 text-sm text-[#66736c]">
               Spec-first voice agents for SaaS teams and agencies.
             </p>
           </div>
-          <nav className="flex flex-wrap gap-5 text-sm text-stone-600">
-            <Link href="/#product" className="transition hover:text-orange-800">
+          <nav className="flex flex-wrap gap-5 text-sm text-[#51615a]">
+            <Link href="/#product" className="transition hover:text-[#23594f]">
               Product
             </Link>
-            <Link href="/#workflow" className="transition hover:text-orange-800">
+            <Link href="/#workflow" className="transition hover:text-[#23594f]">
               Workflow
             </Link>
-            <Link href="/#compliance" className="transition hover:text-orange-800">
+            <Link href="/#compliance" className="transition hover:text-[#23594f]">
               Compliance
             </Link>
-            <Link href="/#demo-call" className="transition hover:text-orange-800">
+            <Link href="/#demo-call" className="transition hover:text-[#23594f]">
               Demo call
             </Link>
-            <Link href="/#agencies" className="transition hover:text-orange-800">
+            <Link href="/#agencies" className="transition hover:text-[#23594f]">
               Agencies
             </Link>
-            <Link href="/pricing" className="transition hover:text-orange-800">
+            <Link href="/pricing" className="transition hover:text-[#23594f]">
               Pricing
             </Link>
-            <Link href={demoSharePath} className="transition hover:text-orange-800">
+            <Link href={demoSharePath} className="transition hover:text-[#23594f]">
               Share demo
             </Link>
-            <Link href="/sign-up" className="transition hover:text-orange-800">
+            <Link href="/sign-up" className="transition hover:text-[#23594f]">
               Sign up
             </Link>
-            <Link href="/sign-in" className="transition hover:text-orange-800">
+            <Link href="/sign-in" className="transition hover:text-[#23594f]">
               Sign in
             </Link>
           </nav>
-          <p className="text-sm text-slate-500">&copy; 2026 VoiceForge AI</p>
+          <p className="text-sm text-[#66736c]">&copy; 2026 VoiceForge AI</p>
         </div>
       </footer>
     </div>
