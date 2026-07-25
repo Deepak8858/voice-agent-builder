@@ -26,7 +26,10 @@ export class TwilioWebhookController {
 
     const number = await this.prisma.twilioPhoneNumber.findUnique({
       where: { phoneNumber: to },
-      include: { agent: true },
+      include: {
+        agent: true,
+        workspace: { select: { organizationId: true } },
+      },
     });
 
     if (!number?.agent) {
@@ -39,6 +42,7 @@ export class TwilioWebhookController {
     const call = await this.prisma.call.create({
       data: {
         workspaceId: number.workspaceId!,
+        organizationId: number.workspace.organizationId,
         agentId: number.agentId!,
         direction: 'inbound',
         status: 'queued',
