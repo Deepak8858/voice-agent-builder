@@ -118,6 +118,65 @@ const RuntimeDebitReplayMetadataSchema = z
   })
   .passthrough();
 
+const SubscriptionGrantOperationSchema = z
+  .object({
+    kind: z.literal('subscription_grant'),
+    organizationId: IdentifierSchema,
+    invoiceId: IdentifierSchema,
+  })
+  .strict();
+
+const SubscriptionGrantReplayMetadataSchema = z
+  .object({
+    operation: SubscriptionGrantOperationSchema,
+  })
+  .passthrough();
+
+const PurchasedGrantOperationSchema = z
+  .object({
+    kind: z.literal('purchased_grant'),
+    organizationId: IdentifierSchema,
+    checkoutSessionId: IdentifierSchema,
+  })
+  .strict();
+
+const PurchasedGrantReplayMetadataSchema = z
+  .object({
+    operation: PurchasedGrantOperationSchema,
+  })
+  .passthrough();
+
+const ReservationFinalizationOperationSchema = z
+  .object({
+    kind: z.enum(['reservation_commit', 'reservation_release']),
+    organizationId: IdentifierSchema,
+    callId: IdentifierSchema,
+    reservationIdempotencyKey: IdempotencyKeySchema,
+  })
+  .strict();
+
+const ReservationFinalizationReplayMetadataSchema = z
+  .object({
+    operation: ReservationFinalizationOperationSchema,
+  })
+  .passthrough();
+
+const PurchasedReversalOperationSchema = z
+  .object({
+    kind: z.literal('purchased_credit_reversal'),
+    organizationId: IdentifierSchema,
+    checkoutSessionId: IdentifierSchema,
+    refundId: IdentifierSchema,
+    bucketId: IdentifierSchema,
+  })
+  .strict();
+
+const PurchasedReversalReplayMetadataSchema = z
+  .object({
+    operation: PurchasedReversalOperationSchema,
+  })
+  .passthrough();
+
 export type SubscriptionGrantInput = z.infer<
   typeof SubscriptionGrantInputSchema
 >;
@@ -170,6 +229,16 @@ export class CreditLedgerInvariantError extends Error {
 
 type TransactionClient = Prisma.TransactionClient;
 
+type LedgerReplayExpectation<T> = {
+  entryTypes: readonly string[];
+  organizationId: string;
+  callId: string | null;
+  workspaceId?: string | null;
+  bucketId?: string | null;
+  metadataSchema: z.ZodType<T>;
+  operationMatches: (metadata: T) => boolean;
+};
+
 @Injectable()
 export class CreditLedgerService {
   constructor(private readonly prisma: PrismaService) {}
@@ -184,13 +253,21 @@ export class CreditLedgerService {
     return this.withLockedBalance(
       input.organizationId,
       async (tx, lockedBalance) => {
-        if (
-          await this.findIdempotentEntry(
-            tx,
-            input.organizationId,
-            idempotencyKey,
-          )
-        ) {
+        const existing = await this.findIdempotentEntry(
+          tx,
+          input.organizationId,
+          idempotencyKey,
+        );
+        if (existing) {
+          this.assertLedgerReplayIdentity(existing, {
+            entryTypes: ['subscription_grant'],
+            organizationId: input.organizationId,
+            callId: null,
+            metadataSchema: SubscriptionGrantReplayMetadataSchema,
+            operationMatches: ({ operation }) =>
+              operation.organizationId === input.organizationId &&
+              operation.invoiceId === input.invoiceId,
+          });
           return this.buildCreditBalance(tx, lockedBalance);
         }
 
@@ -229,6 +306,11 @@ export class CreditLedgerService {
             reasonCode: 'subscription_included',
             idempotencyKey,
             metadata: this.jsonMetadata({
+              operation: {
+                kind: 'subscription_grant',
+                organizationId: input.organizationId,
+                invoiceId: input.invoiceId,
+              },
               invoiceId: input.invoiceId,
               includedMinutes: input.includedMinutes,
               periodEnd: input.periodEnd.toISOString(),
@@ -251,13 +333,21 @@ export class CreditLedgerService {
     return this.withLockedBalance(
       input.organizationId,
       async (tx, lockedBalance) => {
-        if (
-          await this.findIdempotentEntry(
-            tx,
-            input.organizationId,
-            idempotencyKey,
-          )
-        ) {
+        const existing = await this.findIdempotentEntry(
+          tx,
+          input.organizationId,
+          idempotencyKey,
+        );
+        if (existing) {
+          this.assertLedgerReplayIdentity(existing, {
+            entryTypes: ['purchase_grant'],
+            organizationId: input.organizationId,
+            callId: null,
+            metadataSchema: PurchasedGrantReplayMetadataSchema,
+            operationMatches: ({ operation }) =>
+              operation.organizationId === input.organizationId &&
+              operation.checkoutSessionId === input.checkoutSessionId,
+          });
           return this.buildCreditBalance(tx, lockedBalance);
         }
 
@@ -298,6 +388,11 @@ export class CreditLedgerService {
             reasonCode: 'purchased_topup',
             idempotencyKey,
             metadata: this.jsonMetadata({
+              operation: {
+                kind: 'purchased_grant',
+                organizationId: input.organizationId,
+                checkoutSessionId: input.checkoutSessionId,
+              },
               checkoutSessionId: input.checkoutSessionId,
               purchasedAt: input.purchasedAt.toISOString(),
               expiresAt: expiresAt.toISOString(),
@@ -440,6 +535,12 @@ export class CreditLedgerService {
           input.idempotencyKey,
         );
         if (exactDuplicate) {
+          this.assertReservationFinalizationReplay(
+            exactDuplicate,
+            input.organizationId,
+            input.callId,
+            'reservation_commit',
+          );
           return this.buildCreditBalance(tx, lockedBalance);
         }
 
@@ -452,6 +553,12 @@ export class CreditLedgerService {
           orderBy: { createdAt: 'desc' },
         });
         if (previousCommit) {
+          this.assertReservationFinalizationReplay(
+            previousCommit,
+            input.organizationId,
+            input.callId,
+            'reservation_commit',
+          );
           return this.buildCreditBalance(tx, lockedBalance);
         }
         const previousRelease = await tx.billingLedgerEntry.findFirst({
@@ -504,6 +611,12 @@ export class CreditLedgerService {
             reasonCode: 'call_connected',
             idempotencyKey: input.idempotencyKey,
             metadata: this.jsonMetadata({
+              operation: {
+                kind: 'reservation_commit',
+                organizationId: input.organizationId,
+                callId: input.callId,
+                reservationIdempotencyKey: reservation.idempotencyKey,
+              },
               reservationIdempotencyKey: reservation.idempotencyKey,
               allocations,
             }),
@@ -541,7 +654,10 @@ export class CreditLedgerService {
           return this.runtimeDecision(
             input,
             allowed,
-            this.reasonFromLedger(existing.reasonCode),
+            this.reasonFromLedger(
+              existing.entryType,
+              existing.reasonCode,
+            ),
             allowed ? 1 : 0,
             creditBalance,
           );
@@ -632,6 +748,12 @@ export class CreditLedgerService {
           input.idempotencyKey,
         );
         if (exactDuplicate) {
+          this.assertReservationFinalizationReplay(
+            exactDuplicate,
+            input.organizationId,
+            input.callId,
+            'reservation_release',
+          );
           return this.buildCreditBalance(tx, lockedBalance);
         }
 
@@ -644,6 +766,12 @@ export class CreditLedgerService {
           orderBy: { createdAt: 'desc' },
         });
         if (previousRelease) {
+          this.assertReservationFinalizationReplay(
+            previousRelease,
+            input.organizationId,
+            input.callId,
+            'reservation_release',
+          );
           return this.buildCreditBalance(tx, lockedBalance);
         }
         const previousCommit = await tx.billingLedgerEntry.findFirst({
@@ -702,6 +830,12 @@ export class CreditLedgerService {
             reasonCode: 'call_not_connected',
             idempotencyKey: input.idempotencyKey,
             metadata: this.jsonMetadata({
+              operation: {
+                kind: 'reservation_release',
+                organizationId: input.organizationId,
+                callId: input.callId,
+                reservationIdempotencyKey: reservation.idempotencyKey,
+              },
               reservationIdempotencyKey: reservation.idempotencyKey,
               allocations,
             }),
@@ -722,16 +856,6 @@ export class CreditLedgerService {
     return this.withLockedBalance(
       input.organizationId,
       async (tx, lockedBalance) => {
-        if (
-          await this.findIdempotentEntry(
-            tx,
-            input.organizationId,
-            idempotencyKey,
-          )
-        ) {
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
-
         const bucket = await tx.billingCreditBucket.findUnique({
           where: {
             organizationId_sourceType_sourceId: {
@@ -746,8 +870,34 @@ export class CreditLedgerService {
             `Purchased credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
           );
         }
-        if (bucket.status === 'refunded') {
+        const existing = await this.findIdempotentEntry(
+          tx,
+          input.organizationId,
+          idempotencyKey,
+        );
+        if (existing) {
+          this.assertLedgerReplayIdentity(existing, {
+            entryTypes: [
+              'purchase_reversal',
+              'purchase_reversal_review',
+            ],
+            organizationId: input.organizationId,
+            callId: null,
+            bucketId: bucket.id,
+            metadataSchema: PurchasedReversalReplayMetadataSchema,
+            operationMatches: ({ operation }) =>
+              operation.organizationId === input.organizationId &&
+              operation.checkoutSessionId === input.checkoutSessionId &&
+              operation.refundId === input.refundId &&
+              operation.bucketId === bucket.id,
+          });
           return this.buildCreditBalance(tx, lockedBalance);
+        }
+        if (bucket.status === 'refunded') {
+          throw new CreditLedgerInvariantError(
+            `Purchased credit bucket ${input.checkoutSessionId} was already refunded by another operation`,
+            'refund_already_processed',
+          );
         }
 
         const unusedSeconds = bucket.remainingSeconds;
@@ -781,6 +931,10 @@ export class CreditLedgerService {
               reasonCode: 'refund_manual_review',
               idempotencyKey,
               metadata: this.jsonMetadata({
+                operation: this.purchasedReversalOperation(
+                  input,
+                  bucket.id,
+                ),
                 checkoutSessionId: input.checkoutSessionId,
                 refundId: input.refundId,
                 originalSeconds: bucket.originalSeconds,
@@ -824,6 +978,7 @@ export class CreditLedgerService {
             reasonCode: 'refund_unused_credit',
             idempotencyKey,
             metadata: this.jsonMetadata({
+              operation: this.purchasedReversalOperation(input, bucket.id),
               checkoutSessionId: input.checkoutSessionId,
               refundId: input.refundId,
               originalSeconds: bucket.originalSeconds,
@@ -1232,7 +1387,7 @@ export class CreditLedgerService {
       organizationId: input.organizationId,
       callId: input.callId,
       allowed,
-      reason: this.reasonFromLedger(entry.reasonCode),
+      reason: this.reasonFromLedger(entry.entryType, entry.reasonCode),
       seconds: this.sumAllocations(allocations),
       allocations,
       creditBalance: await this.buildCreditBalance(tx, balance),
@@ -1243,47 +1398,72 @@ export class CreditLedgerService {
     entry: BillingLedgerEntry,
     input: MinuteReservationInput,
   ): void {
-    const parsed = InitialReservationReplayMetadataSchema.safeParse(
-      entry.metadata,
-    );
-    const expectedEntryType =
-      entry.entryType === 'reservation' ||
-      entry.entryType === 'reservation_denied';
-    const operation = parsed.success ? parsed.data.operation : null;
-    if (
-      !expectedEntryType ||
-      entry.organizationId !== input.organizationId ||
-      entry.workspaceId !== input.workspaceId ||
-      entry.callId !== input.callId ||
-      !operation ||
-      operation.organizationId !== input.organizationId ||
-      operation.workspaceId !== input.workspaceId ||
-      operation.callId !== input.callId
-    ) {
-      throw new CreditLedgerInvariantError(
-        `Idempotency key is already bound to another credit operation`,
-        'idempotency_conflict',
-      );
-    }
+    this.assertLedgerReplayIdentity(entry, {
+      entryTypes: ['reservation', 'reservation_denied'],
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: input.callId,
+      metadataSchema: InitialReservationReplayMetadataSchema,
+      operationMatches: ({ operation }) =>
+        operation.organizationId === input.organizationId &&
+        operation.workspaceId === input.workspaceId &&
+        operation.callId === input.callId,
+    });
   }
 
   private assertRuntimeDebitIdentity(
     entry: BillingLedgerEntry,
     input: NextMinuteInput,
   ): void {
-    const parsed = RuntimeDebitReplayMetadataSchema.safeParse(entry.metadata);
-    const expectedEntryType =
-      entry.entryType === 'usage_debit' ||
-      entry.entryType === 'usage_debit_denied';
-    const operation = parsed.success ? parsed.data.operation : null;
+    this.assertLedgerReplayIdentity(entry, {
+      entryTypes: ['usage_debit', 'usage_debit_denied'],
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: input.callId,
+      metadataSchema: RuntimeDebitReplayMetadataSchema,
+      operationMatches: ({ operation }) =>
+        operation.organizationId === input.organizationId &&
+        operation.callId === input.callId &&
+        operation.eventId === input.eventId,
+    });
+  }
+
+  private assertReservationFinalizationReplay(
+    entry: BillingLedgerEntry,
+    organizationId: string,
+    callId: string,
+    entryType: 'reservation_commit' | 'reservation_release',
+  ): void {
+    this.assertLedgerReplayIdentity(entry, {
+      entryTypes: [entryType],
+      organizationId,
+      callId,
+      metadataSchema: ReservationFinalizationReplayMetadataSchema,
+      operationMatches: ({ operation }) =>
+        operation.kind === entryType &&
+        operation.organizationId === organizationId &&
+        operation.callId === callId,
+    });
+  }
+
+  private assertLedgerReplayIdentity<T>(
+    entry: BillingLedgerEntry,
+    expected: LedgerReplayExpectation<T>,
+  ): void {
+    const parsed = expected.metadataSchema.safeParse(entry.metadata);
+    const workspaceMatches =
+      expected.workspaceId === undefined ||
+      entry.workspaceId === expected.workspaceId;
+    const bucketMatches =
+      expected.bucketId === undefined || entry.bucketId === expected.bucketId;
     if (
-      !expectedEntryType ||
-      entry.organizationId !== input.organizationId ||
-      entry.callId !== input.callId ||
-      !operation ||
-      operation.organizationId !== input.organizationId ||
-      operation.callId !== input.callId ||
-      operation.eventId !== input.eventId
+      !expected.entryTypes.includes(entry.entryType) ||
+      entry.organizationId !== expected.organizationId ||
+      entry.callId !== expected.callId ||
+      !workspaceMatches ||
+      !bucketMatches ||
+      !parsed.success ||
+      !expected.operationMatches(parsed.data)
     ) {
       throw new CreditLedgerInvariantError(
         `Idempotency key is already bound to another credit operation`,
@@ -1311,6 +1491,19 @@ export class CreditLedgerService {
       organizationId: input.organizationId,
       callId: input.callId,
       eventId: input.eventId,
+    };
+  }
+
+  private purchasedReversalOperation(
+    input: CreditReversalInput,
+    bucketId: string,
+  ): z.infer<typeof PurchasedReversalOperationSchema> {
+    return {
+      kind: 'purchased_credit_reversal',
+      organizationId: input.organizationId,
+      checkoutSessionId: input.checkoutSessionId,
+      refundId: input.refundId,
+      bucketId,
     };
   }
 
@@ -1343,12 +1536,29 @@ export class CreditLedgerService {
     return allocations;
   }
 
-  private reasonFromLedger(reasonCode: string): EntitlementReason {
-    if (reasonCode === 'credit_insufficient') return 'credit_insufficient';
-    if (reasonCode === 'billing_temporarily_unavailable') {
-      return 'billing_temporarily_unavailable';
+  private reasonFromLedger(
+    entryType: string,
+    reasonCode: string,
+  ): EntitlementReason {
+    if (
+      (entryType === 'reservation' && reasonCode === 'initial_minute') ||
+      (entryType === 'usage_debit' && reasonCode === 'minute_boundary')
+    ) {
+      return 'allowed';
     }
-    return 'allowed';
+    if (
+      entryType === 'reservation_denied' ||
+      entryType === 'usage_debit_denied'
+    ) {
+      if (reasonCode === 'credit_insufficient') return 'credit_insufficient';
+      if (reasonCode === 'billing_temporarily_unavailable') {
+        return 'billing_temporarily_unavailable';
+      }
+    }
+    throw new CreditLedgerInvariantError(
+      `Ledger entry ${entryType} has incompatible reason code ${reasonCode}`,
+      'ledger_reason_invalid',
+    );
   }
 
   private sumAllocations(allocations: ReservationAllocation[]): number {

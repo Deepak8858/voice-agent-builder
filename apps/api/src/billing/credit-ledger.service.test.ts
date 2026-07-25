@@ -1228,4 +1228,334 @@ describe('CreditLedgerService', () => {
       prisma.ledger.filter((entry) => entry.entryType === 'reservation_release'),
     ).toHaveLength(0);
   });
+
+  it('rejects a subscription grant key colliding with a non-subscription entry', async () => {
+    const { prisma, service } = makeService();
+    await prisma.billingLedgerEntry.create({
+      data: {
+        organizationId: 'org-subscription-collision',
+        bucketId: null,
+        workspaceId: null,
+        callId: null,
+        entryType: 'usage_debit',
+        seconds: -60,
+        balanceAfterSeconds: 0,
+        actorType: 'system',
+        actorId: null,
+        reasonCode: 'minute_boundary',
+        idempotencyKey: 'stripe:invoice:in_collision:included',
+        metadata: {
+          operation: {
+            kind: 'next_minute_debit',
+            organizationId: 'org-subscription-collision',
+            callId: 'call-unrelated',
+            eventId: 'event-unrelated',
+          },
+        },
+      },
+    });
+
+    await expect(
+      service.grantSubscriptionCredits({
+        organizationId: 'org-subscription-collision',
+        invoiceId: 'in_collision',
+        includedMinutes: 10,
+        periodEnd: PERIOD_END,
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-subscription-collision');
+    expectExactSeconds(balance, {
+      available: 0,
+      reserved: 0,
+      totalOwned: 0,
+    });
+    expect(prisma.buckets).toHaveLength(0);
+    expect(prisma.ledger).toHaveLength(1);
+  });
+
+  it('rejects a purchased grant key bound to a different checkout identity', async () => {
+    const { prisma, service } = makeService();
+    await prisma.billingLedgerEntry.create({
+      data: {
+        organizationId: 'org-purchase-collision',
+        bucketId: null,
+        workspaceId: null,
+        callId: null,
+        entryType: 'purchase_grant',
+        seconds: 6_000,
+        balanceAfterSeconds: 6_000,
+        actorType: 'stripe',
+        actorId: 'cs_other',
+        reasonCode: 'purchased_topup',
+        idempotencyKey: 'stripe:checkout:cs_collision:topup',
+        metadata: {
+          checkoutSessionId: 'cs_other',
+          purchasedAt: NOW.toISOString(),
+        },
+      },
+    });
+
+    await expect(
+      service.grantPurchasedCredits({
+        organizationId: 'org-purchase-collision',
+        checkoutSessionId: 'cs_collision',
+        purchasedAt: NOW,
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-purchase-collision');
+    expectExactSeconds(balance, {
+      available: 0,
+      reserved: 0,
+      totalOwned: 0,
+    });
+    expect(prisma.buckets).toHaveLength(0);
+    expect(prisma.ledger).toHaveLength(1);
+  });
+
+  it('rejects a refund key reused for another checkout bucket', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-refund-collision',
+      checkoutSessionId: 'cs_refund_a',
+      purchasedAt: NOW,
+    });
+    await service.grantPurchasedCredits({
+      organizationId: 'org-refund-collision',
+      checkoutSessionId: 'cs_refund_b',
+      purchasedAt: NOW,
+    });
+    await service.reversePurchasedCredits({
+      organizationId: 'org-refund-collision',
+      checkoutSessionId: 'cs_refund_a',
+      refundId: 're_shared',
+    });
+
+    await expect(
+      service.reversePurchasedCredits({
+        organizationId: 'org-refund-collision',
+        checkoutSessionId: 'cs_refund_b',
+        refundId: 're_shared',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-refund-collision');
+    expectExactSeconds(balance, {
+      available: 6_000,
+      reserved: 0,
+      totalOwned: 6_000,
+    });
+    expect(
+      prisma.buckets.find((bucket) => bucket.sourceId === 'cs_refund_b'),
+    ).toMatchObject({
+      status: 'active',
+      remainingSeconds: 6_000,
+    });
+    expect(
+      prisma.ledger.filter((entry) =>
+        entry.entryType.startsWith('purchase_reversal'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('rejects a commit key bound to an opposite lifecycle entry for another call', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-commit-collision',
+      sourceType: 'included',
+      sourceId: 'in_commit_collision',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-commit-collision',
+      workspaceId: 'workspace-commit-collision',
+      callId: 'call-commit-target',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-commit-collision',
+      workspaceId: 'workspace-commit-collision',
+      callId: 'call-release-source',
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-commit-collision',
+      workspaceId: 'workspace-commit-collision',
+      callId: 'call-commit-target',
+      idempotencyKey: 'commit-target-reservation',
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-commit-collision',
+      workspaceId: 'workspace-commit-collision',
+      callId: 'call-release-source',
+      idempotencyKey: 'release-source-reservation',
+    });
+    await service.releaseReservation({
+      organizationId: 'org-commit-collision',
+      callId: 'call-release-source',
+      idempotencyKey: 'shared-lifecycle-key',
+    });
+
+    await expect(
+      service.commitReservation({
+        organizationId: 'org-commit-collision',
+        callId: 'call-commit-target',
+        idempotencyKey: 'shared-lifecycle-key',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-commit-collision');
+    expectExactSeconds(balance, {
+      available: 60,
+      reserved: 60,
+      totalOwned: 120,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit'),
+    ).toHaveLength(0);
+  });
+
+  it('rejects a release key bound to an opposite lifecycle entry for another call', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-release-collision',
+      sourceType: 'included',
+      sourceId: 'in_release_collision',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-release-collision',
+      workspaceId: 'workspace-release-collision',
+      callId: 'call-release-target',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-release-collision',
+      workspaceId: 'workspace-release-collision',
+      callId: 'call-commit-source',
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-release-collision',
+      workspaceId: 'workspace-release-collision',
+      callId: 'call-release-target',
+      idempotencyKey: 'release-target-reservation',
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-release-collision',
+      workspaceId: 'workspace-release-collision',
+      callId: 'call-commit-source',
+      idempotencyKey: 'commit-source-reservation',
+    });
+    await service.commitReservation({
+      organizationId: 'org-release-collision',
+      callId: 'call-commit-source',
+      idempotencyKey: 'shared-lifecycle-key',
+    });
+
+    await expect(
+      service.releaseReservation({
+        organizationId: 'org-release-collision',
+        callId: 'call-release-target',
+        idempotencyKey: 'shared-lifecycle-key',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-release-collision');
+    expectExactSeconds(balance, {
+      available: 0,
+      reserved: 60,
+      totalOwned: 60,
+    });
+    expect(
+      prisma.ledger.filter(
+        (entry) =>
+          entry.entryType === 'reservation_release' &&
+          entry.callId === 'call-release-target',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('replays exact purchased grant and refund operations without duplicate mutation', async () => {
+    const { prisma, service } = makeService();
+    const grantInput = {
+      organizationId: 'org-exact-durable-replay',
+      checkoutSessionId: 'cs_exact_durable_replay',
+      purchasedAt: NOW,
+    };
+    const firstGrant = await service.grantPurchasedCredits(grantInput);
+    const repeatedGrant = await service.grantPurchasedCredits(grantInput);
+    expect(repeatedGrant).toEqual(firstGrant);
+    expect(prisma.buckets).toHaveLength(1);
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant'),
+    ).toHaveLength(1);
+
+    const refundInput = {
+      organizationId: 'org-exact-durable-replay',
+      checkoutSessionId: 'cs_exact_durable_replay',
+      refundId: 're_exact_durable_replay',
+    };
+    const firstRefund = await service.reversePurchasedCredits(refundInput);
+    const repeatedRefund = await service.reversePurchasedCredits(refundInput);
+    expect(repeatedRefund).toEqual(firstRefund);
+    expectExactSeconds(repeatedRefund, {
+      available: 0,
+      reserved: 0,
+      totalOwned: 0,
+    });
+    expect(
+      prisma.ledger.filter((entry) =>
+        entry.entryType.startsWith('purchase_reversal'),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('fails closed when a replayed denial has an unknown reason code', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-reason-replay',
+      workspaceId: 'workspace-reason-replay',
+      callId: 'call-reason-replay',
+    });
+    prisma.seedSeconds({
+      organizationId: 'org-reason-replay',
+      sourceType: 'included',
+      sourceId: 'in_reason_replay',
+      seconds: 59,
+      priority: 10,
+    });
+    const input = {
+      organizationId: 'org-reason-replay',
+      workspaceId: 'workspace-reason-replay',
+      callId: 'call-reason-replay',
+      idempotencyKey: 'reason-replay-reservation',
+    };
+    await service.reserveInitialMinute(input);
+    const denial = prisma.ledger.find(
+      (entry) => entry.entryType === 'reservation_denied',
+    )!;
+    denial.reasonCode = 'unknown_denial_reason';
+
+    await expect(service.reserveInitialMinute(input)).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'ledger_reason_invalid',
+    });
+    const balance = await service.getBalance('org-reason-replay');
+    expectExactSeconds(balance, {
+      available: 59,
+      reserved: 0,
+      totalOwned: 59,
+    });
+    expect(prisma.ledger).toHaveLength(1);
+  });
 });
