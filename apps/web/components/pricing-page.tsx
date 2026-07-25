@@ -52,12 +52,13 @@ function trustedCheckoutUrl(url: string): boolean {
 }
 
 const FEATURE_COMPARISON = [
-  { feature: 'Voice minutes', free: '10 trial', starter: '300/mo', growth: '2,000/mo', enterprise: 'Unlimited' },
-  { feature: 'Agents', free: '1', starter: '3', growth: '10', enterprise: 'Unlimited' },
-  { feature: 'Outbound calls', free: '5 trial', starter: '100/mo', growth: '500/mo', enterprise: 'Unlimited' },
-  { feature: 'Workspaces', free: '1', starter: '2', growth: '5', enterprise: 'Unlimited' },
-  { feature: 'Tools per agent', free: '0', starter: '5', growth: '20', enterprise: 'Unlimited' },
-  { feature: 'Contacts', free: '50', starter: '500', growth: '5,000', enterprise: 'Unlimited' },
+  { feature: 'Voice minutes', free: '0 PSTN', starter: '200/mo', growth: '1,000/mo', enterprise: '3,000/mo' },
+  { feature: 'Browser test', free: '180 sec lifetime', starter: 'Included minutes', growth: 'Included minutes', enterprise: 'Included minutes' },
+  { feature: 'Agents', free: '1', starter: '3', growth: '10', enterprise: '30' },
+  { feature: 'Concurrent calls', free: '0', starter: '2', growth: '10', enterprise: '25 (50 by contract)' },
+  { feature: 'Workspaces', free: '1', starter: '1', growth: '5', enterprise: '15' },
+  { feature: 'Nango connections', free: '0', starter: '2', growth: '10', enterprise: '25' },
+  { feature: 'Contacts', free: '50', starter: '500', growth: '5,000', enterprise: '25,000' },
   { feature: 'White-label', free: false, starter: 'Subdomain', growth: 'Custom domain', enterprise: 'Custom domain' },
   { feature: 'API access', free: false, starter: true, growth: true, enterprise: true },
   { feature: 'Bulk import', free: false, starter: false, growth: true, enterprise: true },
@@ -107,7 +108,7 @@ export function PricingPage({
   const [estimateInput, setEstimateInput] = useState<PricingEstimateInput>({
     agents: 2,
     minutes: 250,
-    outboundCalls: 80,
+    concurrentCalls: 2,
     tools: 3,
     workspaces: 1,
     contacts: 400,
@@ -269,7 +270,7 @@ export function PricingPage({
                 <CardContent className="flex flex-col gap-4">
                   <div className="flex items-baseline gap-1">
                     <span className="text-4xl font-bold">{plan.priceLabel}</span>
-                    {plan.interval && plan.monthlyPriceUsd !== null ? (
+                    {plan.interval && plan.id !== 'enterprise' ? (
                       <span className="text-muted-foreground">/{plan.interval}</span>
                     ) : null}
                   </div>
@@ -323,7 +324,7 @@ export function PricingPage({
                 {([
                   ['agents', 'Agents'],
                   ['minutes', 'Voice minutes'],
-                  ['outboundCalls', 'Outbound calls'],
+                  ['concurrentCalls', 'Concurrent calls'],
                   ['tools', 'Integration tools'],
                   ['workspaces', 'Workspaces'],
                   ['contacts', 'Contacts'],

@@ -12,7 +12,10 @@ describe('plan catalog', () => {
     expect(getPlanById('free')).toMatchObject({ monthlyPriceUsd: 0 });
     expect(getPlanById('starter')).toMatchObject({ monthlyPriceUsd: 99 });
     expect(getPlanById('growth')).toMatchObject({ monthlyPriceUsd: 299 });
-    expect(getPlanById('enterprise')).toMatchObject({ monthlyPriceUsd: 999 });
+    expect(getPlanById('enterprise')).toMatchObject({
+      monthlyPriceUsd: 999,
+      priceLabel: 'From $999/month',
+    });
 
     expect(getPlanEntitlements('free')).toMatchObject({
       includedMinutes: 0,

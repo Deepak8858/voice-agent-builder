@@ -89,7 +89,7 @@ export function getPlanEntitlements(plan: PlanType): PlanEntitlements {
  */
 interface CompatibilityPlanLimits {
   agents: number;
-  outboundCalls: number;
+  concurrentCalls: number;
   minutes: number;
   tools: number;
   workspaces: number;
@@ -100,7 +100,7 @@ interface CompatibilityPlanLimits {
 function compatibilityLimits(entitlements: PlanEntitlements): CompatibilityPlanLimits {
   return {
     agents: entitlements.agents,
-    outboundCalls: entitlements.concurrentCalls,
+    concurrentCalls: entitlements.concurrentCalls,
     minutes: entitlements.includedMinutes,
     tools: entitlements.nangoConnections,
     workspaces: entitlements.workspaces,
@@ -132,7 +132,7 @@ export interface PlanCatalogEntry {
   marketingLimits: {
     agents: string;
     minutes: string;
-    outboundCalls: string;
+    concurrentCalls: string;
     tools: string;
     workspaces: string;
     contacts: string;
@@ -154,7 +154,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
     marketingLimits: {
       agents: '1 agent',
       minutes: '0 PSTN min',
-      outboundCalls: '0 outbound calls',
+      concurrentCalls: '0 concurrent calls',
       tools: '0 integrations',
       workspaces: '1 workspace',
       contacts: '50 contacts',
@@ -175,7 +175,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
     marketingLimits: {
       agents: '3 agents',
       minutes: '200 min/mo',
-      outboundCalls: '2 concurrent calls',
+      concurrentCalls: '2 concurrent calls',
       tools: '2 integrations',
       workspaces: '1 workspace',
       contacts: '500 contacts',
@@ -195,7 +195,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
     marketingLimits: {
       agents: '10 agents',
       minutes: '1,000 min/mo',
-      outboundCalls: '10 concurrent calls',
+      concurrentCalls: '10 concurrent calls',
       tools: '10 integrations',
       workspaces: '5 workspaces',
       contacts: '5,000 contacts',
@@ -206,7 +206,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
     id: 'enterprise',
     name: 'Enterprise',
     tagline: 'Sales-assisted rollout for larger organizations and contract needs.',
-    priceLabel: '$999',
+    priceLabel: 'From $999/month',
     monthlyPriceUsd: 999,
     interval: 'month',
     cta: 'Contact sales',
@@ -215,7 +215,7 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
     marketingLimits: {
       agents: '30 agents',
       minutes: '3,000 min/mo',
-      outboundCalls: '25 concurrent calls (50 by contract)',
+      concurrentCalls: '25 concurrent calls (50 by contract)',
       tools: '25 integrations',
       workspaces: '15 workspaces',
       contacts: '25,000 contacts',

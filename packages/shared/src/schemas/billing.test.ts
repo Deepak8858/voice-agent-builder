@@ -47,7 +47,8 @@ describe('billing DTO schemas', () => {
   });
 
   it('does not retain recurring free calling allowances', () => {
-    expect(PLAN_LIMITS.free).toMatchObject({ minutes: 0, outboundCalls: 0 });
+    expect(PLAN_LIMITS.free).toMatchObject({ minutes: 0, concurrentCalls: 0 });
+    expect(PLAN_LIMITS.starter).not.toHaveProperty('outboundCalls');
   });
 
   it('defaults strict top-up checkout paths to billing routes', () => {
@@ -68,18 +69,64 @@ describe('billing DTO schemas', () => {
     }).success).toBe(true);
   });
 
-  it('requires tenant-scoped, idempotent runtime usage events', () => {
-    const event = {
+  it('accepts every tenant-scoped, idempotent runtime usage event branch', () => {
+    const baseEvent = {
       eventId: 'evt_123',
       callId: 'call_123',
       organizationId: 'org_123',
       occurredAt: '2026-07-24T12:00:00.000Z',
-      type: 'minute_boundary',
-      minute: 1,
     };
 
-    expect(RuntimeUsageEventSchema.safeParse(event).success).toBe(true);
-    expect(RuntimeUsageEventSchema.safeParse({ ...event, organizationId: undefined }).success).toBe(false);
-    expect(RuntimeUsageEventSchema.safeParse({ ...event, type: 'call_ended' }).success).toBe(false);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_connected',
+      providerCallId: 'provider_call_123',
+    }).success).toBe(true);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'minute_boundary',
+      minute: 1,
+    }).success).toBe(true);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_ended',
+      durationSeconds: 60,
+    }).success).toBe(true);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_failed',
+      failureCode: 'provider_unavailable',
+    }).success).toBe(true);
+  });
+
+  it('rejects missing or cross-branch runtime event fields', () => {
+    const baseEvent = {
+      eventId: 'evt_123',
+      callId: 'call_123',
+      organizationId: 'org_123',
+      occurredAt: '2026-07-24T12:00:00.000Z',
+    };
+
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_connected',
+    }).success).toBe(false);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_ended',
+      durationSeconds: 60,
+      minute: 1,
+    }).success).toBe(false);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      type: 'call_failed',
+      failureCode: '',
+    }).success).toBe(false);
+    expect(RuntimeUsageEventSchema.safeParse({
+      ...baseEvent,
+      organizationId: undefined,
+      type: 'minute_boundary',
+      minute: 1,
+    }).success).toBe(false);
   });
 });

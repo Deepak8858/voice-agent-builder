@@ -72,6 +72,13 @@ export const CreatePortalSessionDtoSchema = z
   .strict();
 export type CreatePortalSessionDto = z.infer<typeof CreatePortalSessionDtoSchema>;
 
+/** Compatibility response shape for existing billing-status consumers. */
+export interface BillingStatusDto {
+  mode: 'demo' | 'live';
+  liveCheckoutEnabled: boolean;
+  message: string;
+}
+
 export const SubscriptionDtoSchema = z.object({
   id: z.string().uuid(),
   plan: PlanTypeSchema,

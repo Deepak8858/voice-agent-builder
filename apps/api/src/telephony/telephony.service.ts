@@ -479,11 +479,7 @@ export class TelephonyService {
     }
     const outbound = await this.billing.canStartOutboundCall(workspaceId);
     if (!outbound.allowed) {
-      throw new ForbiddenPlanError(
-        outbound.limit === -1
-          ? 'Outbound calls are not available on your plan.'
-          : `Monthly outbound call limit reached (${outbound.limit}). Please upgrade or wait until next billing cycle.`,
-      );
+      throw new ForbiddenPlanError('Outbound calls are not available on your plan.');
     }
 
     const purpose = typeof dto.metadata?.purpose === 'string' ? dto.metadata.purpose : null;

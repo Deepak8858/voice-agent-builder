@@ -19,7 +19,7 @@ import type {
   SubscriptionStatus,
   WorkspaceUsageDto,
 } from '@voiceforge/shared';
-import { PLAN_LIMITS as SHARED_PLAN_LIMITS } from '@voiceforge/shared';
+import { getPlanEntitlements, PLAN_LIMITS as SHARED_PLAN_LIMITS } from '@voiceforge/shared';
 import type { ApiErrorCode } from '@voiceforge/shared';
 import { AppError } from '../common/errors';
 import { CacheService } from '../cache/cache.service';
@@ -201,7 +201,6 @@ export class BillingService {
     const priceIds: Record<CheckoutPlan, string | undefined> = {
       starter: env.STRIPE_STARTER_PRICE_ID,
       growth: env.STRIPE_GROWTH_PRICE_ID,
-      enterprise: env.STRIPE_ENTERPRISE_PRICE_ID,
     };
     const priceId = priceIds[plan];
     if (!priceId) {
@@ -330,7 +329,6 @@ export class BillingService {
       periodEnd: end.toISOString(),
       metrics,
       limits: {
-        calls: limits.outboundCalls,
         minutes: limits.minutes,
         tools: limits.tools,
         agents: limits.agents,
@@ -380,11 +378,12 @@ export class BillingService {
       plan = 'free';
     }
 
+    const entitlements = getPlanEntitlements(plan);
     const limits = SHARED_PLAN_LIMITS[plan];
 
     switch (gate) {
       case 'outbound':
-        return limits.outboundCalls > 0 || limits.outboundCalls === -1;
+        return entitlements.outboundPstn;
       case 'ai_insights':
         return plan !== 'free';
       case 'compliance_blocks':
@@ -412,22 +411,24 @@ export class BillingService {
     const sub = await this.getSubscription(organizationId);
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
     const limit = SHARED_PLAN_LIMITS[plan].agents;
-    return limit === -1 || currentAgentCount < limit;
+    return currentAgentCount < limit;
   }
 
-  async canOutboundCall(organizationId: string, currentCallCount: number): Promise<boolean> {
+  async canOutboundCall(organizationId: string, currentConcurrentCallCount: number): Promise<boolean> {
     const sub = await this.getSubscription(organizationId);
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
-    const limit = SHARED_PLAN_LIMITS[plan].outboundCalls;
-    return limit === -1 || currentCallCount < limit;
+    const entitlements = getPlanEntitlements(plan);
+    return entitlements.outboundPstn && currentConcurrentCallCount < entitlements.concurrentCalls;
   }
 
-  async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean; remaining: number; limit: number }> {
-    const usage = await this.getWorkspaceUsage(workspaceId);
-    const limit = usage.limits.calls ?? 0;
-    const used = usage.metrics.calls ?? 0;
-    const remaining = limit === -1 ? -1 : Math.max(0, limit - used);
-    return { allowed: remaining !== 0, remaining, limit };
+  async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean }> {
+    const workspace = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    const sub = await this.getSubscription(workspace.organizationId);
+    const plan = (sub?.plan ?? 'free') as PlanType;
+    return { allowed: getPlanEntitlements(plan).outboundPstn };
   }
 
   async enforceAgentLimit(organizationId: string): Promise<void> {
@@ -448,7 +449,6 @@ export class BillingService {
     const sub = await this.getSubscription(organizationId);
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
     const limit = SHARED_PLAN_LIMITS[plan].agents;
-    if (limit === -1) return { warning: null, current: 0, limit: -1 };
     const current = await this.prisma.agent.count({ where: { workspace: { organizationId } } });
     const threshold = Math.floor(limit * 0.8);
     if (current >= threshold && current <= limit) {

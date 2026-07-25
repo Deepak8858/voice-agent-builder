@@ -274,11 +274,11 @@ describe('BillingService', () => {
   });
 
   describe('checkFeatureGate', () => {
-    it('returns true for outbound during the free trial allowance', async () => {
+    it('returns false for outbound on free because browser tests are not PSTN calls', async () => {
       const prisma = makePrisma({ subscription: { plan: 'free', status: 'active' } });
       const svc = makeService(prisma);
       const result = await svc.checkFeatureGate('org-fake', 'outbound');
-      expect(result).toBe(true);
+      expect(result).toBe(false);
     });
 
     it('returns true for outbound on starter plan', async () => {
@@ -326,7 +326,7 @@ describe('BillingService', () => {
         subscription: { plan: 'trialing', status: 'trialing', trialEnd: expiredTrial },
       });
       const svc = makeService(prisma);
-      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(true);
+      expect(await svc.checkFeatureGate('org-fake', 'outbound')).toBe(false);
       expect(await svc.checkFeatureGate('org-fake', 'analytics')).toBe(false);
       expect(await svc.checkFeatureGate('org-fake', 'white_label')).toBe(false);
     });
@@ -372,12 +372,12 @@ describe('BillingService', () => {
       expect(result.current).toBe(1);
     });
 
-    it('returns null warning for unlimited plan (enterprise)', async () => {
-      const prisma = makePrisma({ subscription: { plan: 'enterprise', status: 'active' }, agentCount: 50 });
+    it('returns a warning when enterprise reaches its 30-agent contract quota', async () => {
+      const prisma = makePrisma({ subscription: { plan: 'enterprise', status: 'active' }, agentCount: 30 });
       const svc = makeService(prisma);
       const result = await svc.checkAgentCreationWarning('org-fake');
-      expect(result.warning).toBeNull();
-      expect(result.limit).toBe(-1);
+      expect(result.warning).toContain('30/30');
+      expect(result.limit).toBe(30);
     });
   });
 
@@ -412,13 +412,13 @@ describe('BillingService', () => {
       await expect(svc.enforceAgentLimit('org-fake')).resolves.toBeUndefined();
     });
 
-    it('does not throw for enterprise (unlimited)', async () => {
+    it('throws when enterprise reaches its 30-agent contract quota', async () => {
       const prisma = makePrisma({
         subscription: { plan: 'enterprise', status: 'active' },
-        agentCount: 999,
+        agentCount: 30,
       });
       const svc = makeService(prisma);
-      await expect(svc.enforceAgentLimit('org-fake')).resolves.toBeUndefined();
+      await expect(svc.enforceAgentLimit('org-fake')).rejects.toBeInstanceOf(ForbiddenPlanError);
     });
   });
 
@@ -460,7 +460,7 @@ describe('BillingService', () => {
       const result = await svc.getWorkspaceUsage('ws-1');
       expect(result.workspaceId).toBe('ws-1');
       expect(result.usage.calls).toBe(0);
-      expect(result.limits.calls).toBe(5); // free plan includes 5 trial outbound calls
+      expect(result.limits.calls).toBeUndefined();
     });
 
     it('sums up records by metric', async () => {
@@ -477,6 +477,24 @@ describe('BillingService', () => {
       const result = await svc.getWorkspaceUsage('ws-1');
       expect(result.usage.calls).toBe(5);
       expect(result.usage.minutes).toBe(60);
+    });
+  });
+
+  describe('canStartOutboundCall', () => {
+    it('does not treat connected call history as a paid-plan call-count allowance', async () => {
+      const prisma = makePrisma({
+        subscription: { plan: 'starter', status: 'active' },
+        usageRecords: [{ billableMetric: 'calls', quantity: 2, periodStart: new Date(), periodEnd: new Date() }],
+      });
+      const svc = makeService(prisma);
+
+      await expect(svc.canStartOutboundCall('ws-1')).resolves.toEqual({ allowed: true });
+    });
+
+    it('denies Free PSTN calls even though it has a browser-test entitlement', async () => {
+      const svc = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+
+      await expect(svc.canStartOutboundCall('ws-1')).resolves.toEqual({ allowed: false });
     });
   });
 });
