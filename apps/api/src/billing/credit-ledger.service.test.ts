@@ -60,6 +60,11 @@ class MemoryPrisma {
   readonly balances = new Map<string, BalanceRecord>();
   readonly buckets: BucketRecord[] = [];
   readonly ledger: LedgerRecord[] = [];
+  readonly workspaces = new Map<string, { id: string; organizationId: string }>();
+  readonly calls = new Map<
+    string,
+    { id: string; organizationId: string; workspaceId: string }
+  >();
 
   private sequence = 0;
   private transactionTail: Promise<void> = Promise.resolve();
@@ -314,6 +319,37 @@ class MemoryPrisma {
     },
   };
 
+  readonly workspace = {
+    findFirst: async (input: {
+      where: { id: string; organizationId: string };
+    }): Promise<{ id: string } | null> => {
+      const workspace = this.workspaces.get(input.where.id);
+      return workspace?.organizationId === input.where.organizationId
+        ? { id: workspace.id }
+        : null;
+    },
+  };
+
+  readonly call = {
+    findFirst: async (input: {
+      where: {
+        id: string;
+        organizationId: string;
+        workspaceId?: string;
+      };
+    }): Promise<{ id: string; workspaceId: string } | null> => {
+      const call = this.calls.get(input.where.id);
+      if (!call || call.organizationId !== input.where.organizationId) return null;
+      if (
+        input.where.workspaceId &&
+        call.workspaceId !== input.where.workspaceId
+      ) {
+        return null;
+      }
+      return { id: call.id, workspaceId: call.workspaceId };
+    },
+  };
+
   readonly $queryRaw = async (
     _strings: TemplateStringsArray,
     ..._values: unknown[]
@@ -377,6 +413,22 @@ class MemoryPrisma {
       status: 'active',
       createdAt: now,
       updatedAt: now,
+    });
+  }
+
+  seedRuntimeScope(input: {
+    organizationId: string;
+    workspaceId: string;
+    callId: string;
+  }): void {
+    this.workspaces.set(input.workspaceId, {
+      id: input.workspaceId,
+      organizationId: input.organizationId,
+    });
+    this.calls.set(input.callId, {
+      id: input.callId,
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
     });
   }
 
@@ -473,6 +525,11 @@ describe('CreditLedgerService', () => {
 
   it('consumes included buckets before purchased buckets', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-priority',
+      workspaceId: 'workspace-priority',
+      callId: 'call-priority',
+    });
     await service.grantPurchasedCredits({
       organizationId: 'org-priority',
       checkoutSessionId: 'cs_pack',
@@ -508,6 +565,11 @@ describe('CreditLedgerService', () => {
 
   it('reserves 60 seconds without changing total owned credit', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-reserve',
+      workspaceId: 'workspace-reserve',
+      callId: 'call-reserve',
+    });
     await service.grantSubscriptionCredits({
       organizationId: 'org-reserve',
       invoiceId: 'in_reserve',
@@ -544,6 +606,11 @@ describe('CreditLedgerService', () => {
 
   it('commits a reservation exactly once on connection', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-commit',
+      workspaceId: 'workspace-commit',
+      callId: 'call-commit',
+    });
     prisma.seedSeconds({
       organizationId: 'org-commit',
       sourceType: 'included',
@@ -582,6 +649,11 @@ describe('CreditLedgerService', () => {
 
   it('releases the full reservation when a call never connects', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-release',
+      workspaceId: 'workspace-release',
+      callId: 'call-release',
+    });
     prisma.seedSeconds({
       organizationId: 'org-release',
       sourceType: 'included',
@@ -621,6 +693,11 @@ describe('CreditLedgerService', () => {
 
   it('refuses a reservation when only 59 seconds are available', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-short',
+      workspaceId: 'workspace-short',
+      callId: 'call-short',
+    });
     prisma.seedSeconds({
       organizationId: 'org-short',
       sourceType: 'included',
@@ -652,6 +729,16 @@ describe('CreditLedgerService', () => {
 
   it('never allows two concurrent reservations to overspend one balance', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-concurrent',
+      workspaceId: 'workspace-concurrent',
+      callId: 'call-concurrent-a',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-concurrent',
+      workspaceId: 'workspace-concurrent',
+      callId: 'call-concurrent-b',
+    });
     prisma.seedSeconds({
       organizationId: 'org-concurrent',
       sourceType: 'included',
@@ -724,6 +811,11 @@ describe('CreditLedgerService', () => {
 
   it('blocks the organization for manual review when refunded credit was consumed', async () => {
     const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-review',
+      workspaceId: 'workspace-review',
+      callId: 'call-review',
+    });
     await service.grantPurchasedCredits({
       organizationId: 'org-review',
       checkoutSessionId: 'cs_review',
@@ -744,17 +836,396 @@ describe('CreditLedgerService', () => {
     });
 
     expectExactSeconds(reversed, {
-      available: 0,
+      available: 5_940,
       reserved: 0,
-      totalOwned: 0,
+      totalOwned: 5_940,
     });
     expect(reversed.status).toBe('blocked');
     expect(reversed.reviewReason).toContain('60');
     expect(reversed.reviewReason).toContain('cs_review');
     expect(reversed.reviewReason).toContain('manual');
     expect(prisma.buckets[0]).toMatchObject({
-      remainingSeconds: 0,
-      status: 'refunded',
+      remainingSeconds: 5_940,
+      status: 'active',
     });
+  });
+
+  it('rejects a conflicting reservation idempotency key reused across calls', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-reservation-conflict',
+      sourceType: 'included',
+      sourceId: 'in_reservation_conflict',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-reservation-conflict',
+      workspaceId: 'workspace-reservation-conflict',
+      callId: 'call-reservation-a',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-reservation-conflict',
+      workspaceId: 'workspace-reservation-conflict',
+      callId: 'call-reservation-b',
+    });
+    const idempotencyKey = 'reservation-conflict-key';
+    await service.reserveInitialMinute({
+      organizationId: 'org-reservation-conflict',
+      workspaceId: 'workspace-reservation-conflict',
+      callId: 'call-reservation-a',
+      idempotencyKey,
+    });
+
+    await expect(
+      service.reserveInitialMinute({
+        organizationId: 'org-reservation-conflict',
+        workspaceId: 'workspace-reservation-conflict',
+        callId: 'call-reservation-b',
+        idempotencyKey,
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-reservation-conflict');
+    expectExactSeconds(balance, {
+      available: 60,
+      reserved: 60,
+      totalOwned: 120,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'reservation'),
+    ).toHaveLength(1);
+  });
+
+  it('rejects a conflicting next-minute key reused for another event and call', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-runtime-conflict',
+      sourceType: 'included',
+      sourceId: 'in_runtime_conflict',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-runtime-conflict',
+      workspaceId: 'workspace-runtime-conflict',
+      callId: 'call-runtime-a',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-runtime-conflict',
+      workspaceId: 'workspace-runtime-conflict',
+      callId: 'call-runtime-b',
+    });
+    const idempotencyKey = 'runtime-conflict-key';
+    await service.reserveAndDebitNextMinute({
+      organizationId: 'org-runtime-conflict',
+      workspaceId: 'workspace-runtime-conflict',
+      callId: 'call-runtime-a',
+      eventId: 'event-runtime-a',
+      idempotencyKey,
+    });
+
+    await expect(
+      service.reserveAndDebitNextMinute({
+        organizationId: 'org-runtime-conflict',
+        workspaceId: 'workspace-runtime-conflict',
+        callId: 'call-runtime-b',
+        eventId: 'event-runtime-b',
+        idempotencyKey,
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    const balance = await service.getBalance('org-runtime-conflict');
+    expectExactSeconds(balance, {
+      available: 60,
+      reserved: 0,
+      totalOwned: 60,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'usage_debit'),
+    ).toHaveLength(1);
+  });
+
+  it('does not create a second initial reservation for the same call with a new key', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-one-reservation',
+      sourceType: 'included',
+      sourceId: 'in_one_reservation',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-one-reservation',
+    });
+    const first = await service.reserveInitialMinute({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-one-reservation',
+      idempotencyKey: 'initial-reservation-key-a',
+    });
+
+    const replay = await service.reserveInitialMinute({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-one-reservation',
+      idempotencyKey: 'initial-reservation-key-b',
+    });
+
+    expect(replay).toMatchObject({
+      allowed: true,
+      reason: 'allowed',
+      seconds: 60,
+      allocations: first.allocations,
+    });
+    expectExactSeconds(replay.creditBalance, {
+      available: 60,
+      reserved: 60,
+      totalOwned: 120,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'reservation'),
+    ).toHaveLength(1);
+  });
+
+  it('preserves a reserved purchased bucket during refund review and later release', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-reserved-refund',
+      workspaceId: 'workspace-reserved-refund',
+      callId: 'call-reserved-refund',
+    });
+    await service.grantPurchasedCredits({
+      organizationId: 'org-reserved-refund',
+      checkoutSessionId: 'cs_reserved_refund',
+      purchasedAt: NOW,
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-reserved-refund',
+      workspaceId: 'workspace-reserved-refund',
+      callId: 'call-reserved-refund',
+      idempotencyKey: 'reserved-refund-reservation',
+    });
+
+    const reviewBalance = await service.reversePurchasedCredits({
+      organizationId: 'org-reserved-refund',
+      checkoutSessionId: 'cs_reserved_refund',
+      refundId: 're_reserved_refund',
+    });
+
+    expectExactSeconds(reviewBalance, {
+      available: 5_940,
+      reserved: 60,
+      totalOwned: 6_000,
+    });
+    expect(reviewBalance.status).toBe('blocked');
+    expect(prisma.buckets[0]).toMatchObject({
+      remainingSeconds: 5_940,
+      status: 'active',
+    });
+    expect(prisma.ledger.at(-1)).toMatchObject({
+      entryType: 'purchase_reversal_review',
+      seconds: 0,
+    });
+
+    const released = await service.releaseReservation({
+      organizationId: 'org-reserved-refund',
+      callId: 'call-reserved-refund',
+      idempotencyKey: 'reserved-refund-release',
+    });
+    expectExactSeconds(released, {
+      available: 6_000,
+      reserved: 0,
+      totalOwned: 6_000,
+    });
+    expect(released.status).toBe('blocked');
+    expect(prisma.buckets[0]).toMatchObject({
+      remainingSeconds: 6_000,
+      status: 'active',
+    });
+  });
+
+  it('rejects a cross-tenant workspace without mutating credit', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-workspace-owner',
+      sourceType: 'included',
+      sourceId: 'in_workspace_owner',
+      seconds: 60,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-workspace-owner',
+      workspaceId: 'workspace-owner',
+      callId: 'call-workspace-owner',
+    });
+    prisma.workspaces.set('workspace-foreign', {
+      id: 'workspace-foreign',
+      organizationId: 'org-foreign',
+    });
+
+    await expect(
+      service.reserveInitialMinute({
+        organizationId: 'org-workspace-owner',
+        workspaceId: 'workspace-foreign',
+        callId: 'call-workspace-owner',
+        idempotencyKey: 'cross-tenant-workspace-key',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'tenant_scope_mismatch',
+    });
+    const balance = await service.getBalance('org-workspace-owner');
+    expectExactSeconds(balance, {
+      available: 60,
+      reserved: 0,
+      totalOwned: 60,
+    });
+    expect(prisma.ledger).toHaveLength(0);
+  });
+
+  it('rejects a cross-tenant call without mutating credit', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedSeconds({
+      organizationId: 'org-call-owner',
+      sourceType: 'included',
+      sourceId: 'in_call_owner',
+      seconds: 60,
+      priority: 10,
+    });
+    prisma.workspaces.set('workspace-call-owner', {
+      id: 'workspace-call-owner',
+      organizationId: 'org-call-owner',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-foreign',
+      workspaceId: 'workspace-foreign-call',
+      callId: 'call-foreign',
+    });
+
+    await expect(
+      service.reserveInitialMinute({
+        organizationId: 'org-call-owner',
+        workspaceId: 'workspace-call-owner',
+        callId: 'call-foreign',
+        idempotencyKey: 'cross-tenant-call-key',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'tenant_scope_mismatch',
+    });
+    const balance = await service.getBalance('org-call-owner');
+    expectExactSeconds(balance, {
+      available: 60,
+      reserved: 0,
+      totalOwned: 60,
+    });
+    expect(prisma.ledger).toHaveLength(0);
+  });
+
+  it('rejects reservation metadata whose allocations do not total 60 seconds', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-allocation-total',
+      workspaceId: 'workspace-allocation-total',
+      callId: 'call-allocation-total',
+    });
+    prisma.seedSeconds({
+      organizationId: 'org-allocation-total',
+      sourceType: 'included',
+      sourceId: 'in_allocation_total',
+      seconds: 60,
+      priority: 10,
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-allocation-total',
+      workspaceId: 'workspace-allocation-total',
+      callId: 'call-allocation-total',
+      idempotencyKey: 'allocation-total-reservation',
+    });
+    const reservation = prisma.ledger.find(
+      (entry) => entry.entryType === 'reservation',
+    )!;
+    reservation.metadata = {
+      allocations: [{ bucketId: prisma.buckets[0]!.id, seconds: 30 }],
+    };
+
+    await expect(
+      service.commitReservation({
+        organizationId: 'org-allocation-total',
+        callId: 'call-allocation-total',
+        idempotencyKey: 'allocation-total-commit',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'reservation_allocation_invalid',
+    });
+    const balance = await service.getBalance('org-allocation-total');
+    expectExactSeconds(balance, {
+      available: 0,
+      reserved: 60,
+      totalOwned: 60,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit'),
+    ).toHaveLength(0);
+  });
+
+  it('rejects reservation metadata containing duplicate bucket IDs', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-allocation-duplicate',
+      workspaceId: 'workspace-allocation-duplicate',
+      callId: 'call-allocation-duplicate',
+    });
+    prisma.seedSeconds({
+      organizationId: 'org-allocation-duplicate',
+      sourceType: 'included',
+      sourceId: 'in_allocation_duplicate',
+      seconds: 60,
+      priority: 10,
+    });
+    await service.reserveInitialMinute({
+      organizationId: 'org-allocation-duplicate',
+      workspaceId: 'workspace-allocation-duplicate',
+      callId: 'call-allocation-duplicate',
+      idempotencyKey: 'allocation-duplicate-reservation',
+    });
+    const reservation = prisma.ledger.find(
+      (entry) => entry.entryType === 'reservation',
+    )!;
+    const bucketId = prisma.buckets[0]!.id;
+    reservation.metadata = {
+      allocations: [
+        { bucketId, seconds: 30 },
+        { bucketId, seconds: 30 },
+      ],
+    };
+
+    await expect(
+      service.releaseReservation({
+        organizationId: 'org-allocation-duplicate',
+        callId: 'call-allocation-duplicate',
+        idempotencyKey: 'allocation-duplicate-release',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'reservation_allocation_invalid',
+    });
+    const balance = await service.getBalance('org-allocation-duplicate');
+    expectExactSeconds(balance, {
+      available: 0,
+      reserved: 60,
+      totalOwned: 60,
+    });
+    expect(
+      prisma.ledger.filter((entry) => entry.entryType === 'reservation_release'),
+    ).toHaveLength(0);
   });
 });
