@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { PLAN_LIMITS } from '../billing/catalog';
+
+export { PLAN_LIMITS } from '../billing/catalog';
 
 // --------------------------------------------------------------------------
 // Enums
@@ -7,7 +10,7 @@ import { z } from 'zod';
 export const PlanTypeSchema = z.enum(['free', 'starter', 'growth', 'enterprise']);
 export type PlanType = z.infer<typeof PlanTypeSchema>;
 
-export const CheckoutPlanSchema = z.enum(['starter', 'growth', 'enterprise']);
+export const CheckoutPlanSchema = z.enum(['starter', 'growth']);
 export type CheckoutPlan = z.infer<typeof CheckoutPlanSchema>;
 
 export const SubscriptionStatusSchema = z.enum([
@@ -18,61 +21,16 @@ export const SubscriptionStatusSchema = z.enum([
   'incomplete',
   'incomplete_expired',
   'unpaid',
+  'paused',
 ]);
 export type SubscriptionStatus = z.infer<typeof SubscriptionStatusSchema>;
-
-export const BillingModeSchema = z.enum(['demo', 'live']);
-export type BillingMode = z.infer<typeof BillingModeSchema>;
 
 export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 
-// --------------------------------------------------------------------------
-// Plan limits
-// --------------------------------------------------------------------------
-
-export const PLAN_LIMITS = {
-  free: {
-    agents: 1,
-    outboundCalls: 5,    // 5 trial calls (consumable, not monthly)
-    minutes: 10,          // 10 trial minutes (consumable, not monthly)
-    tools: 0,
-    workspaces: 1,
-    contacts: 50,
-    complianceBlocks: 10,
-  },
-  starter: {
-    agents: 3,
-    outboundCalls: 100,
-    minutes: 300,
-    tools: 5,
-    workspaces: 2,
-    contacts: 500,
-    complianceBlocks: false,
-  },
-  growth: {
-    agents: 10,
-    outboundCalls: 500,
-    minutes: 2000,
-    tools: 20,
-    workspaces: 5,
-    contacts: 5000,
-    complianceBlocks: true,
-  },
-  enterprise: {
-    agents: -1, // unlimited
-    outboundCalls: -1,
-    minutes: -1,
-    tools: -1,
-    workspaces: -1,
-    contacts: -1,
-    complianceBlocks: true,
-  },
-} as const;
-
 export type PlanLimits = typeof PLAN_LIMITS;
 
-const RelativeBillingPathSchema = z
+export const RelativeBillingPathSchema = z
   .string()
   .min(1)
   .refine((value) => {
@@ -98,6 +56,14 @@ export const CreateCheckoutSessionDtoSchema = z
   })
   .strict();
 export type CreateCheckoutSessionDto = z.infer<typeof CreateCheckoutSessionDtoSchema>;
+
+export const CreateTopUpCheckoutDtoSchema = z
+  .object({
+    successPath: RelativeBillingPathSchema.default('/dashboard/billing?topup=success'),
+    cancelPath: RelativeBillingPathSchema.default('/dashboard/billing?topup=cancel'),
+  })
+  .strict();
+export type CreateTopUpCheckoutDto = z.infer<typeof CreateTopUpCheckoutDtoSchema>;
 
 export const CreatePortalSessionDtoSchema = z
   .object({
@@ -138,12 +104,86 @@ export const WorkspaceUsageDtoSchema = z.object({
 });
 export type WorkspaceUsageDto = z.infer<typeof WorkspaceUsageDtoSchema>;
 
-export const BillingStatusDtoSchema = z.object({
-  mode: BillingModeSchema,
-  liveCheckoutEnabled: z.boolean(),
-  message: z.string(),
-});
-export type BillingStatusDto = z.infer<typeof BillingStatusDtoSchema>;
+export const EntitlementReasonSchema = z.enum([
+  'allowed',
+  'subscription_required',
+  'subscription_inactive',
+  'trial_already_used',
+  'credit_insufficient',
+  'agent_limit_reached',
+  'workspace_limit_reached',
+  'integration_limit_reached',
+  'organization_concurrency_reached',
+  'platform_concurrency_reached',
+  'billing_temporarily_unavailable',
+]);
+export type EntitlementReason = z.infer<typeof EntitlementReasonSchema>;
+
+const IdentifierSchema = z.string().trim().min(1);
+
+export const EntitlementDecisionSchema = z
+  .object({
+    organizationId: IdentifierSchema,
+    plan: PlanTypeSchema,
+    allowed: z.boolean(),
+    reason: EntitlementReasonSchema,
+  })
+  .strict();
+export type EntitlementDecision = z.infer<typeof EntitlementDecisionSchema>;
+
+export const CreditBalanceDtoSchema = z
+  .object({
+    organizationId: IdentifierSchema,
+    includedMinutesRemaining: z.number().int().nonnegative(),
+    purchasedMinutesRemaining: z.number().int().nonnegative(),
+    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CreditBalanceDto = z.infer<typeof CreditBalanceDtoSchema>;
+
+const RuntimeUsageEventBaseSchema = {
+  eventId: IdentifierSchema,
+  callId: IdentifierSchema,
+  organizationId: IdentifierSchema,
+  occurredAt: z.string().datetime(),
+};
+
+export const RuntimeUsageEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    ...RuntimeUsageEventBaseSchema,
+    type: z.literal('call_connected'),
+    providerCallId: IdentifierSchema,
+  }).strict(),
+  z.object({
+    ...RuntimeUsageEventBaseSchema,
+    type: z.literal('minute_boundary'),
+    minute: z.number().int().positive(),
+  }).strict(),
+  z.object({
+    ...RuntimeUsageEventBaseSchema,
+    type: z.literal('call_ended'),
+    durationSeconds: z.number().int().nonnegative(),
+  }).strict(),
+  z.object({
+    ...RuntimeUsageEventBaseSchema,
+    type: z.literal('call_failed'),
+    failureCode: IdentifierSchema,
+  }).strict(),
+]);
+export type RuntimeUsageEvent = z.infer<typeof RuntimeUsageEventSchema>;
+
+export const RuntimeUsageDecisionSchema = z
+  .object({
+    eventId: IdentifierSchema,
+    callId: IdentifierSchema,
+    organizationId: IdentifierSchema,
+    allowed: z.boolean(),
+    reason: EntitlementReasonSchema,
+    billableMinutes: z.number().int().nonnegative(),
+    creditBalance: CreditBalanceDtoSchema,
+  })
+  .strict();
+export type RuntimeUsageDecision = z.infer<typeof RuntimeUsageDecisionSchema>;
 
 export const StripeEventDtoSchema = z.object({
   id: z.string().uuid(),
