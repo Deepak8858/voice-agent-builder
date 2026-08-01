@@ -50,7 +50,10 @@ type LedgerRecord = {
 
 type NumberMutation = number | { increment?: number; decrement?: number };
 
-function mutateNumber(current: number, mutation: NumberMutation | undefined): number {
+function mutateNumber(
+  current: number,
+  mutation: NumberMutation | undefined,
+): number {
   if (mutation === undefined) return current;
   if (typeof mutation === 'number') return mutation;
   return current + (mutation.increment ?? 0) - (mutation.decrement ?? 0);
@@ -60,7 +63,10 @@ class MemoryPrisma {
   readonly balances = new Map<string, BalanceRecord>();
   readonly buckets: BucketRecord[] = [];
   readonly ledger: LedgerRecord[] = [];
-  readonly workspaces = new Map<string, { id: string; organizationId: string }>();
+  readonly workspaces = new Map<
+    string,
+    { id: string; organizationId: string }
+  >();
   readonly calls = new Map<
     string,
     { id: string; organizationId: string; workspaceId: string }
@@ -112,8 +118,14 @@ class MemoryPrisma {
       const current = this.requireBalance(input.where.organizationId);
       const updated: BalanceRecord = {
         ...current,
-        availableSeconds: mutateNumber(current.availableSeconds, input.data.availableSeconds),
-        reservedSeconds: mutateNumber(current.reservedSeconds, input.data.reservedSeconds),
+        availableSeconds: mutateNumber(
+          current.availableSeconds,
+          input.data.availableSeconds,
+        ),
+        reservedSeconds: mutateNumber(
+          current.reservedSeconds,
+          input.data.reservedSeconds,
+        ),
         version: mutateNumber(current.version, input.data.version),
         status: input.data.status ?? current.status,
         reviewReason:
@@ -164,7 +176,8 @@ class MemoryPrisma {
     }): Promise<BucketRecord[]> => {
       const filtered = this.buckets.filter((bucket) => {
         if (bucket.organizationId !== input.where.organizationId) return false;
-        if (input.where.status && bucket.status !== input.where.status) return false;
+        if (input.where.status && bucket.status !== input.where.status)
+          return false;
         if (
           input.where.validFrom?.lte &&
           bucket.validFrom.getTime() > input.where.validFrom.lte.getTime()
@@ -214,7 +227,9 @@ class MemoryPrisma {
       where: { id: string };
       data: { remainingSeconds?: NumberMutation; status?: string };
     }): Promise<BucketRecord> => {
-      const index = this.buckets.findIndex((bucket) => bucket.id === input.where.id);
+      const index = this.buckets.findIndex(
+        (bucket) => bucket.id === input.where.id,
+      );
       if (index < 0) throw new Error(`missing bucket ${input.where.id}`);
       const current = this.buckets[index]!;
       const updated: BucketRecord = {
@@ -339,7 +354,8 @@ class MemoryPrisma {
       };
     }): Promise<{ id: string; workspaceId: string } | null> => {
       const call = this.calls.get(input.where.id);
-      if (!call || call.organizationId !== input.where.organizationId) return null;
+      if (!call || call.organizationId !== input.where.organizationId)
+        return null;
       if (
         input.where.workspaceId &&
         call.workspaceId !== input.where.workspaceId
@@ -355,7 +371,9 @@ class MemoryPrisma {
     ..._values: unknown[]
   ): Promise<Array<{ id: string }>> => [];
 
-  async $transaction<T>(operation: (tx: MemoryPrisma) => Promise<T>): Promise<T> {
+  async $transaction<T>(
+    operation: (tx: MemoryPrisma) => Promise<T>,
+  ): Promise<T> {
     let releaseLock: (() => void) | undefined;
     const previous = this.transactionTail;
     this.transactionTail = new Promise<void>((resolve) => {
@@ -372,7 +390,8 @@ class MemoryPrisma {
       return await operation(this);
     } catch (error) {
       this.balances.clear();
-      for (const [key, value] of snapshot.balances) this.balances.set(key, value);
+      for (const [key, value] of snapshot.balances)
+        this.balances.set(key, value);
       this.buckets.splice(0, this.buckets.length, ...snapshot.buckets);
       this.ledger.splice(0, this.ledger.length, ...snapshot.ledger);
       throw error;
@@ -687,7 +706,9 @@ describe('CreditLedgerService', () => {
     expect(duplicate).toEqual(released);
     expect(prisma.buckets[0]?.remainingSeconds).toBe(60);
     expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation_release'),
+      prisma.ledger.filter(
+        (entry) => entry.entryType === 'reservation_release',
+      ),
     ).toHaveLength(1);
   });
 
@@ -762,7 +783,9 @@ describe('CreditLedgerService', () => {
       }),
     ]);
 
-    expect(reservations.filter((reservation) => reservation.allowed)).toHaveLength(1);
+    expect(
+      reservations.filter((reservation) => reservation.allowed),
+    ).toHaveLength(1);
     expect(
       reservations.filter(
         (reservation) => reservation.reason === 'credit_insufficient',
@@ -1225,7 +1248,9 @@ describe('CreditLedgerService', () => {
       totalOwned: 60,
     });
     expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation_release'),
+      prisma.ledger.filter(
+        (entry) => entry.entryType === 'reservation_release',
+      ),
     ).toHaveLength(0);
   });
 
@@ -1555,6 +1580,535 @@ describe('CreditLedgerService', () => {
       available: 59,
       reserved: 0,
       totalOwned: 59,
+    });
+    expect(prisma.ledger).toHaveLength(1);
+  });
+
+  type GrantReplayFixture = {
+    prisma: MemoryPrisma;
+    retry: () => Promise<CreditBalance>;
+    entry: LedgerRecord;
+    bucket: BucketRecord;
+  };
+
+  async function makeGrantReplayFixture(
+    kind: 'subscription' | 'purchased',
+  ): Promise<GrantReplayFixture> {
+    const { prisma, service } = makeService();
+    if (kind === 'subscription') {
+      const input = {
+        organizationId: 'org-subscription-exact-replay',
+        invoiceId: 'in_subscription_exact_replay',
+        includedMinutes: 10,
+        periodEnd: PERIOD_END,
+      };
+      await service.grantSubscriptionCredits(input);
+      return {
+        prisma,
+        retry: () => service.grantSubscriptionCredits(input),
+        entry: prisma.ledger[0]!,
+        bucket: prisma.buckets[0]!,
+      };
+    }
+
+    const input = {
+      organizationId: 'org-purchased-exact-replay',
+      checkoutSessionId: 'cs_purchased_exact_replay',
+      purchasedAt: NOW,
+    };
+    await service.grantPurchasedCredits(input);
+    return {
+      prisma,
+      retry: () => service.grantPurchasedCredits(input),
+      entry: prisma.ledger[0]!,
+      bucket: prisma.buckets[0]!,
+    };
+  }
+
+  function metadataRecord(entry: LedgerRecord): Record<string, unknown> {
+    return entry.metadata as Record<string, unknown>;
+  }
+
+  type GrantReplayMutation = readonly [
+    label: string,
+    mutate: (fixture: GrantReplayFixture) => void,
+  ];
+
+  const subscriptionGrantReplayMutations: GrantReplayMutation[] = [
+    [
+      'the ledger bucket ID differs',
+      ({ entry }) => (entry.bucketId = 'bucket-wrong'),
+    ],
+    [
+      'the bucket source type differs',
+      ({ bucket }) => (bucket.sourceType = 'purchased'),
+    ],
+    [
+      'the bucket source ID differs',
+      ({ bucket }) => (bucket.sourceId = 'in_other'),
+    ],
+    [
+      'the bucket seconds differ',
+      ({ bucket }) => (bucket.originalSeconds = 599),
+    ],
+    [
+      'the bucket expiry differs',
+      ({ bucket }) => (bucket.expiresAt = new Date('2026-08-26T12:00:00.000Z')),
+    ],
+    ['the bucket priority differs', ({ bucket }) => (bucket.priority = 11)],
+    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
+    [
+      'the ledger workspace is non-null',
+      ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
+    ],
+    ['the ledger seconds differ', ({ entry }) => (entry.seconds = 599)],
+    [
+      'the ledger reason differs',
+      ({ entry }) => (entry.reasonCode = 'purchased_topup'),
+    ],
+    [
+      'required financial metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).includedMinutes,
+    ],
+    [
+      'the metadata seconds terms differ',
+      ({ entry }) => (metadataRecord(entry).includedMinutes = 11),
+    ],
+    [
+      'the metadata expiry terms differ',
+      ({ entry }) =>
+        (metadataRecord(entry).periodEnd = '2026-08-26T12:00:00.000Z'),
+    ],
+    [
+      'the metadata priority terms differ',
+      ({ entry }) => (metadataRecord(entry).priority = 11),
+    ],
+  ];
+
+  it.each(subscriptionGrantReplayMutations)(
+    'rejects subscription grant replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeGrantReplayFixture('subscription');
+      mutate(fixture);
+
+      await expect(fixture.retry()).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(fixture.prisma.ledger).toHaveLength(1);
+      expect(fixture.prisma.buckets).toHaveLength(1);
+    },
+  );
+
+  const purchasedGrantReplayMutations: GrantReplayMutation[] = [
+    [
+      'the ledger bucket ID differs',
+      ({ entry }) => (entry.bucketId = 'bucket-wrong'),
+    ],
+    [
+      'the bucket source type differs',
+      ({ bucket }) => (bucket.sourceType = 'included'),
+    ],
+    [
+      'the bucket source ID differs',
+      ({ bucket }) => (bucket.sourceId = 'cs_other'),
+    ],
+    [
+      'the bucket seconds differ',
+      ({ bucket }) => (bucket.originalSeconds = 6_001),
+    ],
+    [
+      'the purchase time differs',
+      ({ bucket }) => (bucket.validFrom = new Date('2026-07-25T12:00:01.000Z')),
+    ],
+    [
+      'the bucket expiry differs',
+      ({ bucket }) => (bucket.expiresAt = new Date('2027-07-26T12:00:00.000Z')),
+    ],
+    ['the bucket priority differs', ({ bucket }) => (bucket.priority = 21)],
+    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
+    [
+      'the ledger workspace is non-null',
+      ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
+    ],
+    ['the ledger seconds differ', ({ entry }) => (entry.seconds = 5_999)],
+    [
+      'the ledger reason differs',
+      ({ entry }) => (entry.reasonCode = 'subscription_included'),
+    ],
+    [
+      'required financial metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).expiresAt,
+    ],
+    [
+      'the metadata purchase time differs',
+      ({ entry }) =>
+        (metadataRecord(entry).purchasedAt = '2026-07-25T12:00:01.000Z'),
+    ],
+    [
+      'the metadata expiry terms differ',
+      ({ entry }) =>
+        (metadataRecord(entry).expiresAt = '2027-07-26T12:00:00.000Z'),
+    ],
+    [
+      'the metadata priority terms differ',
+      ({ entry }) => (metadataRecord(entry).priority = 21),
+    ],
+  ];
+
+  it.each(purchasedGrantReplayMutations)(
+    'rejects purchased grant replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeGrantReplayFixture('purchased');
+      mutate(fixture);
+
+      await expect(fixture.retry()).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(fixture.prisma.ledger).toHaveLength(1);
+      expect(fixture.prisma.buckets).toHaveLength(1);
+    },
+  );
+
+  it.each(['subscription', 'purchased'] as const)(
+    'persists exact %s grant operation terms and safely replays them',
+    async (kind) => {
+      const fixture = await makeGrantReplayFixture(kind);
+      const operation = metadataRecord(fixture.entry).operation;
+
+      expect(operation).toEqual(
+        kind === 'subscription'
+          ? {
+              kind: 'subscription_grant',
+              organizationId: 'org-subscription-exact-replay',
+              invoiceId: 'in_subscription_exact_replay',
+              bucketId: fixture.bucket.id,
+              sourceType: 'included',
+              sourceId: 'in_subscription_exact_replay',
+              seconds: 600,
+              periodEnd: PERIOD_END.toISOString(),
+              priority: 10,
+              status: 'active',
+            }
+          : {
+              kind: 'purchased_grant',
+              organizationId: 'org-purchased-exact-replay',
+              checkoutSessionId: 'cs_purchased_exact_replay',
+              bucketId: fixture.bucket.id,
+              sourceType: 'purchased',
+              sourceId: 'cs_purchased_exact_replay',
+              seconds: 6_000,
+              purchasedAt: NOW.toISOString(),
+              expiresAt: new Date(
+                NOW.getTime() + 365 * 24 * 60 * 60 * 1_000,
+              ).toISOString(),
+              priority: 20,
+              status: 'active',
+            },
+      );
+      await expect(fixture.retry()).resolves.toMatchObject({
+        organizationId: fixture.entry.organizationId,
+      });
+      expect(fixture.prisma.ledger).toHaveLength(1);
+      expect(fixture.prisma.buckets).toHaveLength(1);
+    },
+  );
+
+  type FinalizationKind = 'reservation_commit' | 'reservation_release';
+
+  async function makeFinalizationReplayFixture(kind: FinalizationKind) {
+    const { prisma, service } = makeService();
+    const organizationId = `org-${kind}-exact-replay`;
+    const workspaceId = `workspace-${kind}-exact-replay`;
+    const callId = `call-${kind}-exact-replay`;
+    const reservationIdempotencyKey = `${kind}-initial-reservation`;
+    const finalizationIdempotencyKey = `${kind}-finalization`;
+    prisma.seedSeconds({
+      organizationId,
+      sourceType: 'included',
+      sourceId: `${kind}-credits`,
+      seconds: 60,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope({ organizationId, workspaceId, callId });
+    await service.reserveInitialMinute({
+      organizationId,
+      workspaceId,
+      callId,
+      idempotencyKey: reservationIdempotencyKey,
+    });
+    const finalize = (idempotencyKey: string) =>
+      kind === 'reservation_commit'
+        ? service.commitReservation({ organizationId, callId, idempotencyKey })
+        : service.releaseReservation({
+            organizationId,
+            callId,
+            idempotencyKey,
+          });
+    await finalize(finalizationIdempotencyKey);
+    return {
+      prisma,
+      finalize,
+      organizationId,
+      workspaceId,
+      callId,
+      reservationIdempotencyKey,
+      finalizationIdempotencyKey,
+      entry: prisma.ledger.find((candidate) => candidate.entryType === kind)!,
+    };
+  }
+
+  const finalizationReplayCases = [
+    ['reservation_commit', 'exact'] as const,
+    ['reservation_commit', 'semantic'] as const,
+    ['reservation_release', 'exact'] as const,
+    ['reservation_release', 'semantic'] as const,
+  ];
+
+  it.each(finalizationReplayCases)(
+    'rejects %s %s replay with the wrong reservation key',
+    async (kind, replayMode) => {
+      const fixture = await makeFinalizationReplayFixture(kind);
+      const operation = metadataRecord(fixture.entry).operation as Record<
+        string,
+        unknown
+      >;
+      operation.reservationIdempotencyKey = 'reservation-arbitrary';
+
+      await expect(
+        fixture.finalize(
+          replayMode === 'exact'
+            ? fixture.finalizationIdempotencyKey
+            : `${kind}-semantic-retry`,
+        ),
+      ).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(
+        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(finalizationReplayCases)(
+    'rejects %s %s replay with a foreign persisted workspace',
+    async (kind, replayMode) => {
+      const fixture = await makeFinalizationReplayFixture(kind);
+      fixture.entry.workspaceId = 'workspace-foreign';
+
+      await expect(
+        fixture.finalize(
+          replayMode === 'exact'
+            ? fixture.finalizationIdempotencyKey
+            : `${kind}-semantic-retry`,
+        ),
+      ).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(
+        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['reservation_commit', 'reservation_release'] as const)(
+    'keeps exact %s retries idempotent with the original reservation identity',
+    async (kind) => {
+      const fixture = await makeFinalizationReplayFixture(kind);
+      const replay = await fixture.finalize(fixture.finalizationIdempotencyKey);
+
+      expect(replay.organizationId).toBe(fixture.organizationId);
+      expect(
+        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
+      ).toHaveLength(1);
+    },
+  );
+
+  async function makeRuntimeDebitReplayFixture() {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: 'org-runtime-exact-replay',
+      workspaceId: 'workspace-runtime-exact-replay',
+      callId: 'call-runtime-exact-replay',
+      eventId: 'event-runtime-exact-replay',
+      idempotencyKey: 'runtime-exact-replay',
+    };
+    prisma.seedSeconds({
+      organizationId: input.organizationId,
+      sourceType: 'included',
+      sourceId: 'in_runtime_exact_replay',
+      seconds: 120,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope(input);
+    await service.reserveAndDebitNextMinute(input);
+    return {
+      prisma,
+      service,
+      input,
+      entry: prisma.ledger.find(
+        (candidate) => candidate.entryType === 'usage_debit',
+      )!,
+    };
+  }
+
+  type RuntimeReplayMutation = readonly [
+    label: string,
+    mutate: (entry: LedgerRecord) => void,
+  ];
+
+  const runtimeReplayMutations: RuntimeReplayMutation[] = [
+    [
+      'operation workspace is missing',
+      (entry) =>
+        delete (metadataRecord(entry).operation as Record<string, unknown>)
+          .workspaceId,
+    ],
+    [
+      'allocations are missing',
+      (entry) => delete metadataRecord(entry).allocations,
+    ],
+    [
+      'an allocation is malformed',
+      (entry) =>
+        (metadataRecord(entry).allocations = [
+          { bucketId: 'bucket-malformed', seconds: 0 },
+        ]),
+    ],
+    [
+      'allocation bucket IDs are duplicated',
+      (entry) =>
+        (metadataRecord(entry).allocations = [
+          { bucketId: 'bucket-duplicate', seconds: 30 },
+          { bucketId: 'bucket-duplicate', seconds: 30 },
+        ]),
+    ],
+    [
+      'allocations do not total 60 seconds',
+      (entry) =>
+        (metadataRecord(entry).allocations = [
+          { bucketId: 'bucket-short', seconds: 59 },
+        ]),
+    ],
+    ['ledger seconds are not minus 60', (entry) => (entry.seconds = -59)],
+    [
+      'a per-bucket ledger association is present',
+      (entry) => (entry.bucketId = 'bucket-1'),
+    ],
+  ];
+
+  it.each(runtimeReplayMutations)(
+    'rejects allowed runtime debit replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeRuntimeDebitReplayFixture();
+      mutate(fixture.entry);
+
+      await expect(
+        fixture.service.reserveAndDebitNextMinute(fixture.input),
+      ).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(fixture.prisma.ledger).toHaveLength(1);
+      expect(
+        fixture.prisma.balances.get(fixture.input.organizationId),
+      ).toMatchObject({
+        availableSeconds: 60,
+        reservedSeconds: 0,
+      });
+    },
+  );
+
+  it('rejects denied runtime debit replay with nonempty allocations', async () => {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: 'org-runtime-denial-replay',
+      workspaceId: 'workspace-runtime-denial-replay',
+      callId: 'call-runtime-denial-replay',
+      eventId: 'event-runtime-denial-replay',
+      idempotencyKey: 'runtime-denial-replay',
+    };
+    prisma.seedSeconds({
+      organizationId: input.organizationId,
+      sourceType: 'included',
+      sourceId: 'in_runtime_denial_replay',
+      seconds: 59,
+      priority: 10,
+    });
+    prisma.seedRuntimeScope(input);
+    await service.reserveAndDebitNextMinute(input);
+    const denial = prisma.ledger.find(
+      (entry) => entry.entryType === 'usage_debit_denied',
+    )!;
+    metadataRecord(denial).allocations = [
+      { bucketId: prisma.buckets[0]!.id, seconds: 60 },
+    ];
+
+    await expect(
+      service.reserveAndDebitNextMinute(input),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    expect(prisma.ledger).toHaveLength(1);
+    expect(prisma.balances.get(input.organizationId)).toMatchObject({
+      availableSeconds: 59,
+      reservedSeconds: 0,
+    });
+  });
+
+  it('rejects denied runtime debit replay with nonzero ledger seconds', async () => {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: 'org-runtime-denial-seconds',
+      workspaceId: 'workspace-runtime-denial-seconds',
+      callId: 'call-runtime-denial-seconds',
+      eventId: 'event-runtime-denial-seconds',
+      idempotencyKey: 'runtime-denial-seconds',
+    };
+    prisma.seedRuntimeScope(input);
+    await service.reserveAndDebitNextMinute(input);
+    const denial = prisma.ledger[0]!;
+    denial.seconds = -60;
+
+    await expect(
+      service.reserveAndDebitNextMinute(input),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    expect(prisma.ledger).toHaveLength(1);
+  });
+
+  it('keeps exact allowed and denied runtime debit retries idempotent', async () => {
+    const allowed = await makeRuntimeDebitReplayFixture();
+    await expect(
+      allowed.service.reserveAndDebitNextMinute(allowed.input),
+    ).resolves.toMatchObject({
+      allowed: true,
+      billableMinutes: 1,
+    });
+    expect(allowed.prisma.ledger).toHaveLength(1);
+
+    const { prisma, service } = makeService();
+    const deniedInput = {
+      organizationId: 'org-runtime-denied-exact',
+      workspaceId: 'workspace-runtime-denied-exact',
+      callId: 'call-runtime-denied-exact',
+      eventId: 'event-runtime-denied-exact',
+      idempotencyKey: 'runtime-denied-exact',
+    };
+    prisma.seedRuntimeScope(deniedInput);
+    await service.reserveAndDebitNextMinute(deniedInput);
+    await expect(
+      service.reserveAndDebitNextMinute(deniedInput),
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: 'credit_insufficient',
+      billableMinutes: 0,
     });
     expect(prisma.ledger).toHaveLength(1);
   });

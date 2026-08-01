@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
   Prisma,
+  type BillingCreditBucket,
   type BillingLedgerEntry,
   type OrganizationCreditBalance,
 } from '@prisma/client';
@@ -107,6 +108,7 @@ const RuntimeDebitOperationSchema = z
   .object({
     kind: z.literal('next_minute_debit'),
     organizationId: IdentifierSchema,
+    workspaceId: IdentifierSchema,
     callId: IdentifierSchema,
     eventId: IdentifierSchema,
   })
@@ -115,6 +117,7 @@ const RuntimeDebitOperationSchema = z
 const RuntimeDebitReplayMetadataSchema = z
   .object({
     operation: RuntimeDebitOperationSchema,
+    allocations: z.array(ReservationAllocationSchema),
   })
   .passthrough();
 
@@ -123,12 +126,23 @@ const SubscriptionGrantOperationSchema = z
     kind: z.literal('subscription_grant'),
     organizationId: IdentifierSchema,
     invoiceId: IdentifierSchema,
+    bucketId: IdentifierSchema,
+    sourceType: z.literal('included'),
+    sourceId: IdentifierSchema,
+    seconds: z.number().int().nonnegative(),
+    periodEnd: z.string().datetime(),
+    priority: z.literal(10),
+    status: z.literal('active'),
   })
   .strict();
 
 const SubscriptionGrantReplayMetadataSchema = z
   .object({
     operation: SubscriptionGrantOperationSchema,
+    invoiceId: IdentifierSchema,
+    includedMinutes: z.number().int().nonnegative(),
+    periodEnd: z.string().datetime(),
+    priority: z.literal(10),
   })
   .passthrough();
 
@@ -137,12 +151,24 @@ const PurchasedGrantOperationSchema = z
     kind: z.literal('purchased_grant'),
     organizationId: IdentifierSchema,
     checkoutSessionId: IdentifierSchema,
+    bucketId: IdentifierSchema,
+    sourceType: z.literal('purchased'),
+    sourceId: IdentifierSchema,
+    seconds: z.literal(PURCHASED_PACK_SECONDS),
+    purchasedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    priority: z.literal(20),
+    status: z.literal('active'),
   })
   .strict();
 
 const PurchasedGrantReplayMetadataSchema = z
   .object({
     operation: PurchasedGrantOperationSchema,
+    checkoutSessionId: IdentifierSchema,
+    purchasedAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+    priority: z.literal(20),
   })
   .passthrough();
 
@@ -158,6 +184,7 @@ const ReservationFinalizationOperationSchema = z
 const ReservationFinalizationReplayMetadataSchema = z
   .object({
     operation: ReservationFinalizationOperationSchema,
+    reservationIdempotencyKey: IdempotencyKeySchema,
   })
   .passthrough();
 
@@ -235,6 +262,8 @@ type LedgerReplayExpectation<T> = {
   callId: string | null;
   workspaceId?: string | null;
   bucketId?: string | null;
+  seconds?: number;
+  reasonCode?: string;
   metadataSchema: z.ZodType<T>;
   operationMatches: (metadata: T) => boolean;
 };
@@ -259,14 +288,43 @@ export class CreditLedgerService {
           idempotencyKey,
         );
         if (existing) {
+          const bucket = await this.findReplaySourceBucket(
+            tx,
+            input.organizationId,
+            'included',
+            input.invoiceId,
+          );
           this.assertLedgerReplayIdentity(existing, {
             entryTypes: ['subscription_grant'],
             organizationId: input.organizationId,
+            workspaceId: null,
             callId: null,
+            bucketId: bucket.id,
+            seconds,
+            reasonCode: 'subscription_included',
             metadataSchema: SubscriptionGrantReplayMetadataSchema,
-            operationMatches: ({ operation }) =>
-              operation.organizationId === input.organizationId &&
-              operation.invoiceId === input.invoiceId,
+            operationMatches: (metadata) =>
+              metadata.invoiceId === input.invoiceId &&
+              metadata.includedMinutes === input.includedMinutes &&
+              metadata.periodEnd === input.periodEnd.toISOString() &&
+              metadata.priority === 10 &&
+              metadata.operation.kind === 'subscription_grant' &&
+              metadata.operation.organizationId === input.organizationId &&
+              metadata.operation.invoiceId === input.invoiceId &&
+              metadata.operation.bucketId === bucket.id &&
+              metadata.operation.sourceType === 'included' &&
+              metadata.operation.sourceId === input.invoiceId &&
+              metadata.operation.seconds === seconds &&
+              metadata.operation.periodEnd === input.periodEnd.toISOString() &&
+              metadata.operation.priority === 10 &&
+              metadata.operation.status === 'active' &&
+              bucket.organizationId === input.organizationId &&
+              bucket.sourceType === 'included' &&
+              bucket.sourceId === input.invoiceId &&
+              bucket.originalSeconds === seconds &&
+              bucket.expiresAt.getTime() === input.periodEnd.getTime() &&
+              bucket.priority === 10 &&
+              bucket.status === 'active',
           });
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -310,6 +368,13 @@ export class CreditLedgerService {
                 kind: 'subscription_grant',
                 organizationId: input.organizationId,
                 invoiceId: input.invoiceId,
+                bucketId: bucket.id,
+                sourceType: 'included',
+                sourceId: input.invoiceId,
+                seconds,
+                periodEnd: input.periodEnd.toISOString(),
+                priority: 10,
+                status: 'active',
               },
               invoiceId: input.invoiceId,
               includedMinutes: input.includedMinutes,
@@ -339,14 +404,50 @@ export class CreditLedgerService {
           idempotencyKey,
         );
         if (existing) {
+          const expiresAt = new Date(
+            input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS,
+          );
+          const bucket = await this.findReplaySourceBucket(
+            tx,
+            input.organizationId,
+            'purchased',
+            input.checkoutSessionId,
+          );
           this.assertLedgerReplayIdentity(existing, {
             entryTypes: ['purchase_grant'],
             organizationId: input.organizationId,
+            workspaceId: null,
             callId: null,
+            bucketId: bucket.id,
+            seconds: PURCHASED_PACK_SECONDS,
+            reasonCode: 'purchased_topup',
             metadataSchema: PurchasedGrantReplayMetadataSchema,
-            operationMatches: ({ operation }) =>
-              operation.organizationId === input.organizationId &&
-              operation.checkoutSessionId === input.checkoutSessionId,
+            operationMatches: (metadata) =>
+              metadata.checkoutSessionId === input.checkoutSessionId &&
+              metadata.purchasedAt === input.purchasedAt.toISOString() &&
+              metadata.expiresAt === expiresAt.toISOString() &&
+              metadata.priority === 20 &&
+              metadata.operation.kind === 'purchased_grant' &&
+              metadata.operation.organizationId === input.organizationId &&
+              metadata.operation.checkoutSessionId ===
+                input.checkoutSessionId &&
+              metadata.operation.bucketId === bucket.id &&
+              metadata.operation.sourceType === 'purchased' &&
+              metadata.operation.sourceId === input.checkoutSessionId &&
+              metadata.operation.seconds === PURCHASED_PACK_SECONDS &&
+              metadata.operation.purchasedAt ===
+                input.purchasedAt.toISOString() &&
+              metadata.operation.expiresAt === expiresAt.toISOString() &&
+              metadata.operation.priority === 20 &&
+              metadata.operation.status === 'active' &&
+              bucket.organizationId === input.organizationId &&
+              bucket.sourceType === 'purchased' &&
+              bucket.sourceId === input.checkoutSessionId &&
+              bucket.originalSeconds === PURCHASED_PACK_SECONDS &&
+              bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
+              bucket.expiresAt.getTime() === expiresAt.getTime() &&
+              bucket.priority === 20 &&
+              bucket.status === 'active',
           });
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -392,6 +493,14 @@ export class CreditLedgerService {
                 kind: 'purchased_grant',
                 organizationId: input.organizationId,
                 checkoutSessionId: input.checkoutSessionId,
+                bucketId: bucket.id,
+                sourceType: 'purchased',
+                sourceId: input.checkoutSessionId,
+                seconds: PURCHASED_PACK_SECONDS,
+                purchasedAt: input.purchasedAt.toISOString(),
+                expiresAt: expiresAt.toISOString(),
+                priority: 20,
+                status: 'active',
               },
               checkoutSessionId: input.checkoutSessionId,
               purchasedAt: input.purchasedAt.toISOString(),
@@ -528,7 +637,17 @@ export class CreditLedgerService {
     return this.withLockedBalance(
       input.organizationId,
       async (tx, lockedBalance) => {
-        await this.assertCallScope(tx, input.organizationId, input.callId);
+        const call = await this.assertCallScope(
+          tx,
+          input.organizationId,
+          input.callId,
+        );
+        const reservation = await this.findInitialReservation(
+          tx,
+          input.organizationId,
+          input.callId,
+        );
+        this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
         const exactDuplicate = await this.findIdempotentEntry(
           tx,
           input.organizationId,
@@ -540,6 +659,7 @@ export class CreditLedgerService {
             input.organizationId,
             input.callId,
             'reservation_commit',
+            reservation,
           );
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -558,6 +678,7 @@ export class CreditLedgerService {
             input.organizationId,
             input.callId,
             'reservation_commit',
+            reservation,
           );
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -575,11 +696,6 @@ export class CreditLedgerService {
           );
         }
 
-        const reservation = await this.findInitialReservation(
-          tx,
-          input.organizationId,
-          input.callId,
-        );
         const allocations = this.parseReservationAllocations(
           reservation.metadata,
         );
@@ -741,7 +857,17 @@ export class CreditLedgerService {
     return this.withLockedBalance(
       input.organizationId,
       async (tx, lockedBalance) => {
-        await this.assertCallScope(tx, input.organizationId, input.callId);
+        const call = await this.assertCallScope(
+          tx,
+          input.organizationId,
+          input.callId,
+        );
+        const reservation = await this.findInitialReservation(
+          tx,
+          input.organizationId,
+          input.callId,
+        );
+        this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
         const exactDuplicate = await this.findIdempotentEntry(
           tx,
           input.organizationId,
@@ -753,6 +879,7 @@ export class CreditLedgerService {
             input.organizationId,
             input.callId,
             'reservation_release',
+            reservation,
           );
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -771,6 +898,7 @@ export class CreditLedgerService {
             input.organizationId,
             input.callId,
             'reservation_release',
+            reservation,
           );
           return this.buildCreditBalance(tx, lockedBalance);
         }
@@ -788,11 +916,6 @@ export class CreditLedgerService {
           );
         }
 
-        const reservation = await this.findInitialReservation(
-          tx,
-          input.organizationId,
-          input.callId,
-        );
         const allocations = this.parseReservationAllocations(
           reservation.metadata,
         );
@@ -1092,7 +1215,7 @@ export class CreditLedgerService {
     tx: TransactionClient,
     organizationId: string,
     callId: string,
-  ): Promise<void> {
+  ): Promise<{ id: string; workspaceId: string }> {
     const call = await tx.call.findFirst({
       where: { id: callId, organizationId },
       select: { id: true, workspaceId: true },
@@ -1111,6 +1234,19 @@ export class CreditLedgerService {
       throw new CreditLedgerInvariantError(
         `Call ${callId} references a workspace outside organization ${organizationId}`,
         'tenant_scope_mismatch',
+      );
+    }
+    return call;
+  }
+
+  private assertReservationWorkspaceIdentity(
+    reservation: BillingLedgerEntry,
+    callWorkspaceId: string,
+  ): void {
+    if (reservation.workspaceId !== callWorkspaceId) {
+      throw new CreditLedgerInvariantError(
+        'Initial reservation workspace does not match the persisted call workspace',
+        'idempotency_conflict',
       );
     }
   }
@@ -1204,6 +1340,30 @@ export class CreditLedgerService {
         },
       },
     });
+  }
+
+  private async findReplaySourceBucket(
+    tx: TransactionClient,
+    organizationId: string,
+    sourceType: 'included' | 'purchased',
+    sourceId: string,
+  ): Promise<BillingCreditBucket> {
+    const bucket = await tx.billingCreditBucket.findUnique({
+      where: {
+        organizationId_sourceType_sourceId: {
+          organizationId,
+          sourceType,
+          sourceId,
+        },
+      },
+    });
+    if (!bucket) {
+      throw new CreditLedgerInvariantError(
+        'Idempotent grant is missing its organization-scoped credit bucket',
+        'idempotency_conflict',
+      );
+    }
+    return bucket;
   }
 
   private async recordDeniedReservation(
@@ -1420,12 +1580,40 @@ export class CreditLedgerService {
       organizationId: input.organizationId,
       workspaceId: input.workspaceId,
       callId: input.callId,
+      bucketId: null,
       metadataSchema: RuntimeDebitReplayMetadataSchema,
       operationMatches: ({ operation }) =>
         operation.organizationId === input.organizationId &&
+        operation.workspaceId === input.workspaceId &&
         operation.callId === input.callId &&
         operation.eventId === input.eventId,
     });
+    const metadata = RuntimeDebitReplayMetadataSchema.parse(entry.metadata);
+    if (entry.entryType === 'usage_debit') {
+      const bucketIds = new Set(
+        metadata.allocations.map((allocation) => allocation.bucketId),
+      );
+      if (
+        entry.seconds !== -CREDIT_SECONDS_PER_MINUTE ||
+        metadata.allocations.length === 0 ||
+        this.sumAllocations(metadata.allocations) !==
+          CREDIT_SECONDS_PER_MINUTE ||
+        bucketIds.size !== metadata.allocations.length
+      ) {
+        throw new CreditLedgerInvariantError(
+          'Runtime debit replay does not contain an exact 60-second allocation identity',
+          'idempotency_conflict',
+        );
+      }
+      return;
+    }
+
+    if (entry.seconds !== 0 || metadata.allocations.length !== 0) {
+      throw new CreditLedgerInvariantError(
+        'Denied runtime debit replay must have zero seconds and no allocations',
+        'idempotency_conflict',
+      );
+    }
   }
 
   private assertReservationFinalizationReplay(
@@ -1433,16 +1621,20 @@ export class CreditLedgerService {
     organizationId: string,
     callId: string,
     entryType: 'reservation_commit' | 'reservation_release',
+    reservation: BillingLedgerEntry,
   ): void {
     this.assertLedgerReplayIdentity(entry, {
       entryTypes: [entryType],
       organizationId,
+      workspaceId: reservation.workspaceId,
       callId,
       metadataSchema: ReservationFinalizationReplayMetadataSchema,
-      operationMatches: ({ operation }) =>
+      operationMatches: ({ operation, reservationIdempotencyKey }) =>
         operation.kind === entryType &&
         operation.organizationId === organizationId &&
-        operation.callId === callId,
+        operation.callId === callId &&
+        operation.reservationIdempotencyKey === reservation.idempotencyKey &&
+        reservationIdempotencyKey === reservation.idempotencyKey,
     });
   }
 
@@ -1456,12 +1648,19 @@ export class CreditLedgerService {
       entry.workspaceId === expected.workspaceId;
     const bucketMatches =
       expected.bucketId === undefined || entry.bucketId === expected.bucketId;
+    const secondsMatch =
+      expected.seconds === undefined || entry.seconds === expected.seconds;
+    const reasonMatches =
+      expected.reasonCode === undefined ||
+      entry.reasonCode === expected.reasonCode;
     if (
       !expected.entryTypes.includes(entry.entryType) ||
       entry.organizationId !== expected.organizationId ||
       entry.callId !== expected.callId ||
       !workspaceMatches ||
       !bucketMatches ||
+      !secondsMatch ||
+      !reasonMatches ||
       !parsed.success ||
       !expected.operationMatches(parsed.data)
     ) {
@@ -1489,6 +1688,7 @@ export class CreditLedgerService {
     return {
       kind: 'next_minute_debit',
       organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
       callId: input.callId,
       eventId: input.eventId,
     };
