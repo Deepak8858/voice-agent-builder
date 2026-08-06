@@ -5,11 +5,7 @@ import {
   type BillingLedgerEntry,
   type OrganizationCreditBalance,
 } from '@prisma/client';
-import type {
-  CreditBalanceDto,
-  EntitlementReason,
-  RuntimeUsageDecision,
-} from '@voiceforge/shared';
+import type { CreditBalanceDto, EntitlementReason, RuntimeUsageDecision } from '@voiceforge/shared';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -98,9 +94,25 @@ const InitialReservationOperationSchema = z
   })
   .strict();
 
+const CreditBalanceReplaySchema = z
+  .object({
+    organizationId: IdentifierSchema,
+    includedMinutesRemaining: z.number().int().nonnegative(),
+    purchasedMinutesRemaining: z.number().int().nonnegative(),
+    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
+    availableSeconds: z.number().int().nonnegative(),
+    reservedSeconds: z.number().int().nonnegative(),
+    totalOwnedSeconds: z.number().int().nonnegative(),
+    status: IdentifierSchema,
+    reviewReason: z.string().nullable(),
+  })
+  .strict();
+
 const InitialReservationReplayMetadataSchema = z
   .object({
     operation: InitialReservationOperationSchema,
+    allocations: z.array(ReservationAllocationSchema),
+    creditBalance: CreditBalanceReplaySchema,
   })
   .passthrough();
 
@@ -185,6 +197,7 @@ const ReservationFinalizationReplayMetadataSchema = z
   .object({
     operation: ReservationFinalizationOperationSchema,
     reservationIdempotencyKey: IdempotencyKeySchema,
+    allocations: z.array(ReservationAllocationSchema).min(1),
   })
   .passthrough();
 
@@ -195,34 +208,45 @@ const PurchasedReversalOperationSchema = z
     checkoutSessionId: IdentifierSchema,
     refundId: IdentifierSchema,
     bucketId: IdentifierSchema,
+    sourceType: z.literal('purchased'),
+    sourceId: IdentifierSchema,
+    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
   })
   .strict();
 
-const PurchasedReversalReplayMetadataSchema = z
+const AutomaticPurchasedReversalReplayMetadataSchema = z
   .object({
     operation: PurchasedReversalOperationSchema,
+    checkoutSessionId: IdentifierSchema,
+    refundId: IdentifierSchema,
+    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
+    unusedSecondsRemoved: z.literal(PURCHASED_PACK_SECONDS),
+    consumedOrReservedSeconds: z.literal(0),
+    reviewReason: z.null(),
   })
-  .passthrough();
+  .strict();
 
-export type SubscriptionGrantInput = z.infer<
-  typeof SubscriptionGrantInputSchema
->;
+const ManualReviewPurchasedReversalReplayMetadataSchema = z
+  .object({
+    operation: PurchasedReversalOperationSchema,
+    checkoutSessionId: IdentifierSchema,
+    refundId: IdentifierSchema,
+    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
+    unusedSecondsPreserved: z.number().int().nonnegative(),
+    consumedOrReservedSeconds: z.number().int().positive(),
+    reviewReason: IdentifierSchema,
+  })
+  .strict();
+
+export type SubscriptionGrantInput = z.infer<typeof SubscriptionGrantInputSchema>;
 export type PurchasedGrantInput = z.infer<typeof PurchasedGrantInputSchema>;
-export type MinuteReservationInput = z.infer<
-  typeof MinuteReservationInputSchema
->;
-export type CommitReservationInput = z.infer<
-  typeof CommitReservationInputSchema
->;
+export type MinuteReservationInput = z.infer<typeof MinuteReservationInputSchema>;
+export type CommitReservationInput = z.infer<typeof CommitReservationInputSchema>;
 export type NextMinuteInput = z.infer<typeof NextMinuteInputSchema>;
-export type ReleaseReservationInput = z.infer<
-  typeof ReleaseReservationInputSchema
->;
+export type ReleaseReservationInput = z.infer<typeof ReleaseReservationInputSchema>;
 export type CreditReversalInput = z.infer<typeof CreditReversalInputSchema>;
 
-export type ReservationAllocation = z.infer<
-  typeof ReservationAllocationSchema
->;
+export type ReservationAllocation = z.infer<typeof ReservationAllocationSchema>;
 
 export interface CreditBalance extends CreditBalanceDto {
   availableSeconds: number;
@@ -272,818 +296,650 @@ type LedgerReplayExpectation<T> = {
 export class CreditLedgerService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async grantSubscriptionCredits(
-    rawInput: SubscriptionGrantInput,
-  ): Promise<CreditBalance> {
+  async grantSubscriptionCredits(rawInput: SubscriptionGrantInput): Promise<CreditBalance> {
     const input = SubscriptionGrantInputSchema.parse(rawInput);
     const seconds = input.includedMinutes * CREDIT_SECONDS_PER_MINUTE;
     const idempotencyKey = `stripe:invoice:${input.invoiceId}:included`;
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        const existing = await this.findIdempotentEntry(
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
+      if (existing) {
+        const bucket = await this.findReplaySourceBucket(
           tx,
           input.organizationId,
-          idempotencyKey,
+          'included',
+          input.invoiceId,
         );
-        if (existing) {
-          const bucket = await this.findReplaySourceBucket(
-            tx,
-            input.organizationId,
-            'included',
-            input.invoiceId,
-          );
-          this.assertLedgerReplayIdentity(existing, {
-            entryTypes: ['subscription_grant'],
-            organizationId: input.organizationId,
-            workspaceId: null,
-            callId: null,
-            bucketId: bucket.id,
-            seconds,
-            reasonCode: 'subscription_included',
-            metadataSchema: SubscriptionGrantReplayMetadataSchema,
-            operationMatches: (metadata) =>
-              metadata.invoiceId === input.invoiceId &&
-              metadata.includedMinutes === input.includedMinutes &&
-              metadata.periodEnd === input.periodEnd.toISOString() &&
-              metadata.priority === 10 &&
-              metadata.operation.kind === 'subscription_grant' &&
-              metadata.operation.organizationId === input.organizationId &&
-              metadata.operation.invoiceId === input.invoiceId &&
-              metadata.operation.bucketId === bucket.id &&
-              metadata.operation.sourceType === 'included' &&
-              metadata.operation.sourceId === input.invoiceId &&
-              metadata.operation.seconds === seconds &&
-              metadata.operation.periodEnd === input.periodEnd.toISOString() &&
-              metadata.operation.priority === 10 &&
-              metadata.operation.status === 'active' &&
-              bucket.organizationId === input.organizationId &&
-              bucket.sourceType === 'included' &&
-              bucket.sourceId === input.invoiceId &&
-              bucket.originalSeconds === seconds &&
-              bucket.expiresAt.getTime() === input.periodEnd.getTime() &&
-              bucket.priority === 10 &&
-              bucket.status === 'active',
-          });
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
+        this.assertLedgerReplayIdentity(existing, {
+          entryTypes: ['subscription_grant'],
+          organizationId: input.organizationId,
+          workspaceId: null,
+          callId: null,
+          bucketId: bucket.id,
+          seconds,
+          reasonCode: 'subscription_included',
+          metadataSchema: SubscriptionGrantReplayMetadataSchema,
+          operationMatches: (metadata) =>
+            metadata.invoiceId === input.invoiceId &&
+            metadata.includedMinutes === input.includedMinutes &&
+            metadata.periodEnd === input.periodEnd.toISOString() &&
+            metadata.priority === 10 &&
+            metadata.operation.kind === 'subscription_grant' &&
+            metadata.operation.organizationId === input.organizationId &&
+            metadata.operation.invoiceId === input.invoiceId &&
+            metadata.operation.bucketId === bucket.id &&
+            metadata.operation.sourceType === 'included' &&
+            metadata.operation.sourceId === input.invoiceId &&
+            metadata.operation.seconds === seconds &&
+            metadata.operation.periodEnd === input.periodEnd.toISOString() &&
+            metadata.operation.priority === 10 &&
+            metadata.operation.status === 'active' &&
+            bucket.organizationId === input.organizationId &&
+            bucket.sourceType === 'included' &&
+            bucket.sourceId === input.invoiceId &&
+            bucket.originalSeconds === seconds &&
+            bucket.expiresAt.getTime() === input.periodEnd.getTime() &&
+            bucket.priority === 10 &&
+            bucket.status === 'active',
+        });
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
 
-        const grantedAt = new Date();
-        const bucket = await tx.billingCreditBucket.create({
-          data: {
-            organizationId: input.organizationId,
-            sourceType: 'included',
-            sourceId: input.invoiceId,
-            originalSeconds: seconds,
-            remainingSeconds: seconds,
-            validFrom: grantedAt,
-            expiresAt: input.periodEnd,
-            priority: 10,
-            status: 'active',
-          },
-        });
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            availableSeconds: { increment: seconds },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: bucket.id,
-            workspaceId: null,
-            callId: null,
-            entryType: 'subscription_grant',
-            seconds,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'stripe',
-            actorId: input.actorId ?? input.invoiceId,
-            reasonCode: 'subscription_included',
-            idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: {
-                kind: 'subscription_grant',
-                organizationId: input.organizationId,
-                invoiceId: input.invoiceId,
-                bucketId: bucket.id,
-                sourceType: 'included',
-                sourceId: input.invoiceId,
-                seconds,
-                periodEnd: input.periodEnd.toISOString(),
-                priority: 10,
-                status: 'active',
-              },
+      const grantedAt = new Date();
+      const bucket = await tx.billingCreditBucket.create({
+        data: {
+          organizationId: input.organizationId,
+          sourceType: 'included',
+          sourceId: input.invoiceId,
+          originalSeconds: seconds,
+          remainingSeconds: seconds,
+          validFrom: grantedAt,
+          expiresAt: input.periodEnd,
+          priority: 10,
+          status: 'active',
+        },
+      });
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { increment: seconds },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: bucket.id,
+          workspaceId: null,
+          callId: null,
+          entryType: 'subscription_grant',
+          seconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'stripe',
+          actorId: input.actorId ?? input.invoiceId,
+          reasonCode: 'subscription_included',
+          idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: {
+              kind: 'subscription_grant',
+              organizationId: input.organizationId,
               invoiceId: input.invoiceId,
-              includedMinutes: input.includedMinutes,
+              bucketId: bucket.id,
+              sourceType: 'included',
+              sourceId: input.invoiceId,
+              seconds,
               periodEnd: input.periodEnd.toISOString(),
               priority: 10,
-            }),
-          },
-        });
+              status: 'active',
+            },
+            invoiceId: input.invoiceId,
+            includedMinutes: input.includedMinutes,
+            periodEnd: input.periodEnd.toISOString(),
+            priority: 10,
+          }),
+        },
+      });
 
-        return this.buildCreditBalance(tx, updatedBalance);
-      },
-    );
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
   }
 
-  async grantPurchasedCredits(
-    rawInput: PurchasedGrantInput,
-  ): Promise<CreditBalance> {
+  async grantPurchasedCredits(rawInput: PurchasedGrantInput): Promise<CreditBalance> {
     const input = PurchasedGrantInputSchema.parse(rawInput);
     const idempotencyKey = `stripe:checkout:${input.checkoutSessionId}:topup`;
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        const existing = await this.findIdempotentEntry(
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
+      if (existing) {
+        const expiresAt = new Date(input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS);
+        const bucket = await this.findReplaySourceBucket(
           tx,
           input.organizationId,
-          idempotencyKey,
+          'purchased',
+          input.checkoutSessionId,
         );
-        if (existing) {
-          const expiresAt = new Date(
-            input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS,
-          );
-          const bucket = await this.findReplaySourceBucket(
-            tx,
-            input.organizationId,
-            'purchased',
-            input.checkoutSessionId,
-          );
-          this.assertLedgerReplayIdentity(existing, {
-            entryTypes: ['purchase_grant'],
-            organizationId: input.organizationId,
-            workspaceId: null,
-            callId: null,
-            bucketId: bucket.id,
-            seconds: PURCHASED_PACK_SECONDS,
-            reasonCode: 'purchased_topup',
-            metadataSchema: PurchasedGrantReplayMetadataSchema,
-            operationMatches: (metadata) =>
-              metadata.checkoutSessionId === input.checkoutSessionId &&
-              metadata.purchasedAt === input.purchasedAt.toISOString() &&
-              metadata.expiresAt === expiresAt.toISOString() &&
-              metadata.priority === 20 &&
-              metadata.operation.kind === 'purchased_grant' &&
-              metadata.operation.organizationId === input.organizationId &&
-              metadata.operation.checkoutSessionId ===
-                input.checkoutSessionId &&
-              metadata.operation.bucketId === bucket.id &&
-              metadata.operation.sourceType === 'purchased' &&
-              metadata.operation.sourceId === input.checkoutSessionId &&
-              metadata.operation.seconds === PURCHASED_PACK_SECONDS &&
-              metadata.operation.purchasedAt ===
-                input.purchasedAt.toISOString() &&
-              metadata.operation.expiresAt === expiresAt.toISOString() &&
-              metadata.operation.priority === 20 &&
-              metadata.operation.status === 'active' &&
-              bucket.organizationId === input.organizationId &&
-              bucket.sourceType === 'purchased' &&
-              bucket.sourceId === input.checkoutSessionId &&
-              bucket.originalSeconds === PURCHASED_PACK_SECONDS &&
-              bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
-              bucket.expiresAt.getTime() === expiresAt.getTime() &&
-              bucket.priority === 20 &&
-              bucket.status === 'active',
-          });
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
+        this.assertLedgerReplayIdentity(existing, {
+          entryTypes: ['purchase_grant'],
+          organizationId: input.organizationId,
+          workspaceId: null,
+          callId: null,
+          bucketId: bucket.id,
+          seconds: PURCHASED_PACK_SECONDS,
+          reasonCode: 'purchased_topup',
+          metadataSchema: PurchasedGrantReplayMetadataSchema,
+          operationMatches: (metadata) =>
+            metadata.checkoutSessionId === input.checkoutSessionId &&
+            metadata.purchasedAt === input.purchasedAt.toISOString() &&
+            metadata.expiresAt === expiresAt.toISOString() &&
+            metadata.priority === 20 &&
+            metadata.operation.kind === 'purchased_grant' &&
+            metadata.operation.organizationId === input.organizationId &&
+            metadata.operation.checkoutSessionId === input.checkoutSessionId &&
+            metadata.operation.bucketId === bucket.id &&
+            metadata.operation.sourceType === 'purchased' &&
+            metadata.operation.sourceId === input.checkoutSessionId &&
+            metadata.operation.seconds === PURCHASED_PACK_SECONDS &&
+            metadata.operation.purchasedAt === input.purchasedAt.toISOString() &&
+            metadata.operation.expiresAt === expiresAt.toISOString() &&
+            metadata.operation.priority === 20 &&
+            metadata.operation.status === 'active' &&
+            bucket.organizationId === input.organizationId &&
+            bucket.sourceType === 'purchased' &&
+            bucket.sourceId === input.checkoutSessionId &&
+            bucket.originalSeconds === PURCHASED_PACK_SECONDS &&
+            bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
+            bucket.expiresAt.getTime() === expiresAt.getTime() &&
+            bucket.priority === 20 &&
+            bucket.status === 'active',
+        });
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
 
-        const expiresAt = new Date(
-          input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS,
-        );
-        const bucket = await tx.billingCreditBucket.create({
-          data: {
-            organizationId: input.organizationId,
-            sourceType: 'purchased',
-            sourceId: input.checkoutSessionId,
-            originalSeconds: PURCHASED_PACK_SECONDS,
-            remainingSeconds: PURCHASED_PACK_SECONDS,
-            validFrom: input.purchasedAt,
-            expiresAt,
-            priority: 20,
-            status: 'active',
-          },
-        });
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            availableSeconds: { increment: PURCHASED_PACK_SECONDS },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: bucket.id,
-            workspaceId: null,
-            callId: null,
-            entryType: 'purchase_grant',
-            seconds: PURCHASED_PACK_SECONDS,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'stripe',
-            actorId: input.actorId ?? input.checkoutSessionId,
-            reasonCode: 'purchased_topup',
-            idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: {
-                kind: 'purchased_grant',
-                organizationId: input.organizationId,
-                checkoutSessionId: input.checkoutSessionId,
-                bucketId: bucket.id,
-                sourceType: 'purchased',
-                sourceId: input.checkoutSessionId,
-                seconds: PURCHASED_PACK_SECONDS,
-                purchasedAt: input.purchasedAt.toISOString(),
-                expiresAt: expiresAt.toISOString(),
-                priority: 20,
-                status: 'active',
-              },
+      const expiresAt = new Date(input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS);
+      const bucket = await tx.billingCreditBucket.create({
+        data: {
+          organizationId: input.organizationId,
+          sourceType: 'purchased',
+          sourceId: input.checkoutSessionId,
+          originalSeconds: PURCHASED_PACK_SECONDS,
+          remainingSeconds: PURCHASED_PACK_SECONDS,
+          validFrom: input.purchasedAt,
+          expiresAt,
+          priority: 20,
+          status: 'active',
+        },
+      });
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { increment: PURCHASED_PACK_SECONDS },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: bucket.id,
+          workspaceId: null,
+          callId: null,
+          entryType: 'purchase_grant',
+          seconds: PURCHASED_PACK_SECONDS,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'stripe',
+          actorId: input.actorId ?? input.checkoutSessionId,
+          reasonCode: 'purchased_topup',
+          idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: {
+              kind: 'purchased_grant',
+              organizationId: input.organizationId,
               checkoutSessionId: input.checkoutSessionId,
+              bucketId: bucket.id,
+              sourceType: 'purchased',
+              sourceId: input.checkoutSessionId,
+              seconds: PURCHASED_PACK_SECONDS,
               purchasedAt: input.purchasedAt.toISOString(),
               expiresAt: expiresAt.toISOString(),
               priority: 20,
-            }),
-          },
-        });
+              status: 'active',
+            },
+            checkoutSessionId: input.checkoutSessionId,
+            purchasedAt: input.purchasedAt.toISOString(),
+            expiresAt: expiresAt.toISOString(),
+            priority: 20,
+          }),
+        },
+      });
 
-        return this.buildCreditBalance(tx, updatedBalance);
-      },
-    );
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
   }
 
-  async reserveInitialMinute(
-    rawInput: MinuteReservationInput,
-  ): Promise<MinuteReservation> {
+  async reserveInitialMinute(rawInput: MinuteReservationInput): Promise<MinuteReservation> {
     const input = MinuteReservationInputSchema.parse(rawInput);
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        await this.assertRuntimeScope(
-          tx,
-          input.organizationId,
-          input.workspaceId,
-          input.callId,
-        );
-        const existing = await this.findIdempotentEntry(
-          tx,
-          input.organizationId,
-          input.idempotencyKey,
-        );
-        if (existing) {
-          return this.replayInitialReservation(
-            tx,
-            lockedBalance,
-            input,
-            existing,
-          );
-        }
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      await this.assertRuntimeScope(tx, input.organizationId, input.workspaceId, input.callId);
+      const existing = await this.findIdempotentEntry(
+        tx,
+        input.organizationId,
+        input.idempotencyKey,
+      );
+      if (existing) {
+        return this.replayInitialReservation(input, existing);
+      }
 
-        const existingReservation = await this.findInitialReservationOrNull(
+      const existingDecision = await this.findInitialReservationDecisionOrNull(
+        tx,
+        input.organizationId,
+        input.callId,
+      );
+      if (existingDecision) {
+        return this.replayInitialReservation(input, existingDecision);
+      }
+
+      if (lockedBalance.status !== 'active') {
+        return this.recordDeniedReservation(
           tx,
-          input.organizationId,
-          input.callId,
+          lockedBalance,
+          input,
+          'billing_temporarily_unavailable',
         );
-        if (existingReservation) {
-          return this.replayInitialReservation(
-            tx,
-            lockedBalance,
-            input,
-            existingReservation,
-          );
-        }
+      }
 
-        if (lockedBalance.status !== 'active') {
-          return this.recordDeniedReservation(
-            tx,
-            lockedBalance,
-            input,
-            'billing_temporarily_unavailable',
-          );
-        }
+      const allocations = await this.selectAllocations(
+        tx,
+        input.organizationId,
+        CREDIT_SECONDS_PER_MINUTE,
+      );
+      if (
+        lockedBalance.availableSeconds < CREDIT_SECONDS_PER_MINUTE ||
+        this.sumAllocations(allocations) < CREDIT_SECONDS_PER_MINUTE
+      ) {
+        return this.recordDeniedReservation(tx, lockedBalance, input, 'credit_insufficient');
+      }
 
-        const allocations = await this.selectAllocations(
-          tx,
-          input.organizationId,
-          CREDIT_SECONDS_PER_MINUTE,
-        );
-        if (
-          lockedBalance.availableSeconds < CREDIT_SECONDS_PER_MINUTE ||
-          this.sumAllocations(allocations) < CREDIT_SECONDS_PER_MINUTE
-        ) {
-          return this.recordDeniedReservation(
-            tx,
-            lockedBalance,
-            input,
-            'credit_insufficient',
-          );
-        }
-
-        await this.decrementAllocatedBuckets(
-          tx,
-          input.organizationId,
-          allocations,
-        );
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            availableSeconds: { decrement: CREDIT_SECONDS_PER_MINUTE },
-            reservedSeconds: { increment: CREDIT_SECONDS_PER_MINUTE },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: null,
-            workspaceId: input.workspaceId,
-            callId: input.callId,
-            entryType: 'reservation',
-            seconds: CREDIT_SECONDS_PER_MINUTE,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'system',
-            actorId: input.callId,
-            reasonCode: 'initial_minute',
-            idempotencyKey: input.idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: this.initialReservationOperation(input),
-              allocations,
-            }),
-          },
-        });
-
-        return {
+      await this.decrementAllocatedBuckets(tx, input.organizationId, allocations);
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { decrement: CREDIT_SECONDS_PER_MINUTE },
+          reservedSeconds: { increment: CREDIT_SECONDS_PER_MINUTE },
+          version: { increment: 1 },
+        },
+      });
+      const creditBalance = await this.buildCreditBalance(tx, updatedBalance);
+      await tx.billingLedgerEntry.create({
+        data: {
           organizationId: input.organizationId,
+          bucketId: null,
+          workspaceId: input.workspaceId,
           callId: input.callId,
-          allowed: true,
-          reason: 'allowed',
+          entryType: 'reservation',
           seconds: CREDIT_SECONDS_PER_MINUTE,
-          allocations,
-          creditBalance: await this.buildCreditBalance(tx, updatedBalance),
-        };
-      },
-    );
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'system',
+          actorId: input.callId,
+          reasonCode: 'initial_minute',
+          idempotencyKey: input.idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: this.initialReservationOperation(input),
+            allocations,
+            creditBalance: { ...creditBalance },
+          }),
+        },
+      });
+
+      return {
+        organizationId: input.organizationId,
+        callId: input.callId,
+        allowed: true,
+        reason: 'allowed',
+        seconds: CREDIT_SECONDS_PER_MINUTE,
+        allocations,
+        creditBalance,
+      };
+    });
   }
 
-  async commitReservation(
-    rawInput: CommitReservationInput,
-  ): Promise<CreditBalance> {
+  async commitReservation(rawInput: CommitReservationInput): Promise<CreditBalance> {
     const input = CommitReservationInputSchema.parse(rawInput);
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        const call = await this.assertCallScope(
-          tx,
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const call = await this.assertCallScope(tx, input.organizationId, input.callId);
+      const reservation = await this.findInitialReservation(tx, input.organizationId, input.callId);
+      this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
+      const allocations = this.assertPersistedInitialReservationIdentity(
+        reservation,
+        input.organizationId,
+        call.workspaceId,
+        input.callId,
+      );
+      const exactDuplicate = await this.findIdempotentEntry(
+        tx,
+        input.organizationId,
+        input.idempotencyKey,
+      );
+      if (exactDuplicate) {
+        this.assertReservationFinalizationReplay(
+          exactDuplicate,
           input.organizationId,
           input.callId,
+          'reservation_commit',
+          reservation,
+          allocations,
         );
-        const reservation = await this.findInitialReservation(
-          tx,
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+
+      const previousCommit = await tx.billingLedgerEntry.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          callId: input.callId,
+          entryType: 'reservation_commit',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (previousCommit) {
+        this.assertReservationFinalizationReplay(
+          previousCommit,
           input.organizationId,
           input.callId,
+          'reservation_commit',
+          reservation,
+          allocations,
         );
-        this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
-        const exactDuplicate = await this.findIdempotentEntry(
-          tx,
-          input.organizationId,
-          input.idempotencyKey,
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+      const previousRelease = await tx.billingLedgerEntry.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          callId: input.callId,
+          entryType: 'reservation_release',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (previousRelease) {
+        throw new CreditLedgerInvariantError(
+          `Cannot commit released reservation for call ${input.callId}`,
         );
-        if (exactDuplicate) {
-          this.assertReservationFinalizationReplay(
-            exactDuplicate,
-            input.organizationId,
-            input.callId,
-            'reservation_commit',
-            reservation,
-          );
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
+      }
 
-        const previousCommit = await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_commit',
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (previousCommit) {
-          this.assertReservationFinalizationReplay(
-            previousCommit,
-            input.organizationId,
-            input.callId,
-            'reservation_commit',
-            reservation,
-          );
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
-        const previousRelease = await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_release',
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (previousRelease) {
-          throw new CreditLedgerInvariantError(
-            `Cannot commit released reservation for call ${input.callId}`,
-          );
-        }
-
-        const allocations = this.parseReservationAllocations(
-          reservation.metadata,
+      const seconds = this.sumAllocations(allocations);
+      if (lockedBalance.reservedSeconds < seconds) {
+        throw new CreditLedgerInvariantError(
+          `Reserved balance is insufficient to commit call ${input.callId}`,
         );
-        const seconds = this.sumAllocations(allocations);
-        if (lockedBalance.reservedSeconds < seconds) {
-          throw new CreditLedgerInvariantError(
-            `Reserved balance is insufficient to commit call ${input.callId}`,
-          );
-        }
+      }
 
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            reservedSeconds: { decrement: seconds },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: null,
-            workspaceId: reservation.workspaceId,
-            callId: input.callId,
-            entryType: 'reservation_commit',
-            seconds: -seconds,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'system',
-            actorId: input.callId,
-            reasonCode: 'call_connected',
-            idempotencyKey: input.idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: {
-                kind: 'reservation_commit',
-                organizationId: input.organizationId,
-                callId: input.callId,
-                reservationIdempotencyKey: reservation.idempotencyKey,
-              },
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          reservedSeconds: { decrement: seconds },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: null,
+          workspaceId: reservation.workspaceId,
+          callId: input.callId,
+          entryType: 'reservation_commit',
+          seconds: -seconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'system',
+          actorId: input.callId,
+          reasonCode: 'call_connected',
+          idempotencyKey: input.idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: {
+              kind: 'reservation_commit',
+              organizationId: input.organizationId,
+              callId: input.callId,
               reservationIdempotencyKey: reservation.idempotencyKey,
-              allocations,
-            }),
-          },
-        });
+            },
+            reservationIdempotencyKey: reservation.idempotencyKey,
+            allocations,
+          }),
+        },
+      });
 
-        return this.buildCreditBalance(tx, updatedBalance);
-      },
-    );
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
   }
 
-  async reserveAndDebitNextMinute(
-    rawInput: NextMinuteInput,
-  ): Promise<RuntimeUsageDecision> {
+  async reserveAndDebitNextMinute(rawInput: NextMinuteInput): Promise<RuntimeUsageDecision> {
     const input = NextMinuteInputSchema.parse(rawInput);
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        await this.assertRuntimeScope(
-          tx,
-          input.organizationId,
-          input.workspaceId,
-          input.callId,
-        );
-        const existing = await this.findIdempotentEntry(
-          tx,
-          input.organizationId,
-          input.idempotencyKey,
-        );
-        if (existing) {
-          this.assertRuntimeDebitIdentity(existing, input);
-          const creditBalance = await this.buildCreditBalance(tx, lockedBalance);
-          const allowed = existing.entryType === 'usage_debit';
-          return this.runtimeDecision(
-            input,
-            allowed,
-            this.reasonFromLedger(
-              existing.entryType,
-              existing.reasonCode,
-            ),
-            allowed ? 1 : 0,
-            creditBalance,
-          );
-        }
-
-        if (lockedBalance.status !== 'active') {
-          return this.recordDeniedRuntimeDebit(
-            tx,
-            lockedBalance,
-            input,
-            'billing_temporarily_unavailable',
-          );
-        }
-
-        const allocations = await this.selectAllocations(
-          tx,
-          input.organizationId,
-          CREDIT_SECONDS_PER_MINUTE,
-        );
-        if (
-          lockedBalance.availableSeconds < CREDIT_SECONDS_PER_MINUTE ||
-          this.sumAllocations(allocations) < CREDIT_SECONDS_PER_MINUTE
-        ) {
-          return this.recordDeniedRuntimeDebit(
-            tx,
-            lockedBalance,
-            input,
-            'credit_insufficient',
-          );
-        }
-
-        await this.decrementAllocatedBuckets(
-          tx,
-          input.organizationId,
-          allocations,
-        );
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            availableSeconds: { decrement: CREDIT_SECONDS_PER_MINUTE },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: null,
-            workspaceId: input.workspaceId,
-            callId: input.callId,
-            entryType: 'usage_debit',
-            seconds: -CREDIT_SECONDS_PER_MINUTE,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'system',
-            actorId: input.callId,
-            reasonCode: 'minute_boundary',
-            idempotencyKey: input.idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: this.runtimeDebitOperation(input),
-              allocations,
-            }),
-          },
-        });
-
-        const creditBalance = await this.buildCreditBalance(tx, updatedBalance);
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      await this.assertRuntimeScope(tx, input.organizationId, input.workspaceId, input.callId);
+      const existing = await this.findIdempotentEntry(
+        tx,
+        input.organizationId,
+        input.idempotencyKey,
+      );
+      if (existing) {
+        this.assertRuntimeDebitIdentity(existing, input);
+        const creditBalance = await this.buildCreditBalance(tx, lockedBalance);
+        const allowed = existing.entryType === 'usage_debit';
         return this.runtimeDecision(
           input,
-          true,
-          'allowed',
-          1,
+          allowed,
+          this.reasonFromLedger(existing.entryType, existing.reasonCode),
+          allowed ? 1 : 0,
           creditBalance,
         );
-      },
-    );
+      }
+
+      if (lockedBalance.status !== 'active') {
+        return this.recordDeniedRuntimeDebit(
+          tx,
+          lockedBalance,
+          input,
+          'billing_temporarily_unavailable',
+        );
+      }
+
+      const allocations = await this.selectAllocations(
+        tx,
+        input.organizationId,
+        CREDIT_SECONDS_PER_MINUTE,
+      );
+      if (
+        lockedBalance.availableSeconds < CREDIT_SECONDS_PER_MINUTE ||
+        this.sumAllocations(allocations) < CREDIT_SECONDS_PER_MINUTE
+      ) {
+        return this.recordDeniedRuntimeDebit(tx, lockedBalance, input, 'credit_insufficient');
+      }
+
+      await this.decrementAllocatedBuckets(tx, input.organizationId, allocations);
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { decrement: CREDIT_SECONDS_PER_MINUTE },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: null,
+          workspaceId: input.workspaceId,
+          callId: input.callId,
+          entryType: 'usage_debit',
+          seconds: -CREDIT_SECONDS_PER_MINUTE,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'system',
+          actorId: input.callId,
+          reasonCode: 'minute_boundary',
+          idempotencyKey: input.idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: this.runtimeDebitOperation(input),
+            allocations,
+          }),
+        },
+      });
+
+      const creditBalance = await this.buildCreditBalance(tx, updatedBalance);
+      return this.runtimeDecision(input, true, 'allowed', 1, creditBalance);
+    });
   }
 
-  async releaseReservation(
-    rawInput: ReleaseReservationInput,
-  ): Promise<CreditBalance> {
+  async releaseReservation(rawInput: ReleaseReservationInput): Promise<CreditBalance> {
     const input = ReleaseReservationInputSchema.parse(rawInput);
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        const call = await this.assertCallScope(
-          tx,
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const call = await this.assertCallScope(tx, input.organizationId, input.callId);
+      const reservation = await this.findInitialReservation(tx, input.organizationId, input.callId);
+      this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
+      const allocations = this.assertPersistedInitialReservationIdentity(
+        reservation,
+        input.organizationId,
+        call.workspaceId,
+        input.callId,
+      );
+      const exactDuplicate = await this.findIdempotentEntry(
+        tx,
+        input.organizationId,
+        input.idempotencyKey,
+      );
+      if (exactDuplicate) {
+        this.assertReservationFinalizationReplay(
+          exactDuplicate,
           input.organizationId,
           input.callId,
-        );
-        const reservation = await this.findInitialReservation(
-          tx,
-          input.organizationId,
-          input.callId,
-        );
-        this.assertReservationWorkspaceIdentity(reservation, call.workspaceId);
-        const exactDuplicate = await this.findIdempotentEntry(
-          tx,
-          input.organizationId,
-          input.idempotencyKey,
-        );
-        if (exactDuplicate) {
-          this.assertReservationFinalizationReplay(
-            exactDuplicate,
-            input.organizationId,
-            input.callId,
-            'reservation_release',
-            reservation,
-          );
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
-
-        const previousRelease = await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_release',
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (previousRelease) {
-          this.assertReservationFinalizationReplay(
-            previousRelease,
-            input.organizationId,
-            input.callId,
-            'reservation_release',
-            reservation,
-          );
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
-        const previousCommit = await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_commit',
-          },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (previousCommit) {
-          throw new CreditLedgerInvariantError(
-            `Cannot release committed reservation for call ${input.callId}`,
-          );
-        }
-
-        const allocations = this.parseReservationAllocations(
-          reservation.metadata,
-        );
-        const seconds = this.sumAllocations(allocations);
-        if (lockedBalance.reservedSeconds < seconds) {
-          throw new CreditLedgerInvariantError(
-            `Reserved balance is insufficient to release call ${input.callId}`,
-          );
-        }
-
-        await this.incrementAllocatedBuckets(
-          tx,
-          input.organizationId,
+          'reservation_release',
+          reservation,
           allocations,
         );
-        const updatedBalance = await tx.organizationCreditBalance.update({
-          where: { organizationId: input.organizationId },
-          data: {
-            availableSeconds: { increment: seconds },
-            reservedSeconds: { decrement: seconds },
-            version: { increment: 1 },
-          },
-        });
-        await tx.billingLedgerEntry.create({
-          data: {
-            organizationId: input.organizationId,
-            bucketId: null,
-            workspaceId: reservation.workspaceId,
-            callId: input.callId,
-            entryType: 'reservation_release',
-            seconds,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
-            actorType: 'system',
-            actorId: input.callId,
-            reasonCode: 'call_not_connected',
-            idempotencyKey: input.idempotencyKey,
-            metadata: this.jsonMetadata({
-              operation: {
-                kind: 'reservation_release',
-                organizationId: input.organizationId,
-                callId: input.callId,
-                reservationIdempotencyKey: reservation.idempotencyKey,
-              },
-              reservationIdempotencyKey: reservation.idempotencyKey,
-              allocations,
-            }),
-          },
-        });
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
 
-        return this.buildCreditBalance(tx, updatedBalance);
-      },
-    );
+      const previousRelease = await tx.billingLedgerEntry.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          callId: input.callId,
+          entryType: 'reservation_release',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (previousRelease) {
+        this.assertReservationFinalizationReplay(
+          previousRelease,
+          input.organizationId,
+          input.callId,
+          'reservation_release',
+          reservation,
+          allocations,
+        );
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+      const previousCommit = await tx.billingLedgerEntry.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          callId: input.callId,
+          entryType: 'reservation_commit',
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (previousCommit) {
+        throw new CreditLedgerInvariantError(
+          `Cannot release committed reservation for call ${input.callId}`,
+        );
+      }
+
+      const seconds = this.sumAllocations(allocations);
+      if (lockedBalance.reservedSeconds < seconds) {
+        throw new CreditLedgerInvariantError(
+          `Reserved balance is insufficient to release call ${input.callId}`,
+        );
+      }
+
+      await this.incrementAllocatedBuckets(tx, input.organizationId, allocations);
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { increment: seconds },
+          reservedSeconds: { decrement: seconds },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: null,
+          workspaceId: reservation.workspaceId,
+          callId: input.callId,
+          entryType: 'reservation_release',
+          seconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'system',
+          actorId: input.callId,
+          reasonCode: 'call_not_connected',
+          idempotencyKey: input.idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: {
+              kind: 'reservation_release',
+              organizationId: input.organizationId,
+              callId: input.callId,
+              reservationIdempotencyKey: reservation.idempotencyKey,
+            },
+            reservationIdempotencyKey: reservation.idempotencyKey,
+            allocations,
+          }),
+        },
+      });
+
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
   }
 
-  async reversePurchasedCredits(
-    rawInput: CreditReversalInput,
-  ): Promise<CreditBalance> {
+  async reversePurchasedCredits(rawInput: CreditReversalInput): Promise<CreditBalance> {
     const input = CreditReversalInputSchema.parse(rawInput);
     const idempotencyKey = `stripe:refund:${input.refundId}:topup_reversal`;
 
-    return this.withLockedBalance(
-      input.organizationId,
-      async (tx, lockedBalance) => {
-        const bucket = await tx.billingCreditBucket.findUnique({
-          where: {
-            organizationId_sourceType_sourceId: {
-              organizationId: input.organizationId,
-              sourceType: 'purchased',
-              sourceId: input.checkoutSessionId,
-            },
-          },
-        });
-        if (!bucket) {
-          throw new CreditLedgerInvariantError(
-            `Purchased credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
-          );
-        }
-        const existing = await this.findIdempotentEntry(
-          tx,
-          input.organizationId,
-          idempotencyKey,
-        );
-        if (existing) {
-          this.assertLedgerReplayIdentity(existing, {
-            entryTypes: [
-              'purchase_reversal',
-              'purchase_reversal_review',
-            ],
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const bucket = await tx.billingCreditBucket.findUnique({
+        where: {
+          organizationId_sourceType_sourceId: {
             organizationId: input.organizationId,
-            callId: null,
-            bucketId: bucket.id,
-            metadataSchema: PurchasedReversalReplayMetadataSchema,
-            operationMatches: ({ operation }) =>
-              operation.organizationId === input.organizationId &&
-              operation.checkoutSessionId === input.checkoutSessionId &&
-              operation.refundId === input.refundId &&
-              operation.bucketId === bucket.id,
-          });
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
-        if (bucket.status === 'refunded') {
-          throw new CreditLedgerInvariantError(
-            `Purchased credit bucket ${input.checkoutSessionId} was already refunded by another operation`,
-            'refund_already_processed',
-          );
-        }
+            sourceType: 'purchased',
+            sourceId: input.checkoutSessionId,
+          },
+        },
+      });
+      if (!bucket) {
+        throw new CreditLedgerInvariantError(
+          `Purchased credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
+        );
+      }
+      this.assertPurchasedBucketIdentity(bucket, input);
+      const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
+      if (existing) {
+        this.assertPurchasedReversalReplay(existing, input, bucket);
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+      if (bucket.status === 'refunded') {
+        throw new CreditLedgerInvariantError(
+          `Purchased credit bucket ${input.checkoutSessionId} was already refunded by another operation`,
+          'refund_already_processed',
+        );
+      }
 
-        const unusedSeconds = bucket.remainingSeconds;
-        const consumedOrReservedSeconds =
-          bucket.originalSeconds - bucket.remainingSeconds;
-        const reviewReason =
-          consumedOrReservedSeconds > 0
-            ? `Purchased credit refund for checkout ${input.checkoutSessionId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`
-            : null;
+      const unusedSeconds = bucket.remainingSeconds;
+      const consumedOrReservedSeconds = bucket.originalSeconds - bucket.remainingSeconds;
+      const reviewReason =
+        consumedOrReservedSeconds > 0
+          ? this.purchasedRefundReviewReason(input.checkoutSessionId, consumedOrReservedSeconds)
+          : null;
 
-        if (reviewReason) {
-          const blockedBalance = await tx.organizationCreditBalance.update({
-            where: { organizationId: input.organizationId },
-            data: {
-              status: 'blocked',
-              reviewReason,
-              version: { increment: 1 },
-            },
-          });
-          await tx.billingLedgerEntry.create({
-            data: {
-              organizationId: input.organizationId,
-              bucketId: bucket.id,
-              workspaceId: null,
-              callId: null,
-              entryType: 'purchase_reversal_review',
-              seconds: 0,
-              balanceAfterSeconds: this.totalOwned(blockedBalance),
-              actorType: 'stripe',
-              actorId: input.refundId,
-              reasonCode: 'refund_manual_review',
-              idempotencyKey,
-              metadata: this.jsonMetadata({
-                operation: this.purchasedReversalOperation(
-                  input,
-                  bucket.id,
-                ),
-                checkoutSessionId: input.checkoutSessionId,
-                refundId: input.refundId,
-                originalSeconds: bucket.originalSeconds,
-                unusedSecondsPreserved: unusedSeconds,
-                consumedOrReservedSeconds,
-                reviewReason,
-              }),
-            },
-          });
-          return this.buildCreditBalance(tx, blockedBalance);
-        }
-
-        if (lockedBalance.availableSeconds < unusedSeconds) {
-          throw new CreditLedgerInvariantError(
-            `Available balance cannot remove ${unusedSeconds} refunded seconds for organization ${input.organizationId}`,
-          );
-        }
-
-        await this.updateScopedBucket(tx, input.organizationId, bucket.id, {
-          remainingSeconds: 0,
-          status: 'refunded',
-        });
-        const updatedBalance = await tx.organizationCreditBalance.update({
+      if (reviewReason) {
+        const blockedBalance = await tx.organizationCreditBalance.update({
           where: { organizationId: input.organizationId },
           data: {
-            availableSeconds: { decrement: unusedSeconds },
+            status: 'blocked',
+            reviewReason,
             version: { increment: 1 },
           },
         });
@@ -1093,44 +949,83 @@ export class CreditLedgerService {
             bucketId: bucket.id,
             workspaceId: null,
             callId: null,
-            entryType: 'purchase_reversal',
-            seconds: -unusedSeconds,
-            balanceAfterSeconds: this.totalOwned(updatedBalance),
+            entryType: 'purchase_reversal_review',
+            seconds: 0,
+            balanceAfterSeconds: this.totalOwned(blockedBalance),
             actorType: 'stripe',
             actorId: input.refundId,
-            reasonCode: 'refund_unused_credit',
+            reasonCode: 'refund_manual_review',
             idempotencyKey,
             metadata: this.jsonMetadata({
-              operation: this.purchasedReversalOperation(input, bucket.id),
+              operation: this.purchasedReversalOperation(input, bucket),
               checkoutSessionId: input.checkoutSessionId,
               refundId: input.refundId,
               originalSeconds: bucket.originalSeconds,
-              unusedSecondsRemoved: unusedSeconds,
+              unusedSecondsPreserved: unusedSeconds,
               consumedOrReservedSeconds,
-              reviewReason: null,
+              reviewReason,
             }),
           },
         });
+        return this.buildCreditBalance(tx, blockedBalance);
+      }
 
-        return this.buildCreditBalance(tx, updatedBalance);
-      },
-    );
+      if (lockedBalance.availableSeconds < unusedSeconds) {
+        throw new CreditLedgerInvariantError(
+          `Available balance cannot remove ${unusedSeconds} refunded seconds for organization ${input.organizationId}`,
+        );
+      }
+
+      await this.updateScopedBucket(tx, input.organizationId, bucket.id, {
+        remainingSeconds: 0,
+        status: 'refunded',
+      });
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { decrement: unusedSeconds },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: bucket.id,
+          workspaceId: null,
+          callId: null,
+          entryType: 'purchase_reversal',
+          seconds: -unusedSeconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'stripe',
+          actorId: input.refundId,
+          reasonCode: 'refund_unused_credit',
+          idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: this.purchasedReversalOperation(input, bucket),
+            checkoutSessionId: input.checkoutSessionId,
+            refundId: input.refundId,
+            originalSeconds: bucket.originalSeconds,
+            unusedSecondsRemoved: unusedSeconds,
+            consumedOrReservedSeconds,
+            reviewReason: null,
+          }),
+        },
+      });
+
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
   }
 
   async getBalance(organizationId: string): Promise<CreditBalance> {
     const validatedOrganizationId = IdentifierSchema.parse(organizationId);
-    return this.withLockedBalance(
-      validatedOrganizationId,
-      (tx, lockedBalance) => this.buildCreditBalance(tx, lockedBalance),
+    return this.withLockedBalance(validatedOrganizationId, (tx, lockedBalance) =>
+      this.buildCreditBalance(tx, lockedBalance),
     );
   }
 
   private async withLockedBalance<T>(
     organizationId: string,
-    operation: (
-      tx: TransactionClient,
-      balance: OrganizationCreditBalance,
-    ) => Promise<T>,
+    operation: (tx: TransactionClient, balance: OrganizationCreditBalance) => Promise<T>,
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
       await tx.organizationCreditBalance.upsert({
@@ -1251,6 +1146,34 @@ export class CreditLedgerService {
     }
   }
 
+  private assertPersistedInitialReservationIdentity(
+    reservation: BillingLedgerEntry,
+    organizationId: string,
+    workspaceId: string,
+    callId: string,
+  ): ReservationAllocation[] {
+    if (!IdempotencyKeySchema.safeParse(reservation.idempotencyKey).success) {
+      throw new CreditLedgerInvariantError(
+        'Persisted initial reservation has an invalid idempotency key',
+        'idempotency_conflict',
+      );
+    }
+    const allocations = this.parseReservationAllocations(reservation.metadata);
+    this.assertInitialReservationIdentity(reservation, {
+      organizationId,
+      workspaceId,
+      callId,
+      idempotencyKey: reservation.idempotencyKey,
+    });
+    if (reservation.entryType !== 'reservation') {
+      throw new CreditLedgerInvariantError(
+        'Reservation finalization requires an allowed initial reservation',
+        'idempotency_conflict',
+      );
+    }
+    return allocations;
+  }
+
   private async decrementAllocatedBuckets(
     tx: TransactionClient,
     organizationId: string,
@@ -1297,11 +1220,7 @@ export class CreditLedgerService {
     organizationId: string,
     callId: string,
   ) {
-    const reservation = await this.findInitialReservationOrNull(
-      tx,
-      organizationId,
-      callId,
-    );
+    const reservation = await this.findInitialReservationOrNull(tx, organizationId, callId);
     if (!reservation) {
       throw new CreditLedgerInvariantError(
         `Initial reservation was not found for call ${callId}`,
@@ -1322,6 +1241,23 @@ export class CreditLedgerService {
         callId,
         entryType: 'reservation',
         reasonCode: 'initial_minute',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  private async findInitialReservationDecisionOrNull(
+    tx: TransactionClient,
+    organizationId: string,
+    callId: string,
+  ): Promise<BillingLedgerEntry | null> {
+    const reservation = await this.findInitialReservationOrNull(tx, organizationId, callId);
+    if (reservation) return reservation;
+    return tx.billingLedgerEntry.findFirst({
+      where: {
+        organizationId,
+        callId,
+        entryType: 'reservation_denied',
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -1370,11 +1306,9 @@ export class CreditLedgerService {
     tx: TransactionClient,
     balance: OrganizationCreditBalance,
     input: MinuteReservationInput,
-    reason: Extract<
-      EntitlementReason,
-      'credit_insufficient' | 'billing_temporarily_unavailable'
-    >,
+    reason: Extract<EntitlementReason, 'credit_insufficient' | 'billing_temporarily_unavailable'>,
   ): Promise<MinuteReservation> {
+    const creditBalance = await this.buildCreditBalance(tx, balance);
     await tx.billingLedgerEntry.create({
       data: {
         organizationId: input.organizationId,
@@ -1391,6 +1325,7 @@ export class CreditLedgerService {
         metadata: this.jsonMetadata({
           operation: this.initialReservationOperation(input),
           allocations: [],
+          creditBalance: { ...creditBalance },
         }),
       },
     });
@@ -1401,7 +1336,7 @@ export class CreditLedgerService {
       reason,
       seconds: 0,
       allocations: [],
-      creditBalance: await this.buildCreditBalance(tx, balance),
+      creditBalance,
     };
   }
 
@@ -1409,10 +1344,7 @@ export class CreditLedgerService {
     tx: TransactionClient,
     balance: OrganizationCreditBalance,
     input: NextMinuteInput,
-    reason: Extract<
-      EntitlementReason,
-      'credit_insufficient' | 'billing_temporarily_unavailable'
-    >,
+    reason: Extract<EntitlementReason, 'credit_insufficient' | 'billing_temporarily_unavailable'>,
   ): Promise<RuntimeUsageDecision> {
     await tx.billingLedgerEntry.create({
       data: {
@@ -1470,14 +1402,10 @@ export class CreditLedgerService {
       },
       orderBy: [{ priority: 'asc' }, { expiresAt: 'asc' }, { id: 'asc' }],
     });
-    const secondsBySource = buckets.reduce<Record<string, number>>(
-      (totals, bucket) => {
-        totals[bucket.sourceType] =
-          (totals[bucket.sourceType] ?? 0) + bucket.remainingSeconds;
-        return totals;
-      },
-      {},
-    );
+    const secondsBySource = buckets.reduce<Record<string, number>>((totals, bucket) => {
+      totals[bucket.sourceType] = (totals[bucket.sourceType] ?? 0) + bucket.remainingSeconds;
+      return totals;
+    }, {});
 
     return {
       organizationId: balance.organizationId,
@@ -1487,8 +1415,7 @@ export class CreditLedgerService {
       purchasedMinutesRemaining: Math.floor(
         (secondsBySource.purchased ?? 0) / CREDIT_SECONDS_PER_MINUTE,
       ),
-      lifetimeBrowserTestSecondsRemaining:
-        secondsBySource.lifetime_browser_test ?? 0,
+      lifetimeBrowserTestSecondsRemaining: secondsBySource.lifetime_browser_test ?? 0,
       availableSeconds: balance.availableSeconds,
       reservedSeconds: balance.reservedSeconds,
       totalOwnedSeconds: this.totalOwned(balance),
@@ -1502,47 +1429,18 @@ export class CreditLedgerService {
       organizationId: balance.organizationId,
       includedMinutesRemaining: balance.includedMinutesRemaining,
       purchasedMinutesRemaining: balance.purchasedMinutesRemaining,
-      lifetimeBrowserTestSecondsRemaining:
-        balance.lifetimeBrowserTestSecondsRemaining,
+      lifetimeBrowserTestSecondsRemaining: balance.lifetimeBrowserTestSecondsRemaining,
     };
   }
 
-  private async replayInitialReservation(
-    tx: TransactionClient,
-    balance: OrganizationCreditBalance,
+  private replayInitialReservation(
     input: MinuteReservationInput,
     entry: BillingLedgerEntry,
-  ): Promise<MinuteReservation> {
+  ): MinuteReservation {
     this.assertInitialReservationIdentity(entry, input);
+    const metadata = InitialReservationReplayMetadataSchema.parse(entry.metadata);
     const allowed = entry.entryType === 'reservation';
-    const allocations = allowed
-      ? this.parseReservationAllocations(entry.metadata)
-      : [];
-    if (allowed) {
-      const completedEntry =
-        (await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_commit',
-          },
-          orderBy: { createdAt: 'desc' },
-        })) ??
-        (await tx.billingLedgerEntry.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            callId: input.callId,
-            entryType: 'reservation_release',
-          },
-          orderBy: { createdAt: 'desc' },
-        }));
-      if (completedEntry) {
-        throw new CreditLedgerInvariantError(
-          `Initial reservation for call ${input.callId} is already finalized`,
-          'reservation_lifecycle_conflict',
-        );
-      }
-    }
+    const allocations = allowed ? metadata.allocations : [];
     return {
       organizationId: input.organizationId,
       callId: input.callId,
@@ -1550,7 +1448,7 @@ export class CreditLedgerService {
       reason: this.reasonFromLedger(entry.entryType, entry.reasonCode),
       seconds: this.sumAllocations(allocations),
       allocations,
-      creditBalance: await this.buildCreditBalance(tx, balance),
+      creditBalance: metadata.creditBalance,
     };
   }
 
@@ -1563,18 +1461,58 @@ export class CreditLedgerService {
       organizationId: input.organizationId,
       workspaceId: input.workspaceId,
       callId: input.callId,
+      bucketId: null,
       metadataSchema: InitialReservationReplayMetadataSchema,
       operationMatches: ({ operation }) =>
         operation.organizationId === input.organizationId &&
         operation.workspaceId === input.workspaceId &&
         operation.callId === input.callId,
     });
+    if (entry.idempotencyKey !== input.idempotencyKey) {
+      throw new CreditLedgerInvariantError(
+        'Initial reservation is bound to a different idempotency key',
+        'idempotency_conflict',
+      );
+    }
+
+    const metadata = InitialReservationReplayMetadataSchema.parse(entry.metadata);
+    if (
+      metadata.creditBalance.organizationId !== input.organizationId ||
+      metadata.creditBalance.totalOwnedSeconds !==
+        metadata.creditBalance.availableSeconds + metadata.creditBalance.reservedSeconds ||
+      entry.balanceAfterSeconds !== metadata.creditBalance.totalOwnedSeconds
+    ) {
+      throw new CreditLedgerInvariantError(
+        'Initial reservation replay balance snapshot is inconsistent with the ledger entry',
+        'idempotency_conflict',
+      );
+    }
+    if (entry.entryType === 'reservation') {
+      if (entry.seconds !== CREDIT_SECONDS_PER_MINUTE) {
+        throw new CreditLedgerInvariantError(
+          'Initial reservation replay must contain exactly plus 60 seconds',
+          'idempotency_conflict',
+        );
+      }
+      this.reasonFromLedger(entry.entryType, entry.reasonCode);
+      this.assertExactMinuteAllocations(
+        metadata.allocations,
+        'reservation_allocation_invalid',
+        'Initial reservation',
+      );
+      return;
+    }
+
+    if (entry.seconds !== 0 || metadata.allocations.length !== 0) {
+      throw new CreditLedgerInvariantError(
+        'Denied initial reservation replay must have zero seconds and no allocations',
+        'idempotency_conflict',
+      );
+    }
+    this.reasonFromLedger(entry.entryType, entry.reasonCode);
   }
 
-  private assertRuntimeDebitIdentity(
-    entry: BillingLedgerEntry,
-    input: NextMinuteInput,
-  ): void {
+  private assertRuntimeDebitIdentity(entry: BillingLedgerEntry, input: NextMinuteInput): void {
     this.assertLedgerReplayIdentity(entry, {
       entryTypes: ['usage_debit', 'usage_debit_denied'],
       organizationId: input.organizationId,
@@ -1590,14 +1528,11 @@ export class CreditLedgerService {
     });
     const metadata = RuntimeDebitReplayMetadataSchema.parse(entry.metadata);
     if (entry.entryType === 'usage_debit') {
-      const bucketIds = new Set(
-        metadata.allocations.map((allocation) => allocation.bucketId),
-      );
+      const bucketIds = new Set(metadata.allocations.map((allocation) => allocation.bucketId));
       if (
         entry.seconds !== -CREDIT_SECONDS_PER_MINUTE ||
         metadata.allocations.length === 0 ||
-        this.sumAllocations(metadata.allocations) !==
-          CREDIT_SECONDS_PER_MINUTE ||
+        this.sumAllocations(metadata.allocations) !== CREDIT_SECONDS_PER_MINUTE ||
         bucketIds.size !== metadata.allocations.length
       ) {
         throw new CreditLedgerInvariantError(
@@ -1622,12 +1557,17 @@ export class CreditLedgerService {
     callId: string,
     entryType: 'reservation_commit' | 'reservation_release',
     reservation: BillingLedgerEntry,
+    reservationAllocations: ReservationAllocation[],
   ): void {
     this.assertLedgerReplayIdentity(entry, {
       entryTypes: [entryType],
       organizationId,
       workspaceId: reservation.workspaceId,
       callId,
+      bucketId: null,
+      seconds:
+        entryType === 'reservation_commit' ? -CREDIT_SECONDS_PER_MINUTE : CREDIT_SECONDS_PER_MINUTE,
+      reasonCode: entryType === 'reservation_commit' ? 'call_connected' : 'call_not_connected',
       metadataSchema: ReservationFinalizationReplayMetadataSchema,
       operationMatches: ({ operation, reservationIdempotencyKey }) =>
         operation.kind === entryType &&
@@ -1636,6 +1576,18 @@ export class CreditLedgerService {
         operation.reservationIdempotencyKey === reservation.idempotencyKey &&
         reservationIdempotencyKey === reservation.idempotencyKey,
     });
+    const metadata = ReservationFinalizationReplayMetadataSchema.parse(entry.metadata);
+    this.assertExactMinuteAllocations(
+      metadata.allocations,
+      'idempotency_conflict',
+      'Reservation finalization',
+    );
+    if (!this.allocationsMatch(metadata.allocations, reservationAllocations)) {
+      throw new CreditLedgerInvariantError(
+        'Reservation finalization allocations do not match the persisted reservation',
+        'idempotency_conflict',
+      );
+    }
   }
 
   private assertLedgerReplayIdentity<T>(
@@ -1644,15 +1596,11 @@ export class CreditLedgerService {
   ): void {
     const parsed = expected.metadataSchema.safeParse(entry.metadata);
     const workspaceMatches =
-      expected.workspaceId === undefined ||
-      entry.workspaceId === expected.workspaceId;
-    const bucketMatches =
-      expected.bucketId === undefined || entry.bucketId === expected.bucketId;
-    const secondsMatch =
-      expected.seconds === undefined || entry.seconds === expected.seconds;
+      expected.workspaceId === undefined || entry.workspaceId === expected.workspaceId;
+    const bucketMatches = expected.bucketId === undefined || entry.bucketId === expected.bucketId;
+    const secondsMatch = expected.seconds === undefined || entry.seconds === expected.seconds;
     const reasonMatches =
-      expected.reasonCode === undefined ||
-      entry.reasonCode === expected.reasonCode;
+      expected.reasonCode === undefined || entry.reasonCode === expected.reasonCode;
     if (
       !expected.entryTypes.includes(entry.entryType) ||
       entry.organizationId !== expected.organizationId ||
@@ -1694,22 +1642,122 @@ export class CreditLedgerService {
     };
   }
 
+  private assertPurchasedBucketIdentity(
+    bucket: BillingCreditBucket,
+    input: CreditReversalInput,
+  ): void {
+    if (
+      bucket.organizationId !== input.organizationId ||
+      bucket.sourceType !== 'purchased' ||
+      bucket.sourceId !== input.checkoutSessionId ||
+      bucket.originalSeconds !== PURCHASED_PACK_SECONDS
+    ) {
+      throw new CreditLedgerInvariantError(
+        'Purchased reversal bucket does not match immutable purchase identity',
+        'idempotency_conflict',
+      );
+    }
+  }
+
+  private assertPurchasedReversalReplay(
+    entry: BillingLedgerEntry,
+    input: CreditReversalInput,
+    bucket: BillingCreditBucket,
+  ): void {
+    if (entry.entryType === 'purchase_reversal') {
+      this.assertLedgerReplayIdentity(entry, {
+        entryTypes: ['purchase_reversal'],
+        organizationId: input.organizationId,
+        workspaceId: null,
+        callId: null,
+        bucketId: bucket.id,
+        seconds: -PURCHASED_PACK_SECONDS,
+        reasonCode: 'refund_unused_credit',
+        metadataSchema: AutomaticPurchasedReversalReplayMetadataSchema,
+        operationMatches: (metadata) =>
+          this.purchasedReversalIdentityMatches(metadata.operation, input, bucket) &&
+          metadata.checkoutSessionId === input.checkoutSessionId &&
+          metadata.refundId === input.refundId &&
+          metadata.originalSeconds === bucket.originalSeconds &&
+          metadata.unusedSecondsRemoved === bucket.originalSeconds &&
+          metadata.consumedOrReservedSeconds === 0 &&
+          metadata.reviewReason === null,
+      });
+      return;
+    }
+
+    if (entry.entryType === 'purchase_reversal_review') {
+      this.assertLedgerReplayIdentity(entry, {
+        entryTypes: ['purchase_reversal_review'],
+        organizationId: input.organizationId,
+        workspaceId: null,
+        callId: null,
+        bucketId: bucket.id,
+        seconds: 0,
+        reasonCode: 'refund_manual_review',
+        metadataSchema: ManualReviewPurchasedReversalReplayMetadataSchema,
+        operationMatches: (metadata) =>
+          this.purchasedReversalIdentityMatches(metadata.operation, input, bucket) &&
+          metadata.checkoutSessionId === input.checkoutSessionId &&
+          metadata.refundId === input.refundId &&
+          metadata.originalSeconds === bucket.originalSeconds &&
+          metadata.unusedSecondsPreserved + metadata.consumedOrReservedSeconds ===
+            metadata.originalSeconds &&
+          metadata.reviewReason ===
+            this.purchasedRefundReviewReason(
+              input.checkoutSessionId,
+              metadata.consumedOrReservedSeconds,
+            ),
+      });
+      return;
+    }
+
+    throw new CreditLedgerInvariantError(
+      'Refund idempotency key is bound to another ledger entry type',
+      'idempotency_conflict',
+    );
+  }
+
+  private purchasedReversalIdentityMatches(
+    operation: z.infer<typeof PurchasedReversalOperationSchema>,
+    input: CreditReversalInput,
+    bucket: BillingCreditBucket,
+  ): boolean {
+    return (
+      operation.organizationId === input.organizationId &&
+      operation.checkoutSessionId === input.checkoutSessionId &&
+      operation.refundId === input.refundId &&
+      operation.bucketId === bucket.id &&
+      operation.sourceType === 'purchased' &&
+      operation.sourceId === input.checkoutSessionId &&
+      operation.originalSeconds === bucket.originalSeconds
+    );
+  }
+
+  private purchasedRefundReviewReason(
+    checkoutSessionId: string,
+    consumedOrReservedSeconds: number,
+  ): string {
+    return `Purchased credit refund for checkout ${checkoutSessionId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`;
+  }
+
   private purchasedReversalOperation(
     input: CreditReversalInput,
-    bucketId: string,
+    bucket: BillingCreditBucket,
   ): z.infer<typeof PurchasedReversalOperationSchema> {
     return {
       kind: 'purchased_credit_reversal',
       organizationId: input.organizationId,
       checkoutSessionId: input.checkoutSessionId,
       refundId: input.refundId,
-      bucketId,
+      bucketId: bucket.id,
+      sourceType: 'purchased',
+      sourceId: input.checkoutSessionId,
+      originalSeconds: PURCHASED_PACK_SECONDS,
     };
   }
 
-  private parseReservationAllocations(
-    metadata: Prisma.JsonValue | null,
-  ): ReservationAllocation[] {
+  private parseReservationAllocations(metadata: Prisma.JsonValue | null): ReservationAllocation[] {
     const parsed = ReservationMetadataSchema.safeParse(metadata);
     if (!parsed.success) {
       throw new CreditLedgerInvariantError(
@@ -1718,38 +1766,51 @@ export class CreditLedgerService {
       );
     }
     const allocations = parsed.data.allocations;
-    if (this.sumAllocations(allocations) !== CREDIT_SECONDS_PER_MINUTE) {
-      throw new CreditLedgerInvariantError(
-        `Reservation allocations must total exactly ${CREDIT_SECONDS_PER_MINUTE} seconds`,
-        'reservation_allocation_invalid',
-      );
-    }
-    const bucketIds = new Set(
-      allocations.map((allocation) => allocation.bucketId),
-    );
-    if (bucketIds.size !== allocations.length) {
-      throw new CreditLedgerInvariantError(
-        'Reservation allocations must contain unique bucket IDs',
-        'reservation_allocation_invalid',
-      );
-    }
+    this.assertExactMinuteAllocations(allocations, 'reservation_allocation_invalid', 'Reservation');
     return allocations;
   }
 
-  private reasonFromLedger(
-    entryType: string,
+  private assertExactMinuteAllocations(
+    allocations: ReservationAllocation[],
     reasonCode: string,
-  ): EntitlementReason {
+    context: string,
+  ): void {
+    if (this.sumAllocations(allocations) !== CREDIT_SECONDS_PER_MINUTE) {
+      throw new CreditLedgerInvariantError(
+        `${context} allocations must total exactly ${CREDIT_SECONDS_PER_MINUTE} seconds`,
+        reasonCode,
+      );
+    }
+    const bucketIds = new Set(allocations.map((allocation) => allocation.bucketId));
+    if (bucketIds.size !== allocations.length) {
+      throw new CreditLedgerInvariantError(
+        `${context} allocations must contain unique bucket IDs`,
+        reasonCode,
+      );
+    }
+  }
+
+  private allocationsMatch(
+    actual: ReservationAllocation[],
+    expected: ReservationAllocation[],
+  ): boolean {
+    if (actual.length !== expected.length) return false;
+    const secondsByBucket = new Map(
+      expected.map((allocation) => [allocation.bucketId, allocation.seconds]),
+    );
+    return actual.every(
+      (allocation) => secondsByBucket.get(allocation.bucketId) === allocation.seconds,
+    );
+  }
+
+  private reasonFromLedger(entryType: string, reasonCode: string): EntitlementReason {
     if (
       (entryType === 'reservation' && reasonCode === 'initial_minute') ||
       (entryType === 'usage_debit' && reasonCode === 'minute_boundary')
     ) {
       return 'allowed';
     }
-    if (
-      entryType === 'reservation_denied' ||
-      entryType === 'usage_debit_denied'
-    ) {
+    if (entryType === 'reservation_denied' || entryType === 'usage_debit_denied') {
       if (reasonCode === 'credit_insufficient') return 'credit_insufficient';
       if (reasonCode === 'billing_temporarily_unavailable') {
         return 'billing_temporarily_unavailable';
@@ -1762,24 +1823,16 @@ export class CreditLedgerService {
   }
 
   private sumAllocations(allocations: ReservationAllocation[]): number {
-    return allocations.reduce(
-      (total, allocation) => total + allocation.seconds,
-      0,
-    );
+    return allocations.reduce((total, allocation) => total + allocation.seconds, 0);
   }
 
   private totalOwned(
-    balance: Pick<
-      OrganizationCreditBalance,
-      'availableSeconds' | 'reservedSeconds'
-    >,
+    balance: Pick<OrganizationCreditBalance, 'availableSeconds' | 'reservedSeconds'>,
   ): number {
     return balance.availableSeconds + balance.reservedSeconds;
   }
 
-  private jsonMetadata(
-    value: Record<string, Prisma.JsonValue>,
-  ): Prisma.InputJsonValue {
+  private jsonMetadata(value: Record<string, Prisma.JsonValue>): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
   }
 }

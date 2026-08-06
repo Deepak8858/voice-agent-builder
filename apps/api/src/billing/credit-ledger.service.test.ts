@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  CreditLedgerService,
-  type CreditBalance,
-} from './credit-ledger.service';
+import { CreditLedgerService, type CreditBalance } from './credit-ledger.service';
 
 type BalanceRecord = {
   id: string;
@@ -50,10 +47,27 @@ type LedgerRecord = {
 
 type NumberMutation = number | { increment?: number; decrement?: number };
 
-function mutateNumber(
-  current: number,
-  mutation: NumberMutation | undefined,
-): number {
+type TransactionEvent = {
+  transactionId: number;
+  action: string;
+  organizationId: string;
+  query?: string;
+};
+
+type TransactionContext = {
+  id: number;
+  upsertedOrganizationId: string | null;
+  pendingBalance: BalanceRecord | null;
+  lockedOrganizationId: string | null;
+  releaseLock: (() => void) | null;
+  snapshot: {
+    balance: BalanceRecord | null;
+    buckets: BucketRecord[];
+    ledger: LedgerRecord[];
+  } | null;
+};
+
+function mutateNumber(current: number, mutation: NumberMutation | undefined): number {
   if (mutation === undefined) return current;
   if (typeof mutation === 'number') return mutation;
   return current + (mutation.increment ?? 0) - (mutation.decrement ?? 0);
@@ -63,17 +77,13 @@ class MemoryPrisma {
   readonly balances = new Map<string, BalanceRecord>();
   readonly buckets: BucketRecord[] = [];
   readonly ledger: LedgerRecord[] = [];
-  readonly workspaces = new Map<
-    string,
-    { id: string; organizationId: string }
-  >();
-  readonly calls = new Map<
-    string,
-    { id: string; organizationId: string; workspaceId: string }
-  >();
+  readonly workspaces = new Map<string, { id: string; organizationId: string }>();
+  readonly calls = new Map<string, { id: string; organizationId: string; workspaceId: string }>();
+  readonly transactionEvents: TransactionEvent[] = [];
 
   private sequence = 0;
-  private transactionTail: Promise<void> = Promise.resolve();
+  private transactionSequence = 0;
+  private readonly organizationLockTails = new Map<string, Promise<void>>();
 
   readonly organizationCreditBalance = {
     upsert: async (input: {
@@ -118,20 +128,12 @@ class MemoryPrisma {
       const current = this.requireBalance(input.where.organizationId);
       const updated: BalanceRecord = {
         ...current,
-        availableSeconds: mutateNumber(
-          current.availableSeconds,
-          input.data.availableSeconds,
-        ),
-        reservedSeconds: mutateNumber(
-          current.reservedSeconds,
-          input.data.reservedSeconds,
-        ),
+        availableSeconds: mutateNumber(current.availableSeconds, input.data.availableSeconds),
+        reservedSeconds: mutateNumber(current.reservedSeconds, input.data.reservedSeconds),
         version: mutateNumber(current.version, input.data.version),
         status: input.data.status ?? current.status,
         reviewReason:
-          input.data.reviewReason === undefined
-            ? current.reviewReason
-            : input.data.reviewReason,
+          input.data.reviewReason === undefined ? current.reviewReason : input.data.reviewReason,
         updatedAt: new Date(),
       };
       if (updated.availableSeconds < 0 || updated.reservedSeconds < 0) {
@@ -176,8 +178,7 @@ class MemoryPrisma {
     }): Promise<BucketRecord[]> => {
       const filtered = this.buckets.filter((bucket) => {
         if (bucket.organizationId !== input.where.organizationId) return false;
-        if (input.where.status && bucket.status !== input.where.status)
-          return false;
+        if (input.where.status && bucket.status !== input.where.status) return false;
         if (
           input.where.validFrom?.lte &&
           bucket.validFrom.getTime() > input.where.validFrom.lte.getTime()
@@ -201,7 +202,8 @@ class MemoryPrisma {
       filtered.sort(
         (left, right) =>
           left.priority - right.priority ||
-          left.expiresAt.getTime() - right.expiresAt.getTime(),
+          left.expiresAt.getTime() - right.expiresAt.getTime() ||
+          left.id.localeCompare(right.id),
       );
       return structuredClone(filtered);
     },
@@ -227,24 +229,16 @@ class MemoryPrisma {
       where: { id: string };
       data: { remainingSeconds?: NumberMutation; status?: string };
     }): Promise<BucketRecord> => {
-      const index = this.buckets.findIndex(
-        (bucket) => bucket.id === input.where.id,
-      );
+      const index = this.buckets.findIndex((bucket) => bucket.id === input.where.id);
       if (index < 0) throw new Error(`missing bucket ${input.where.id}`);
       const current = this.buckets[index]!;
       const updated: BucketRecord = {
         ...current,
-        remainingSeconds: mutateNumber(
-          current.remainingSeconds,
-          input.data.remainingSeconds,
-        ),
+        remainingSeconds: mutateNumber(current.remainingSeconds, input.data.remainingSeconds),
         status: input.data.status ?? current.status,
         updatedAt: new Date(),
       };
-      if (
-        updated.remainingSeconds < 0 ||
-        updated.remainingSeconds > updated.originalSeconds
-      ) {
+      if (updated.remainingSeconds < 0 || updated.remainingSeconds > updated.originalSeconds) {
         throw new Error('invalid bucket balance');
       }
       this.buckets[index] = updated;
@@ -256,24 +250,17 @@ class MemoryPrisma {
     }): Promise<{ count: number }> => {
       const index = this.buckets.findIndex(
         (bucket) =>
-          bucket.id === input.where.id &&
-          bucket.organizationId === input.where.organizationId,
+          bucket.id === input.where.id && bucket.organizationId === input.where.organizationId,
       );
       if (index < 0) return { count: 0 };
       const current = this.buckets[index]!;
       const updated: BucketRecord = {
         ...current,
-        remainingSeconds: mutateNumber(
-          current.remainingSeconds,
-          input.data.remainingSeconds,
-        ),
+        remainingSeconds: mutateNumber(current.remainingSeconds, input.data.remainingSeconds),
         status: input.data.status ?? current.status,
         updatedAt: new Date(),
       };
-      if (
-        updated.remainingSeconds < 0 ||
-        updated.remainingSeconds > updated.originalSeconds
-      ) {
+      if (updated.remainingSeconds < 0 || updated.remainingSeconds > updated.originalSeconds) {
         throw new Error('invalid bucket balance');
       }
       this.buckets[index] = updated;
@@ -299,12 +286,7 @@ class MemoryPrisma {
       return entry ? structuredClone(entry) : null;
     },
     findFirst: async (input: {
-      where: Partial<
-        Pick<
-          LedgerRecord,
-          'organizationId' | 'callId' | 'entryType' | 'reasonCode'
-        >
-      >;
+      where: Partial<Pick<LedgerRecord, 'organizationId' | 'callId' | 'entryType' | 'reasonCode'>>;
       orderBy?: { createdAt: 'asc' | 'desc' };
     }): Promise<LedgerRecord | null> => {
       const matches = this.ledger.filter((entry) =>
@@ -339,9 +321,7 @@ class MemoryPrisma {
       where: { id: string; organizationId: string };
     }): Promise<{ id: string } | null> => {
       const workspace = this.workspaces.get(input.where.id);
-      return workspace?.organizationId === input.where.organizationId
-        ? { id: workspace.id }
-        : null;
+      return workspace?.organizationId === input.where.organizationId ? { id: workspace.id } : null;
     },
   };
 
@@ -354,12 +334,8 @@ class MemoryPrisma {
       };
     }): Promise<{ id: string; workspaceId: string } | null> => {
       const call = this.calls.get(input.where.id);
-      if (!call || call.organizationId !== input.where.organizationId)
-        return null;
-      if (
-        input.where.workspaceId &&
-        call.workspaceId !== input.where.workspaceId
-      ) {
+      if (!call || call.organizationId !== input.where.organizationId) return null;
+      if (input.where.workspaceId && call.workspaceId !== input.where.workspaceId) {
         return null;
       }
       return { id: call.id, workspaceId: call.workspaceId };
@@ -369,35 +345,245 @@ class MemoryPrisma {
   readonly $queryRaw = async (
     _strings: TemplateStringsArray,
     ..._values: unknown[]
-  ): Promise<Array<{ id: string }>> => [];
+  ): Promise<Array<{ id: string }>> => {
+    throw new Error('row locks must be acquired through a transaction client');
+  };
 
-  async $transaction<T>(
-    operation: (tx: MemoryPrisma) => Promise<T>,
-  ): Promise<T> {
-    let releaseLock: (() => void) | undefined;
-    const previous = this.transactionTail;
-    this.transactionTail = new Promise<void>((resolve) => {
-      releaseLock = resolve;
-    });
-
-    await previous;
-    const snapshot = {
-      balances: structuredClone(Array.from(this.balances.entries())),
-      buckets: structuredClone(this.buckets),
-      ledger: structuredClone(this.ledger),
+  async $transaction<T>(operation: (tx: MemoryPrisma) => Promise<T>): Promise<T> {
+    const context: TransactionContext = {
+      id: ++this.transactionSequence,
+      upsertedOrganizationId: null,
+      pendingBalance: null,
+      lockedOrganizationId: null,
+      releaseLock: null,
+      snapshot: null,
     };
     try {
-      return await operation(this);
+      return await operation(this.createTransactionClient(context));
     } catch (error) {
-      this.balances.clear();
-      for (const [key, value] of snapshot.balances)
-        this.balances.set(key, value);
-      this.buckets.splice(0, this.buckets.length, ...snapshot.buckets);
-      this.ledger.splice(0, this.ledger.length, ...snapshot.ledger);
+      this.restoreTransactionSnapshot(context);
       throw error;
     } finally {
-      releaseLock?.();
+      context.releaseLock?.();
     }
+  }
+
+  private createTransactionClient(context: TransactionContext): MemoryPrisma {
+    const organizationCreditBalance: MemoryPrisma['organizationCreditBalance'] = {
+      upsert: async (input) => {
+        const organizationId = input.where.organizationId;
+        this.recordTransactionEvent(context, 'balance.upsert', organizationId);
+        if (context.lockedOrganizationId !== null) {
+          throw new Error('balance upsert must occur before row lock');
+        }
+        if (
+          context.upsertedOrganizationId !== null &&
+          context.upsertedOrganizationId !== organizationId
+        ) {
+          throw new Error('transaction cannot upsert multiple organizations');
+        }
+        context.upsertedOrganizationId = organizationId;
+        const existing = this.balances.get(organizationId);
+        if (existing) return structuredClone(existing);
+        if (!context.pendingBalance) {
+          const now = new Date();
+          context.pendingBalance = {
+            id: this.nextId('balance'),
+            organizationId,
+            availableSeconds: 0,
+            reservedSeconds: 0,
+            status: 'active',
+            reviewReason: null,
+            version: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+        return structuredClone(context.pendingBalance);
+      },
+      findUnique: async (input) => {
+        this.assertLockedAccess(context, 'balance.findUnique', input.where.organizationId);
+        return this.organizationCreditBalance.findUnique(input);
+      },
+      update: async (input) => {
+        this.assertLockedAccess(context, 'balance.update', input.where.organizationId);
+        return this.organizationCreditBalance.update(input);
+      },
+    };
+
+    const billingCreditBucket: MemoryPrisma['billingCreditBucket'] = {
+      create: async (input) => {
+        this.assertLockedAccess(context, 'bucket.create', input.data.organizationId);
+        return this.billingCreditBucket.create(input);
+      },
+      findMany: async (input) => {
+        this.assertLockedAccess(context, 'bucket.findMany', input.where.organizationId);
+        return this.billingCreditBucket.findMany(input);
+      },
+      findUnique: async (input) => {
+        const organizationId = input.where.organizationId_sourceType_sourceId.organizationId;
+        this.assertLockedAccess(context, 'bucket.findUnique', organizationId);
+        return this.billingCreditBucket.findUnique(input);
+      },
+      update: async (input) => {
+        const organizationId = this.buckets.find(
+          (bucket) => bucket.id === input.where.id,
+        )?.organizationId;
+        this.assertLockedAccess(context, 'bucket.update', organizationId);
+        return this.billingCreditBucket.update(input);
+      },
+      updateMany: async (input) => {
+        this.assertLockedAccess(context, 'bucket.updateMany', input.where.organizationId);
+        return this.billingCreditBucket.updateMany(input);
+      },
+    };
+
+    const billingLedgerEntry: MemoryPrisma['billingLedgerEntry'] = {
+      findUnique: async (input) => {
+        const organizationId = input.where.organizationId_idempotencyKey.organizationId;
+        this.assertLockedAccess(context, 'ledger.findUnique', organizationId);
+        return this.billingLedgerEntry.findUnique(input);
+      },
+      findFirst: async (input) => {
+        this.assertLockedAccess(context, 'ledger.findFirst', input.where.organizationId);
+        return this.billingLedgerEntry.findFirst(input);
+      },
+      create: async (input) => {
+        this.assertLockedAccess(context, 'ledger.create', input.data.organizationId);
+        return this.billingLedgerEntry.create(input);
+      },
+    };
+
+    const workspace: MemoryPrisma['workspace'] = {
+      findFirst: async (input) => {
+        this.assertLockedAccess(context, 'workspace.findFirst', input.where.organizationId);
+        return this.workspace.findFirst(input);
+      },
+    };
+
+    const call: MemoryPrisma['call'] = {
+      findFirst: async (input) => {
+        this.assertLockedAccess(context, 'call.findFirst', input.where.organizationId);
+        return this.call.findFirst(input);
+      },
+    };
+
+    return {
+      organizationCreditBalance,
+      billingCreditBucket,
+      billingLedgerEntry,
+      workspace,
+      call,
+      $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) =>
+        this.acquireOrganizationRowLock(context, strings, values),
+    } as unknown as MemoryPrisma;
+  }
+
+  private async acquireOrganizationRowLock(
+    context: TransactionContext,
+    strings: TemplateStringsArray,
+    values: unknown[],
+  ): Promise<Array<{ id: string }>> {
+    const query = strings
+      .map((part, index) => (index < values.length ? `${part}$${index + 1}` : part))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const expectedQuery =
+      'SELECT id FROM organization_credit_balances WHERE organization_id = $1::uuid FOR UPDATE';
+    const organizationId = values[0];
+    if (query !== expectedQuery || values.length !== 1 || typeof organizationId !== 'string') {
+      throw new Error(`unexpected row-lock query: ${query}`);
+    }
+    if (context.upsertedOrganizationId !== organizationId) {
+      throw new Error('organization projection upsert must precede row lock');
+    }
+    if (context.lockedOrganizationId !== null) {
+      throw new Error('transaction attempted to acquire more than one row lock');
+    }
+
+    context.releaseLock = await this.acquireOrganizationLock(organizationId);
+    context.lockedOrganizationId = organizationId;
+    context.snapshot = this.snapshotOrganizationState(organizationId);
+    if (!this.balances.has(organizationId) && context.pendingBalance) {
+      this.balances.set(organizationId, structuredClone(context.pendingBalance));
+    }
+    this.recordTransactionEvent(context, 'organization.row_lock', organizationId, query);
+    return [{ id: this.requireBalance(organizationId).id }];
+  }
+
+  private async acquireOrganizationLock(organizationId: string): Promise<() => void> {
+    const previous = this.organizationLockTails.get(organizationId) ?? Promise.resolve();
+    let releaseCurrent: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.organizationLockTails.set(organizationId, tail);
+    await previous;
+    return () => {
+      releaseCurrent?.();
+      if (this.organizationLockTails.get(organizationId) === tail) {
+        this.organizationLockTails.delete(organizationId);
+      }
+    };
+  }
+
+  private assertLockedAccess(
+    context: TransactionContext,
+    action: string,
+    organizationId: string | undefined,
+  ): asserts organizationId is string {
+    if (organizationId === undefined || context.lockedOrganizationId !== organizationId) {
+      throw new Error(`${action} must follow the matching organization row lock`);
+    }
+    this.recordTransactionEvent(context, action, organizationId);
+  }
+
+  private recordTransactionEvent(
+    context: TransactionContext,
+    action: string,
+    organizationId: string,
+    query?: string,
+  ): void {
+    this.transactionEvents.push({
+      transactionId: context.id,
+      action,
+      organizationId,
+      ...(query ? { query } : {}),
+    });
+  }
+
+  private snapshotOrganizationState(organizationId: string) {
+    return structuredClone({
+      balance: this.balances.get(organizationId) ?? null,
+      buckets: this.buckets.filter((bucket) => bucket.organizationId === organizationId),
+      ledger: this.ledger.filter((entry) => entry.organizationId === organizationId),
+    });
+  }
+
+  private restoreTransactionSnapshot(context: TransactionContext): void {
+    if (!context.snapshot || !context.lockedOrganizationId) return;
+    const organizationId = context.lockedOrganizationId;
+    if (context.snapshot.balance) {
+      this.balances.set(organizationId, structuredClone(context.snapshot.balance));
+    } else {
+      this.balances.delete(organizationId);
+    }
+    const otherBuckets = this.buckets.filter((bucket) => bucket.organizationId !== organizationId);
+    this.buckets.splice(
+      0,
+      this.buckets.length,
+      ...otherBuckets,
+      ...structuredClone(context.snapshot.buckets),
+    );
+    const otherLedger = this.ledger.filter((entry) => entry.organizationId !== organizationId);
+    this.ledger.splice(
+      0,
+      this.ledger.length,
+      ...otherLedger,
+      ...structuredClone(context.snapshot.ledger),
+    );
   }
 
   seedSeconds(input: {
@@ -435,11 +621,7 @@ class MemoryPrisma {
     });
   }
 
-  seedRuntimeScope(input: {
-    organizationId: string;
-    workspaceId: string;
-    callId: string;
-  }): void {
+  seedRuntimeScope(input: { organizationId: string; workspaceId: string; callId: string }): void {
     this.workspaces.set(input.workspaceId, {
       id: input.workspaceId,
       organizationId: input.organizationId,
@@ -492,6 +674,16 @@ function expectExactSeconds(
   expect(balance.reservedSeconds).toBeGreaterThanOrEqual(0);
 }
 
+function snapshotCreditState(prisma: MemoryPrisma) {
+  return structuredClone({
+    projection: Array.from(prisma.balances.entries()).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+    buckets: [...prisma.buckets].sort((left, right) => left.id.localeCompare(right.id)),
+    ledger: [...prisma.ledger].sort((left, right) => left.id.localeCompare(right.id)),
+  });
+}
+
 describe('CreditLedgerService', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -512,6 +704,7 @@ describe('CreditLedgerService', () => {
     };
 
     const first = await service.grantSubscriptionCredits(input);
+    const stateAfterFirst = snapshotCreditState(prisma);
     const duplicate = await service.grantSubscriptionCredits(input);
 
     expectExactSeconds(first, {
@@ -540,6 +733,7 @@ describe('CreditLedgerService', () => {
         idempotencyKey: 'stripe:invoice:in_123:included',
       },
     ]);
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
   });
 
   it('consumes included buckets before purchased buckets', async () => {
@@ -573,12 +767,10 @@ describe('CreditLedgerService', () => {
     expect(decision.reason).toBe('allowed');
     expect(decision.billableMinutes).toBe(1);
     expect(
-      prisma.buckets.find((bucket) => bucket.sourceType === 'included')
-        ?.remainingSeconds,
+      prisma.buckets.find((bucket) => bucket.sourceType === 'included')?.remainingSeconds,
     ).toBe(0);
     expect(
-      prisma.buckets.find((bucket) => bucket.sourceType === 'purchased')
-        ?.remainingSeconds,
+      prisma.buckets.find((bucket) => bucket.sourceType === 'purchased')?.remainingSeconds,
     ).toBe(6_000);
   });
 
@@ -649,6 +841,7 @@ describe('CreditLedgerService', () => {
       callId: 'call-commit',
       idempotencyKey: 'call:call-commit:connect-commit',
     });
+    const stateAfterFirst = snapshotCreditState(prisma);
     const duplicate = await service.commitReservation({
       organizationId: 'org-commit',
       callId: 'call-commit',
@@ -661,9 +854,10 @@ describe('CreditLedgerService', () => {
       totalOwned: 0,
     });
     expect(duplicate).toEqual(first);
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit'),
-    ).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit')).toHaveLength(
+      1,
+    );
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
   });
 
   it('releases the full reservation when a call never connects', async () => {
@@ -692,6 +886,7 @@ describe('CreditLedgerService', () => {
       callId: 'call-release',
       idempotencyKey: 'call:call-release:no-connect-release',
     });
+    const stateAfterFirst = snapshotCreditState(prisma);
     const duplicate = await service.releaseReservation({
       organizationId: 'org-release',
       callId: 'call-release',
@@ -705,11 +900,10 @@ describe('CreditLedgerService', () => {
     });
     expect(duplicate).toEqual(released);
     expect(prisma.buckets[0]?.remainingSeconds).toBe(60);
-    expect(
-      prisma.ledger.filter(
-        (entry) => entry.entryType === 'reservation_release',
-      ),
-    ).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation_release')).toHaveLength(
+      1,
+    );
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
   });
 
   it('refuses a reservation when only 59 seconds are available', async () => {
@@ -783,14 +977,43 @@ describe('CreditLedgerService', () => {
       }),
     ]);
 
+    expect(reservations.filter((reservation) => reservation.allowed)).toHaveLength(1);
     expect(
-      reservations.filter((reservation) => reservation.allowed),
+      reservations.filter((reservation) => reservation.reason === 'credit_insufficient'),
     ).toHaveLength(1);
-    expect(
-      reservations.filter(
-        (reservation) => reservation.reason === 'credit_insufficient',
-      ),
-    ).toHaveLength(1);
+    const raceTrace =
+      (
+        prisma as unknown as {
+          transactionEvents?: Array<{
+            transactionId: number;
+            action: string;
+            organizationId?: string;
+          }>;
+        }
+      ).transactionEvents ?? [];
+    const raceTransactions = new Set(
+      raceTrace
+        .filter(
+          (event) =>
+            event.action === 'organization.row_lock' && event.organizationId === 'org-concurrent',
+        )
+        .map((event) => event.transactionId),
+    );
+    expect(raceTransactions.size).toBe(2);
+    for (const transactionId of raceTransactions) {
+      const actions = raceTrace
+        .filter((event) => event.transactionId === transactionId)
+        .map((event) => event.action);
+      expect(actions.indexOf('balance.upsert')).toBeLessThan(
+        actions.indexOf('organization.row_lock'),
+      );
+      expect(actions.indexOf('organization.row_lock')).toBeLessThan(
+        actions.indexOf('balance.findUnique'),
+      );
+      expect(actions.indexOf('organization.row_lock')).toBeLessThan(
+        actions.indexOf('bucket.findMany'),
+      );
+    }
     const balance = await service.getBalance('org-concurrent');
     expectExactSeconds(balance, {
       available: 0,
@@ -798,6 +1021,123 @@ describe('CreditLedgerService', () => {
       totalOwned: 60,
     });
     expect(prisma.buckets[0]?.remainingSeconds).toBe(0);
+  });
+
+  it('does not serialize transaction callbacks before a row lock is requested', async () => {
+    const prisma = new MemoryPrisma();
+    const entered: string[] = [];
+    let releaseGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const first = prisma.$transaction(async () => {
+      entered.push('first');
+      await gate;
+    });
+    const second = prisma.$transaction(async () => {
+      entered.push('second');
+      await gate;
+    });
+
+    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    try {
+      expect(entered).toEqual(['first', 'second']);
+    } finally {
+      releaseGate?.();
+      await Promise.all([first, second]);
+    }
+  });
+
+  it('traces projection upsert, the exact organization row lock, then shared reads and mutations', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-lock-trace',
+      workspaceId: 'workspace-lock-trace',
+      callId: 'call-lock-trace',
+    });
+    prisma.seedSeconds({
+      organizationId: 'org-lock-trace',
+      sourceType: 'included',
+      sourceId: 'in-lock-trace',
+      seconds: 60,
+      priority: 10,
+    });
+
+    await service.reserveInitialMinute({
+      organizationId: 'org-lock-trace',
+      workspaceId: 'workspace-lock-trace',
+      callId: 'call-lock-trace',
+      idempotencyKey: 'reservation-lock-trace',
+    });
+
+    const trace =
+      (
+        prisma as unknown as {
+          transactionEvents?: Array<{
+            transactionId: number;
+            action: string;
+            organizationId?: string;
+            query?: string;
+          }>;
+        }
+      ).transactionEvents ?? [];
+    expect(trace.map((event) => event.action)).toEqual([
+      'balance.upsert',
+      'organization.row_lock',
+      'balance.findUnique',
+      'workspace.findFirst',
+      'call.findFirst',
+      'ledger.findUnique',
+      'ledger.findFirst',
+      'ledger.findFirst',
+      'bucket.findMany',
+      'bucket.updateMany',
+      'balance.update',
+      'bucket.findMany',
+      'ledger.create',
+    ]);
+    expect(trace[1]).toEqual({
+      transactionId: trace[0]?.transactionId,
+      action: 'organization.row_lock',
+      organizationId: 'org-lock-trace',
+      query:
+        'SELECT id FROM organization_credit_balances WHERE organization_id = $1::uuid FOR UPDATE',
+    });
+  });
+
+  it('uses bucket ID as the stable allocation tie-breaker in the test double', async () => {
+    const { prisma, service } = makeService();
+    const organizationId = 'org-stable-bucket-order';
+    await service.grantSubscriptionCredits({
+      organizationId,
+      invoiceId: 'in-stable-b',
+      includedMinutes: 1,
+      periodEnd: PERIOD_END,
+    });
+    await service.grantSubscriptionCredits({
+      organizationId,
+      invoiceId: 'in-stable-a',
+      includedMinutes: 1,
+      periodEnd: PERIOD_END,
+    });
+    prisma.seedRuntimeScope({
+      organizationId,
+      workspaceId: 'workspace-stable-bucket-order',
+      callId: 'call-stable-bucket-order',
+    });
+    const expectedFirstBucketId = prisma.buckets
+      .map((bucket) => bucket.id)
+      .sort((left, right) => left.localeCompare(right))[0]!;
+    prisma.buckets.reverse();
+
+    const reservation = await service.reserveInitialMinute({
+      organizationId,
+      workspaceId: 'workspace-stable-bucket-order',
+      callId: 'call-stable-bucket-order',
+      idempotencyKey: 'reservation-stable-bucket-order',
+    });
+
+    expect(reservation.allocations).toEqual([{ bucketId: expectedFirstBucketId, seconds: 60 }]);
   });
 
   it('removes unused purchased credit on a refund', async () => {
@@ -917,9 +1257,7 @@ describe('CreditLedgerService', () => {
       reserved: 60,
       totalOwned: 120,
     });
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation'),
-    ).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation')).toHaveLength(1);
   });
 
   it('rejects a conflicting next-minute key reused for another event and call', async () => {
@@ -968,18 +1306,62 @@ describe('CreditLedgerService', () => {
       reserved: 0,
       totalOwned: 60,
     });
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'usage_debit')).toHaveLength(1);
+  });
+
+  it('does not let a denied initial reservation gain admission through a new key', async () => {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: 'org-denied-reservation-key',
+      workspaceId: 'workspace-denied-reservation-key',
+      callId: 'call-denied-reservation-key',
+      idempotencyKey: 'denied-reservation-key-a',
+    };
+    prisma.seedRuntimeScope(input);
+    prisma.seedSeconds({
+      organizationId: input.organizationId,
+      sourceType: 'included',
+      sourceId: 'in_denied_reservation_key',
+      seconds: 59,
+      priority: 10,
+    });
+    const denied = await service.reserveInitialMinute(input);
+    expect(denied).toMatchObject({ allowed: false, reason: 'credit_insufficient' });
+
+    await service.grantSubscriptionCredits({
+      organizationId: input.organizationId,
+      invoiceId: 'in_denied_reservation_retry_credit',
+      includedMinutes: 1,
+      periodEnd: PERIOD_END,
+    });
+    const stateBeforeRetry = snapshotCreditState(prisma);
+
+    await expect(
+      service.reserveInitialMinute({
+        ...input,
+        idempotencyKey: 'denied-reservation-key-b',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeRetry);
     expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'usage_debit'),
+      prisma.ledger.filter(
+        (entry) =>
+          entry.callId === input.callId &&
+          (entry.entryType === 'reservation' || entry.entryType === 'reservation_denied'),
+      ),
     ).toHaveLength(1);
   });
 
-  it('does not create a second initial reservation for the same call with a new key', async () => {
+  it('rejects a second reservation key without aliasing it and binds it only to a later exact call identity', async () => {
     const { prisma, service } = makeService();
     prisma.seedSeconds({
       organizationId: 'org-one-reservation',
       sourceType: 'included',
       sourceId: 'in_one_reservation',
-      seconds: 120,
+      seconds: 180,
       priority: 10,
     });
     prisma.seedRuntimeScope({
@@ -987,34 +1369,73 @@ describe('CreditLedgerService', () => {
       workspaceId: 'workspace-one-reservation',
       callId: 'call-one-reservation',
     });
-    const first = await service.reserveInitialMinute({
+    prisma.seedRuntimeScope({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-second-reservation',
+    });
+    prisma.seedRuntimeScope({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-third-reservation',
+    });
+    await service.reserveInitialMinute({
       organizationId: 'org-one-reservation',
       workspaceId: 'workspace-one-reservation',
       callId: 'call-one-reservation',
       idempotencyKey: 'initial-reservation-key-a',
     });
+    const stateAfterFirst = snapshotCreditState(prisma);
 
-    const replay = await service.reserveInitialMinute({
-      organizationId: 'org-one-reservation',
-      workspaceId: 'workspace-one-reservation',
-      callId: 'call-one-reservation',
-      idempotencyKey: 'initial-reservation-key-b',
+    await expect(
+      service.reserveInitialMinute({
+        organizationId: 'org-one-reservation',
+        workspaceId: 'workspace-one-reservation',
+        callId: 'call-one-reservation',
+        idempotencyKey: 'initial-reservation-key-b',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
     });
 
-    expect(replay).toMatchObject({
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
+    expect(
+      prisma.ledger.find((entry) => entry.idempotencyKey === 'initial-reservation-key-b'),
+    ).toBeUndefined();
+
+    const second = await service.reserveInitialMinute({
+      organizationId: 'org-one-reservation',
+      workspaceId: 'workspace-one-reservation',
+      callId: 'call-second-reservation',
+      idempotencyKey: 'initial-reservation-key-b',
+    });
+    expect(second).toMatchObject({
       allowed: true,
       reason: 'allowed',
       seconds: 60,
-      allocations: first.allocations,
     });
-    expectExactSeconds(replay.creditBalance, {
+    expectExactSeconds(second.creditBalance, {
       available: 60,
-      reserved: 60,
-      totalOwned: 120,
+      reserved: 120,
+      totalOwned: 180,
     });
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation'),
-    ).toHaveLength(1);
+    const stateAfterSecond = snapshotCreditState(prisma);
+
+    await expect(
+      service.reserveInitialMinute({
+        organizationId: 'org-one-reservation',
+        workspaceId: 'workspace-one-reservation',
+        callId: 'call-third-reservation',
+        idempotencyKey: 'initial-reservation-key-b',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterSecond);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation')).toHaveLength(2);
   });
 
   it('preserves a reserved purchased bucket during refund review and later release', async () => {
@@ -1172,9 +1593,7 @@ describe('CreditLedgerService', () => {
       callId: 'call-allocation-total',
       idempotencyKey: 'allocation-total-reservation',
     });
-    const reservation = prisma.ledger.find(
-      (entry) => entry.entryType === 'reservation',
-    )!;
+    const reservation = prisma.ledger.find((entry) => entry.entryType === 'reservation')!;
     reservation.metadata = {
       allocations: [{ bucketId: prisma.buckets[0]!.id, seconds: 30 }],
     };
@@ -1195,9 +1614,9 @@ describe('CreditLedgerService', () => {
       reserved: 60,
       totalOwned: 60,
     });
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit'),
-    ).toHaveLength(0);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit')).toHaveLength(
+      0,
+    );
   });
 
   it('rejects reservation metadata containing duplicate bucket IDs', async () => {
@@ -1220,9 +1639,7 @@ describe('CreditLedgerService', () => {
       callId: 'call-allocation-duplicate',
       idempotencyKey: 'allocation-duplicate-reservation',
     });
-    const reservation = prisma.ledger.find(
-      (entry) => entry.entryType === 'reservation',
-    )!;
+    const reservation = prisma.ledger.find((entry) => entry.entryType === 'reservation')!;
     const bucketId = prisma.buckets[0]!.id;
     reservation.metadata = {
       allocations: [
@@ -1247,11 +1664,9 @@ describe('CreditLedgerService', () => {
       reserved: 60,
       totalOwned: 60,
     });
-    expect(
-      prisma.ledger.filter(
-        (entry) => entry.entryType === 'reservation_release',
-      ),
-    ).toHaveLength(0);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation_release')).toHaveLength(
+      0,
+    );
   });
 
   it('rejects a subscription grant key colliding with a non-subscription entry', async () => {
@@ -1377,16 +1792,12 @@ describe('CreditLedgerService', () => {
       reserved: 0,
       totalOwned: 6_000,
     });
-    expect(
-      prisma.buckets.find((bucket) => bucket.sourceId === 'cs_refund_b'),
-    ).toMatchObject({
+    expect(prisma.buckets.find((bucket) => bucket.sourceId === 'cs_refund_b')).toMatchObject({
       status: 'active',
       remainingSeconds: 6_000,
     });
     expect(
-      prisma.ledger.filter((entry) =>
-        entry.entryType.startsWith('purchase_reversal'),
-      ),
+      prisma.ledger.filter((entry) => entry.entryType.startsWith('purchase_reversal')),
     ).toHaveLength(1);
   });
 
@@ -1443,9 +1854,9 @@ describe('CreditLedgerService', () => {
       reserved: 60,
       totalOwned: 120,
     });
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit'),
-    ).toHaveLength(0);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'reservation_commit')).toHaveLength(
+      0,
+    );
   });
 
   it('rejects a release key bound to an opposite lifecycle entry for another call', async () => {
@@ -1504,8 +1915,7 @@ describe('CreditLedgerService', () => {
     expect(
       prisma.ledger.filter(
         (entry) =>
-          entry.entryType === 'reservation_release' &&
-          entry.callId === 'call-release-target',
+          entry.entryType === 'reservation_release' && entry.callId === 'call-release-target',
       ),
     ).toHaveLength(0);
   });
@@ -1518,12 +1928,12 @@ describe('CreditLedgerService', () => {
       purchasedAt: NOW,
     };
     const firstGrant = await service.grantPurchasedCredits(grantInput);
+    const stateAfterGrant = snapshotCreditState(prisma);
     const repeatedGrant = await service.grantPurchasedCredits(grantInput);
     expect(repeatedGrant).toEqual(firstGrant);
     expect(prisma.buckets).toHaveLength(1);
-    expect(
-      prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant'),
-    ).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant')).toHaveLength(1);
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterGrant);
 
     const refundInput = {
       organizationId: 'org-exact-durable-replay',
@@ -1531,6 +1941,7 @@ describe('CreditLedgerService', () => {
       refundId: 're_exact_durable_replay',
     };
     const firstRefund = await service.reversePurchasedCredits(refundInput);
+    const stateAfterRefund = snapshotCreditState(prisma);
     const repeatedRefund = await service.reversePurchasedCredits(refundInput);
     expect(repeatedRefund).toEqual(firstRefund);
     expectExactSeconds(repeatedRefund, {
@@ -1539,9 +1950,206 @@ describe('CreditLedgerService', () => {
       totalOwned: 0,
     });
     expect(
-      prisma.ledger.filter((entry) =>
-        entry.entryType.startsWith('purchase_reversal'),
-      ),
+      prisma.ledger.filter((entry) => entry.entryType.startsWith('purchase_reversal')),
+    ).toHaveLength(1);
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterRefund);
+  });
+
+  async function makeReversalReplayFixture(branch: 'automatic' | 'manual_review') {
+    const { prisma, service } = makeService();
+    const organizationId = `org-reversal-${branch}`;
+    const checkoutSessionId = `cs-reversal-${branch}`;
+    const refundId = `re-reversal-${branch}`;
+    const refundInput = { organizationId, checkoutSessionId, refundId };
+    await service.grantPurchasedCredits({
+      organizationId,
+      checkoutSessionId,
+      purchasedAt: NOW,
+    });
+
+    let releaseReservation: (() => Promise<CreditBalance>) | undefined;
+    if (branch === 'manual_review') {
+      const workspaceId = `workspace-reversal-${branch}`;
+      const callId = `call-reversal-${branch}`;
+      prisma.seedRuntimeScope({ organizationId, workspaceId, callId });
+      await service.reserveInitialMinute({
+        organizationId,
+        workspaceId,
+        callId,
+        idempotencyKey: `reservation-reversal-${branch}`,
+      });
+      releaseReservation = () =>
+        service.releaseReservation({
+          organizationId,
+          callId,
+          idempotencyKey: `release-reversal-${branch}`,
+        });
+    }
+
+    await service.reversePurchasedCredits(refundInput);
+    return {
+      prisma,
+      service,
+      refundInput,
+      releaseReservation,
+      bucket: prisma.buckets[0]!,
+      entry: prisma.ledger.find((candidate) =>
+        candidate.entryType.startsWith('purchase_reversal'),
+      )!,
+    };
+  }
+
+  it.each(['automatic', 'manual_review'] as const)(
+    'persists complete immutable %s reversal identity and replays without another mutation',
+    async (branch) => {
+      const fixture = await makeReversalReplayFixture(branch);
+      expect(metadataRecord(fixture.entry).operation).toEqual({
+        kind: 'purchased_credit_reversal',
+        organizationId: fixture.refundInput.organizationId,
+        checkoutSessionId: fixture.refundInput.checkoutSessionId,
+        refundId: fixture.refundInput.refundId,
+        bucketId: fixture.bucket.id,
+        sourceType: 'purchased',
+        sourceId: fixture.refundInput.checkoutSessionId,
+        originalSeconds: 6_000,
+      });
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await fixture.service.reversePurchasedCredits(fixture.refundInput);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+      expect(
+        fixture.prisma.ledger.filter((entry) => entry.entryType.startsWith('purchase_reversal')),
+      ).toHaveLength(1);
+    },
+  );
+
+  type ReversalReplayFixture = Awaited<ReturnType<typeof makeReversalReplayFixture>>;
+  type ReversalReplayMutation = readonly [
+    label: string,
+    mutate: (fixture: ReversalReplayFixture) => void,
+  ];
+
+  const commonReversalReplayMutations: ReversalReplayMutation[] = [
+    [
+      'the ledger workspace is non-null',
+      ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
+    ],
+    ['the ledger call is non-null', ({ entry }) => (entry.callId = 'call-unexpected')],
+    [
+      'the source type identity is missing',
+      ({ entry }) =>
+        delete (metadataRecord(entry).operation as Record<string, unknown>)['sourceType'],
+    ],
+    [
+      'the source ID identity is missing',
+      ({ entry }) =>
+        delete (metadataRecord(entry).operation as Record<string, unknown>)['sourceId'],
+    ],
+    [
+      'the immutable original-seconds identity is missing',
+      ({ entry }) =>
+        delete (metadataRecord(entry).operation as Record<string, unknown>)['originalSeconds'],
+    ],
+    [
+      'the checkout metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).checkoutSessionId,
+    ],
+    ['the refund metadata is missing', ({ entry }) => delete metadataRecord(entry).refundId],
+    [
+      'the original-seconds metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).originalSeconds,
+    ],
+  ];
+
+  const automaticReversalReplayMutations: ReversalReplayMutation[] = [
+    ...commonReversalReplayMutations,
+    [
+      'the entry type is the manual-review branch',
+      ({ entry }) => (entry.entryType = 'purchase_reversal_review'),
+    ],
+    ['the ledger seconds differ', ({ entry }) => (entry.seconds = -5_999)],
+    ['the ledger reason differs', ({ entry }) => (entry.reasonCode = 'refund_manual_review')],
+    [
+      'removed-seconds metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).unusedSecondsRemoved,
+    ],
+    [
+      'removed-seconds metadata differs',
+      ({ entry }) => (metadataRecord(entry).unusedSecondsRemoved = 5_999),
+    ],
+    [
+      'consumed-seconds metadata is nonzero',
+      ({ entry }) => (metadataRecord(entry).consumedOrReservedSeconds = 1),
+    ],
+    ['review metadata is non-null', ({ entry }) => (metadataRecord(entry).reviewReason = 'manual')],
+  ];
+
+  const manualReversalReplayMutations: ReversalReplayMutation[] = [
+    ...commonReversalReplayMutations,
+    [
+      'the entry type is the automatic branch',
+      ({ entry }) => (entry.entryType = 'purchase_reversal'),
+    ],
+    ['the ledger seconds are nonzero', ({ entry }) => (entry.seconds = -60)],
+    ['the ledger reason differs', ({ entry }) => (entry.reasonCode = 'refund_unused_credit')],
+    [
+      'preserved-seconds metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).unusedSecondsPreserved,
+    ],
+    [
+      'preserved and consumed seconds do not sum to the original',
+      ({ entry }) => (metadataRecord(entry).unusedSecondsPreserved = 5_939),
+    ],
+    [
+      'consumed-seconds metadata is zero',
+      ({ entry }) => (metadataRecord(entry).consumedOrReservedSeconds = 0),
+    ],
+    [
+      'the durable review reason differs',
+      ({ entry }) => (metadataRecord(entry).reviewReason = 'manual'),
+    ],
+  ];
+
+  it.each(automaticReversalReplayMutations)(
+    'fails closed for automatic reversal replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeReversalReplayFixture('automatic');
+      mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(
+        fixture.service.reversePurchasedCredits(fixture.refundInput),
+      ).rejects.toMatchObject({ code: 'credit_ledger_invariant' });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  it.each(manualReversalReplayMutations)(
+    'fails closed for manual-review reversal replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeReversalReplayFixture('manual_review');
+      mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(
+        fixture.service.reversePurchasedCredits(fixture.refundInput),
+      ).rejects.toMatchObject({ code: 'credit_ledger_invariant' });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  it('replays a manual-review reversal after release without consulting mutable bucket remaining state', async () => {
+    const fixture = await makeReversalReplayFixture('manual_review');
+    await fixture.releaseReservation!();
+    expect(
+      fixture.prisma.buckets.find((bucket) => bucket.id === fixture.bucket.id)?.remainingSeconds,
+    ).toBe(6_000);
+    const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+    await fixture.service.reversePurchasedCredits(fixture.refundInput);
+    expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    expect(
+      fixture.prisma.ledger.filter((entry) => entry.entryType.startsWith('purchase_reversal')),
     ).toHaveLength(1);
   });
 
@@ -1566,10 +2174,9 @@ describe('CreditLedgerService', () => {
       idempotencyKey: 'reason-replay-reservation',
     };
     await service.reserveInitialMinute(input);
-    const denial = prisma.ledger.find(
-      (entry) => entry.entryType === 'reservation_denied',
-    )!;
+    const denial = prisma.ledger.find((entry) => entry.entryType === 'reservation_denied')!;
     denial.reasonCode = 'unknown_denial_reason';
+    const stateBeforeRetry = snapshotCreditState(prisma);
 
     await expect(service.reserveInitialMinute(input)).rejects.toMatchObject({
       code: 'credit_ledger_invariant',
@@ -1582,7 +2189,117 @@ describe('CreditLedgerService', () => {
       totalOwned: 59,
     });
     expect(prisma.ledger).toHaveLength(1);
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeRetry);
   });
+
+  async function makeInitialReservationReplayFixture(outcome: 'allowed' | 'denied') {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: `org-initial-${outcome}-identity`,
+      workspaceId: `workspace-initial-${outcome}-identity`,
+      callId: `call-initial-${outcome}-identity`,
+      idempotencyKey: `initial-${outcome}-identity`,
+    };
+    prisma.seedRuntimeScope(input);
+    prisma.seedSeconds({
+      organizationId: input.organizationId,
+      sourceType: 'included',
+      sourceId: `in-initial-${outcome}-identity`,
+      seconds: outcome === 'allowed' ? 60 : 59,
+      priority: 10,
+    });
+    const result = await service.reserveInitialMinute(input);
+    return {
+      prisma,
+      service,
+      input,
+      result,
+      entry: prisma.ledger[0]!,
+    };
+  }
+
+  type InitialReplayMutation = readonly [label: string, mutate: (entry: LedgerRecord) => void];
+
+  const allowedInitialReplayMutations: InitialReplayMutation[] = [
+    ['a bucket column is present', (entry) => (entry.bucketId = 'bucket-unexpected')],
+    ['ledger seconds are not plus 60', (entry) => (entry.seconds = 59)],
+    ['the reason is not initial_minute', (entry) => (entry.reasonCode = 'minute_boundary')],
+    [
+      'the operation workspace differs',
+      (entry) =>
+        ((metadataRecord(entry).operation as Record<string, unknown>)['workspaceId'] =
+          'workspace-foreign'),
+    ],
+    ['allocations are missing', (entry) => delete metadataRecord(entry).allocations],
+    [
+      'allocations do not total 60 seconds',
+      (entry) => (metadataRecord(entry).allocations = [{ bucketId: 'bucket-short', seconds: 59 }]),
+    ],
+    [
+      'allocation bucket IDs are duplicated',
+      (entry) =>
+        (metadataRecord(entry).allocations = [
+          { bucketId: 'bucket-duplicate', seconds: 30 },
+          { bucketId: 'bucket-duplicate', seconds: 30 },
+        ]),
+    ],
+  ];
+
+  it.each(allowedInitialReplayMutations)(
+    'fails closed for allowed initial reservation replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeInitialReservationReplayFixture('allowed');
+      mutate(fixture.entry);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(fixture.service.reserveInitialMinute(fixture.input)).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+      });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  const deniedInitialReplayMutations: InitialReplayMutation[] = [
+    ['a bucket column is present', (entry) => (entry.bucketId = 'bucket-unexpected')],
+    ['ledger seconds are nonzero', (entry) => (entry.seconds = 1)],
+    ['allocations are missing', (entry) => delete metadataRecord(entry).allocations],
+    [
+      'allocations are nonempty',
+      (entry) =>
+        (metadataRecord(entry).allocations = [{ bucketId: 'bucket-unexpected', seconds: 60 }]),
+    ],
+    [
+      'the operation call differs',
+      (entry) =>
+        ((metadataRecord(entry).operation as Record<string, unknown>)['callId'] = 'call-foreign'),
+    ],
+  ];
+
+  it.each(deniedInitialReplayMutations)(
+    'fails closed for denied initial reservation replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeInitialReservationReplayFixture('denied');
+      mutate(fixture.entry);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(fixture.service.reserveInitialMinute(fixture.input)).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+      });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  it.each(['allowed', 'denied'] as const)(
+    'keeps an exact %s initial reservation retry mutation-free',
+    async (outcome) => {
+      const fixture = await makeInitialReservationReplayFixture(outcome);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      const replay = await fixture.service.reserveInitialMinute(fixture.input);
+      expect(replay).toEqual(fixture.result);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
 
   type GrantReplayFixture = {
     prisma: MemoryPrisma;
@@ -1635,22 +2352,10 @@ describe('CreditLedgerService', () => {
   ];
 
   const subscriptionGrantReplayMutations: GrantReplayMutation[] = [
-    [
-      'the ledger bucket ID differs',
-      ({ entry }) => (entry.bucketId = 'bucket-wrong'),
-    ],
-    [
-      'the bucket source type differs',
-      ({ bucket }) => (bucket.sourceType = 'purchased'),
-    ],
-    [
-      'the bucket source ID differs',
-      ({ bucket }) => (bucket.sourceId = 'in_other'),
-    ],
-    [
-      'the bucket seconds differ',
-      ({ bucket }) => (bucket.originalSeconds = 599),
-    ],
+    ['the ledger bucket ID differs', ({ entry }) => (entry.bucketId = 'bucket-wrong')],
+    ['the bucket source type differs', ({ bucket }) => (bucket.sourceType = 'purchased')],
+    ['the bucket source ID differs', ({ bucket }) => (bucket.sourceId = 'in_other')],
+    ['the bucket seconds differ', ({ bucket }) => (bucket.originalSeconds = 599)],
     [
       'the bucket expiry differs',
       ({ bucket }) => (bucket.expiresAt = new Date('2026-08-26T12:00:00.000Z')),
@@ -1661,11 +2366,9 @@ describe('CreditLedgerService', () => {
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
     ],
+    ['the ledger call is non-null', ({ entry }) => (entry.callId = 'call-unexpected')],
     ['the ledger seconds differ', ({ entry }) => (entry.seconds = 599)],
-    [
-      'the ledger reason differs',
-      ({ entry }) => (entry.reasonCode = 'purchased_topup'),
-    ],
+    ['the ledger reason differs', ({ entry }) => (entry.reasonCode = 'purchased_topup')],
     [
       'required financial metadata is missing',
       ({ entry }) => delete metadataRecord(entry).includedMinutes,
@@ -1676,13 +2379,9 @@ describe('CreditLedgerService', () => {
     ],
     [
       'the metadata expiry terms differ',
-      ({ entry }) =>
-        (metadataRecord(entry).periodEnd = '2026-08-26T12:00:00.000Z'),
+      ({ entry }) => (metadataRecord(entry).periodEnd = '2026-08-26T12:00:00.000Z'),
     ],
-    [
-      'the metadata priority terms differ',
-      ({ entry }) => (metadataRecord(entry).priority = 11),
-    ],
+    ['the metadata priority terms differ', ({ entry }) => (metadataRecord(entry).priority = 11)],
   ];
 
   it.each(subscriptionGrantReplayMutations)(
@@ -1690,6 +2389,7 @@ describe('CreditLedgerService', () => {
     async (_label, mutate) => {
       const fixture = await makeGrantReplayFixture('subscription');
       mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
 
       await expect(fixture.retry()).rejects.toMatchObject({
         code: 'credit_ledger_invariant',
@@ -1697,26 +2397,15 @@ describe('CreditLedgerService', () => {
       });
       expect(fixture.prisma.ledger).toHaveLength(1);
       expect(fixture.prisma.buckets).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
   const purchasedGrantReplayMutations: GrantReplayMutation[] = [
-    [
-      'the ledger bucket ID differs',
-      ({ entry }) => (entry.bucketId = 'bucket-wrong'),
-    ],
-    [
-      'the bucket source type differs',
-      ({ bucket }) => (bucket.sourceType = 'included'),
-    ],
-    [
-      'the bucket source ID differs',
-      ({ bucket }) => (bucket.sourceId = 'cs_other'),
-    ],
-    [
-      'the bucket seconds differ',
-      ({ bucket }) => (bucket.originalSeconds = 6_001),
-    ],
+    ['the ledger bucket ID differs', ({ entry }) => (entry.bucketId = 'bucket-wrong')],
+    ['the bucket source type differs', ({ bucket }) => (bucket.sourceType = 'included')],
+    ['the bucket source ID differs', ({ bucket }) => (bucket.sourceId = 'cs_other')],
+    ['the bucket seconds differ', ({ bucket }) => (bucket.originalSeconds = 6_001)],
     [
       'the purchase time differs',
       ({ bucket }) => (bucket.validFrom = new Date('2026-07-25T12:00:01.000Z')),
@@ -1731,29 +2420,22 @@ describe('CreditLedgerService', () => {
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
     ],
+    ['the ledger call is non-null', ({ entry }) => (entry.callId = 'call-unexpected')],
     ['the ledger seconds differ', ({ entry }) => (entry.seconds = 5_999)],
-    [
-      'the ledger reason differs',
-      ({ entry }) => (entry.reasonCode = 'subscription_included'),
-    ],
+    ['the ledger reason differs', ({ entry }) => (entry.reasonCode = 'subscription_included')],
     [
       'required financial metadata is missing',
       ({ entry }) => delete metadataRecord(entry).expiresAt,
     ],
     [
       'the metadata purchase time differs',
-      ({ entry }) =>
-        (metadataRecord(entry).purchasedAt = '2026-07-25T12:00:01.000Z'),
+      ({ entry }) => (metadataRecord(entry).purchasedAt = '2026-07-25T12:00:01.000Z'),
     ],
     [
       'the metadata expiry terms differ',
-      ({ entry }) =>
-        (metadataRecord(entry).expiresAt = '2027-07-26T12:00:00.000Z'),
+      ({ entry }) => (metadataRecord(entry).expiresAt = '2027-07-26T12:00:00.000Z'),
     ],
-    [
-      'the metadata priority terms differ',
-      ({ entry }) => (metadataRecord(entry).priority = 21),
-    ],
+    ['the metadata priority terms differ', ({ entry }) => (metadataRecord(entry).priority = 21)],
   ];
 
   it.each(purchasedGrantReplayMutations)(
@@ -1761,6 +2443,7 @@ describe('CreditLedgerService', () => {
     async (_label, mutate) => {
       const fixture = await makeGrantReplayFixture('purchased');
       mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
 
       await expect(fixture.retry()).rejects.toMatchObject({
         code: 'credit_ledger_invariant',
@@ -1768,6 +2451,7 @@ describe('CreditLedgerService', () => {
       });
       expect(fixture.prisma.ledger).toHaveLength(1);
       expect(fixture.prisma.buckets).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
@@ -1800,18 +2484,18 @@ describe('CreditLedgerService', () => {
               sourceId: 'cs_purchased_exact_replay',
               seconds: 6_000,
               purchasedAt: NOW.toISOString(),
-              expiresAt: new Date(
-                NOW.getTime() + 365 * 24 * 60 * 60 * 1_000,
-              ).toISOString(),
+              expiresAt: new Date(NOW.getTime() + 365 * 24 * 60 * 60 * 1_000).toISOString(),
               priority: 20,
               status: 'active',
             },
       );
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
       await expect(fixture.retry()).resolves.toMatchObject({
         organizationId: fixture.entry.organizationId,
       });
       expect(fixture.prisma.ledger).toHaveLength(1);
       expect(fixture.prisma.buckets).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
@@ -1832,12 +2516,13 @@ describe('CreditLedgerService', () => {
       priority: 10,
     });
     prisma.seedRuntimeScope({ organizationId, workspaceId, callId });
-    await service.reserveInitialMinute({
+    const reservationInput = {
       organizationId,
       workspaceId,
       callId,
       idempotencyKey: reservationIdempotencyKey,
-    });
+    };
+    const reservationResult = await service.reserveInitialMinute(reservationInput);
     const finalize = (idempotencyKey: string) =>
       kind === 'reservation_commit'
         ? service.commitReservation({ organizationId, callId, idempotencyKey })
@@ -1849,12 +2534,16 @@ describe('CreditLedgerService', () => {
     await finalize(finalizationIdempotencyKey);
     return {
       prisma,
+      service,
       finalize,
       organizationId,
       workspaceId,
       callId,
       reservationIdempotencyKey,
       finalizationIdempotencyKey,
+      reservationInput,
+      reservationResult,
+      reservationEntry: prisma.ledger.find((candidate) => candidate.entryType === 'reservation')!,
       entry: prisma.ledger.find((candidate) => candidate.entryType === kind)!,
     };
   }
@@ -1870,25 +2559,20 @@ describe('CreditLedgerService', () => {
     'rejects %s %s replay with the wrong reservation key',
     async (kind, replayMode) => {
       const fixture = await makeFinalizationReplayFixture(kind);
-      const operation = metadataRecord(fixture.entry).operation as Record<
-        string,
-        unknown
-      >;
+      const operation = metadataRecord(fixture.entry).operation as Record<string, unknown>;
       operation.reservationIdempotencyKey = 'reservation-arbitrary';
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
 
       await expect(
         fixture.finalize(
-          replayMode === 'exact'
-            ? fixture.finalizationIdempotencyKey
-            : `${kind}-semantic-retry`,
+          replayMode === 'exact' ? fixture.finalizationIdempotencyKey : `${kind}-semantic-retry`,
         ),
       ).rejects.toMatchObject({
         code: 'credit_ledger_invariant',
         reasonCode: 'idempotency_conflict',
       });
-      expect(
-        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
-      ).toHaveLength(1);
+      expect(fixture.prisma.ledger.filter((entry) => entry.entryType === kind)).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
@@ -1897,20 +2581,107 @@ describe('CreditLedgerService', () => {
     async (kind, replayMode) => {
       const fixture = await makeFinalizationReplayFixture(kind);
       fixture.entry.workspaceId = 'workspace-foreign';
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
 
       await expect(
         fixture.finalize(
-          replayMode === 'exact'
-            ? fixture.finalizationIdempotencyKey
-            : `${kind}-semantic-retry`,
+          replayMode === 'exact' ? fixture.finalizationIdempotencyKey : `${kind}-semantic-retry`,
         ),
       ).rejects.toMatchObject({
         code: 'credit_ledger_invariant',
         reasonCode: 'idempotency_conflict',
       });
-      expect(
-        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
-      ).toHaveLength(1);
+      expect(fixture.prisma.ledger.filter((entry) => entry.entryType === kind)).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  type FinalizationReplayFixture = Awaited<ReturnType<typeof makeFinalizationReplayFixture>>;
+
+  type FinalizationEntryMutation = readonly [
+    label: string,
+    mutate: (fixture: FinalizationReplayFixture) => void,
+  ];
+
+  const finalizationEntryMutations: FinalizationEntryMutation[] = [
+    ['a bucket column is present', ({ entry }) => (entry.bucketId = 'bucket-unexpected')],
+    ['the signed seconds differ', ({ entry }) => (entry.seconds = 0)],
+    ['the reason differs', ({ entry }) => (entry.reasonCode = 'lifecycle-reason-wrong')],
+    ['allocations are missing', ({ entry }) => delete metadataRecord(entry).allocations],
+    [
+      'allocations are malformed',
+      ({ entry }) =>
+        (metadataRecord(entry).allocations = [{ bucketId: 'bucket-malformed', seconds: 0 }]),
+    ],
+    [
+      'allocations do not match the reservation',
+      ({ entry }) =>
+        (metadataRecord(entry).allocations = [{ bucketId: 'bucket-other', seconds: 60 }]),
+    ],
+    [
+      'the top-level reservation key differs',
+      ({ entry }) => (metadataRecord(entry).reservationIdempotencyKey = 'reservation-arbitrary'),
+    ],
+  ];
+
+  it.each(
+    (['reservation_commit', 'reservation_release'] as const).flatMap((kind) =>
+      finalizationEntryMutations.map(([label, mutate]) => [kind, label, mutate] as const),
+    ),
+  )('fails closed for %s replay when %s', async (kind, _label, mutate) => {
+    const fixture = await makeFinalizationReplayFixture(kind);
+    mutate(fixture);
+    const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+    await expect(fixture.finalize(fixture.finalizationIdempotencyKey)).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+    });
+    expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+  });
+
+  const persistedReservationMutations: FinalizationEntryMutation[] = [
+    [
+      'the reservation bucket column is non-null',
+      ({ reservationEntry }) => (reservationEntry.bucketId = 'bucket-unexpected'),
+    ],
+    [
+      'the reservation seconds are not plus 60',
+      ({ reservationEntry }) => (reservationEntry.seconds = 59),
+    ],
+    [
+      'the reservation reason differs',
+      ({ reservationEntry }) => (reservationEntry.reasonCode = 'reservation-reason-wrong'),
+    ],
+    [
+      'the reservation operation differs',
+      ({ reservationEntry }) =>
+        ((metadataRecord(reservationEntry).operation as Record<string, unknown>)['workspaceId'] =
+          'workspace-foreign'),
+    ],
+    [
+      'the reservation allocations are malformed',
+      ({ reservationEntry }) =>
+        (metadataRecord(reservationEntry).allocations = [
+          { bucketId: 'bucket-short', seconds: 59 },
+        ]),
+    ],
+  ];
+
+  it.each(
+    (['reservation_commit', 'reservation_release'] as const).flatMap((kind) =>
+      persistedReservationMutations.map(([label, mutate]) => [kind, label, mutate] as const),
+    ),
+  )(
+    'validates the persisted reservation before exact %s replay when %s',
+    async (kind, _label, mutate) => {
+      const fixture = await makeFinalizationReplayFixture(kind);
+      mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(fixture.finalize(fixture.finalizationIdempotencyKey)).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+      });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
@@ -1918,12 +2689,35 @@ describe('CreditLedgerService', () => {
     'keeps exact %s retries idempotent with the original reservation identity',
     async (kind) => {
       const fixture = await makeFinalizationReplayFixture(kind);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
       const replay = await fixture.finalize(fixture.finalizationIdempotencyKey);
 
       expect(replay.organizationId).toBe(fixture.organizationId);
-      expect(
-        fixture.prisma.ledger.filter((entry) => entry.entryType === kind),
-      ).toHaveLength(1);
+      expect(fixture.prisma.ledger.filter((entry) => entry.entryType === kind)).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  it.each(['reservation_commit', 'reservation_release'] as const)(
+    'replays the exact original reservation after %s and rejects a different reservation key',
+    async (kind) => {
+      const fixture = await makeFinalizationReplayFixture(kind);
+      const stateAfterFinalization = snapshotCreditState(fixture.prisma);
+
+      const replay = await fixture.service.reserveInitialMinute(fixture.reservationInput);
+      expect(replay).toEqual(fixture.reservationResult);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateAfterFinalization);
+
+      await expect(
+        fixture.service.reserveInitialMinute({
+          ...fixture.reservationInput,
+          idempotencyKey: `${fixture.reservationIdempotencyKey}-different`,
+        }),
+      ).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateAfterFinalization);
     },
   );
 
@@ -1949,34 +2743,32 @@ describe('CreditLedgerService', () => {
       prisma,
       service,
       input,
-      entry: prisma.ledger.find(
-        (candidate) => candidate.entryType === 'usage_debit',
-      )!,
+      entry: prisma.ledger.find((candidate) => candidate.entryType === 'usage_debit')!,
     };
   }
 
   type RuntimeReplayMutation = readonly [
     label: string,
     mutate: (entry: LedgerRecord) => void,
+    reasonCode: 'idempotency_conflict' | 'ledger_reason_invalid',
   ];
 
   const runtimeReplayMutations: RuntimeReplayMutation[] = [
     [
       'operation workspace is missing',
-      (entry) =>
-        delete (metadataRecord(entry).operation as Record<string, unknown>)
-          .workspaceId,
+      (entry) => delete (metadataRecord(entry).operation as Record<string, unknown>).workspaceId,
+      'idempotency_conflict',
     ],
     [
       'allocations are missing',
       (entry) => delete metadataRecord(entry).allocations,
+      'idempotency_conflict',
     ],
     [
       'an allocation is malformed',
       (entry) =>
-        (metadataRecord(entry).allocations = [
-          { bucketId: 'bucket-malformed', seconds: 0 },
-        ]),
+        (metadataRecord(entry).allocations = [{ bucketId: 'bucket-malformed', seconds: 0 }]),
+      'idempotency_conflict',
     ],
     [
       'allocation bucket IDs are duplicated',
@@ -1985,40 +2777,43 @@ describe('CreditLedgerService', () => {
           { bucketId: 'bucket-duplicate', seconds: 30 },
           { bucketId: 'bucket-duplicate', seconds: 30 },
         ]),
+      'idempotency_conflict',
     ],
     [
       'allocations do not total 60 seconds',
-      (entry) =>
-        (metadataRecord(entry).allocations = [
-          { bucketId: 'bucket-short', seconds: 59 },
-        ]),
+      (entry) => (metadataRecord(entry).allocations = [{ bucketId: 'bucket-short', seconds: 59 }]),
+      'idempotency_conflict',
     ],
-    ['ledger seconds are not minus 60', (entry) => (entry.seconds = -59)],
+    ['ledger seconds are not minus 60', (entry) => (entry.seconds = -59), 'idempotency_conflict'],
+    [
+      'the ledger reason is not minute_boundary',
+      (entry) => (entry.reasonCode = 'initial_minute'),
+      'ledger_reason_invalid',
+    ],
     [
       'a per-bucket ledger association is present',
       (entry) => (entry.bucketId = 'bucket-1'),
+      'idempotency_conflict',
     ],
   ];
 
   it.each(runtimeReplayMutations)(
     'rejects allowed runtime debit replay when %s',
-    async (_label, mutate) => {
+    async (_label, mutate, reasonCode) => {
       const fixture = await makeRuntimeDebitReplayFixture();
       mutate(fixture.entry);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
 
-      await expect(
-        fixture.service.reserveAndDebitNextMinute(fixture.input),
-      ).rejects.toMatchObject({
+      await expect(fixture.service.reserveAndDebitNextMinute(fixture.input)).rejects.toMatchObject({
         code: 'credit_ledger_invariant',
-        reasonCode: 'idempotency_conflict',
+        reasonCode,
       });
       expect(fixture.prisma.ledger).toHaveLength(1);
-      expect(
-        fixture.prisma.balances.get(fixture.input.organizationId),
-      ).toMatchObject({
+      expect(fixture.prisma.balances.get(fixture.input.organizationId)).toMatchObject({
         availableSeconds: 60,
         reservedSeconds: 0,
       });
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
     },
   );
 
@@ -2040,16 +2835,11 @@ describe('CreditLedgerService', () => {
     });
     prisma.seedRuntimeScope(input);
     await service.reserveAndDebitNextMinute(input);
-    const denial = prisma.ledger.find(
-      (entry) => entry.entryType === 'usage_debit_denied',
-    )!;
-    metadataRecord(denial).allocations = [
-      { bucketId: prisma.buckets[0]!.id, seconds: 60 },
-    ];
+    const denial = prisma.ledger.find((entry) => entry.entryType === 'usage_debit_denied')!;
+    metadataRecord(denial).allocations = [{ bucketId: prisma.buckets[0]!.id, seconds: 60 }];
+    const stateBeforeRetry = snapshotCreditState(prisma);
 
-    await expect(
-      service.reserveAndDebitNextMinute(input),
-    ).rejects.toMatchObject({
+    await expect(service.reserveAndDebitNextMinute(input)).rejects.toMatchObject({
       code: 'credit_ledger_invariant',
       reasonCode: 'idempotency_conflict',
     });
@@ -2058,6 +2848,7 @@ describe('CreditLedgerService', () => {
       availableSeconds: 59,
       reservedSeconds: 0,
     });
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeRetry);
   });
 
   it('rejects denied runtime debit replay with nonzero ledger seconds', async () => {
@@ -2073,25 +2864,25 @@ describe('CreditLedgerService', () => {
     await service.reserveAndDebitNextMinute(input);
     const denial = prisma.ledger[0]!;
     denial.seconds = -60;
+    const stateBeforeRetry = snapshotCreditState(prisma);
 
-    await expect(
-      service.reserveAndDebitNextMinute(input),
-    ).rejects.toMatchObject({
+    await expect(service.reserveAndDebitNextMinute(input)).rejects.toMatchObject({
       code: 'credit_ledger_invariant',
       reasonCode: 'idempotency_conflict',
     });
     expect(prisma.ledger).toHaveLength(1);
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeRetry);
   });
 
   it('keeps exact allowed and denied runtime debit retries idempotent', async () => {
     const allowed = await makeRuntimeDebitReplayFixture();
-    await expect(
-      allowed.service.reserveAndDebitNextMinute(allowed.input),
-    ).resolves.toMatchObject({
+    const allowedStateBeforeRetry = snapshotCreditState(allowed.prisma);
+    await expect(allowed.service.reserveAndDebitNextMinute(allowed.input)).resolves.toMatchObject({
       allowed: true,
       billableMinutes: 1,
     });
     expect(allowed.prisma.ledger).toHaveLength(1);
+    expect(snapshotCreditState(allowed.prisma)).toEqual(allowedStateBeforeRetry);
 
     const { prisma, service } = makeService();
     const deniedInput = {
@@ -2103,13 +2894,13 @@ describe('CreditLedgerService', () => {
     };
     prisma.seedRuntimeScope(deniedInput);
     await service.reserveAndDebitNextMinute(deniedInput);
-    await expect(
-      service.reserveAndDebitNextMinute(deniedInput),
-    ).resolves.toMatchObject({
+    const deniedStateBeforeRetry = snapshotCreditState(prisma);
+    await expect(service.reserveAndDebitNextMinute(deniedInput)).resolves.toMatchObject({
       allowed: false,
       reason: 'credit_insufficient',
       billableMinutes: 0,
     });
     expect(prisma.ledger).toHaveLength(1);
+    expect(snapshotCreditState(prisma)).toEqual(deniedStateBeforeRetry);
   });
 });
