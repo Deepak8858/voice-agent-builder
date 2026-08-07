@@ -1,4 +1,4 @@
-import { Logger, Module, type Provider } from '@nestjs/common';
+import { Module, type Provider } from '@nestjs/common';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { env } from '../config/env';
 import {
@@ -15,7 +15,6 @@ import { SupabaseKnowledgeFileStorage } from './supabase-knowledge-file-storage.
 const embeddingProvider: Provider = {
   provide: EMBEDDING_PROVIDER_TOKEN,
   useFactory: (): EmbeddingProvider => {
-    const logger = new Logger('KnowledgeModule');
     if (env.EMBEDDING_PROVIDER === 'openai') {
       if (!env.OPENAI_API_KEY) {
         throw new Error('EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is not set.');
