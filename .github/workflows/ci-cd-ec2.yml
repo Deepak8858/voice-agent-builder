@@ -8,11 +8,9 @@
 
 name: Legacy CI/CD — AWS EC2
 
+# Azure is the sole production target. This legacy workflow can only be run
+# through an explicit manual dispatch while migration/decommissioning completes.
 on:
-  pull_request:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       environment:
