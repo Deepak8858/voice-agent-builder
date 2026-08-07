@@ -1,0 +1,118 @@
+# =============================================================================
+# VoiceForge AI — Quality Gate
+# =============================================================================
+# The deploy workflows (AWS, GCP, Azure) are all workflow_dispatch-only, since
+# Azure is the sole production target and deploys are operator-initiated.
+# That left the repository with no checks running automatically on a pull
+# request. This workflow is the automatic gate: it never deploys and never
+# needs cloud credentials.
+# =============================================================================
+
+name: Quality Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "10.33.2"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to diff a PR range rather than only the tip.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      # --frozen-lockfile also asserts that pnpm-lock.yaml agrees with every
+      # package.json, including the pnpm.overrides block. A drifted lockfile
+      # fails here instead of silently installing unpinned transitives.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Generate Prisma client
+        run: pnpm --filter @voiceforge/api run db:generate
+
+      - name: Build shared package
+        run: pnpm --filter @voiceforge/shared run build
+
+      - name: Typecheck
+        run: pnpm -r --if-present run typecheck
+
+      - name: Lint
+        run: pnpm -r --if-present run lint
+
+      # Recursive, so apps/web is included. The root "test" script only covers
+      # shared + api + livekit-agent and would silently skip the web suite.
+      - name: Test
+        run: pnpm -r --if-present run test
+
+      - name: Build API
+        run: pnpm --filter @voiceforge/api run build
+
+      # The web build prerenders pages that construct a Supabase client, so it
+      # needs the public env values. These are public by definition (they ship
+      # in the browser bundle); no service-role or secret key is used here.
+      - name: Build web
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+        run: pnpm --filter @voiceforge/web run build
+
+  # Fails the PR if credential-bearing scratch directories are ever tracked
+  # again. These were committed once before and required a history rewrite.
+  no-tracked-secrets:
+    name: No tracked credential paths
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Assert credential scratch paths are untracked
+        run: |
+          set -euo pipefail
+          blocked=0
+          for path in ".codex-browser-shots" "supabase/.temp" ".claude/worktrees"; do
+            if git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+              echo "::error::$path is tracked in git; it may contain credentials."
+              blocked=1
+            fi
+          done
+          exit "$blocked"
