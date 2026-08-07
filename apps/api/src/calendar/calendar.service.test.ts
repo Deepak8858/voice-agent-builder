@@ -1,6 +1,19 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { CalendarService } from './calendar.service';
+import { safeFetch } from '../common/safe-fetch';
 import type { RefreshedGoogleToken } from './google-oauth.client';
+
+/**
+ * CalendarService reaches the network through safeFetch, not global fetch.
+ * safeFetch performs DNS resolution and SSRF address checks before issuing a
+ * real https request, so stubbing globalThis.fetch would not intercept it.
+ * Mock the module itself.
+ */
+vi.mock('../common/safe-fetch', () => ({
+  safeFetch: vi.fn(),
+}));
+
+const safeFetchMock = vi.mocked(safeFetch);
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -48,15 +61,16 @@ function sealed(value: string): string {
 }
 
 function makeFetchSpy() {
-  const spy = vi.fn(async (_url: string, _init: RequestInit) => calendarOk());
-  globalThis.fetch = spy as unknown as typeof globalThis.fetch;
-  return spy;
+  safeFetchMock.mockImplementation(async () => calendarOk());
+  return safeFetchMock;
 }
 
-function authHeader(spy: ReturnType<typeof makeFetchSpy>, index = 0): string {
+function authHeader(spy: typeof safeFetchMock, index = 0): string {
   const call = spy.mock.calls[index];
   if (!call) throw new Error(`no fetch call recorded at index ${index}`);
-  return (call[1].headers as Record<string, string>).Authorization ?? '';
+  const init = call[1];
+  if (!init) throw new Error(`fetch call at index ${index} had no init`);
+  return (init.headers as Record<string, string>).Authorization ?? '';
 }
 
 function calendarOk() {
@@ -120,14 +134,12 @@ const bookingArgs = {
 };
 
 describe('CalendarService Google token refresh', () => {
-  const originalFetch = globalThis.fetch;
-
   beforeEach(() => {
     vi.clearAllMocks();
+    safeFetchMock.mockReset();
   });
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
   });
 
