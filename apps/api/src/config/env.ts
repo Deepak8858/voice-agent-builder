@@ -73,6 +73,20 @@ const EnvSchema = z.object({
   WEB_BASE_URL: z.string().default('http://localhost:3000'),
   DEFAULT_COUNTRY: z.string().default('US'),
 
+  // Weekly digest schedule. Defaults to Monday 09:00 UTC. The cron pattern is
+  // handed to BullMQ's scheduler, so it must be a 5- or 6-field expression.
+  WEEKLY_DIGEST_CRON: z
+    .string()
+    .default('0 9 * * 1')
+    .refine(
+      (v) => {
+        const fields = v.trim().split(/\s+/).length;
+        return fields === 5 || fields === 6;
+      },
+      'WEEKLY_DIGEST_CRON must be a 5- or 6-field cron expression',
+    ),
+  WEEKLY_DIGEST_TIMEZONE: z.string().default('UTC'),
+
   // Supabase (used by backend for service-role operations)
   SUPABASE_URL: z.string().optional(),
   SUPABASE_JWT_SECRET: z.string().optional(),
@@ -146,7 +160,39 @@ const EnvSchema = z.object({
       message: 'VOICE_PROVIDER=mock is not allowed in production',
     });
   }
+  // WEB_BASE_URL is the origin Stripe redirects customers back to after
+  // checkout and from the billing portal. It defaults to localhost, so a live
+  // deployment that omits it takes payments and then bounces the customer to a
+  // dead address. That failure is invisible to a boot check, hence this guard.
+  if (value.BILLING_MODE === 'live') {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(value.WEB_BASE_URL);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.protocol !== 'https:' || isLocalHostname(parsed.hostname)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WEB_BASE_URL'],
+        message:
+          'WEB_BASE_URL must be an absolute non-local HTTPS URL when BILLING_MODE=live, ' +
+          'because Stripe redirects customers back to it',
+      });
+    }
+  }
 });
+
+function isLocalHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '::1' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    /^127\./.test(host)
+  );
+}
 
 export type Env = z.infer<typeof EnvSchema>;
 
