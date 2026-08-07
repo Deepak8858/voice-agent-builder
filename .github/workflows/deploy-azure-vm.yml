@@ -1,0 +1,314 @@
+name: Deploy production to Azure VM
+
+# Azure is the only production target. Deployments are always operator-initiated
+# and build registry-free images on the VM from an exact commit.
+on:
+  workflow_dispatch:
+    inputs:
+      git_sha:
+        description: "Full 40-character commit SHA to deploy (blank uses this workflow ref)"
+        required: false
+        type: string
+      confirm_production:
+        description: "Type deploy-production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-vm-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy exact commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate exact commit
+        id: revision
+        env:
+          REQUESTED_SHA: ${{ inputs.git_sha }}
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_PRODUCTION" != "deploy-production" ]; then
+            echo "::error::Production confirmation did not match deploy-production."
+            exit 1
+          fi
+
+          sha="${REQUESTED_SHA:-$GITHUB_SHA}"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error::git_sha must be a full 40-character hexadecimal commit SHA."
+            exit 1
+          fi
+          sha="$(printf '%s' "$sha" | tr 'A-F' 'a-f')"
+
+          git fetch --no-tags origin "$sha"
+          resolved="$(git rev-parse FETCH_HEAD^{commit})"
+          if [ "$resolved" != "$sha" ]; then
+            echo "::error::Requested revision did not resolve to the exact commit."
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate SSH configuration
+        env:
+          AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          AZURE_VM_USER: ${{ secrets.AZURE_VM_USER }}
+          AZURE_VM_SSH_KEY: ${{ secrets.AZURE_VM_SSH_KEY }}
+          AZURE_VM_KNOWN_HOSTS: ${{ secrets.AZURE_VM_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_VM_HOST AZURE_VM_USER AZURE_VM_SSH_KEY AZURE_VM_KNOWN_HOSTS; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::Missing required GitHub secret: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$AZURE_VM_SSH_KEY" > ~/.ssh/deploy_key
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$AZURE_VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Deploy on Azure VM
+        env:
+          AZURE_VM_HOST: ${{ secrets.AZURE_VM_HOST }}
+          AZURE_VM_USER: ${{ secrets.AZURE_VM_USER }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}.git
+          PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
+          PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$AZURE_VM_USER@$AZURE_VM_HOST" \
+            bash -s -- "$DEPLOY_SHA" "$REPOSITORY_URL" "$PUBLIC_APP_URL" "$PUBLIC_API_URL" <<'REMOTE'
+          set -euo pipefail
+
+          deploy_sha="$1"
+          repository_url="$2"
+          public_app_url="$3"
+          public_api_url="$4"
+          deploy_root=/opt/voiceforge
+          source_dir="$deploy_root/src"
+          state_dir="$deploy_root/deploy-state"
+          # The Compose file lives at the deploy root so its ./src build context
+          # resolves to the exact Git checkout at /opt/voiceforge/src.
+          compose_file="$deploy_root/docker-compose.azure.yml"
+          env_file="$deploy_root/.env"
+          nginx_source="$source_dir/infra/nginx/nginx.azure.conf"
+          nginx_target="$deploy_root/nginx/nginx.conf"
+          current_file="$state_dir/current-sha"
+          previous_file="$state_dir/previous-sha"
+          current_livekit_file="$state_dir/current-livekit"
+          previous_livekit_file="$state_dir/previous-livekit"
+          candidate_file="$state_dir/candidate-sha"
+          livekit_enabled=false
+          previous_livekit=false
+          previous_sha=""
+          replacement_started=false
+
+          if ! printf '%s' "$deploy_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Invalid deploy SHA" >&2
+            exit 1
+          fi
+          if [ -z "$public_app_url" ] || [ -z "$public_api_url" ]; then
+            echo "PUBLIC_APP_URL and PUBLIC_API_URL repository variables are required" >&2
+            exit 1
+          fi
+
+          deploy_user="$(id -un)"
+          deploy_group="$(id -gn)"
+          sudo install -d -m 755 "$deploy_root" "$state_dir" "$deploy_root/nginx"
+          sudo chown "$deploy_user:$deploy_group" "$state_dir"
+          test -s "$env_file" || { echo "$env_file is missing or empty" >&2; exit 1; }
+
+          if [ ! -d "$source_dir/.git" ]; then
+            if [ -e "$source_dir" ] && [ -n "$(ls -A "$source_dir" 2>/dev/null)" ]; then
+              echo "$source_dir exists but is not an empty Git checkout" >&2
+              exit 1
+            fi
+            rm -rf "$source_dir"
+            sudo install -d -m 755 -o "$deploy_user" -g "$deploy_group" "$source_dir"
+            git clone --no-checkout "$repository_url" "$source_dir"
+          fi
+
+          cd "$source_dir"
+          if [ "$(git config --get remote.origin.url)" != "$repository_url" ]; then
+            echo "Unexpected origin URL in $source_dir" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "$deploy_sha"
+          git checkout --detach --force "$deploy_sha"
+          git clean -ffd
+          checked_out="$(git rev-parse HEAD)"
+          test "$checked_out" = "$deploy_sha" || { echo "Exact checkout verification failed" >&2; exit 1; }
+
+          # Inspect names/status only. Never print .env contents or values.
+          required=(
+            NODE_ENV DATABASE_URL DIRECT_URL JWT_SECRET ENCRYPTION_KEY
+            VOICE_WEBHOOK_SECRET ALLOWED_ORIGINS SUPABASE_URL
+            SUPABASE_JWT_SECRET SUPABASE_SERVICE_ROLE_KEY INTERNAL_API_KEY
+            NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY
+            STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
+            STRIPE_GROWTH_PRICE_ID STRIPE_ENTERPRISE_PRICE_ID BILLING_MODE
+            WORKERS_ENABLED TRUST_PROXY_HOPS
+          )
+          missing=()
+          invalid=()
+          for name in "${required[@]}"; do
+            value="$(awk -F= -v key="$name" '$1 == key { sub(/^[^=]*=/, ""); print; found=1; exit } END { if (!found) exit 1 }' "$env_file")" || value=""
+            if [ -z "$value" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required production variable: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
+          env_value() {
+            awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$env_file"
+          }
+          [ "$(env_value NODE_ENV)" = production ] || invalid+=(NODE_ENV)
+          [ "$(env_value BILLING_MODE)" = live ] || invalid+=(BILLING_MODE)
+          printf '%s' "$(env_value WORKERS_ENABLED)" | grep -Eqi '^(1|true|yes|on|0|false|no|off)$' || invalid+=(WORKERS_ENABLED)
+          printf '%s' "$(env_value TRUST_PROXY_HOPS)" | grep -Eq '^[0-5]$' || invalid+=(TRUST_PROXY_HOPS)
+          if [ "${#invalid[@]}" -ne 0 ]; then
+            printf 'Invalid production setting: %s\n' "${invalid[@]}" >&2
+            exit 1
+          fi
+
+          livekit_count=0
+          for name in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+            if [ -n "$(env_value "$name")" ]; then livekit_count=$((livekit_count + 1)); fi
+          done
+          if [ "$livekit_count" -eq 3 ]; then
+            livekit_enabled=true
+          elif [ "$livekit_count" -ne 0 ]; then
+            echo "LiveKit configuration is partial; set all three required variables or none" >&2
+            exit 1
+          fi
+
+          sudo install -m 644 infra/docker/docker-compose.azure.yml "$compose_file"
+          sudo install -m 644 "$nginx_source" "$nginx_target"
+          export IMAGE_TAG="$deploy_sha"
+          export COMPOSE_PROJECT_NAME=voiceforge
+          compose=(docker compose --env-file "$env_file" -f "$compose_file")
+          profile=()
+          services=(redis api api-worker web nginx)
+          if [ "$livekit_enabled" = true ]; then
+            profile=(--profile livekit)
+            services+=(livekit-agent)
+          fi
+          "${compose[@]}" "${profile[@]}" config --quiet
+
+          if [ -s "$current_file" ]; then
+            previous_sha="$(tr -d '\r\n' < "$current_file")"
+            if ! printf '%s' "$previous_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "Recorded current SHA is invalid; refusing an unrollbackable replacement" >&2
+              exit 1
+            fi
+            if [ -s "$current_livekit_file" ] && [ "$(tr -d '\r\n' < "$current_livekit_file")" = true ]; then
+              previous_livekit=true
+            fi
+            docker image inspect "voiceforge-api:$previous_sha" >/dev/null
+            docker image inspect "voiceforge-web:$previous_sha" >/dev/null
+            if [ "$previous_livekit" = true ]; then
+              docker image inspect "voiceforge-livekit-agent:$previous_sha" >/dev/null
+            fi
+          fi
+          printf '%s\n' "$deploy_sha" > "$candidate_file"
+
+          rollback() {
+            exit_code=$?
+            trap - ERR
+            if [ "$replacement_started" = true ] && [ -n "$previous_sha" ]; then
+              echo "Deployment failed after replacement; rolling services back to the prior SHA" >&2
+              export IMAGE_TAG="$previous_sha"
+              rollback_profile=()
+              if [ "$previous_livekit" = true ]; then
+                rollback_profile=(--profile livekit)
+              fi
+              "${compose[@]}" "${rollback_profile[@]}" up -d --no-build --remove-orphans
+              if [ "$previous_livekit" = false ]; then
+                "${compose[@]}" --profile livekit rm -sf livekit-agent || true
+              fi
+              printf '%s\n' "$previous_sha" > "$current_file"
+              printf '%s\n' "$previous_livekit" > "$current_livekit_file"
+            elif [ "$replacement_started" = true ]; then
+              echo "Initial deployment failed and no previous SHA exists for automatic rollback" >&2
+            fi
+            rm -f "$candidate_file"
+            exit "$exit_code"
+          }
+          trap rollback ERR
+
+          docker build --pull -f infra/docker/Dockerfile.api -t "voiceforge-api:$deploy_sha" .
+          docker build --pull \
+            --build-arg "NEXT_PUBLIC_API_URL=$(env_value NEXT_PUBLIC_API_URL)" \
+            --build-arg "NEXT_PUBLIC_APP_URL=$(env_value NEXT_PUBLIC_APP_URL)" \
+            --build-arg "NEXT_PUBLIC_SUPABASE_URL=$(env_value NEXT_PUBLIC_SUPABASE_URL)" \
+            --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$(env_value NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY)" \
+            --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$(env_value NEXT_PUBLIC_SUPABASE_ANON_KEY)" \
+            -f infra/docker/Dockerfile.web -t "voiceforge-web:$deploy_sha" .
+          if [ "$livekit_enabled" = true ]; then
+            docker build --pull -f infra/docker/Dockerfile.livekit-agent -t "voiceforge-livekit-agent:$deploy_sha" .
+          fi
+
+          # Migrations happen while the old services remain active. Database migrations
+          # are forward-only and are intentionally not rerun during service rollback.
+          "${compose[@]}" run --rm --no-deps api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
+
+          replacement_started=true
+          "${compose[@]}" "${profile[@]}" up -d --no-build --remove-orphans "${services[@]}"
+          if [ "$livekit_enabled" = false ]; then
+            "${compose[@]}" --profile livekit rm -sf livekit-agent
+          fi
+
+          check_url() {
+            label="$1"
+            url="$2"
+            for attempt in $(seq 1 30); do
+              if curl -fsS --max-time 10 "$url" >/dev/null; then return 0; fi
+              sleep 5
+            done
+            echo "$label health check failed" >&2
+            return 1
+          }
+          check_url API http://127.0.0.1:4000/api/v1/health
+          check_url Web http://127.0.0.1:3000/api/health
+          check_url "Public API" "${public_api_url%/}/health"
+          check_url "Public web" "$public_app_url"
+
+          if [ -n "$previous_sha" ] && [ "$previous_sha" != "$deploy_sha" ]; then
+            printf '%s\n' "$previous_sha" > "$previous_file"
+            printf '%s\n' "$previous_livekit" > "$previous_livekit_file"
+          fi
+          printf '%s\n' "$deploy_sha" > "$current_file"
+          printf '%s\n' "$livekit_enabled" > "$current_livekit_file"
+          rm -f "$candidate_file"
+          trap - ERR
+          echo "Deployment completed for commit $deploy_sha"
+          REMOTE
+
+      - name: Record deployment summary
+        run: |
+          echo "### Azure production deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ steps.revision.outputs.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Images: built and tagged on the VM with the full commit SHA" >> "$GITHUB_STEP_SUMMARY"
