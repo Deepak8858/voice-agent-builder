@@ -118,6 +118,10 @@ export class SupabaseAuthService extends AuthService {
       try {
         return jwt.verify(token, env.SUPABASE_JWT_SECRET, {
           algorithms: ['HS256'],
+          audience: 'authenticated',
+          ...(this.supabaseUrl
+            ? { issuer: `${this.supabaseUrl.replace(/\/$/, '')}/auth/v1` }
+            : {}),
         }) as SupabaseJWTPayload;
       } catch (err) {
         this.logger.debug(`[supabase] local token verify failed: ${(err as Error).message}`);

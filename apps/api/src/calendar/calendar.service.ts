@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppError } from '../common/errors';
+import { safeFetch } from '../common/safe-fetch';
 
 @Injectable()
 export class CalendarService {
@@ -86,7 +87,7 @@ export class CalendarService {
         : [],
     };
 
-    const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    const response = await safeFetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,

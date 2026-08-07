@@ -13,19 +13,21 @@ const BooleanEnvSchema = z.preprocess((value) => {
  * We intentionally load from process.env and validate once at boot so a
  * misconfigured environment fails fast with a readable error.
  *
- * RULE: mock providers are REMOVED. Only real providers are allowed.
+ * Mock providers are available for credential-less development and tests but
+ * are rejected in production.
  */
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().min(1).optional(),
   WEB_PORT: z.coerce.number().int().min(1).optional(),
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
 
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
-  VOICE_PROVIDER: z.enum(['vapi', 'twilio', 'openai-realtime']).optional(),
+  VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
@@ -33,6 +35,11 @@ const EnvSchema = z.object({
   VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
+
+  RETELL_API_KEY: z.string().optional(),
+  RETELL_BASE_URL: z.string().url().default('https://api.retellai.com'),
+  RETELL_FROM_NUMBER: z.string().optional(),
+  RETELL_VOICE_ID: z.string().default('11labs-Adrian'),
 
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -118,11 +125,25 @@ const EnvSchema = z.object({
     .default('')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 }).superRefine((value, ctx) => {
+  if (value.NODE_ENV === 'production' && value.ALLOWED_ORIGINS.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ALLOWED_ORIGINS'],
+      message: 'ALLOWED_ORIGINS must contain at least one explicit origin in production',
+    });
+  }
   if (value.NODE_ENV === 'production' && !value.VOICE_WEBHOOK_SECRET) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['VOICE_WEBHOOK_SECRET'],
       message: 'VOICE_WEBHOOK_SECRET is required in production',
+    });
+  }
+  if (value.NODE_ENV === 'production' && value.VOICE_PROVIDER === 'mock') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_PROVIDER'],
+      message: 'VOICE_PROVIDER=mock is not allowed in production',
     });
   }
 });

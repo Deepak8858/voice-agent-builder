@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
+import { safeFetch } from '../common/safe-fetch';
 import { WebhookExecutor } from './webhook-executor';
+vi.mock('../common/safe-fetch', () => ({ safeFetch: vi.fn() }));
 
 interface ExecResult {
   status: number;
@@ -10,23 +12,22 @@ interface ExecResult {
 
 describe('WebhookExecutor', () => {
   const exec = new WebhookExecutor();
-  const originalFetch = globalThis.fetch;
+  const safeFetchMock = vi.mocked(safeFetch);
 
   beforeEach(() => {
+    safeFetchMock.mockReset();
     vi.useFakeTimers();
   });
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.useRealTimers();
   });
 
   it('POSTs JSON and returns parsed body + status + duration', async () => {
-    const fetchSpy = vi.fn(async () =>
+    safeFetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ok: true, n: 1 }), { status: 200 }),
     );
-    globalThis.fetch = fetchSpy as never;
 
     vi.useRealTimers();
     const out = await exec.execute(
@@ -38,7 +39,7 @@ describe('WebhookExecutor', () => {
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ ok: true, n: 1 });
     expect(typeof result.duration_ms).toBe('number');
-    const callArg = (fetchSpy.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1];
+    const callArg = safeFetchMock.mock.calls[0]![1]!;
     expect(callArg.method).toBe('POST');
     expect(JSON.parse(callArg.body as string)).toEqual({ hello: 'world' });
     const headers = callArg.headers as Record<string, string>;
@@ -47,8 +48,7 @@ describe('WebhookExecutor', () => {
   });
 
   it('signs body with HMAC-SHA256 when secret is set', async () => {
-    const fetchSpy = vi.fn(async () => new Response('{}', { status: 200 }));
-    globalThis.fetch = fetchSpy as never;
+    safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
 
     vi.useRealTimers();
     await exec.execute(
@@ -61,7 +61,7 @@ describe('WebhookExecutor', () => {
       } as never,
     );
 
-    const callArg = (fetchSpy.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1];
+    const callArg = safeFetchMock.mock.calls[0]![1]!;
     const body = callArg.body as string;
     const headers = callArg.headers as Record<string, string>;
     const expected = `sha256=${createHmac('sha256', 'topsecret').update(body).digest('hex')}`;
@@ -69,7 +69,7 @@ describe('WebhookExecutor', () => {
   });
 
   it('returns string body when response is non-JSON text', async () => {
-    globalThis.fetch = (async () => new Response('plain text', { status: 200 })) as never;
+    safeFetchMock.mockResolvedValue(new Response('plain text', { status: 200 }));
     vi.useRealTimers();
     const out = await exec.execute(
       {},
@@ -81,7 +81,7 @@ describe('WebhookExecutor', () => {
 
   it('truncates very long text bodies', async () => {
     const big = 'x'.repeat(8192);
-    globalThis.fetch = (async () => new Response(big, { status: 200 })) as never;
+    safeFetchMock.mockResolvedValue(new Response(big, { status: 200 }));
     vi.useRealTimers();
     const out = await exec.execute(
       {},
@@ -93,8 +93,7 @@ describe('WebhookExecutor', () => {
   });
 
   it('GET method does not send body or signature', async () => {
-    const fetchSpy = vi.fn(async () => new Response('{}', { status: 200 }));
-    globalThis.fetch = fetchSpy as never;
+    safeFetchMock.mockResolvedValue(new Response('{}', { status: 200 }));
     vi.useRealTimers();
     await exec.execute(
       { ignored: true },
@@ -105,14 +104,15 @@ describe('WebhookExecutor', () => {
         timeout_ms: 1000,
       } as never,
     );
-    const callArg = (fetchSpy.mock.calls as unknown as Array<[string, RequestInit]>)[0]![1];
+    const callArg = safeFetchMock.mock.calls[0]![1]!;
     expect(callArg.body).toBeUndefined();
     expect((callArg.headers as Record<string, string>)['x-voiceforge-signature']).toBeUndefined();
   });
 
   it('returns success=false on HTTP non-2xx', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ error: 'bad' }), { status: 500 })) as never;
+    safeFetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'bad' }), { status: 500 }),
+    );
     vi.useRealTimers();
     const out = await exec.execute(
       {},

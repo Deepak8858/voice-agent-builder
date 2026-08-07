@@ -20,7 +20,10 @@ const PROTECTED_PREFIXES = [
   '/billing',
 ];
 
-export async function updateSupabaseSession(req: NextRequest): Promise<NextResponse> {
+export async function updateSupabaseSession(
+  req: NextRequest,
+  requestHeaders = new Headers(req.headers),
+): Promise<NextResponse> {
   const path = req.nextUrl.pathname;
   const needsAuth = PROTECTED_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
 
@@ -31,7 +34,7 @@ export async function updateSupabaseSession(req: NextRequest): Promise<NextRespo
     return NextResponse.redirect(redirect);
   }
 
-  return NextResponse.next({ request: req });
+  return NextResponse.next({ request: { headers: requestHeaders } });
 }
 
 function hasSupabaseAuthCookie(req: NextRequest): boolean {

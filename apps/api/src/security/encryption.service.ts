@@ -63,8 +63,10 @@ export class EncryptionService {
       if (isProduction()) {
         throw new AppError('INTERNAL_ERROR', 'ENCRYPTION_KEY is required in production.', 500);
       }
-      this.logger.warn('ENCRYPTION_KEY is not set; using a development-only telephony encryption key.');
-      return Buffer.from('voiceforge-dev-telephony-key-321');
+      this.logger.warn(
+        'ENCRYPTION_KEY is not set; using an ephemeral development key. Encrypted values will not survive restart.',
+      );
+      return randomBytes(32);
     }
 
     const raw = env.ENCRYPTION_KEY;

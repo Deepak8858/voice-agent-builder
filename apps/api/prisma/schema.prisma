@@ -366,6 +366,7 @@ model Call {
 
 model CallEvent {
   id             String   @id @default(uuid()) @db.Uuid
+  providerEventId String?  @unique @map("provider_event_id")
   callId         String   @map("call_id") @db.Uuid
   workspaceId    String   @map("workspace_id") @db.Uuid
   organizationId String?  @map("organization_id") @db.Uuid

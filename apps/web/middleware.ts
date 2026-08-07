@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import { buildContentSecurityPolicy } from './lib/content-security-policy';
 import { updateSupabaseSession } from './middleware-utils';
 
 /**
@@ -8,23 +9,25 @@ import { updateSupabaseSession } from './middleware-utils';
  * and auth validation.
  */
 export async function middleware(req: NextRequest) {
-  return updateSupabaseSession(req);
+  const nonce = btoa(crypto.randomUUID());
+  const contentSecurityPolicy = buildContentSecurityPolicy(nonce);
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set('x-nonce', nonce);
+  requestHeaders.set('Content-Security-Policy', contentSecurityPolicy);
+
+  const response = await updateSupabaseSession(req, requestHeaders);
+  response.headers.set('Content-Security-Policy', contentSecurityPolicy);
+  return response;
 }
 
 export const config = {
   matcher: [
-    '/dashboard/:path*',
-    '/agents/:path*',
-    '/calls/:path*',
-    '/onboarding/:path*',
-    '/invite/:path*',
-    '/settings/:path*',
-    '/knowledge/:path*',
-    '/integrations/:path*',
-    '/compliance/:path*',
-    '/analytics/:path*',
-    '/white-label/:path*',
-    '/clients/:path*',
-    '/billing/:path*',
+    {
+      source: '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif)$).*)',
+      missing: [
+        { type: 'header', key: 'next-router-prefetch' },
+        { type: 'header', key: 'purpose', value: 'prefetch' },
+      ],
+    },
   ],
 };

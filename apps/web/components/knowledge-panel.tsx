@@ -105,10 +105,11 @@ export function KnowledgePanel({
 
   const searchMutation = useMutation({
     mutationFn: async () => {
-      const params = new URLSearchParams({ query: searchInput, k: '5' });
-      if (agentId) params.set('agent_id', agentId);
+      const body: Record<string, unknown> = { query: searchInput, k: 5 };
+      if (agentId) body.agent_id = agentId;
       return call<KnowledgeSearchResult>(
-        `/workspaces/${workspaceId}/knowledge-sources/search?${params.toString()}`,
+        `/workspaces/${workspaceId}/knowledge-sources/search`,
+        { method: 'POST', body: JSON.stringify(body) },
       );
     },
     onSuccess: (data) => setSearchResult(data),

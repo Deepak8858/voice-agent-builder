@@ -13,13 +13,14 @@
 #   - Docker + Docker Compose v2 installed
 #   - Docker Swarm initialized: docker swarm init
 #   - /opt/voiceforge/.env file created from secret injection
-#   - /opt/voiceforge/data/certs populated with TLS certs (self-signed or Let's Encrypt)
+#   - /opt/voiceforge/data/certs populated with a trusted fullchain.pem and key.pem
 #   - Ports 80 and 443 open in AWS Security Group
+#   - ECR_REGISTRY exported as <account-id>.dkr.ecr.<region>.amazonaws.com
 # =============================================================================
 
 services:
   web:
-    image: ${ECR_REGISTRY:-393060838606.dkr.ecr.ap-south-1.amazonaws.com}/voiceforge-web:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-web:${IMAGE_TAG:-latest}
     container_name: vf-web
     restart: always
     ports:
@@ -53,7 +54,7 @@ services:
       start_period: 15s
 
   api:
-    image: ${ECR_REGISTRY:-393060838606.dkr.ecr.ap-south-1.amazonaws.com}/voiceforge-api:${IMAGE_TAG:-latest}
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-api:${IMAGE_TAG:-latest}
     container_name: vf-api
     restart: always
     ports:

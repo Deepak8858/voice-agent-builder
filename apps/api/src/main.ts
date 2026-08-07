@@ -27,6 +27,8 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
   });
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set('trust proxy', env.TRUST_PROXY_HOPS);
 
   app.setGlobalPrefix('api/v1');
 
@@ -43,12 +45,9 @@ async function bootstrap() {
   }
 
   // CORS
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
+  const allowedOrigins = env.ALLOWED_ORIGINS.length > 0
+    ? env.ALLOWED_ORIGINS
     : [`http://localhost:${env.WEB_PORT ?? 3000}`];
-  if (isProduction() && allowedOrigins.length === 0) {
-    throw new Error('ALLOWED_ORIGINS must be explicitly set in production.');
-  }
   const corsResult = cors({
     origin: allowedOrigins,
     credentials: true,

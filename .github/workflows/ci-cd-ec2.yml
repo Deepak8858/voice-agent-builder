@@ -9,6 +9,10 @@
 name: Legacy CI/CD — AWS EC2
 
 on:
+  pull_request:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       environment:
@@ -50,6 +54,13 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
 
       - name: Generate Prisma client
         run: pnpm --filter @voiceforge/api run db:generate
@@ -59,6 +70,12 @@ jobs:
 
       - name: Typecheck
         run: pnpm -r --if-present run typecheck
+
+      - name: Lint
+        run: pnpm -r --if-present run lint
+
+      - name: Test
+        run: pnpm -r --if-present run test
 
   # =========================================================================
   # Phase 2 — Build & Push Container Images to AWS ECR
@@ -70,6 +87,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -77,8 +95,8 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: voiceforge-github-actions
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -188,18 +206,25 @@ jobs:
           fi
 
       - name: Setup SSH key for direct scp
+        env:
+          AWS_EC2_KNOWN_HOSTS: ${{ secrets.AWS_EC2_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.AWS_EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.AWS_EC2_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.AWS_EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          if [ -z "${AWS_EC2_KNOWN_HOSTS:-}" ]; then
+            echo "::error::AWS_EC2_KNOWN_HOSTS must contain the pinned EC2 SSH host key."
+            exit 1
+          fi
+          printf '%s\n' "$AWS_EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Upload compose & nginx files to EC2
         run: |
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
             infra/docker/docker-compose.prod.yml \
             ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:/tmp/docker-compose.prod.yml
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
             infra/nginx/nginx.conf \
             ${{ secrets.AWS_EC2_USER }}@${{ secrets.AWS_EC2_HOST }}:/tmp/nginx.conf
 
@@ -209,6 +234,7 @@ jobs:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          fingerprint: ${{ secrets.AWS_EC2_HOST_FINGERPRINT }}
           script_stop: true
           envs: AWS_REGION,COMPOSE_PROJECT_NAME
           script: |
@@ -233,14 +259,11 @@ jobs:
             sudo mv /tmp/nginx.conf /opt/voiceforge/nginx/nginx.conf
             sudo chmod 644 /opt/voiceforge/nginx/nginx.conf
 
-            echo "🔐 Creating SSL certs if missing..."
-            sudo mkdir -p /opt/voiceforge/data/certs
-            if [ ! -f /opt/voiceforge/data/certs/cert.pem ]; then
-              sudo openssl req -x509 -nodes -days 90 -newkey rsa:2048 \
-                -keyout /opt/voiceforge/data/certs/key.pem \
-                -out /opt/voiceforge/data/certs/cert.pem \
-                -subj '/CN=vocal.devdeepak.me' 2>/dev/null
-              echo "SSL certs created"
+            echo "🔐 Verifying trusted TLS certificates..."
+            if ! sudo test -s /opt/voiceforge/data/certs/fullchain.pem || \
+               ! sudo test -s /opt/voiceforge/data/certs/key.pem; then
+              echo "::error::Trusted TLS fullchain.pem and key.pem are required in /opt/voiceforge/data/certs."
+              exit 1
             fi
 
             echo "🔍 Verifying /opt/voiceforge/.env exists on EC2..."

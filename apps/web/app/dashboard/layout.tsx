@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { apiFetch, ApiCallError } from '@/lib/api';
 import { AppSidebar } from '@/components/layout/app-sidebar';
 import { SubscriptionStatusBanner } from '@/components/billing/subscription-status-banner';
+import { AuthGate } from '@/components/auth/auth-gate';
 import type { SessionUser } from '@voiceforge/shared';
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +32,9 @@ export default async function DashboardLayout({
           <Suspense fallback={null}>
             <SubscriptionStatusBanner />
           </Suspense>
-          {children}
+          <AuthGate>
+            {children}
+          </AuthGate>
         </div>
       </div>
     </div>

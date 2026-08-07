@@ -4,10 +4,11 @@
 # Build context: repository root (monorepo)
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-alpine AS builder
+FROM --platform=linux/amd64 node:20-slim AS builder
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++ openssl
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ openssl \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 COPY pnpm-workspace.yaml ./
@@ -30,14 +31,15 @@ RUN npx prisma generate --schema=apps/api/prisma/schema.prisma
 RUN npm run build -w @voiceforge/shared
 RUN npm run build -w @voiceforge/livekit-agent
 
-FROM --platform=linux/amd64 node:20-alpine AS production
+FROM --platform=linux/amd64 node:20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apk add --no-cache tini openssl \
-    && addgroup -g 1001 nodegroup \
-    && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
+RUN apt-get update && apt-get install -y --no-install-recommends tini openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1001 nodegroup \
+    && useradd -u 1001 -g nodegroup -s /bin/sh -M nodeuser \
     && chown -R nodeuser:nodegroup /app
 
 COPY --chown=1001:1001 --from=builder /app/apps/livekit-agent/dist ./apps/livekit-agent/dist
@@ -54,5 +56,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 EXPOSE 8081
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "apps/livekit-agent/dist/index.js", "start"]

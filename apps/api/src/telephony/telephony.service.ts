@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomBytes } from 'node:crypto';
 import type {
   AssignPhoneNumberAgentDto,
   CreateTelephonyConnectionDto,
@@ -1210,7 +1211,7 @@ export class TelephonyService {
 }
 
 function cryptoRandomToken(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return randomBytes(32).toString('base64url');
 }
 
 function stringValue(value: unknown): string | null {

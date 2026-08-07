@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Logger, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
 import {
@@ -58,6 +58,7 @@ const DEFAULT_DEMO_AUDIO_URL = '/demo/dental-receptionist-30s.wav';
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/agents')
 export class AgentsController {
+  private readonly logger = new Logger(AgentsController.name);
   constructor(
     private readonly agents: AgentsService,
     private readonly prisma: PrismaService,
@@ -104,6 +105,7 @@ export class AgentsController {
     if (!generator) {
       return { error: 'Streaming not supported by current LLM provider' };
     }
+    const logger = this.logger;
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -113,7 +115,10 @@ export class AgentsController {
           }
           controller.enqueue(`data: ${JSON.stringify({ done: true })}\n\n`);
         } catch (err) {
-          controller.enqueue(`data: ${JSON.stringify({ error: String(err) })}\n\n`);
+          logger.error(
+            `Agent generation stream failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          controller.enqueue(`data: ${JSON.stringify({ error: 'Agent generation failed. Please retry.' })}\n\n`);
         } finally {
           controller.close();
         }

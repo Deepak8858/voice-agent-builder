@@ -22,10 +22,26 @@ describe('env validation', () => {
       NODE_ENV: 'production',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: '',
     });
-    delete process.env.VOICE_WEBHOOK_SECRET;
 
     await expect(import('./env')).rejects.toThrow(/VOICE_WEBHOOK_SECRET/);
+  });
+
+  it('rejects the mock voice provider in production', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'mock',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/VOICE_PROVIDER=mock/);
   });
 
   it('parses WORKERS_ENABLED explicitly and defaults it off', async () => {

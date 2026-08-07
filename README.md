@@ -22,20 +22,20 @@ voice-agent-builder/
   docs/         Full VoiceForge AI product documentation
 ```
 
-Package manager: **npm workspaces** (Node >= 20.11).
+Package manager: **pnpm workspaces** (Node >= 20.11).
 
-## Stack decisions (Phase 0 / Phase 1)
+## Stack decisions
 
-| Concern   | Choice                                               |
-| --------- | ---------------------------------------------------- |
-| Frontend  | Next.js 16 + React 19 + Tailwind 4                   |
-| Backend   | NestJS 10                                            |
-| Database  | **Supabase Postgres** (via Prisma)                   |
-| Queues    | **AWS-hosted Redis** + BullMQ (stub when no `REDIS_URL`) |
-| Auth      | Mock (cookie session) \u2014 Clerk adapter stubbed           |
-| Voice     | Mock provider \u2014 Vapi/Retell adapters stubbed            |
-| LLM       | Mock prompt-to-agent generator                       |
-| Validation| Zod (shared between API & web)                       |
+| Concern | Choice |
+| ------- | ------ |
+| Frontend | Next.js 16 + React 19 + Tailwind 4 |
+| Backend | NestJS 10 |
+| Database | Supabase Postgres via Prisma |
+| Queues | Redis/Valkey + BullMQ |
+| Auth | Supabase Auth with verified JWT audience and issuer |
+| Voice | Vapi, Retell, Twilio/LiveKit, and OpenAI Realtime adapters; mock for development |
+| LLM | GitHub, OpenAI, Anthropic, and Azure AI Foundry adapters |
+| Validation | Shared Zod schemas at API and UI boundaries |
 
 Per `AGENTS.md`, all provider integrations go through adapter interfaces so
 production providers can be swapped in without changing business logic.
@@ -60,7 +60,8 @@ Required backend env vars are documented in `.env.example`.
    - Pooler connection string \u2192 `DATABASE_URL` (port `6543`, `?pgbouncer=true`)
    - Direct connection string \u2192 `DIRECT_URL` (port `5432`)
 
-2. **Copy envs** and fill in the two Supabase URLs (Redis optional for now):
+2. **Copy envs** and configure Supabase, Redis, security keys, explicit CORS origins,
+   and the selected production voice provider:
 
    ```powershell
    Copy-Item .env.example .env
@@ -70,16 +71,16 @@ Required backend env vars are documented in `.env.example`.
 3. **Install & push schema**:
 
    ```powershell
-   npm install
-   npm run db:generate
-   npm run db:push    # uses DIRECT_URL; creates all tables in Supabase
-   npm run db:seed    # seeds the 5 MVP agent templates
+   pnpm install
+   pnpm db:generate
+   pnpm db:push    # uses DIRECT_URL; creates all tables in Supabase
+   pnpm db:seed    # seeds the MVP agent templates
    ```
 
 4. **Run both apps**:
 
    ```powershell
-   npm run dev
+   pnpm dev
    ```
 
    - API \u2192 <http://localhost:4000/api/v1> (health: `/health`)
@@ -94,27 +95,29 @@ Required backend env vars are documented in `.env.example`.
 
 | Command              | What it does                                      |
 | -------------------- | ------------------------------------------------- |
-| `npm run dev`        | Runs `@voiceforge/api` and `@voiceforge/web` in parallel |
-| `npm run build`      | Builds shared \u2192 api \u2192 web in order                 |
-| `npm run typecheck`  | TS check across all workspaces                    |
-| `npm run lint`       | ESLint across all workspaces                      |
-| `npm run test`       | Vitest across all workspaces                      |
-| `npm run db:push`    | Apply Prisma schema to Supabase via `DIRECT_URL`  |
-| `npm run db:seed`    | Seed MVP agent templates                          |
+| `pnpm dev` | Runs `@voiceforge/api` and `@voiceforge/web` in parallel |
+| `pnpm build` | Builds shared, API, and web in order |
+| `pnpm typecheck` | Type-checks all workspaces |
+| `pnpm lint` | Runs ESLint across all workspaces |
+| `pnpm test` | Runs Vitest across all workspaces |
+| `pnpm db:push` | Applies the Prisma schema through `DIRECT_URL` |
+| `pnpm db:seed` | Seeds the MVP agent templates |
 
 ## Status
 
-Phases 0\u20135 are implemented:
+The MVP phases are implemented end to end:
 
-- **Phase 0** \u2014 monorepo, infra, env, Prisma schema, BullMQ stub.
-- **Phase 1** \u2014 Agent Spec JSON, CRUD, mock prompt-to-agent generator, builder UI.
-- **Phase 2** \u2014 templates seeded, knowledge ingest (text/url/file), PDF/CSV/TXT
-  parsing, embedding provider adapters (mock + OpenAI stub), cosine retrieval
-  search endpoint, builder UI for upload + retrieval test.
-- **Phase 3** \u2014 voice runtime adapter interface, mock + Vapi/Retell stubs,
-  test sessions, call events/transcripts.
-- **Phase 4** \u2014 publish flow, voice webhook controller, post-call evaluations.
-- **Phase 5** \u2014 tool registry, webhook executor, input validator, integrations UI.
+- Agent Spec JSON generation, CRUD/versioning, templates, and visual builder.
+- Workspace- and agent-scoped knowledge ingestion, maintained PDF extraction,
+  embeddings, and POST-based retrieval.
+- Provider-neutral voice runtimes with Vapi, Retell, Twilio/LiveKit, OpenAI
+  Realtime, and a non-production mock.
+- Test/outbound calls, signed and replay-protected webhooks, transcripts,
+  recordings, event deduplication, evaluations, and analytics.
+- Permissioned tools, calendar/CRM integrations, centralized SSRF protection,
+  compliance and consent gates, audit logs, billing, and white-label features.
+- Hardened CI/deployment with secret scanning, dependency auditing, AWS OIDC,
+  pinned SSH host keys, trusted TLS certificates, and private observability.
 
-Phase 6 onwards (compliance, analytics, white-label, billing, hardening) is
-not yet implemented \u2014 see `docs/20_IMPLEMENTATION_ROADMAP.md`.
+See `docs/20_IMPLEMENTATION_ROADMAP.md` and `docs/21_TASK_BACKLOG.md` for the
+historical phase breakdown; code and current tests are the source of truth.

@@ -4,11 +4,12 @@
 # Build context: repository root (monorepo)
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-alpine AS builder
+FROM --platform=linux/amd64 node:20-slim AS builder
 WORKDIR /app
 
 # Install build dependencies (python3/make for native modules like sharp)
-RUN apk add --no-cache python3 make g++
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace manifests first for layer caching
 COPY package*.json ./
@@ -46,15 +47,16 @@ RUN npm run build -w @voiceforge/api
 # =============================================================================
 # Production stage
 # =============================================================================
-FROM --platform=linux/amd64 node:20-alpine AS production
+FROM --platform=linux/amd64 node:20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
 
 # Add tini + openssl for Prisma runtime
-RUN apk add --no-cache tini openssl \
-    && addgroup -g 1001 nodegroup \
-    && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
+RUN apt-get update && apt-get install -y --no-install-recommends tini openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1001 nodegroup \
+    && useradd -u 1001 -g nodegroup -s /bin/sh -M nodeuser \
     && chown -R nodeuser:nodegroup /app
 
 # Copy built artifacts (owned by nodeuser)
@@ -75,5 +77,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 4000
 
 # Use tini as init system to properly handle SIGTERM and forward to Node.js
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "apps/api/dist/main.js"]
