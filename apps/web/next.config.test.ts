@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import nextConfig from './next.config';
+import { buildContentSecurityPolicy } from './lib/content-security-policy';
+
+const TEST_NONCE = 'dGVzdC1ub25jZQ==';
 
 async function headerMap(): Promise<Map<string, string>> {
   if (typeof nextConfig.headers !== 'function') {
@@ -11,10 +14,13 @@ async function headerMap(): Promise<Map<string, string>> {
   );
 }
 
-async function cspDirectives(): Promise<Map<string, string[]>> {
-  const headers = await headerMap();
-  const csp = headers.get('Content-Security-Policy');
-  if (!csp) throw new Error('Content-Security-Policy header is missing');
+/**
+ * The CSP is built per-request in middleware.ts so each response can carry a
+ * fresh nonce; it is deliberately NOT a static header in next.config.ts.
+ * Assert against the builder that middleware actually uses.
+ */
+function cspDirectives(): Map<string, string[]> {
+  const csp = buildContentSecurityPolicy(TEST_NONCE);
 
   return new Map(
     csp.split(';').map((directive) => {
@@ -29,17 +35,27 @@ describe('next.config security headers', () => {
     delete process.env.NEXT_PUBLIC_API_URL;
   });
 
-  it('emits a strict baseline CSP', async () => {
-    const directives = await cspDirectives();
+  it('emits a strict baseline CSP', () => {
+    const directives = cspDirectives();
 
     expect(directives.get('default-src')).toEqual(["'self'"]);
     expect(directives.get('object-src')).toEqual(["'none'"]);
     expect(directives.get('base-uri')).toEqual(["'self'"]);
     expect(directives.get('form-action')).toEqual(["'self'"]);
+    expect(directives.get('frame-ancestors')).toEqual(["'none'"]);
   });
 
-  it('allows no wildcard sources in any CSP directive', async () => {
-    const directives = await cspDirectives();
+  it('binds scripts to a per-request nonce and forbids inline event handlers', () => {
+    const directives = cspDirectives();
+
+    expect(directives.get('script-src')).toContain(`'nonce-${TEST_NONCE}'`);
+    expect(directives.get('script-src')).toContain("'strict-dynamic'");
+    expect(directives.get('script-src')).not.toContain("'unsafe-inline'");
+    expect(directives.get('script-src-attr')).toEqual(["'none'"]);
+  });
+
+  it('allows no wildcard sources in any CSP directive', () => {
+    const directives = cspDirectives();
 
     for (const [name, values] of directives) {
       expect(values, `${name} must not allow *`).not.toContain('*');
@@ -48,8 +64,8 @@ describe('next.config security headers', () => {
     }
   });
 
-  it('only frames trusted checkout and Supabase origins', async () => {
-    const directives = await cspDirectives();
+  it('only frames trusted checkout and Supabase origins', () => {
+    const directives = cspDirectives();
 
     expect(directives.get('frame-src')).toEqual([
       "'self'",
@@ -59,9 +75,9 @@ describe('next.config security headers', () => {
     ]);
   });
 
-  it('connects only to self, the configured API, Supabase, and Stripe', async () => {
+  it('connects only to self, the configured API, Supabase, and Stripe', () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.voiceforge.example';
-    const directives = await cspDirectives();
+    const directives = cspDirectives();
 
     expect(directives.get('connect-src')).toEqual([
       "'self'",
