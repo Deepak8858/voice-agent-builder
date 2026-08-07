@@ -13,7 +13,7 @@ Build **VoiceForge AI**, a multi-tenant SaaS platform where users create, test, 
 7. Use TypeScript strict mode.
 8. Use Zod or equivalent runtime validation.
 9. Use PostgreSQL as source of truth.
-10. Mock external providers first if credentials are unavailable, but preserve real interfaces.
+10. Mock providers exist for credential-less local development and tests, and are rejected at boot in production. `apps/api/src/config/env.ts:16-17` states the policy and `env.ts:142-148` enforces it: `VOICE_PROVIDER=mock` fails validation when `NODE_ENV=production`. Real adapters are the only production path.
 
 ## Preferred Architecture
 ```txt
@@ -24,23 +24,26 @@ packages/ui      shared UI components if needed
 docs             product/build documentation
 ```
 
+## Toolchain
+The repo is pnpm-native. Use `corepack` + `pnpm` (workflows pin `10.33.2`, see `.github/workflows/ci-cd-ec2.yml:27`). Do not use `npm install` at the root: workspace dependencies are declared with the `workspace:*` protocol, which npm cannot resolve. Do not convert them.
+When changing `pnpm.overrides` in the root `package.json`, regenerate `pnpm-lock.yaml` in the same commit. CI installs with `--frozen-lockfile` and fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if the two drift.
 ## Build Order
+Build order 1-13 below is the historical MVP sequence and is complete. It is retained for context only; new work is tracked in `ROADMAP.md`.
 1. Project setup and monorepo
 2. Auth and workspace model
 3. Agent Spec JSON schema
 4. Agent CRUD/versioning
-5. Prompt-to-agent mock generator
+5. Prompt-to-agent generator
 6. Templates
 7. Frontend builder UI
-8. Mock voice runtime
+8. Voice runtime
 9. Calls dashboard
 10. Compliance engine
 11. White-label settings
-12. Billing placeholder
-13. Real Vapi/Retell adapter
-
+12. Billing
+13. Real Vapi/Retell adapters
 ## First Working Demo
 ```txt
-Sign up → create workspace → generate agent from prompt → view Agent Spec JSON → test mock call → publish mock agent → view call transcript → see analytics → configure white-label branding
+Sign up → create workspace → generate agent from prompt → view Agent Spec JSON → test call → publish agent → view call transcript → see analytics → configure white-label branding
 ```
 
