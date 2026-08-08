@@ -424,6 +424,77 @@ jobs:
           printf '%s\n' "$livekit_enabled" > "$current_livekit_file"
           rm -f "$candidate_file"
           trap - ERR
+
+          # ---------------------------------------------------------------
+          # Retention
+          # ---------------------------------------------------------------
+          # Every deploy adds roughly 4 GB of SHA-tagged images that nothing
+          # ever removed, so the VM disk filled monotonically. Prune here, but
+          # only under three conditions that keep it safe:
+          #   1. AFTER the health checks pass and AFTER `trap - ERR` is
+          #      cleared, so a prune failure can never trigger a rollback and
+          #      the rollback path still had every image it needed.
+          #   2. Against an explicit keep-set: the release now serving, the
+          #      previous release (the rollback target), and the 'adopted'
+          #      tags captured on the first managed run.
+          #   3. Best-effort — disk hygiene must not fail a healthy deploy.
+          prune_old_releases() {
+            keep_current="$deploy_sha"
+            keep_previous=""
+            if [ -s "$previous_file" ]; then
+              keep_previous="$(tr -d '\r\n' < "$previous_file")"
+            fi
+
+            # 'adopted' is never pruned: it is the only way back to the stack
+            # that predates managed deploys.
+            is_kept() {
+              case "$1" in
+                "$keep_current"|adopted|latest|local) return 0 ;;
+              esac
+              if [ -n "$keep_previous" ] && [ "$1" = "$keep_previous" ]; then
+                return 0
+              fi
+              return 1
+            }
+
+            for repo in voiceforge-api voiceforge-web voiceforge-livekit-agent; do
+              docker image ls "$repo" --format '{{.Tag}}' 2>/dev/null | while read -r tag; do
+                case "$tag" in
+                  ''|'<none>') continue ;;
+                esac
+                if ! is_kept "$tag"; then
+                  echo "Pruning image $repo:$tag" >&2
+                  docker image rm "$repo:$tag" >/dev/null 2>&1 || true
+                fi
+              done
+            done
+
+            # Drop release bundles whose images are gone. These are only a
+            # compose file plus an nginx config, but leaving orphans behind
+            # makes the rollback-target check ambiguous.
+            if [ -d "$bundle_root" ]; then
+              for bundle in "$bundle_root"/*; do
+                [ -d "$bundle" ] || continue
+                name="$(basename "$bundle")"
+                if ! is_kept "$name"; then
+                  rm -rf "$bundle" || true
+                fi
+              done
+            fi
+
+            # Dangling layers left behind by the replaced tags.
+            docker image prune -f >/dev/null 2>&1 || true
+
+            # Trim only BuildKit cache that has gone unused for a week. A blanket
+            # `builder prune -af` would also delete the pnpm store cache mount
+            # that makes rebuilds fast, forcing a cold dependency download on
+            # the next deploy.
+            docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+
+            docker system df >&2 || true
+          }
+          prune_old_releases || echo "Retention pass failed; deployment itself is healthy" >&2
+
           echo "Deployment completed for commit $deploy_sha"
           REMOTE
 
