@@ -75,6 +75,57 @@ export async function validateOutboundUrl(
   return { url, address: addresses[0]! };
 }
 
+/**
+ * Build the `lookup` implementation that pins a connection to an
+ * already-validated address, so DNS cannot be re-resolved to a different
+ * (internal) host between the check and the connect. This is what closes the
+ * TOCTOU / DNS-rebinding window.
+ *
+ * The callback MUST receive an ARRAY. Node enables autoSelectFamily (Happy
+ * Eyeballs) by default from v20.0.0 onward, which invokes `lookup` with
+ * `{ all: true }` and then reads `addresses[0].address`. Passing the
+ * 3-argument string form yields `undefined` there, and every outbound request
+ * fails with ERR_INVALID_IP_ADDRESS.
+ *
+ * Exported so this contract is covered by a test; it previously regressed
+ * silently because all consumers mock the module.
+ */
+export function createPinnedLookup(address: LookupAddress) {
+  return (
+    _hostname: string,
+    _options: unknown,
+    callback: (
+      error: NodeJS.ErrnoException | null,
+      addresses: { address: string; family: number }[],
+    ) => void,
+  ): void => {
+    callback(null, [{ address: address.address, family: address.family }]);
+  };
+}
+
+/** Statuses for which the Response constructor forbids a body. */
+function isNullBodyStatus(status: number): boolean {
+  return status === 101 || status === 204 || status === 205 || status === 304;
+}
+
+/**
+ * Assemble the Response. Exported for tests: passing a zero-length Buffer for
+ * a 204 makes the constructor throw, which would turn an ordinary webhook
+ * reply into a confusing TypeError.
+ */
+export function buildOutboundResponse(
+  status: number,
+  statusText: string | undefined,
+  headers: Headers,
+  chunks: Buffer[],
+): Response {
+  return new Response(isNullBodyStatus(status) ? null : Buffer.concat(chunks), {
+    status,
+    statusText,
+    headers,
+  });
+}
+
 export async function safeFetch(input: string | URL, options: SafeFetchOptions = {}): Promise<Response> {
   const {
     timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -97,13 +148,7 @@ export async function safeFetch(input: string | URL, options: SafeFetchOptions =
       method,
       headers: Object.fromEntries(headers.entries()),
       servername: url.hostname,
-      lookup: ((_: string, __: unknown, callback: (
-        error: NodeJS.ErrnoException | null,
-        resolvedAddress: string,
-        family: number,
-      ) => void) => {
-        callback(null, address.address, address.family);
-      }) as never,
+      lookup: createPinnedLookup(address) as never,
       timeout: timeoutMs,
     }, (response) => {
       const chunks: Buffer[] = [];
@@ -132,11 +177,7 @@ export async function safeFetch(input: string | URL, options: SafeFetchOptions =
             responseHeaders.set(name, String(value));
           }
         }
-        resolve(new Response(Buffer.concat(chunks), {
-          status,
-          statusText: response.statusMessage,
-          headers: responseHeaders,
-        }));
+        resolve(buildOutboundResponse(status, response.statusMessage, responseHeaders, chunks));
       });
     });
 

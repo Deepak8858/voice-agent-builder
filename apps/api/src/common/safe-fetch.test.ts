@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { UnsafeOutboundUrlError, validateOutboundUrl } from './safe-fetch';
+import { createServer, connect, type Server, type AddressInfo } from 'node:net';
+import {
+  UnsafeOutboundUrlError,
+  buildOutboundResponse,
+  createPinnedLookup,
+  validateOutboundUrl,
+} from './safe-fetch';
 
 describe('validateOutboundUrl', () => {
   it.each([
@@ -39,5 +45,126 @@ describe('validateOutboundUrl', () => {
     )).resolves.toMatchObject({
       address: { address: '93.184.216.34', family: 4 },
     });
+  });
+
+  it('rejects URLs carrying embedded credentials', async () => {
+    await expect(validateOutboundUrl('https://user:pass@example.com/'))
+      .rejects.toThrow('cannot contain credentials');
+  });
+
+  it.each([
+    ['decimal', 'https://2130706433/'],
+    ['octal', 'https://0177.0.0.1/'],
+    ['hex', 'https://0x7f000001/'],
+  ])('blocks loopback expressed in %s form', async (_label, url) => {
+    await expect(validateOutboundUrl(url)).rejects.toThrow('private or reserved');
+  });
+});
+
+/**
+ * Regression coverage for the connection-pinning callback.
+ *
+ * This contract broke once and no test caught it: `validateOutboundUrl` tests
+ * never open a socket, and every consumer of safeFetch mocks the module, so the
+ * whole suite stayed green while every real outbound request failed.
+ *
+ * Node enables autoSelectFamily (Happy Eyeballs) by default from v20.0.0. It
+ * calls `lookup` with `{ all: true }` and reads `addresses[0].address`. The
+ * previous implementation invoked the callback with the 3-argument string form,
+ * so that read produced `undefined` and the request died with
+ * ERR_INVALID_IP_ADDRESS.
+ */
+describe('createPinnedLookup', () => {
+  it('invokes the callback with an array, as Happy Eyeballs requires', () => {
+    const lookup = createPinnedLookup({ address: '93.184.216.34', family: 4 });
+
+    let received: unknown;
+    lookup('ignored.example', { all: true }, (_err, addresses) => {
+      received = addresses;
+    });
+
+    // The array shape is the whole point: a bare string here is the bug.
+    expect(Array.isArray(received)).toBe(true);
+    expect(received).toEqual([{ address: '93.184.216.34', family: 4 }]);
+  });
+
+  it('ignores the requested hostname and always returns the validated address', () => {
+    const lookup = createPinnedLookup({ address: '93.184.216.34', family: 4 });
+
+    let received: { address: string; family: number }[] = [];
+    lookup('attacker-rebind.example', { all: true }, (_err, addresses) => {
+      received = addresses;
+    });
+
+    // Pinning is what closes the DNS-rebinding window.
+    expect(received[0]?.address).toBe('93.184.216.34');
+  });
+
+  it('preserves the IPv6 family so the socket layer picks the right stack', () => {
+    const lookup = createPinnedLookup({ address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 });
+
+    let received: { address: string; family: number }[] = [];
+    lookup('ignored.example', { all: true }, (_err, addresses) => {
+      received = addresses;
+    });
+
+    expect(received[0]?.family).toBe(6);
+  });
+
+  /**
+   * End-to-end proof through Node's real socket layer. `net.connect` consumes
+   * `lookup` exactly the way `https.request` does, so this fails with
+   * ERR_INVALID_IP_ADDRESS if the callback shape regresses -- and needs no TLS
+   * certificate to do it.
+   */
+  it('is accepted by the real socket layer under autoSelectFamily', async () => {
+    const server: Server = createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const socket = connect({
+          host: 'pinned.example',
+          port,
+          autoSelectFamily: true,
+          lookup: createPinnedLookup({ address: '127.0.0.1', family: 4 }) as never,
+        });
+        socket.once('connect', () => { socket.destroy(); resolve(); });
+        socket.once('error', reject);
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+/**
+ * The Response constructor throws if given a body for a null-body status.
+ * A 204 is an ordinary webhook reply, so this would turn success into a
+ * confusing TypeError.
+ */
+describe('buildOutboundResponse', () => {
+  it.each([204, 205, 304])('returns a bodyless Response for status %i', (status) => {
+    const response = buildOutboundResponse(status, 'No Content', new Headers(), []);
+    expect(response.status).toBe(status);
+    expect(response.body).toBeNull();
+  });
+
+  it('preserves the body and headers for a normal 200', async () => {
+    const headers = new Headers({ 'content-type': 'application/json' });
+    const response = buildOutboundResponse(200, 'OK', headers, [Buffer.from('{"ok":true}')]);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('application/json');
+    await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
+  it('reports a non-2xx status without throwing', async () => {
+    const response = buildOutboundResponse(500, 'Server Error', new Headers(), [Buffer.from('boom')]);
+
+    expect(response.ok).toBe(false);
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe('boom');
   });
 });

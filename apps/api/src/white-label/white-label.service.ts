@@ -10,7 +10,6 @@ import type {
   UpdateWhiteLabelSettingsDto,
   WhiteLabelSettings,
 } from '@voiceforge/shared';
-import { SUCCESS_OUTCOMES } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AppError, ForbiddenError, ValidationError } from '../common/errors';
@@ -19,7 +18,7 @@ const DEFAULT_USAGE_WINDOW_DAYS = 30;
 const DEFAULT_INVITE_EXPIRY_DAYS = 14;
 
 // Domain regex: allows letters, numbers, hyphens, dots; no protocol, no path
-const DOMAIN_REGEX = /^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?)*$/i;
+const DOMAIN_REGEX = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
 
 function isValidDomain(domain: string): boolean {
   return DOMAIN_REGEX.test(domain) && domain.length <= 253;

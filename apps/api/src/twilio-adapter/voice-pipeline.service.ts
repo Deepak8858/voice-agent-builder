@@ -20,9 +20,10 @@ export class VoicePipelineService {
     return wsUrl;
   }
 
-  async transcribeChunk(sessionId: string, audioBuffer: Buffer): Promise<string> {
-    const session = this.sessionManager.get(sessionId);
-    if (!session) return '';
+  async transcribeChunk(sessionId: string, _audioBuffer: Buffer): Promise<string> {
+    // Transcription is produced by the Deepgram websocket stream started in
+    // startInboundStream(); this hook only guards against unknown sessions.
+    if (!this.sessionManager.get(sessionId)) return '';
     return '';
   }
 

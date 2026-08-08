@@ -1,5 +1,5 @@
 import { type Job } from 'bullmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { BaseWorker } from './base.worker';
 import { QueueService } from '../queue/queue.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -53,7 +53,9 @@ export class OrchestratorWorker extends BaseWorker<GenerateJob | PublishJob> {
   }
 
   private async handleGenerate(job: Job<GenerateJob>): Promise<void> {
-    const { agentId, workspaceId, prompt, crm_providers, template_slug, voice_config } = job.data;
+    // NOTE: `voice_config` is accepted by the job payload but not yet applied to the
+    // generated spec — see the follow-up tracked for voice provider wiring.
+    const { agentId, workspaceId, prompt, crm_providers, template_slug } = job.data;
 
     try {
       this.logger.log(`[generate] agent=${agentId} — generating spec`);

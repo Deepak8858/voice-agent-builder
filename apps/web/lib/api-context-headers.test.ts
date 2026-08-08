@@ -16,4 +16,27 @@ describe('buildApiContextHeaders', () => {
       'x-requested-with': 'XMLHttpRequest',
     });
   });
+
+  it('omits the authorization header when no access token exists', () => {
+    expect(buildApiContextHeaders(null)).not.toHaveProperty('authorization');
+    expect(buildApiContextHeaders(undefined)).not.toHaveProperty('authorization');
+    expect(buildApiContextHeaders('')).not.toHaveProperty('authorization');
+  });
+
+  it('always sends the internal key header, defaulting to an empty string', () => {
+    expect(buildApiContextHeaders('token')['x-internal-key']).toBe('');
+    expect(buildApiContextHeaders('token', { internalApiKey: 'key' })['x-internal-key']).toBe('key');
+  });
+
+  it('omits optional headers unless they are provided', () => {
+    const headers = buildApiContextHeaders('token');
+
+    expect(headers).toEqual({
+      authorization: 'Bearer token',
+      'x-internal-key': '',
+    });
+    expect(buildApiContextHeaders('token', { contentType: null })).not.toHaveProperty(
+      'content-type',
+    );
+  });
 });
