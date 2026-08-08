@@ -106,7 +106,7 @@ jobs:
 
       - name: Extract metadata (API)
         id: meta-api
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-api
           tags: |
@@ -117,7 +117,7 @@ jobs:
 
       - name: Extract metadata (Web)
         id: meta-web
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/voiceforge-web
           tags: |
