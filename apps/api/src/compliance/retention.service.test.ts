@@ -7,7 +7,7 @@ function makeService(state: { calls: Array<{ id: string; createdAt: Date; expire
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => state.calls.find(c => c.id === where.id) ?? null),
       count: vi.fn(async ({ where }: { where: { expiresAt?: { lt: Date } } }) =>
         state.calls.filter(c => c.expiresAt && where.expiresAt?.lt && c.expiresAt < where.expiresAt.lt).length),
-      findMany: vi.fn(async ({ where, take, orderBy, select }: { where: { expiresAt?: { lt: Date } }, take: number, orderBy: unknown, select: unknown }) =>
+      findMany: vi.fn(async ({ where, take }: { where: { expiresAt?: { lt: Date } }, take: number, orderBy: unknown, select: unknown }) =>
         state.calls.filter(c => c.expiresAt && where.expiresAt?.lt && c.expiresAt < where.expiresAt.lt).slice(0, take).map(c => ({ id: c.id }))),
       deleteMany: vi.fn(async ({ where }: { where: { id?: { in: string[] } } }) => {
         const ids = where.id?.in ?? [];

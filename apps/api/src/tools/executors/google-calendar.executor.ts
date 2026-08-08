@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { safeFetch } from '../../common/safe-fetch';
 import type { ToolExecutor, ToolCallResult } from '../tools.service';
 
 @Injectable()
@@ -7,7 +8,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
 
   private async getAccessToken(config: Record<string, string>): Promise<string> {
     const { refresh_token, client_id, client_secret } = config;
-    const res = await fetch('https://oauth2.googleapis.com/token', {
+    const res = await safeFetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -26,7 +27,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
     const calendarId = config.calendar_id ?? 'primary';
 
     if (params.operation === 'create_event') {
-      const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`, {
+      const res = await safeFetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -44,8 +45,8 @@ export class GoogleCalendarExecutor implements ToolExecutor {
     if (params.operation === 'list_events') {
       const timeMin = (params.time_min_iso as string) ?? new Date().toISOString();
       const maxResults = String(params.max_results ?? 10);
-      const res = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?timeMin=${encodeURIComponent(timeMin)}&maxResults=${maxResults}`,
+      const res = await safeFetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?timeMin=${encodeURIComponent(timeMin)}&maxResults=${encodeURIComponent(maxResults)}`,
         { headers: { Authorization: `Bearer ${accessToken}` } },
       );
       const data = await res.json() as { items: Array<{ id: string; summary: string; start: { dateTime: string } }> };
@@ -55,7 +56,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
     if (params.operation === 'find_free_slot') {
       const timeMin = new Date();
       const timeMax = new Date(timeMin.getTime() + 7 * 24 * 60 * 60 * 1000);
-      const res = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+      const res = await safeFetch('https://www.googleapis.com/calendar/v3/freeBusy', {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({

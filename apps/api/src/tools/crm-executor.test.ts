@@ -1,14 +1,14 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { safeFetch } from '../common/safe-fetch';
 import { CrmExecutor } from './crm-executor';
+vi.mock('../common/safe-fetch', () => ({ safeFetch: vi.fn() }));
 
 function mockFetch(response: unknown, ok = true) {
-  const fn = vi.fn().mockResolvedValue({
-    ok,
-    json: () => Promise.resolve(response),
+  const fn = vi.fn(async () => new Response(JSON.stringify(response), {
     status: ok ? 200 : 400,
-    text: () => Promise.resolve(JSON.stringify(response)),
-  });
-  global.fetch = fn;
+    headers: { 'content-type': 'application/json' },
+  }));
+  vi.mocked(safeFetch).mockImplementation(fn);
   return fn;
 }
 
@@ -69,7 +69,7 @@ describe('CrmExecutor', () => {
         email: 'bob@example.com',
       });
 
-      const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+      const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
       expect(url).toBe('https://api.hubapi.com/crm/v3/objects/contacts');
       expect(url).not.toContain('hapikey=');
       expect(init.headers).toMatchObject({ Authorization: 'Bearer hs-token' });
@@ -112,7 +112,7 @@ describe('CrmExecutor', () => {
       }, { full_name: 'Dan', phone: '+10000000000' });
       expect(result.contact_id).toBe('gen-1');
       expect(result.provider).toBe('generic');
-      const [, init] = fetch.mock.calls[0] as [string, RequestInit];
+      const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(init.body as string);
       expect(body.name).toBe('Dan');
       expect(body.phone).toBe('+10000000000');
@@ -140,16 +140,9 @@ describe('CrmExecutor', () => {
 
   describe('error handling', () => {
     it('throws CrmApiError on HTTP failure', async () => {
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        text: () => Promise.resolve('Service Unavailable'),
-      });
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        status: 503,
-        text: () => Promise.resolve('Service Unavailable'),
-      });
+      vi.mocked(safeFetch).mockResolvedValue(
+        new Response('Service Unavailable', { status: 503 }),
+      );
       const executor = new CrmExecutor();
       await expect(
         executor.createContact('generic', { base_url: 'https://fail.example' }, { full_name: 'Eve' }),

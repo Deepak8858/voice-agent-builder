@@ -39,7 +39,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         error = {
           code: obj.code,
           message: obj.message ?? exception.message,
-          details: obj.details,
+          details: isProduction() ? undefined : obj.details,
         };
       } else if (resp && typeof resp === 'object' && 'message' in resp) {
         error = {

@@ -2,31 +2,49 @@
 # VoiceForge AI — API Container (NestJS)
 # =============================================================================
 # Build context: repository root (monorepo)
+#
+# This image installs with pnpm and a FROZEN lockfile. That is a security
+# requirement, not a style preference: the security patches for transitive
+# advisories are expressed as `pnpm.overrides` in the root package.json, and
+# npm does not read that field (it only honours a top-level `overrides`).
+# Installing with npm — or deleting the lockfile — silently resolves a
+# different, unpatched dependency graph than the one CI audits, and makes the
+# image unreproducible from its commit SHA.
+#
+# `--node-linker=hoisted` produces a flat node_modules so the runtime stage can
+# copy a single self-contained tree (pnpm's default symlinked store does not
+# survive a `COPY --from`).
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-alpine AS builder
+FROM --platform=linux/amd64 node:20-slim AS builder
 WORKDIR /app
 
 # Install build dependencies (python3/make for native modules like sharp)
-RUN apk add --no-cache python3 make g++
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace manifests first for layer caching
-COPY package*.json ./
-COPY apps/api/package*.json ./apps/api/
-COPY packages/shared/package*.json ./packages/shared/
-COPY packages/ui/package*.json ./packages/ui/
+# Pin pnpm via corepack; the version must match packageManager in package.json.
+ENV PNPM_HOME=/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
-# Copy package source so file: references work
-COPY packages/shared ./packages/shared
-COPY packages/ui ./packages/ui
+# Copy the lockfile and every workspace manifest first. pnpm needs the complete
+# set of manifests referenced by pnpm-workspace.yaml to satisfy --frozen-lockfile.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json ./apps/api/
+COPY apps/livekit-agent/package.json ./apps/livekit-agent/
+COPY apps/voice-edge/package.json ./apps/voice-edge/
+COPY apps/web/package.json ./apps/web/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui/package.json ./packages/ui/
 
-# Replace pnpm workspace:* with npm-compatible file: paths
-RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/api/package.json && \
-    sed -i 's|"workspace:\*"|"file:./packages/ui"|g' apps/api/package.json 2>/dev/null || true
-
-# Install monorepo dependencies
-RUN rm -f package-lock.json pnpm-lock.yaml
-RUN npm install --ignore-scripts --no-audit --no-fund
+# Install with the lockfile as the source of truth. --frozen-lockfile fails the
+# build if package.json and pnpm-lock.yaml have drifted, which is what keeps the
+# audited override graph and the shipped image in agreement.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store --global && \
+    pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
 
 # Copy source
 COPY apps/api ./apps/api
@@ -36,25 +54,26 @@ COPY tsconfig.base.json ./
 
 # Generate Prisma client before building (if schema exists)
 RUN if [ -f apps/api/prisma/schema.prisma ]; then \
-      npx prisma generate --schema=apps/api/prisma/schema.prisma; \
+      pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma; \
     fi
 
 # Build shared packages then API
-RUN npm run build -w @voiceforge/shared
-RUN npm run build -w @voiceforge/api
+RUN pnpm --filter @voiceforge/shared run build
+RUN pnpm --filter @voiceforge/api run build
 
 # =============================================================================
 # Production stage
 # =============================================================================
-FROM --platform=linux/amd64 node:20-alpine AS production
+FROM --platform=linux/amd64 node:20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production
 
 # Add tini + openssl for Prisma runtime
-RUN apk add --no-cache tini openssl \
-    && addgroup -g 1001 nodegroup \
-    && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
+RUN apt-get update && apt-get install -y --no-install-recommends tini openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1001 nodegroup \
+    && useradd -u 1001 -g nodegroup -s /bin/sh -M nodeuser \
     && chown -R nodeuser:nodegroup /app
 
 # Copy built artifacts (owned by nodeuser)
@@ -75,5 +94,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 4000
 
 # Use tini as init system to properly handle SIGTERM and forward to Node.js
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "apps/api/dist/main.js"]

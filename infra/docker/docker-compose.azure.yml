@@ -1,0 +1,241 @@
+# =============================================================================
+# VoiceForge AI — Production Docker Compose for Azure VM (registry-free)
+# =============================================================================
+# Builds images directly on the VM from the exact git commit checked out at
+# /opt/voiceforge/src. There is intentionally no ACR or other registry.
+#
+# IMAGE_TAG must be the full 40-character commit SHA. There is no `local` or
+# `latest` fallback: a deployment cannot accidentally start an unidentified
+# image. The Azure workflow validates the SHA, builds these images, records the
+# deployed revision, and keeps the previous SHA-tagged images for rollback.
+#
+# /opt/voiceforge/.env is managed out-of-band and is never rewritten by the
+# workflow. LiveKit is an optional Compose profile; absent credentials do not
+# prevent the core web/API/worker stack from deploying.
+# =============================================================================
+
+x-deploy-labels: &deploy-labels
+  org.opencontainers.image.revision: ${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+  dev.voiceforge.deploy.target: azure-vm
+
+services:
+  web:
+    build:
+      context: ./src
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL must be set in /opt/voiceforge/.env}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL must be set in /opt/voiceforge/.env}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?NEXT_PUBLIC_SUPABASE_URL must be set in /opt/voiceforge/.env}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:?set in /opt/voiceforge/.env}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?set in /opt/voiceforge/.env}
+    image: voiceforge-web:${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    container_name: vf-web
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - /opt/voiceforge/.env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    labels: *deploy-labels
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  api:
+    build:
+      context: ./src
+      dockerfile: infra/docker/Dockerfile.api
+    image: voiceforge-api:${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    container_name: vf-api
+    restart: always
+    ports:
+      - "127.0.0.1:4000:4000"
+    env_file:
+      - /opt/voiceforge/.env
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      REDIS_URL: redis://redis:6379
+      WORKERS_ENABLED: "false"
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    labels: *deploy-labels
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+        reservations:
+          cpus: "0.75"
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:4000/api/v1/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  api-worker:
+    image: voiceforge-api:${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    container_name: vf-api-worker
+    restart: always
+    env_file:
+      - /opt/voiceforge/.env
+    environment:
+      NODE_ENV: production
+      API_PORT: 4000
+      REDIS_URL: redis://redis:6379
+      WORKERS_ENABLED: "true"
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    labels: *deploy-labels
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional BYO-phone-number runtime. The deployment enables this profile only
+  # when LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are all present.
+  # Missing or partial LiveKit configuration therefore cannot break core deploys.
+  livekit-agent:
+    profiles: [livekit]
+    build:
+      context: ./src
+      dockerfile: infra/docker/Dockerfile.livekit-agent
+    image: voiceforge-livekit-agent:${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    container_name: vf-livekit-agent
+    restart: always
+    env_file:
+      - /opt/voiceforge/.env
+    environment:
+      NODE_ENV: production
+      REDIS_URL: redis://redis:6379
+      LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-voiceforge-agent}
+      OPENAI_REALTIME_VOICE: ${OPENAI_REALTIME_VOICE:-marin}
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be the full git SHA}
+    labels: *deploy-labels
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8081/', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: vf-redis
+    restart: always
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - voiceforge
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: vf-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/voiceforge/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /opt/voiceforge/data/certs:/opt/certs:ro
+      - /opt/voiceforge/data/certbot/www:/var/www/certbot:ro
+    labels: *deploy-labels
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - voiceforge
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  voiceforge:
+    driver: bridge
+
+volumes:
+  redis_data:

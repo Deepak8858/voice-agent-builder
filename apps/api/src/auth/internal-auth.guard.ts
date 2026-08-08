@@ -5,6 +5,7 @@ import type { SessionUser } from '@voiceforge/shared';
 import { env } from '../config/env';
 import { UnauthorizedError } from '../common/errors';
 import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
+import { constantTimeEqual } from '../common/secure-compare';
 import { SupabaseAuthService } from './supabase-auth.service';
 
 /**
@@ -43,7 +44,7 @@ export class InternalAuthGuard implements CanActivate {
       throw new UnauthorizedError();
     }
 
-    if (typeof provided !== 'string' || provided !== expected) {
+    if (typeof provided !== 'string' || !constantTimeEqual(provided, expected)) {
       throw new UnauthorizedError();
     }
 

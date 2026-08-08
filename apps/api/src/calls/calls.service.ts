@@ -404,9 +404,21 @@ export class CallsService {
 
   async ingestEvent(
     provider: string,
-    payload: { event_type: string; provider_call_id?: string; data?: Record<string, unknown> },
+    payload: {
+      event_type: string;
+      provider_call_id?: string;
+      provider_event_id?: string;
+      data?: Record<string, unknown>;
+    },
   ): Promise<void> {
     if (!payload.provider_call_id) return;
+    if (payload.provider_event_id) {
+      const duplicate = await this.prisma.callEvent.findUnique({
+        where: { providerEventId: payload.provider_event_id },
+        select: { id: true },
+      });
+      if (duplicate) return;
+    }
     let call = await this.prisma.call.findFirst({
       where: { providerCallId: payload.provider_call_id },
     });
@@ -458,15 +470,24 @@ export class CallsService {
 
     if (!call) return;
 
-    const callEvent = await this.prisma.callEvent.create({
-      data: {
-        callId: call.id,
-        workspaceId: call.workspaceId,
-        organizationId: call.organizationId,
-        eventType: payload.event_type,
-        payload: (payload.data as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
-      },
-    });
+    let callEvent;
+    try {
+      callEvent = await this.prisma.callEvent.create({
+        data: {
+          callId: call.id,
+          workspaceId: call.workspaceId,
+          organizationId: call.organizationId,
+          providerEventId: payload.provider_event_id,
+          eventType: payload.event_type,
+          payload: (payload.data as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        return;
+      }
+      throw err;
+    }
 
     // Publish to Redis Pub/Sub for real-time SSE subscribers
     await this.cache.publish(`call:${call.id}`, {

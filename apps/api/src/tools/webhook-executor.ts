@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHmac } from 'node:crypto';
 import type { WebhookConfig } from '@voiceforge/shared';
+import { safeFetch } from '../common/safe-fetch';
 import type { ToolExecutor, ToolCallResult } from './tools.service';
 
 @Injectable()
@@ -34,27 +35,21 @@ export class WebhookExecutor implements ToolExecutor {
       }
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), webhookConfig.timeout_ms ?? 10_000);
 
     const t = Date.now();
-    try {
-      const res = await fetch(webhookConfig.url, {
-        method,
-        headers,
-        body,
-        signal: controller.signal,
-      });
-      const duration_ms = Date.now() - t;
-      const text = await res.text();
-      const parsed = this.tryJson(text);
-      const result = { status: res.status, body: parsed, duration_ms };
-      return res.ok
-        ? { success: true, result }
-        : { success: false, error: `HTTP ${res.status}`, result };
-    } finally {
-      clearTimeout(timeout);
-    }
+    const res = await safeFetch(webhookConfig.url, {
+      method,
+      headers,
+      body,
+      timeoutMs: webhookConfig.timeout_ms ?? 10_000,
+    });
+    const duration_ms = Date.now() - t;
+    const text = await res.text();
+    const parsed = this.tryJson(text);
+    const result = { status: res.status, body: parsed, duration_ms };
+    return res.ok
+      ? { success: true, result }
+      : { success: false, error: `HTTP ${res.status}`, result };
   }
 
   private tryJson(text: string): unknown {

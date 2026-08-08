@@ -133,7 +133,6 @@ function tcpConnect(redisUrl: string, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const socket = createConnection({ host, port });
     let settled = false;
-    let timeout: ReturnType<typeof setTimeout>;
 
     const finish = (error?: Error) => {
       if (settled) return;
@@ -144,7 +143,7 @@ function tcpConnect(redisUrl: string, timeoutMs: number): Promise<void> {
       else resolve();
     };
 
-    timeout = setTimeout(() => finish(new Error('redis health timeout')), timeoutMs);
+    const timeout = setTimeout(() => finish(new Error('redis health timeout')), timeoutMs);
     socket.once('connect', () => finish());
     socket.once('error', (error) => finish(error));
   });

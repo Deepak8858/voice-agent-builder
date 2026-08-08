@@ -15,6 +15,22 @@ interface WeeklyDigest {
   upcomingCampaigns: Array<{ name: string; scheduledCalls: number }>;
 }
 
+/**
+ * Why the digest is only sent to owners/admins: it aggregates workspace-wide
+ * call volume and compliance posture, which is management-level information.
+ * Editors and viewers are intentionally excluded.
+ */
+const DIGEST_RECIPIENT_ROLES = ['owner', 'admin'] as const;
+
+export type WeeklyDigestSkipReason =
+  | 'email_not_configured'
+  | 'workspace_not_found'
+  | 'no_recipients';
+
+export type WeeklyDigestResult =
+  | { status: 'skipped'; reason: WeeklyDigestSkipReason; sent: 0; failed: 0 }
+  | { status: 'sent'; sent: number; failed: number };
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -138,13 +154,178 @@ export class EmailService {
     };
   }
 
-  async sendWeeklyDigest(workspaceId: string): Promise<void> {
+  /**
+   * Build and deliver the weekly digest to the workspace's owners/admins.
+   *
+   * Failure behaviour is deliberately non-throwing: this runs from a scheduled
+   * job, and one workspace's misconfigured mailbox must not abort the run for
+   * every other workspace. Per-recipient failures are counted and logged.
+   */
+  async sendWeeklyDigest(workspaceId: string): Promise<WeeklyDigestResult> {
+    if (!env.RESEND_API_KEY) {
+      this.logger.warn(
+        `[WeeklyDigest] RESEND_API_KEY not set — skipping digest for workspace ${workspaceId}`,
+      );
+      return { status: 'skipped', reason: 'email_not_configured', sent: 0, failed: 0 };
+    }
+
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { id: true, name: true },
+    });
+    if (!workspace) {
+      this.logger.warn(`[WeeklyDigest] Workspace ${workspaceId} not found — skipping digest`);
+      return { status: 'skipped', reason: 'workspace_not_found', sent: 0, failed: 0 };
+    }
+
+    const recipients = await this.resolveDigestRecipients(workspaceId);
+    if (recipients.length === 0) {
+      this.logger.warn(
+        `[WeeklyDigest] No owner/admin recipients for workspace ${workspaceId} — skipping digest`,
+      );
+      return { status: 'skipped', reason: 'no_recipients', sent: 0, failed: 0 };
+    }
+
     const digest = await this.buildWeeklyDigest(workspaceId);
+    const subject = `VoiceForge weekly digest — ${workspace.name}`;
+    const html = this.renderDigestHtml(workspace.name, digest);
+    const text = this.renderDigestText(workspace.name, digest);
+
+    let sent = 0;
+    let failed = 0;
+    for (const to of recipients) {
+      try {
+        await this.send({ to, subject, html, text });
+        sent += 1;
+      } catch (err) {
+        failed += 1;
+        // Log the address, never the Resend key or full response body.
+        this.logger.error(
+          `[WeeklyDigest] Delivery failed for workspace ${workspaceId} recipient ${to}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+
     this.logger.log(
       `[WeeklyDigest] Workspace ${workspaceId}: ${digest.stats.totalCalls} calls, ` +
-      `${digest.stats.totalMinutes.toFixed(1)} min, blocked ${(digest.stats.blockedRate * 100).toFixed(1)}%`,
+      `${digest.stats.totalMinutes.toFixed(1)} min, blocked ${(digest.stats.blockedRate * 100).toFixed(1)}% ` +
+      `— delivered ${sent}/${recipients.length}`,
     );
-    // TODO: integrate Resend/SendGrid for full email delivery.
+
+    return { status: 'sent', sent, failed };
+  }
+
+  /**
+   * Owners/admins of this workspace only. The membership query is the tenancy
+   * boundary: recipients are never derived from the organization or from a
+   * parent workspace, so a digest cannot leak to a sibling tenant.
+   */
+  private async resolveDigestRecipients(workspaceId: string): Promise<string[]> {
+    const memberships = await this.prisma.membership.findMany({
+      where: { workspaceId, role: { in: [...DIGEST_RECIPIENT_ROLES] } },
+      select: { user: { select: { email: true } } },
+    });
+
+    const seen = new Set<string>();
+    const recipients: string[] = [];
+    for (const membership of memberships) {
+      const email = membership.user?.email?.trim();
+      if (!email) continue;
+      const key = email.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      recipients.push(email);
+    }
+    return recipients;
+  }
+
+  private renderDigestHtml(workspaceName: string, digest: WeeklyDigest): string {
+    const esc = (v: string) => this.escapeHtml(v);
+    const period = `${this.formatDate(digest.period.start)} – ${this.formatDate(digest.period.end)}`;
+
+    const alertRows = digest.complianceAlerts.length
+      ? digest.complianceAlerts
+          .map(
+            (a) =>
+              `<li style="margin-bottom:4px;">${esc(a.reason)} — <strong>${a.count}</strong></li>`,
+          )
+          .join('')
+      : '<li style="color:#71717a;">No compliance blocks this week.</li>';
+
+    const campaignRows = digest.upcomingCampaigns.length
+      ? digest.upcomingCampaigns
+          .map(
+            (c) =>
+              `<li style="margin-bottom:4px;">${esc(c.name)} — <strong>${c.scheduledCalls}</strong> scheduled calls</li>`,
+          )
+          .join('')
+      : '<li style="color:#71717a;">No active or draft campaigns.</li>';
+
+    const stat = (label: string, value: string) =>
+      `<td style="padding:12px 16px;border:1px solid #e4e4e7;border-radius:6px;">
+        <div style="color:#71717a;font-size:12px;text-transform:uppercase;">${esc(label)}</div>
+        <div style="color:#18181b;font-size:20px;font-weight:600;">${esc(value)}</div>
+      </td>`;
+
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 0 auto; padding: 24px;">
+  <h2 style="color:#18181b;margin-bottom:4px;">Weekly digest — ${esc(workspaceName)}</h2>
+  <p style="color:#71717a;margin-top:0;">${esc(period)}</p>
+  <table style="border-collapse:separate;border-spacing:8px 0;width:100%;"><tr>
+    ${stat('Calls', String(digest.stats.totalCalls))}
+    ${stat('Minutes', digest.stats.totalMinutes.toFixed(1))}
+    ${stat('Avg duration', `${digest.stats.avgDuration.toFixed(1)} min`)}
+    ${stat('Blocked', `${(digest.stats.blockedRate * 100).toFixed(1)}%`)}
+  </tr></table>
+  <h3 style="color:#18181b;margin-top:24px;">Compliance alerts</h3>
+  <ul style="padding-left:20px;">${alertRows}</ul>
+  <h3 style="color:#18181b;margin-top:24px;">Upcoming campaigns</h3>
+  <ul style="padding-left:20px;">${campaignRows}</ul>
+  <p style="color:#71717a;font-size:12px;margin-top:24px;">
+    You receive this because you are an owner or admin of ${esc(workspaceName)}.
+  </p>
+</body></html>`;
+  }
+
+  private renderDigestText(workspaceName: string, digest: WeeklyDigest): string {
+    const lines = [
+      `Weekly digest - ${workspaceName}`,
+      `${this.formatDate(digest.period.start)} - ${this.formatDate(digest.period.end)}`,
+      '',
+      `Calls: ${digest.stats.totalCalls}`,
+      `Minutes: ${digest.stats.totalMinutes.toFixed(1)}`,
+      `Avg duration: ${digest.stats.avgDuration.toFixed(1)} min`,
+      `Blocked rate: ${(digest.stats.blockedRate * 100).toFixed(1)}%`,
+      '',
+      'Compliance alerts:',
+      ...(digest.complianceAlerts.length
+        ? digest.complianceAlerts.map((a) => `  - ${a.reason}: ${a.count}`)
+        : ['  - No compliance blocks this week.']),
+      '',
+      'Upcoming campaigns:',
+      ...(digest.upcomingCampaigns.length
+        ? digest.upcomingCampaigns.map((c) => `  - ${c.name}: ${c.scheduledCalls} scheduled calls`)
+        : ['  - No active or draft campaigns.']),
+      '',
+      `You receive this because you are an owner or admin of ${workspaceName}.`,
+    ];
+    return lines.join('\n');
+  }
+
+  private formatDate(iso: string): string {
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? iso : date.toISOString().slice(0, 10);
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private getWeekStart(): Date {

@@ -1,9 +1,13 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import cors from 'cors';
 import { AppModule } from './app.module';
+import { HttpExceptionFilter } from './common/http-exception.filter';
+import { RequestLoggingMiddleware } from './common/request-logging.middleware';
+import { ResponseEnvelopeInterceptor } from './common/response-envelope.interceptor';
 import { env, isProduction } from './config/env';
 import { logger } from './logging';
 
@@ -24,9 +28,11 @@ async function bootstrap() {
     process.exit(1);
   }
 
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.set('trust proxy', env.TRUST_PROXY_HOPS);
 
   app.setGlobalPrefix('api/v1');
 
@@ -43,12 +49,9 @@ async function bootstrap() {
   }
 
   // CORS
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
+  const allowedOrigins = env.ALLOWED_ORIGINS.length > 0
+    ? env.ALLOWED_ORIGINS
     : [`http://localhost:${env.WEB_PORT ?? 3000}`];
-  if (isProduction() && allowedOrigins.length === 0) {
-    throw new Error('ALLOWED_ORIGINS must be explicitly set in production.');
-  }
   const corsResult = cors({
     origin: allowedOrigins,
     credentials: true,
@@ -69,18 +72,17 @@ async function bootstrap() {
 
   // tracing.ts is imported as a side effect in app.module.ts — NodeSDK.start() runs during module init
   // OTel auto-instruments HTTP, Express, and Prisma; configure OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector
-  const express = require('express');
-  app.use(express.json({
+  // Widen the JSON parser to webhook media types. `rawBody: true` above makes Nest
+  // attach the untouched request buffer as `req.rawBody` (needed for Stripe/Twilio
+  // signature verification).
+  app.useBodyParser('json', {
     type: ['application/json', 'application/*+json', 'application/webhook+json'],
-    verify: (_req: Record<string, unknown>, _res: Record<string, unknown>, buf: Buffer) => {
-      (_req as { rawBody: Buffer }).rawBody = buf;
-    },
-  }));
+  });
 
-  app.useGlobalFilters(new (require('./common/http-exception.filter').HttpExceptionFilter)());
-  app.useGlobalInterceptors(new (require('./common/response-envelope.interceptor').ResponseEnvelopeInterceptor)());
-  const requestLoggingMiddleware = new (require('./common/request-logging.middleware').RequestLoggingMiddleware)();
-  app.use((req: Record<string, unknown>, res: Record<string, unknown>, next: () => void) => requestLoggingMiddleware.use(req as never, res as never, next as never));
+  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
+  const requestLoggingMiddleware = new RequestLoggingMiddleware();
+  app.use(requestLoggingMiddleware.use.bind(requestLoggingMiddleware));
 
   // Graceful shutdown
   const signals: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];

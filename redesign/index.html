@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoiceForge AI — Voice agents, specified.</title>
+<meta name="description" content="VoiceForge compiles plain-English briefs into Agent Spec JSON — tested, compliant, white-labeled voice calling agents deployable to Vapi, Retell, or Twilio.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   VOICEFORGE AI — SIGNAL
+   Dark broadcast-console command center for voice AI.
+   ============================================================ */
+
+/* ---------- Design tokens (DESIGN_SPEC §2, verbatim) ---------- */
+:root{
+  /* surfaces */
+  --ink-950:#05070b; --ink-900:#070a0f; --ink-850:#0a0f16;
+  --ink-800:#0d141d; --ink-700:#121b26;
+  --line:rgba(148,163,184,.12); --line-strong:rgba(148,163,184,.24);
+  /* text */
+  --text-1:#e9eef5; --text-2:#9ba8ba; --text-3:#5f6f83;
+  /* accents */
+  --signal:#ff4a1f; --signal-hi:#ff6a3d; --on-signal:#160b06;
+  --voice:#35e0ff; --voice-dim:rgba(53,224,255,.14);
+  --pass:#3ecf8e;
+  /* gradients + glows */
+  --grad-text:linear-gradient(100deg,#ff4a1f 0%,#ff9a3d 60%,#ffb14a 100%);
+  --grad-rail:linear-gradient(90deg,#35e0ff,#ff4a1f);
+  --glow-signal:0 0 24px rgba(255,74,31,.35),0 0 72px rgba(255,74,31,.16);
+  --glow-voice:0 0 20px rgba(53,224,255,.22);
+  --shadow-card:0 24px 64px -32px rgba(0,0,0,.72);
+  /* type */
+  --f-display:'Space Grotesk',sans-serif; --f-body:'Instrument Sans',sans-serif;
+  --f-mono:'JetBrains Mono',monospace;
+  /* radii / layout */
+  --r-sm:8px; --r-md:12px; --r-lg:16px; --r-pill:999px;
+  --container:1184px; --gutter:24px; --nav-h:64px;
+  /* motion */
+  --ease-out:cubic-bezier(.22,1,.36,1); --ease-std:cubic-bezier(.4,0,.2,1);
+  --dur-fast:160ms; --dur-med:300ms; --dur-reveal:600ms;
+}
+
+/* ---------- Reset / base ---------- */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--nav-h) + 24px)}
+body{
+  background:var(--ink-900);
+  color:var(--text-2);
+  font:400 1rem/1.65 var(--f-body);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-x:hidden;
+}
+/* film-grain noise texture (spec §2) */
+body::before{
+  content:"";position:fixed;inset:0;z-index:1;pointer-events:none;opacity:.035;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.6'/%3E%3C/svg%3E");
+}
+img,svg,canvas{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+ul{list-style:none}
+::selection{background:rgba(255,74,31,.38);color:var(--text-1)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--ink-950)}
+::-webkit-scrollbar-thumb{background:var(--ink-700);border-radius:5px;border:2px solid var(--ink-950)}
+
+/* focus — non-negotiable (spec §6) */
+:focus-visible{outline:2px solid var(--voice);outline-offset:3px;border-radius:inherit}
+
+/* ---------- Utilities ---------- */
+.container{max-width:var(--container);margin:0 auto;padding:0 var(--gutter)}
+.vh{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.skip-link{
+  position:fixed;top:10px;left:10px;z-index:200;padding:12px 18px;
+  background:var(--ink-800);border:1px solid var(--voice);border-radius:var(--r-sm);
+  font:500 .875rem var(--f-mono);color:var(--voice);
+  transform:translateY(-64px);transition:transform var(--dur-fast) var(--ease-std);
+}
+.skip-link:focus-visible{transform:none}
+.mono-label{
+  font:500 .75rem/1 var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--voice);
+}
+.grad-text{background:var(--grad-text);-webkit-background-clip:text;background-clip:text;color:transparent}
+h1,h2,h3{color:var(--text-1)}
+h1{font:700 clamp(3rem,5.6vw,5rem)/1.02 var(--f-display);letter-spacing:-.03em}
+h2{font:700 clamp(2.25rem,3.8vw,3.25rem)/1.06 var(--f-display);letter-spacing:-.025em}
+h3{font:500 1.25rem/1.25 var(--f-display);letter-spacing:-.01em}
+.body-l{font-size:1.125rem;line-height:1.6;color:var(--text-2)}
+section{padding:120px 0;position:relative}
+.sec-head .mono-label{display:inline-block}
+.sec-head h2{margin-top:20px}
+.sec-head .body-l{margin-top:20px;max-width:620px}
+
+/* ---------- Buttons (spec §2) ---------- */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  height:44px;padding:0 22px;border-radius:var(--r-sm);
+  font:600 15px var(--f-display);white-space:nowrap;
+  transition:transform var(--dur-fast) var(--ease-std),background var(--dur-fast) var(--ease-std),
+             border-color var(--dur-fast) var(--ease-std),color var(--dur-fast) var(--ease-std),
+             box-shadow var(--dur-fast) var(--ease-std);
+}
+.btn-primary{background:var(--signal);color:var(--on-signal)}
+.btn-primary:hover{background:var(--signal-hi);transform:translateY(-1px);box-shadow:var(--glow-signal)}
+.btn-primary:active{transform:translateY(0)}
+.btn-ghost{background:transparent;border:1px solid var(--line-strong);color:var(--text-1)}
+.btn-ghost:hover{border-color:var(--voice);color:var(--voice)}
+.btn-sm{height:36px;padding:0 16px;font-size:13.5px}
+.btn .arr{transition:transform var(--dur-fast) var(--ease-std)}
+.btn:hover .arr{transform:translateX(3px)}
+
+/* ---------- Hairline card chrome + HUD corners (spec §2) ---------- */
+.card{
+  position:relative;background:var(--ink-800);border:1px solid var(--line);
+  border-radius:var(--r-md);box-shadow:var(--shadow-card);
+  transition:transform 200ms var(--ease-std),border-color 200ms var(--ease-std);
+}
+.card::before,.card::after{
+  content:"";position:absolute;width:14px;height:14px;pointer-events:none;
+  border:0 solid var(--line-strong);
+}
+.card::before{top:-1px;left:-1px;border-top-width:1.5px;border-left-width:1.5px;border-top-left-radius:var(--r-md)}
+.card::after{bottom:-1px;right:-1px;border-bottom-width:1.5px;border-right-width:1.5px;border-bottom-right-radius:var(--r-md)}
+.card:hover{border-color:rgba(53,224,255,.35);transform:translateY(-2px)}
+
+/* ---------- S0 Nav (spec §3) ---------- */
+.nav{
+  position:fixed;top:0;left:0;right:0;z-index:50;height:var(--nav-h);
+  background:rgba(7,10,15,.72);backdrop-filter:blur(14px) saturate(140%);
+  -webkit-backdrop-filter:blur(14px) saturate(140%);
+  border-bottom:1px solid var(--line);
+  transition:box-shadow 200ms var(--ease-std);
+}
+.nav.scrolled{box-shadow:var(--shadow-card)}
+.nav-inner{height:100%;display:flex;align-items:center;justify-content:space-between;gap:24px}
+.brand{display:inline-flex;align-items:center;gap:10px;min-height:44px}
+.logo-mark{
+  width:20px;height:20px;border-radius:6px;background:var(--ink-700);
+  display:flex;align-items:flex-end;justify-content:center;gap:2px;padding-bottom:4px;flex:none;
+}
+.logo-mark span{width:3px;background:var(--signal);border-radius:1px}
+.logo-mark span:nth-child(1){height:6px}
+.logo-mark span:nth-child(2){height:12px}
+.logo-mark span:nth-child(3){height:8px}
+.brand-name{font:600 15px var(--f-display);color:var(--text-1);letter-spacing:-.01em}
+.brand-name .forge{color:var(--signal)}
+.nav-links{display:flex;align-items:center;gap:26px}
+.nav-links a{
+  display:inline-flex;align-items:center;min-height:44px;
+  font:500 14px var(--f-body);color:var(--text-2);
+  transition:color var(--dur-fast) var(--ease-std);
+}
+.nav-links a:hover{color:var(--text-1)}
+.nav-right{display:flex;align-items:center;gap:14px}
+.status-pill{
+  display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 14px;
+  border:1px solid var(--line);border-radius:var(--r-pill);
+  font:500 11px var(--f-mono);letter-spacing:.08em;color:var(--text-3);white-space:nowrap;
+}
+.dot{width:6px;height:6px;border-radius:50%;flex:none}
+.dot-cyan{background:var(--voice);animation:pulse-cyan 2s infinite}
+.dot-signal{background:var(--signal);animation:pulse-signal 2s infinite}
+.menu-btn{
+  display:none;width:44px;height:44px;border:1px solid var(--line-strong);
+  border-radius:var(--r-sm);align-items:center;justify-content:center;color:var(--text-1);
+}
+.menu-btn svg{width:20px;height:20px}
+.menu-overlay{
+  position:fixed;inset:0;z-index:90;background:var(--ink-900);
+  display:flex;flex-direction:column;justify-content:center;padding:0 var(--gutter);
+  opacity:0;visibility:hidden;transition:opacity var(--dur-med) var(--ease-std),visibility var(--dur-med);
+}
+body.menu-open .menu-overlay{opacity:1;visibility:visible}
+body.menu-open{overflow:hidden}
+.menu-close{position:absolute;top:10px;right:var(--gutter);width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--text-1)}
+.menu-overlay nav{display:flex;flex-direction:column;gap:6px}
+.m-link{
+  font:500 28px var(--f-display);color:var(--text-1);padding:12px 0;min-height:44px;
+  opacity:0;transform:translateY(14px);
+  transition:opacity var(--dur-med) var(--ease-out),transform var(--dur-med) var(--ease-out);
+  transition-delay:calc(var(--i)*60ms);
+}
+body.menu-open .m-link{opacity:1;transform:none}
+.menu-cta{display:flex;gap:14px;margin-top:32px;flex-wrap:wrap}
+
+/* ---------- S1 Hero (spec §3) ---------- */
+.hero{
+  min-height:92vh;display:flex;align-items:center;
+  padding-top:calc(var(--nav-h) + 88px);padding-bottom:88px;
+}
+.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:64px;align-items:center;width:100%}
+.hero-copy .mono-label{display:inline-block}
+.hero-copy h1{margin-top:20px}
+.hero-copy .body-l{margin-top:20px;max-width:560px}
+.hero-ctas{display:flex;gap:14px;margin-top:36px;flex-wrap:wrap}
+.stats{
+  display:flex;flex-wrap:wrap;margin-top:48px;
+  font:400 .875rem/1.55 var(--f-mono);color:var(--text-3);
+}
+.stats li{display:flex;align-items:baseline;gap:8px;padding:2px 0}
+.stats li b{font-weight:700;color:var(--text-1)}
+.stats li + li{border-left:1px solid var(--line);margin-left:18px;padding-left:18px}
+
+/* right column: waveform canvas behind console card */
+.hero-visual{position:relative;min-height:520px;display:flex;align-items:center;justify-content:center}
+.wave-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:0}
+.console-wrap{position:relative;z-index:2;width:100%;max-width:520px;margin-left:auto}
+.console-wrap::before{ /* --glow-voice behind at 40% */
+  content:"";position:absolute;inset:8% 4%;z-index:-1;opacity:.4;
+  background:radial-gradient(closest-side,rgba(53,224,255,.22),transparent 72%);
+  filter:blur(30px);
+}
+.spec-console{overflow:hidden}
+.spec-console .sheen{
+  position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:3;
+  background:radial-gradient(480px circle at var(--mx,50%) var(--my,50%),rgba(53,224,255,.09),transparent 45%);
+}
+.console-head{
+  height:40px;background:var(--ink-700);display:flex;align-items:center;gap:16px;
+  padding:0 14px;border-bottom:1px solid var(--line);
+}
+.win-dots{display:flex;gap:6px}
+.win-dots span{width:8px;height:8px;border-radius:50%;background:var(--line-strong)}
+.tabs{display:flex;gap:4px;margin-left:4px}
+.tab{
+  height:40px;padding:0 10px;font:500 12px var(--f-mono);color:var(--text-3);
+  border-bottom:2px solid transparent;transition:color var(--dur-fast) var(--ease-std);
+}
+.tab:hover{color:var(--text-2)}
+.tab.active{color:var(--text-1);border-bottom-color:var(--voice)}
+.live-chip{
+  margin-left:auto;display:inline-flex;align-items:center;gap:7px;height:22px;padding:0 10px;
+  border:1px solid var(--line);border-radius:var(--r-pill);
+  font:500 10px var(--f-mono);letter-spacing:.14em;color:var(--text-2);
+}
+.console-body{padding:20px;min-height:280px}
+.console-body[hidden]{display:none}
+.json{font:400 13px/1.7 var(--f-mono);white-space:pre;overflow-x:auto}
+.json .k{color:var(--voice)}
+.json .s{color:#ffb14a}
+.json .p{color:var(--text-3)}
+.prompt-brief{font:400 13px/1.75 var(--f-mono);color:var(--text-2)}
+.prompt-brief .cm{color:var(--text-3)}
+.calllog{font:400 12.5px/2 var(--f-mono);color:var(--text-2)}
+.calllog .t{color:var(--text-3)}
+.calllog .ok{color:var(--pass)}
+.calllog .no{color:var(--signal-hi)}
+.calllog .mk{color:var(--voice)}
+.console-foot{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:14px 20px;border-top:1px solid var(--line);
+}
+.valid{display:inline-flex;align-items:center;gap:7px;font:500 11px var(--f-mono);letter-spacing:.06em;color:var(--pass)}
+.deploy-chip{
+  margin-left:auto;display:inline-flex;align-items:center;height:26px;padding:0 12px;
+  background:var(--voice-dim);border-radius:var(--r-pill);
+  font:500 11px var(--f-mono);color:var(--voice);
+}
+
+/* ---------- S2 Social proof strip (spec §3) ---------- */
+.proof{padding:28px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow:hidden}
+.proof-inner{display:flex;align-items:center;gap:48px}
+.proof-label{flex:none;max-width:300px}
+.proof-label .mono-label{display:block;line-height:1.7;color:var(--text-3)}
+.proof-marquee{flex:1;overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent);mask-image:linear-gradient(90deg,transparent,#000 8%,#000 92%,transparent)}
+.marquee-track{display:flex;width:max-content;animation:marquee 28s linear infinite}
+.proof-marquee:hover .marquee-track{animation-play-state:paused}
+.m-group{display:flex;align-items:center;gap:64px;padding-right:64px}
+.m-group span{
+  font:500 18px var(--f-display);color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;
+  white-space:nowrap;transition:color var(--dur-fast) var(--ease-std);
+}
+.m-group span:hover{color:var(--text-1)}
+.m-group i{font-style:normal;color:var(--line-strong);font-size:10px}
+
+/* ---------- S3 Workflow (spec §3) ---------- */
+.steps{position:relative;margin-top:40px}
+.rail{height:2px;background:var(--ink-700);border-radius:2px;margin-bottom:40px;overflow:hidden}
+.rail-fill{height:100%;width:0;background:var(--grad-rail);border-radius:inherit}
+.steps-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+.step .num{font:700 13px var(--f-mono);color:var(--signal);letter-spacing:.1em}
+.step h3{margin-top:14px}
+.step p{margin-top:12px;font-size:15px;line-height:1.65}
+
+/* ---------- S4 Features bento (spec §3) ---------- */
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-top:56px}
+.bento .card{padding:28px}
+.bento h3{margin-bottom:10px}
+.bento p{font-size:15px;line-height:1.65}
+.card-a{grid-column:span 4;grid-row:span 2;min-height:420px;display:flex;flex-direction:column}
+.card-b,.card-c{grid-column:span 2}
+.card-d,.card-e,.card-f{grid-column:span 2}
+.adapter-diagram{flex:1;display:flex;align-items:center;justify-content:center;margin-top:18px}
+.adapter-diagram svg{width:100%;max-width:520px;height:auto}
+.dash-line{stroke:var(--line-strong);stroke-width:1;fill:none;stroke-dasharray:5 7;animation:dash 1.2s linear infinite}
+.ad-box{fill:var(--ink-700);stroke:var(--line-strong)}
+.ad-chip{fill:var(--ink-800);stroke:var(--line-strong)}
+.ad-txt{font:500 10px var(--f-mono);fill:var(--text-3);letter-spacing:.12em}
+.ad-txt2{font:500 12px var(--f-mono);fill:var(--text-1);letter-spacing:.1em}
+.gate-rows{display:flex;flex-direction:column;gap:12px;margin-top:18px}
+.gate-row{display:flex;align-items:center;gap:10px;font:500 13px var(--f-mono);color:var(--text-1);letter-spacing:.04em}
+.check{flex:none}
+.mini-wave{display:flex;align-items:flex-end;gap:3px;height:56px;margin:20px 0 4px;opacity:.8}
+.mini-wave span{width:3px;background:var(--voice);border-radius:1.5px}
+.f-icon{
+  width:40px;height:40px;border:1px solid var(--line);border-radius:var(--r-sm);
+  display:flex;align-items:center;justify-content:center;margin-bottom:18px;color:var(--voice);
+}
+
+/* ---------- S5 Live transcript terminal (spec §3) ---------- */
+.lab-band{background:var(--ink-850);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.lab-grid{display:grid;grid-template-columns:5fr 7fr;gap:64px;align-items:center}
+.persona-row{display:flex;gap:10px;margin-top:32px;flex-wrap:wrap}
+.persona-chip{
+  display:inline-flex;align-items:center;min-height:44px;padding:0 18px;
+  border:1px solid var(--line);border-radius:var(--r-pill);
+  font:500 12px var(--f-mono);letter-spacing:.08em;color:var(--text-2);
+  transition:background var(--dur-fast) var(--ease-std),color var(--dur-fast) var(--ease-std),border-color var(--dur-fast) var(--ease-std);
+}
+.persona-chip:hover{border-color:var(--line-strong);color:var(--text-1)}
+.persona-chip.active{background:var(--voice-dim);color:var(--voice);border-color:rgba(53,224,255,.35)}
+.terminal{height:400px;padding:24px;overflow:hidden;scroll-behavior:smooth}
+.term-meta{font:400 10px/1 var(--f-mono);letter-spacing:.14em;color:var(--text-3);margin-bottom:18px;text-transform:uppercase}
+.t-line{display:flex;gap:12px;margin-bottom:14px;font:400 13px/1.8 var(--f-mono)}
+.t-line .tag{flex:none;width:64px;font-weight:700;letter-spacing:.06em}
+.t-line .tag.agent{color:var(--voice)}
+.t-line .tag.caller{color:var(--signal)}
+.t-line .msg{color:var(--text-1)}
+.cursor{
+  display:inline-block;width:8px;height:16px;background:var(--voice);
+  vertical-align:-3px;margin-left:2px;animation:blink 1s steps(1) infinite;
+}
+.t-chips{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 16px 76px}
+.t-chip{
+  display:inline-flex;align-items:center;height:24px;padding:0 10px;
+  background:var(--ink-700);border-radius:var(--r-pill);
+  font:400 10px var(--f-mono);letter-spacing:.04em;
+  opacity:0;transform:translateY(4px);
+  transition:opacity 300ms var(--ease-std),transform 300ms var(--ease-std);
+}
+.t-chips.show .t-chip{opacity:1;transform:none}
+.t-chips.show .t-chip:nth-child(2){transition-delay:70ms}
+.t-chips.show .t-chip:nth-child(3){transition-delay:140ms}
+.t-chips.show .t-chip:nth-child(4){transition-delay:210ms}
+.t-chip.pass{color:var(--pass)}
+.t-chip.voice{color:var(--voice)}
+.t-chip.dim{color:var(--text-3)}
+.t-chip.sig{color:var(--signal-hi)}
+
+/* ---------- S6 Compliance (spec §3) ---------- */
+.compliance{background:var(--ink-900)}
+.comp-grid{display:grid;grid-template-columns:1fr 1fr;gap:64px;align-items:center}
+.comp-copy .mono-label{color:var(--signal)}
+.comp-copy h2{margin-top:20px}
+.comp-copy .body-l{margin-top:20px}
+.proof-points{margin-top:18px;display:flex;flex-direction:column;gap:14px}
+.proof-points li{display:flex;gap:12px;font-size:15px;line-height:1.65}
+.proof-points .tick{flex:none;margin-top:3px}
+.gate-track{
+  position:relative;width:480px;max-width:100%;height:48px;margin-top:40px;
+  background:var(--ink-800);border:1px solid var(--line);border-radius:var(--r-pill);overflow:hidden;
+}
+.gate-panel{
+  position:absolute;inset:4px;background:var(--signal);border-radius:var(--r-pill);
+  display:flex;align-items:center;justify-content:center;
+  transform:translateX(-103%);
+  transition:transform 700ms var(--ease-out) 300ms;
+}
+.gate-track.gate-in .gate-panel{transform:translateX(0)}
+.gate-panel span{font:500 12px var(--f-mono);letter-spacing:.2em;color:var(--on-signal)}
+.check-card{padding:28px}
+.check-card .cc-head{font:500 11px var(--f-mono);letter-spacing:.14em;color:var(--text-3);text-transform:uppercase;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.check-row{
+  display:flex;align-items:center;gap:12px;padding:14px 0;
+  border-bottom:1px solid var(--line);font-size:15px;color:var(--text-1);
+}
+.check-row:has(+ .badge-row){border-bottom:0}
+.check-row .ms{margin-left:auto;font:400 11px var(--f-mono);color:var(--text-3)}
+.badge-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}
+.badge{
+  display:inline-flex;align-items:center;padding:8px 14px;
+  border:1px solid var(--line);border-radius:var(--r-pill);
+  font:500 11px var(--f-mono);letter-spacing:.06em;color:var(--text-2);
+}
+
+/* ---------- S7 CTA finale (spec §3) ---------- */
+.cta{
+  padding:160px 0 140px;text-align:center;overflow:hidden;
+  background:radial-gradient(720px 320px at 50% 100%,rgba(255,74,31,.18),transparent 70%);
+}
+.cta .wave-strip{
+  position:absolute;left:0;right:0;bottom:0;height:150px;width:100%;opacity:.5;pointer-events:none;
+}
+.cta-inner{position:relative;z-index:2}
+.cta h2{font-size:clamp(3rem,5.6vw,5rem)}
+.cta .body-l{margin:20px auto 0;max-width:560px}
+.email-row{display:flex;justify-content:center;gap:12px;margin-top:36px}
+.email-input{
+  height:52px;width:340px;max-width:100%;padding:0 18px;
+  background:var(--ink-800);border:1px solid var(--line);border-radius:var(--r-sm);
+  font:400 14px var(--f-mono);color:var(--text-1);
+  transition:border-color var(--dur-fast) var(--ease-std),box-shadow var(--dur-fast) var(--ease-std);
+}
+.email-input::placeholder{color:var(--text-3)}
+.email-input:focus{outline:none;border-color:var(--voice);box-shadow:var(--glow-voice)}
+.email-input:focus-visible{outline:none;border-color:var(--voice);box-shadow:var(--glow-voice)}
+.email-row .btn{height:52px}
+.cta-micro{margin-top:16px;font:400 11px var(--f-mono);letter-spacing:.12em;color:var(--text-3)}
+.cta-confirm{
+  display:none;margin:36px auto 0;padding:16px 24px;max-width:480px;
+  border:1px solid rgba(62,207,142,.35);border-radius:var(--r-sm);
+  font:500 13px var(--f-mono);color:var(--pass);
+}
+.cta-confirm.show{display:block}
+
+/* ---------- S8 Footer (spec §3) ---------- */
+.footer{background:var(--ink-950);border-top:1px solid var(--line);padding:72px 0 40px;position:relative;overflow:hidden}
+.footer-grid{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:32px}
+.f-brand .tagline{margin-top:14px;font:400 12px var(--f-mono);letter-spacing:.1em;color:var(--text-3)}
+.f-col h4{font:500 11px var(--f-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px}
+.f-col a{
+  display:block;padding:12px 0;font-size:14px;color:var(--text-2);
+  transition:color var(--dur-fast) var(--ease-std);
+}
+.f-col a:hover{color:var(--text-1)}
+.footer-meta{
+  display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;
+  margin-top:56px;padding-top:24px;border-top:1px solid var(--line);
+}
+.legal{font:400 12px var(--f-mono);color:var(--text-3)}
+.legal a{transition:color var(--dur-fast) var(--ease-std);padding:14px 0;display:inline-block;min-height:44px}
+.legal a:hover{color:var(--text-1)}
+.watermark{
+  margin-top:64px;font:700 clamp(80px,14vw,200px)/.8 var(--f-display);
+  text-align:center;letter-spacing:.02em;color:transparent;
+  -webkit-text-stroke:1px rgba(148,163,184,.14);
+  -webkit-user-select:none;user-select:none;pointer-events:none;white-space:nowrap;
+}
+
+/* ---------- Scroll reveal (spec §4.4) ---------- */
+.reveal{
+  opacity:0;transform:translateY(16px);
+  transition:opacity var(--dur-reveal) var(--ease-out),transform var(--dur-reveal) var(--ease-out);
+  transition-delay:calc(var(--i,0)*80ms);
+}
+.reveal.in{opacity:1;transform:none}
+/* cards that are also .reveal: .reveal.in above wins the cascade over .card:hover,
+   so hover lift needs higher specificity; .settled (added by JS after the entrance
+   transition ends) restores the 200ms hover timing without disturbing the reveal */
+.card.reveal.settled{transition:transform 200ms var(--ease-std),border-color 200ms var(--ease-std)}
+.card.reveal.in:hover{transform:translateY(-2px);border-color:rgba(53,224,255,.35)}
+
+/* ---------- Keyframes (spec §5) ---------- */
+@keyframes marquee{to{transform:translateX(-50%)}}
+@keyframes pulse-cyan{0%{box-shadow:0 0 0 0 rgba(53,224,255,.5)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes pulse-signal{0%{box-shadow:0 0 0 0 rgba(255,74,31,.5)}70%{box-shadow:0 0 0 8px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes dash{to{stroke-dashoffset:-24}}
+
+/* ---------- Responsive (spec §6) ---------- */
+@media (max-width:1080px){
+  .card-a{grid-column:span 6;grid-row:auto;min-height:380px}
+  .card-b,.card-c{grid-column:span 3}
+  .card-d,.card-e,.card-f{grid-column:span 2}
+}
+@media (max-width:960px){
+  .nav-links{display:none}
+  .menu-btn{display:flex}
+}
+@media (max-width:900px){
+  section{padding:72px 0}
+  .hero{padding-top:calc(var(--nav-h) + 56px);padding-bottom:64px;min-height:0}
+  .hero-grid{grid-template-columns:1fr;gap:56px}
+  .hero-visual{min-height:0}
+  .console-wrap{margin:0 auto}
+  .lab-grid{grid-template-columns:1fr;gap:48px}
+  .comp-grid{grid-template-columns:1fr;gap:48px}
+  .steps-grid{grid-template-columns:repeat(2,1fr)}
+  .stats li + li{margin-left:14px;padding-left:14px}
+}
+@media (max-width:720px){
+  .footer-grid{grid-template-columns:1fr 1fr}
+  .f-brand{grid-column:span 2}
+  .email-row{flex-direction:column;align-items:stretch}
+  .email-input{width:100%}
+  .watermark{font-size:18vw}
+  /* workflow → vertical rail */
+  .steps{margin-top:32px;padding-left:28px}
+  .rail{position:absolute;left:0;top:0;bottom:0;width:2px;height:auto;margin:0}
+  .rail-fill{width:100%;height:0}
+  .steps-grid{grid-template-columns:1fr;gap:32px}
+  .card-b,.card-c,.card-d,.card-e,.card-f{grid-column:span 6}
+  .status-pill.nav-status{display:none}
+  .nav-right .btn-ghost{display:none}
+  .proof-inner{gap:28px}
+  .proof-label{max-width:220px}
+}
+@media (max-width:480px){
+  .hero-ctas .btn{flex:1}
+  .json{font-size:12px}
+  .t-line{gap:8px}
+  .t-line .tag{width:56px}
+  .t-chips{margin-left:64px}
+  .footer-meta{flex-direction:column;align-items:flex-start}
+}
+
+/* ---------- Reduced motion (spec §5) ---------- */
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;transition-delay:0ms!important}
+  .marquee-track{animation-play-state:paused}
+  .gate-panel{transform:translateX(0)}
+  .reveal{opacity:1;transform:none}
+  .t-chip{opacity:1;transform:none}
+  .cursor{animation:none}
+}
+</style>
+<noscript><style>
+  /* JS disabled: show all content statically */
+  .reveal{opacity:1!important;transform:none!important}
+  .gate-panel{transform:translateX(0)!important}
+  .t-chip{opacity:1!important;transform:none!important}
+  .marquee-track{animation:none!important}
+</style></noscript>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<!-- ================= S0 NAV ================= -->
+<header class="nav" id="top">
+  <div class="container nav-inner">
+    <a class="brand" href="#top" aria-label="VoiceForge AI — home">
+      <span class="logo-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="brand-name">Voice<span class="forge">Forge</span>&nbsp;AI</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#product">Product</a>
+      <a href="#workflow">How it works</a>
+      <a href="#compliance">Compliance</a>
+      <a href="#access">Pricing</a>
+      <a href="#access">Docs</a>
+    </nav>
+    <div class="nav-right">
+      <span class="status-pill nav-status"><span class="dot dot-cyan" aria-hidden="true"></span>ALL SYSTEMS OPERATIONAL</span>
+      <a class="btn btn-ghost btn-sm" href="#access">Sign in</a>
+      <a class="btn btn-primary btn-sm" href="#access">Start building</a>
+    </div>
+    <button class="menu-btn" aria-expanded="false" aria-controls="menu-overlay" aria-label="Open menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+  </div>
+</header>
+
+<!-- mobile menu overlay -->
+<div class="menu-overlay" id="menu-overlay" role="dialog" aria-modal="true" aria-label="Menu">
+  <button class="menu-close" aria-label="Close menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+  <nav aria-label="Mobile">
+    <a class="m-link" style="--i:0" href="#product">Product</a>
+    <a class="m-link" style="--i:1" href="#workflow">How it works</a>
+    <a class="m-link" style="--i:2" href="#compliance">Compliance</a>
+    <a class="m-link" style="--i:3" href="#access">Pricing</a>
+    <a class="m-link" style="--i:4" href="#access">Docs</a>
+  </nav>
+  <div class="menu-cta">
+    <a class="btn btn-ghost" href="#access">Sign in</a>
+    <a class="btn btn-primary" href="#access">Start building</a>
+  </div>
+</div>
+
+<main id="main">
+
+  <!-- ================= S1 HERO ================= -->
+  <section class="hero" aria-label="Introduction">
+    <div class="container hero-grid">
+      <div class="hero-copy">
+        <span class="mono-label reveal" style="--i:0">[ Provider adapters for Vapi, Retell &amp; Twilio — now in beta ]</span>
+        <h1 class="reveal" style="--i:1">Voice agents, <span class="grad-text">specified — not prompted.</span></h1>
+        <p class="body-l reveal" style="--i:2">Describe the agent. VoiceForge compiles it into Agent Spec JSON — a governed contract you can test, deploy anywhere, and white-label for clients.</p>
+        <div class="hero-ctas reveal" style="--i:3">
+          <a class="btn btn-primary" href="#access">Start building free</a>
+          <a class="btn btn-ghost" href="#lab">Run a mock call <span class="arr" aria-hidden="true">&rarr;</span></a>
+        </div>
+        <ul class="stats reveal" style="--i:4">
+          <li><b>5 min</b> from plain-English brief to first mock call</li>
+          <li><b>100%</b> of outbound calls gated for compliance before dialing</li>
+          <li><b>3 providers</b> one spec, deployable to Vapi, Retell, or Twilio</li>
+          <li><b>0 code</b> to ship a white-labeled client dashboard</li>
+        </ul>
+      </div>
+
+      <div class="hero-visual">
+        <canvas class="wave-canvas" id="wave-hero" role="presentation" aria-hidden="true"></canvas>
+        <div class="console-wrap reveal" style="--i:2">
+          <div class="card spec-console">
+            <div class="console-head">
+              <span class="win-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+              <div class="tabs" role="tablist" aria-label="Console views">
+                <button class="tab active" role="tab" id="tab-spec" aria-controls="pane-spec" aria-selected="true" data-pane="pane-spec">Spec</button>
+                <button class="tab" role="tab" id="tab-prompt" aria-controls="pane-prompt" aria-selected="false" data-pane="pane-prompt">Prompt</button>
+                <button class="tab" role="tab" id="tab-log" aria-controls="pane-log" aria-selected="false" data-pane="pane-log">Call log</button>
+              </div>
+              <span class="live-chip"><span class="dot dot-signal" aria-hidden="true"></span>LIVE</span>
+            </div>
+
+            <div class="console-body" id="pane-spec" role="tabpanel" aria-labelledby="tab-spec">
+<pre class="json" aria-label="Agent Spec JSON for atlas-support"><span class="p">{</span>
+  <span class="k">"agent"</span><span class="p">:</span> <span class="s">"atlas-support"</span><span class="p">,</span>
+  <span class="k">"voice"</span><span class="p">:</span> <span class="s">"ember-f-2"</span><span class="p">,</span>
+  <span class="k">"persona"</span><span class="p">:</span> <span class="s">"calm, concise"</span><span class="p">,</span>
+  <span class="k">"gates"</span><span class="p">:</span> <span class="p">[</span><span class="s">"dnc"</span><span class="p">,</span> <span class="s">"tcpa-consent"</span><span class="p">,</span> <span class="s">"rec-disclosure"</span><span class="p">],</span>
+  <span class="k">"handoff"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="k">"to"</span><span class="p">:</span> <span class="s">"human"</span><span class="p">,</span>
+    <span class="k">"when"</span><span class="p">:</span> <span class="s">"sentiment &lt; -0.4"</span>
+  <span class="p">}</span>
+<span class="p">}</span></pre>
+            </div>
+
+            <div class="console-body" id="pane-prompt" role="tabpanel" aria-labelledby="tab-prompt" hidden>
+              <p class="prompt-brief"><span class="cm">// brief &rarr; compiled to spec v42</span><br><br>&ldquo;Atlas answers support calls for Northwind HVAC. Calm, concise. Confirm tomorrow&rsquo;s maintenance visits, offer reschedules, and hand off to a human the moment sentiment drops below -0.4.&rdquo;</p>
+            </div>
+
+            <div class="console-body" id="pane-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+              <p class="calllog">
+                <span class="t">14:02:11</span> &middot; outbound &middot; +1 415 &bull;&bull;&bull; 0132 &middot; 2m 41s &middot; <span class="ok">CLEARED</span><br>
+                <span class="t">13:58:44</span> &middot; outbound &middot; +1 628 &bull;&bull;&bull; 4410 &middot; 0m 00s &middot; <span class="no">BLOCKED: DNC</span><br>
+                <span class="t">13:47:02</span> &middot; outbound &middot; +1 206 &bull;&bull;&bull; 8891 &middot; 1m 18s &middot; <span class="ok">CLEARED</span><br>
+                <span class="t">13:15:40</span> &middot; mock &middot; persona: skeptical CFO &middot; 3m 02s &middot; <span class="mk">PASSED</span>
+              </p>
+            </div>
+
+            <div class="console-foot">
+              <span class="valid">&#10003; SCHEMA VALID</span>
+              <span class="valid">&#10003; 3 GATES ARMED</span>
+              <span class="deploy-chip">v42 &rarr; deploy</span>
+            </div>
+            <div class="sheen" aria-hidden="true"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= S2 SOCIAL PROOF STRIP ================= -->
+  <div class="proof reveal" style="--i:0">
+    <div class="container proof-inner">
+      <div class="proof-label">
+        <span class="mono-label">Appointment-driven teams run thousands of governed calls every week on VoiceForge.</span>
+      </div>
+      <div class="proof-marquee" aria-hidden="true">
+        <div class="marquee-track">
+          <div class="m-group">
+            <span>Northwind Dental Group</span><i>&#9679;</i>
+            <span>Atlas Home Services</span><i>&#9679;</i>
+            <span>Meridian Health Clinics</span><i>&#9679;</i>
+            <span>Beacon Realty Partners</span><i>&#9679;</i>
+            <span>Clearline Agency Collective</span><i>&#9679;</i>
+            <span>Harbor Logistics</span><i>&#9679;</i>
+          </div>
+          <div class="m-group">
+            <span>Northwind Dental Group</span><i>&#9679;</i>
+            <span>Atlas Home Services</span><i>&#9679;</i>
+            <span>Meridian Health Clinics</span><i>&#9679;</i>
+            <span>Beacon Realty Partners</span><i>&#9679;</i>
+            <span>Clearline Agency Collective</span><i>&#9679;</i>
+            <span>Harbor Logistics</span><i>&#9679;</i>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= S3 WORKFLOW ================= -->
+  <section id="workflow" aria-label="How it works">
+    <div class="container">
+      <div class="sec-head">
+        <span class="mono-label reveal" style="--i:0">[ How it works ]</span>
+        <h2 class="reveal" style="--i:1">From brief to live calls in four steps</h2>
+      </div>
+      <div class="steps">
+        <div class="rail" aria-hidden="true"><div class="rail-fill" id="rail-fill"></div></div>
+        <div class="steps-grid">
+          <div class="step reveal" style="--i:0">
+            <span class="num">01</span>
+            <h3>Describe the caller experience.</h3>
+            <p>Write a plain-English brief: who calls, what the agent should accomplish, and what it must never say. No prompt engineering, no flowchart wiring.</p>
+          </div>
+          <div class="step reveal" style="--i:1">
+            <span class="num">02</span>
+            <h3>Review the Agent Spec.</h3>
+            <p>VoiceForge compiles your brief into Agent Spec JSON — voice, scripts, tools, guardrails, and compliance rules in one auditable, versioned contract.</p>
+          </div>
+          <div class="step reveal" style="--i:2">
+            <span class="num">03</span>
+            <h3>Run the mock call lab.</h3>
+            <p>Place simulated calls against the spec. Listen to recordings, inspect transcripts, and fix failure modes before a real number ever rings.</p>
+          </div>
+          <div class="step reveal" style="--i:3">
+            <span class="num">04</span>
+            <h3>Publish, monitor, improve.</h3>
+            <p>Deploy through your provider adapter, watch live analytics, and iterate by versioning the spec. Every change is tracked and reversible.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= S4 FEATURES BENTO ================= -->
+  <section id="product" aria-label="Platform features">
+    <div class="container">
+      <div class="sec-head">
+        <span class="mono-label reveal" style="--i:0">[ The platform ]</span>
+        <h2 class="reveal" style="--i:1">Everything between the idea and the call</h2>
+        <p class="body-l reveal" style="--i:2">Every agent compiles to a single versioned contract: persona, scripts, tools, guardrails. Review it, diff it, roll it back.</p>
+      </div>
+      <div class="bento">
+        <!-- Card A: Provider adapters -->
+        <article class="card card-a reveal" style="--i:0">
+          <h3>Provider adapters</h3>
+          <p>One spec, many carriers. Deploy the same agent to Vapi, Retell, or Twilio without rewriting a line.</p>
+          <div class="adapter-diagram" aria-hidden="true">
+            <svg viewBox="0 0 520 260">
+              <path class="dash-line" d="M120 130 C 230 130, 250 50, 360 50"/>
+              <path class="dash-line" d="M120 130 L 360 130"/>
+              <path class="dash-line" d="M120 130 C 230 130, 250 210, 360 210"/>
+              <rect class="ad-box" x="24" y="82" width="96" height="96" rx="12"/>
+              <text class="ad-txt" x="72" y="124" text-anchor="middle">AGENT</text>
+              <text class="ad-txt" x="72" y="140" text-anchor="middle">SPEC</text>
+              <rect class="ad-chip" x="360" y="28" width="136" height="44" rx="22"/>
+              <text class="ad-txt2" x="428" y="55" text-anchor="middle">VAPI</text>
+              <rect class="ad-chip" x="360" y="108" width="136" height="44" rx="22"/>
+              <text class="ad-txt2" x="428" y="135" text-anchor="middle">RETELL</text>
+              <rect class="ad-chip" x="360" y="188" width="136" height="44" rx="22"/>
+              <text class="ad-txt2" x="428" y="215" text-anchor="middle">TWILIO</text>
+            </svg>
+          </div>
+        </article>
+        <!-- Card B: Compliance gates -->
+        <article class="card card-b reveal" style="--i:1">
+          <h3>Compliance gates</h3>
+          <p>Consent capture, DNC screening, AI disclosure, and permitted call windows are enforced before any outbound call dials.</p>
+          <div class="gate-rows">
+            <span class="gate-row"><svg class="check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>DNC SCRUB</span>
+            <span class="gate-row"><svg class="check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>CONSENT</span>
+            <span class="gate-row"><svg class="check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>DISCLOSURE</span>
+          </div>
+        </article>
+        <!-- Card C: Mock call lab -->
+        <article class="card card-c reveal" style="--i:2">
+          <h3>Mock call lab</h3>
+          <p>Every agent runs in the mock call lab first — real audio, real transcripts, zero live numbers.</p>
+          <div class="mini-wave" aria-hidden="true">
+            <span style="height:34%"></span><span style="height:58%"></span><span style="height:42%"></span><span style="height:76%"></span><span style="height:100%"></span><span style="height:64%"></span><span style="height:88%"></span><span style="height:48%"></span><span style="height:70%"></span><span style="height:36%"></span><span style="height:92%"></span><span style="height:55%"></span><span style="height:80%"></span><span style="height:26%"></span><span style="height:62%"></span><span style="height:96%"></span><span style="height:44%"></span><span style="height:72%"></span><span style="height:38%"></span><span style="height:84%"></span><span style="height:52%"></span><span style="height:68%"></span><span style="height:30%"></span><span style="height:20%"></span>
+          </div>
+        </article>
+        <!-- Card D: Workspaces -->
+        <article class="card card-d reveal" style="--i:0">
+          <div class="f-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></svg>
+          </div>
+          <h3>Multi-tenant workspaces</h3>
+          <p>Isolate clients, campaigns, and credentials per workspace, with role-based access for your whole team.</p>
+        </article>
+        <!-- Card E: White-label -->
+        <article class="card card-e reveal" style="--i:1">
+          <div class="f-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9.5" r="1"/><circle cx="15" cy="9.5" r="1"/><circle cx="9.5" cy="15" r="1"/><path d="M12 21a9 9 0 0 0 9-9c0-1.5-1-2-2-2h-3a2 2 0 0 1-2-2V6.5"/></svg>
+          </div>
+          <h3>White-label delivery</h3>
+          <p>Ship client-facing dashboards under your brand — your domain, your logo, your reports, your margins.</p>
+        </article>
+        <!-- Card F: Transcripts & analytics -->
+        <article class="card card-f reveal" style="--i:2">
+          <div class="f-icon" aria-hidden="true">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M6 20v-7M11 20V5M16 20v-4M21 20v-9"/></svg>
+          </div>
+          <h3>Transcripts &amp; analytics</h3>
+          <p>Every call lands with a searchable transcript, outcome tags, and cost and conversion analytics you can act on.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= S5 LIVE TRANSCRIPT TERMINAL ================= -->
+  <section class="lab-band" id="lab" aria-label="Mock call lab demo">
+    <div class="container lab-grid">
+      <div class="lab-copy">
+        <span class="mono-label reveal" style="--i:0">[ Mock call lab ]</span>
+        <h2 class="reveal" style="--i:1">Hear it before it goes live</h2>
+        <p class="body-l reveal" style="--i:2">Every agent runs in the mock call lab first — real audio, real transcripts, zero live numbers.</p>
+        <div class="persona-row reveal" style="--i:3" role="group" aria-label="Choose a synthetic caller persona">
+          <button class="persona-chip active" data-persona="friendly" aria-pressed="true">FRIENDLY BUYER</button>
+          <button class="persona-chip" data-persona="skeptical" aria-pressed="false">SKEPTICAL CFO</button>
+          <button class="persona-chip" data-persona="angry" aria-pressed="false">ANGRY CUSTOMER</button>
+        </div>
+      </div>
+      <div class="reveal" style="--i:2">
+        <div class="card terminal" id="terminal" aria-hidden="true"></div>
+        <p class="vh">Sample mock-call transcript: an automated dental receptionist confirms the caller&rsquo;s identity, offers a cleaning on Tuesday at 9:15 or Thursday at 2:30, the caller picks Thursday, and the agent confirms the booking with Dr. Patel and sends a text confirmation.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= S6 COMPLIANCE ================= -->
+  <section class="compliance" id="compliance" aria-label="Compliance">
+    <div class="container comp-grid">
+      <div class="comp-copy">
+        <span class="mono-label reveal" style="--i:0">[ Compliance ]</span>
+        <h2 class="reveal" style="--i:1">Built for regulated calling</h2>
+        <p class="body-l reveal" style="--i:2">Consent and DNC checks run before every dial — blocked calls are logged with reasons, never retried silently.</p>
+        <ul class="proof-points reveal" style="--i:3">
+          <li><svg class="tick" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg><span>AI disclosure lines are mandatory in every generated spec, in the caller&rsquo;s language, at the top of every call.</span></li>
+          <li><svg class="tick" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg><span>Call windows are enforced per region automatically, so agents only dial during legally permitted hours.</span></li>
+        </ul>
+        <div class="gate-track reveal" style="--i:4" id="gate-track" role="img" aria-label="Compliance gate status: cleared for outbound">
+          <div class="gate-panel"><span>CLEARED FOR OUTBOUND</span></div>
+        </div>
+      </div>
+      <div class="reveal" style="--i:2">
+        <div class="card check-card">
+          <div class="cc-head">Pre-dial gate checks &middot; live</div>
+          <div class="check-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>DNC registry scrub<span class="ms">~40ms</span></div>
+          <div class="check-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>TCPA consent verification<span class="ms">~35ms</span></div>
+          <div class="check-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>Jurisdiction calling hours<span class="ms">~12ms</span></div>
+          <div class="check-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>Call-recording disclosure<span class="ms">armed</span></div>
+          <div class="check-row"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3ecf8e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>STIR/SHAKEN caller ID<span class="ms">attested</span></div>
+          <div class="badge-row">
+            <span class="badge">SOC 2 TYPE II</span>
+            <span class="badge">GDPR READY</span>
+            <span class="badge">HIPAA-READY</span>
+            <span class="badge">STIR/SHAKEN</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= S7 CTA FINALE ================= -->
+  <section class="cta" id="access" aria-label="Get access">
+    <canvas class="wave-strip" id="wave-cta" role="presentation" aria-hidden="true"></canvas>
+    <div class="container cta-inner">
+      <h2 class="reveal" style="--i:0">Spec your first agent <span class="grad-text">today.</span></h2>
+      <p class="body-l reveal" style="--i:1">Go from brief to mock call in five minutes — no credit card, no live dialing required.</p>
+      <form class="email-row reveal" style="--i:2" id="access-form" novalidate>
+        <label class="vh" for="email">Work email</label>
+        <input class="email-input" id="email" type="email" name="email" placeholder="ops@yourcompany.com" autocomplete="email" required>
+        <button class="btn btn-primary" type="submit">Start building free</button>
+      </form>
+      <p class="cta-confirm" id="cta-confirm" role="status">&#10003; REQUEST RECEIVED — YOUR SANDBOX INVITE IS ON THE WAY.</p>
+      <p class="cta-micro reveal" style="--i:3">FREE SANDBOX &middot; NO CREDIT CARD &middot; DEPLOY IN A DAY</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- ================= S8 FOOTER ================= -->
+<footer class="footer" aria-label="Footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="f-brand">
+        <a class="brand" href="#top" aria-label="VoiceForge AI — back to top">
+          <span class="logo-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-name">Voice<span class="forge">Forge</span>&nbsp;AI</span>
+        </a>
+        <p class="tagline">Voice agents, specified.</p>
+      </div>
+      <div class="f-col">
+        <h4>Product</h4>
+        <a href="#product">Features</a>
+        <a href="#lab">Mock call lab</a>
+        <a href="#access">Pricing</a>
+        <a href="#top">Changelog</a>
+      </div>
+      <div class="f-col">
+        <h4>Platform</h4>
+        <a href="#product">Agent Spec JSON</a>
+        <a href="#product">Provider adapters</a>
+        <a href="#compliance">Compliance</a>
+        <a href="#top">API reference</a>
+      </div>
+      <div class="f-col">
+        <h4>Company</h4>
+        <a href="#top">About</a>
+        <a href="#top">Blog</a>
+        <a href="#top">Careers</a>
+        <a href="#top">Contact</a>
+      </div>
+      <div class="f-col">
+        <h4>Resources</h4>
+        <a href="#top">Documentation</a>
+        <a href="#product">Spec schema</a>
+        <a href="#top">Status</a>
+        <a href="#top">Community</a>
+      </div>
+    </div>
+    <div class="footer-meta">
+      <span class="status-pill"><span class="dot dot-cyan" aria-hidden="true"></span>ALL SYSTEMS OPERATIONAL</span>
+      <p class="legal">&copy; 2026 VoiceForge AI. All rights reserved. &nbsp;&middot;&nbsp; <a href="#top">Privacy</a> &middot; <a href="#top">Terms</a> &middot; <a href="#top">DNC Policy</a></p>
+    </div>
+    <div class="watermark" aria-hidden="true">VOICEFORGE</div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+  var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- S0: nav shadow after scrollY > 24 (spec §5) ---------- */
+  var nav = document.querySelector(".nav");
+  function navShadow(){ nav.classList.toggle("scrolled", window.scrollY > 24); }
+  navShadow();
+  window.addEventListener("scroll", navShadow, {passive:true});
+
+  /* ---------- S0: mobile menu (spec §6) ---------- */
+  var menuBtn = document.querySelector(".menu-btn");
+  var menuClose = document.querySelector(".menu-close");
+  var overlay = document.getElementById("menu-overlay");
+  function setMenu(open){
+    document.body.classList.toggle("menu-open", open);
+    menuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open){
+      menuClose.focus();
+    } else if (document.activeElement && overlay.contains(document.activeElement)){
+      menuBtn.focus(); /* return focus to the trigger */
+    }
+  }
+  menuBtn.addEventListener("click", function(){ setMenu(true); });
+  menuClose.addEventListener("click", function(){ setMenu(false); });
+  overlay.addEventListener("click", function(e){ if (e.target.closest("a")) setMenu(false); });
+  document.addEventListener("keydown", function(e){ if (e.key === "Escape") setMenu(false); });
+  /* auto-close if the viewport grows past the mobile-nav breakpoint */
+  window.addEventListener("resize", function(){ if (window.innerWidth > 960) setMenu(false); });
+
+  /* ---------- §4.4: scroll reveals (single IO, once) ---------- */
+  var revealIO = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if (en.isIntersecting){
+        en.target.classList.add("in");
+        revealIO.unobserve(en.target);
+        /* once the entrance transition finishes, mark settled so card hovers
+           can reclaim the 200ms transform/border-color transition (see CSS) */
+        en.target.addEventListener("transitionend", function settle(ev){
+          if (ev.propertyName === "opacity"){
+            en.target.classList.add("settled");
+            en.target.removeEventListener("transitionend", settle);
+          }
+        });
+      }
+    });
+  }, {threshold:.2, rootMargin:"0px 0px -10%"});
+  document.querySelectorAll(".reveal").forEach(function(el){ revealIO.observe(el); });
+
+  /* ---------- §4.4: workflow rail fill ---------- */
+  var steps = document.querySelector(".steps");
+  var railFill = document.getElementById("rail-fill");
+  var railTicking = false;
+  function railUpdate(){
+    railTicking = false;
+    var r = steps.getBoundingClientRect();
+    var vh = window.innerHeight;
+    var p = (vh * 0.85 - r.top) / (r.height + vh * 0.25);
+    p = Math.max(0, Math.min(1, p));
+    if (window.innerWidth <= 720){
+      railFill.style.width = "100%";
+      railFill.style.height = (p * 100) + "%";
+    } else {
+      railFill.style.height = "100%";
+      railFill.style.width = (p * 100) + "%";
+    }
+  }
+  function railRequest(){
+    if (!railTicking){ railTicking = true; requestAnimationFrame(railUpdate); }
+  }
+  railUpdate();
+  window.addEventListener("scroll", railRequest, {passive:true});
+  window.addEventListener("resize", railRequest);
+
+  /* ---------- §4.1: waveform canvas (hero + S7 strip) ---------- */
+  function makeWave(canvas, amp, alpha){
+    var ctx = canvas.getContext("2d");
+    var N = 64, base = 90;
+    var W = 0, H = 0, raf = 0, running = false;
+    var t0 = performance.now();
+    var cursorBar = -999;
+    function resize(){
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = canvas.clientWidth; H = canvas.clientHeight;
+      if (!W || !H) return;
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function drawFrame(now){
+      var t = (now - t0) / 1000;
+      ctx.clearRect(0, 0, W, H);
+      var slot = W / N;
+      var bw = Math.max(2, slot * 0.4);
+      var grad = ctx.createLinearGradient(0, 0, 0, H);
+      grad.addColorStop(0, "#35e0ff");
+      grad.addColorStop(1, "#ff4a1f");
+      ctx.fillStyle = grad;
+      ctx.globalAlpha = alpha;
+      var cy = H / 2;
+      for (var i = 0; i < N; i++){
+        var v = Math.sin(t * 1.3 + i * .32) * .5 + Math.sin(t * .7 + i * .11) * .5;
+        var m = 1 + .6 * Math.exp(-((i - cursorBar) * (i - cursorBar)) / 50);
+        var h = Math.abs(base * amp * v * m);
+        if (h < 1.5) h = 1.5;
+        ctx.fillRect(i * slot + (slot - bw) / 2, cy - h / 2, bw, h);
+      }
+    }
+    function loop(now){
+      drawFrame(now);
+      raf = requestAnimationFrame(loop);
+    }
+    function start(){
+      if (running || reduceMotion) return;
+      running = true;
+      raf = requestAnimationFrame(loop);
+    }
+    function stop(){
+      running = false;
+      cancelAnimationFrame(raf);
+    }
+    resize();
+    if (reduceMotion){
+      drawFrame(1200); /* one static frame */
+    } else {
+      var io = new IntersectionObserver(function(entries){
+        entries.forEach(function(en){ en.isIntersecting ? start() : stop(); });
+      });
+      io.observe(canvas);
+      var host = canvas.parentElement;
+      host.addEventListener("pointermove", function(e){
+        var r = canvas.getBoundingClientRect();
+        cursorBar = (e.clientX - r.left) / (W / N);
+      });
+      host.addEventListener("pointerleave", function(){ cursorBar = -999; });
+    }
+    window.addEventListener("resize", function(){
+      resize();
+      if (reduceMotion) drawFrame(1200);
+    });
+  }
+  makeWave(document.getElementById("wave-hero"), 1, .5);
+  makeWave(document.getElementById("wave-cta"), .3, .5);
+
+  /* ---------- §4.3: cursor-tracked sheen on Spec Console ---------- */
+  var consoleCard = document.querySelector(".spec-console");
+  if (!reduceMotion && consoleCard){
+    var sx = 260, sy = 160, tx = 260, ty = 160;
+    var sheenRaf = 0, sheenHover = false;
+    function sheen(){
+      sx += (tx - sx) * .12;
+      sy += (ty - sy) * .12;
+      consoleCard.style.setProperty("--mx", sx.toFixed(1) + "px");
+      consoleCard.style.setProperty("--my", sy.toFixed(1) + "px");
+      /* keep lerping while hovering or until the sheen catches up, then idle
+         (avoids a perpetual rAF + style recalc when the pointer is elsewhere) */
+      if (sheenHover || Math.abs(tx - sx) > .5 || Math.abs(ty - sy) > .5){
+        sheenRaf = requestAnimationFrame(sheen);
+      } else {
+        sheenRaf = 0;
+      }
+    }
+    consoleCard.addEventListener("pointerenter", function(e){
+      var r = consoleCard.getBoundingClientRect();
+      tx = e.clientX - r.left;
+      ty = e.clientY - r.top;
+      sheenHover = true;
+      if (!sheenRaf) sheenRaf = requestAnimationFrame(sheen);
+    });
+    consoleCard.addEventListener("pointermove", function(e){
+      var r = consoleCard.getBoundingClientRect();
+      tx = e.clientX - r.left;
+      ty = e.clientY - r.top;
+    });
+    consoleCard.addEventListener("pointerleave", function(){ sheenHover = false; });
+  }
+
+  /* ---------- console tabs ---------- */
+  var tabs = document.querySelectorAll(".tab");
+  tabs.forEach(function(tab){
+    tab.addEventListener("click", function(){
+      tabs.forEach(function(t){
+        t.classList.toggle("active", t === tab);
+        t.setAttribute("aria-selected", t === tab ? "true" : "false");
+      });
+      document.querySelectorAll(".console-body").forEach(function(p){
+        p.hidden = p.id !== tab.getAttribute("data-pane");
+      });
+    });
+  });
+
+  /* ---------- §4.2: self-typing transcript terminal ---------- */
+  var SCRIPTS = {
+    friendly: {
+      meta: "MOCK-CALL &middot; SESSION 0472 &middot; PERSONA: FRIENDLY BUYER &middot; SYNTH",
+      lines: [
+        ["agent", "AGENT", "Thanks for calling Brightline Dental — this is an automated assistant. Am I speaking with the person on the account?"],
+        ["caller", "CALLER", "Yes, this is Maria."],
+        ["agent", "AGENT", "Hi Maria. I can book your cleaning. We have Tuesday at 9:15 or Thursday at 2:30 — which works better?"],
+        ["caller", "CALLER", "Thursday at 2:30."],
+        ["agent", "AGENT", "Done — you're confirmed for Thursday at 2:30 with Dr. Patel. A text confirmation is on its way."]
+      ],
+      chipsAfter: 3,
+      chips: [["intent: book_cleaning ✓", "pass"], ["sentiment: neutral→positive", "voice"], ["latency 380ms", "dim"]]
+    },
+    skeptical: {
+      meta: "MOCK-CALL &middot; SESSION 0473 &middot; PERSONA: SKEPTICAL CFO &middot; SYNTH",
+      lines: [
+        ["agent", "AGENT", "Thanks for calling Brightline Dental — this is an automated assistant. Am I speaking with the person on the account?"],
+        ["caller", "CALLER", "Yes. Before anything is booked — what does this cost, and are you in-network?"],
+        ["agent", "AGENT", "A standard cleaning runs $120, and we're in-network with most major plans. I can verify coverage before confirming — shall I?"],
+        ["caller", "CALLER", "Fine. Verify it, then book Thursday at 2:30."],
+        ["agent", "AGENT", "Done — coverage check is queued and Thursday at 2:30 with Dr. Patel is held. You'll get a text once insurance confirms."]
+      ],
+      chipsAfter: 3,
+      chips: [["intent: price_check + booking ✓", "pass"], ["sentiment: skeptical→neutral", "voice"], ["latency 410ms", "dim"]]
+    },
+    angry: {
+      meta: "MOCK-CALL &middot; SESSION 0474 &middot; PERSONA: ANGRY CUSTOMER &middot; SYNTH",
+      lines: [
+        ["agent", "AGENT", "Thanks for calling Brightline Dental — this is an automated assistant. Am I speaking with the person on the account?"],
+        ["caller", "CALLER", "Yes, and I'm not happy — my last visit was cancelled without any notice."],
+        ["agent", "AGENT", "I'm sorry about that — I've flagged the cancellation for the office manager. I can rebook you now: Tuesday at 9:15 or Thursday at 2:30?"],
+        ["caller", "CALLER", "Thursday. And I want the manager to call me back."],
+        ["agent", "AGENT", "Understood — Thursday at 2:30 with Dr. Patel is confirmed, and a priority callback is logged with the manager. A text confirmation is on its way."]
+      ],
+      chipsAfter: 1,
+      chips: [["intent: complaint ✓", "pass"], ["sentiment: negative→neutral", "voice"], ["handoff: manager callback", "sig"], ["latency 395ms", "dim"]]
+    }
+  };
+
+  var term = document.getElementById("terminal");
+  var personaChips = document.querySelectorAll(".persona-chip");
+  var typeToken = 0;
+  var termStarted = false;
+
+  function sleep(ms){ return new Promise(function(res){ setTimeout(res, ms); }); }
+
+  function renderInstant(script){
+    term.innerHTML = '<div class="term-meta">' + script.meta + '</div>';
+    script.lines.forEach(function(line, idx){
+      var div = document.createElement("div");
+      div.className = "t-line";
+      div.innerHTML = '<span class="tag ' + line[0] + '">' + line[1] + '</span><span class="msg"></span>';
+      div.querySelector(".msg").textContent = line[2];
+      term.appendChild(div);
+      if (idx === script.chipsAfter) appendChips(script, true);
+    });
+  }
+
+  function appendChips(script, instant){
+    var box = document.createElement("div");
+    box.className = "t-chips" + (instant ? " show" : "");
+    script.chips.forEach(function(c){
+      var s = document.createElement("span");
+      s.className = "t-chip " + c[1];
+      s.textContent = c[0];
+      box.appendChild(s);
+    });
+    term.appendChild(box);
+    if (!instant){
+      requestAnimationFrame(function(){ requestAnimationFrame(function(){ box.classList.add("show"); }); });
+    }
+  }
+
+  async function runScript(key){
+    var myToken = ++typeToken;
+    var script = SCRIPTS[key];
+    if (reduceMotion){ renderInstant(script); return; }
+    term.innerHTML = '<div class="term-meta">' + script.meta + '</div>';
+    var cursor = document.createElement("span");
+    cursor.className = "cursor";
+    for (var li = 0; li < script.lines.length; li++){
+      if (myToken !== typeToken) return;
+      var line = script.lines[li];
+      var div = document.createElement("div");
+      div.className = "t-line";
+      div.innerHTML = '<span class="tag ' + line[0] + '">' + line[1] + '</span><span class="msg"></span>';
+      term.appendChild(div);
+      var msg = div.querySelector(".msg");
+      msg.appendChild(cursor);
+      var text = line[2];
+      for (var ci = 0; ci < text.length; ci++){
+        if (myToken !== typeToken) return;
+        cursor.before(document.createTextNode(text[ci]));
+        term.scrollTop = term.scrollHeight;
+        await sleep(22 + Math.random() * 16 - 8);
+      }
+      if (li === script.chipsAfter){
+        appendChips(script, false);
+        term.scrollTop = term.scrollHeight;
+      }
+      await sleep(400);
+    }
+    await sleep(2400);
+    if (myToken !== typeToken) return;
+    runScript(key); /* loop */
+  }
+
+  /* start when the lab scrolls into view */
+  var labIO = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if (en.isIntersecting && !termStarted){
+        termStarted = true;
+        runScript("friendly");
+        labIO.disconnect();
+      }
+    });
+  }, {threshold:.2});
+  labIO.observe(term);
+
+  personaChips.forEach(function(chip){
+    chip.addEventListener("click", function(){
+      personaChips.forEach(function(c){
+        c.classList.toggle("active", c === chip);
+        c.setAttribute("aria-pressed", c === chip ? "true" : "false");
+      });
+      runScript(chip.getAttribute("data-persona"));
+    });
+  });
+
+  /* ---------- §5: gate slide on in-view ---------- */
+  var gateTrack = document.getElementById("gate-track");
+  var gateIO = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if (en.isIntersecting){ gateTrack.classList.add("gate-in"); gateIO.disconnect(); }
+    });
+  }, {threshold:.4});
+  gateIO.observe(gateTrack);
+  if (reduceMotion) gateTrack.classList.add("gate-in");
+
+  /* ---------- S7: email capture ---------- */
+  var form = document.getElementById("access-form");
+  var confirm = document.getElementById("cta-confirm");
+  var micro = document.querySelector(".cta-micro");
+  form.addEventListener("submit", function(e){
+    e.preventDefault();
+    var input = document.getElementById("email");
+    if (!input.value || input.value.indexOf("@") < 1){
+      input.focus();
+      return;
+    }
+    form.style.display = "none";
+    confirm.classList.add("show");
+    if (micro) micro.style.marginTop = "24px";
+  });
+})();
+</script>
+</body>
+</html>

@@ -8,32 +8,45 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -k -n api,web -c cyan,magenta \"npm:dev -w @voiceforge/api\" \"npm:dev -w @voiceforge/web\"",
-    "build": "npm run build -w @voiceforge/shared && npm run build -w @voiceforge/api && npm run build -w @voiceforge/web",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
-    "db:generate": "npm run db:generate -w @voiceforge/api",
-    "db:push": "npm run db:push -w @voiceforge/api",
-    "db:seed": "npm run db:seed -w @voiceforge/api",
-    "db:verify": "npm run db:verify -w @voiceforge/api",
-    "db:role-check": "npm run db:role-check -w @voiceforge/api",
-    "db:enable-rls": "npm run db:enable-rls -w @voiceforge/api",
-    "clean": "npm run clean --workspaces --if-present"
+    "dev": "concurrently -k -n api,web -c cyan,magenta \"pnpm --filter @voiceforge/api exec nodemon\" \"pnpm --filter @voiceforge/web exec next dev\"",
+    "build": "pnpm --filter @voiceforge/shared exec tsc -p tsconfig.json && pnpm --filter @voiceforge/api exec tsc -p tsconfig.build.json && pnpm --filter @voiceforge/web exec next build",
+    "typecheck": "pnpm --filter @voiceforge/shared exec tsc -p tsconfig.json --noEmit && pnpm --filter @voiceforge/ui exec tsc -p tsconfig.json --noEmit && pnpm --filter @voiceforge/api exec tsc -p tsconfig.json --noEmit && pnpm --filter @voiceforge/livekit-agent exec tsc -p tsconfig.json --noEmit && pnpm --filter voice-edge exec tsc --noEmit && pnpm --filter @voiceforge/web exec tsc -p tsconfig.json --noEmit",
+    "lint": "pnpm --filter @voiceforge/api exec eslint \"src/**/*.ts\" && pnpm --filter @voiceforge/web exec eslint app components lib middleware.ts middleware-utils.ts next.config.ts",
+    "test": "pnpm --filter @voiceforge/shared exec vitest run && pnpm --filter @voiceforge/api exec vitest run && pnpm --filter @voiceforge/livekit-agent exec vitest run",
+    "db:generate": "pnpm --filter @voiceforge/api exec prisma generate",
+    "db:push": "pnpm --filter @voiceforge/api exec prisma db push --accept-data-loss",
+    "db:seed": "pnpm --filter @voiceforge/api exec node -r @swc-node/register prisma/seed.ts",
+    "db:verify": "pnpm --filter @voiceforge/api exec tsx scripts/db-verify.ts",
+    "db:role-check": "pnpm --filter @voiceforge/api exec tsx scripts/db-role-check.ts",
+    "db:enable-rls": "pnpm --filter @voiceforge/api exec tsx scripts/db-enable-rls.ts",
+    "clean": "pnpm -r --if-present run clean"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1",
+    "concurrently": "^10.0.3",
     "prettier": "^3.3.3",
     "typescript": "^5.6.3"
   },
   "engines": {
     "node": ">=20.11.0"
   },
-  "dependencies": {
-    "@opentelemetry/auto-instrumentations-node": "^0.73.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.215.0",
-    "@opentelemetry/resources": "^2.7.0",
-    "@opentelemetry/sdk-node": "^0.215.0",
-    "libphonenumber-js": "^1.13.1"
+  "packageManager": "pnpm@10.33.2",
+  "pnpm": {
+    "overrides": {
+      "@grpc/grpc-js": ">=1.14.4",
+      "@opentelemetry/propagator-jaeger": ">=2.9.0",
+      "axios": ">=1.18.0",
+      "brace-expansion@5": "^5.0.9",
+      "fast-uri@3": "^3.1.5",
+      "fast-uri@4": "^4.1.2",
+      "find-my-way@9": "^9.7.0",
+      "form-data": ">=4.0.6",
+      "linkify-it": ">=5.0.2",
+      "multer": ">=2.2.0",
+      "nanoid@3": "^3.3.17",
+      "postcss@8": "^8.5.18",
+      "protobufjs": ">=7.6.1",
+      "sharp": ">=0.35.0",
+      "ws": ">=8.21.0"
+    }
   }
 }

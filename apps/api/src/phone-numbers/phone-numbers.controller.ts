@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Req } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
 import { PhoneNumbersService } from './phone-numbers.service';
 
 @Controller('workspaces/:workspaceId/phone-numbers')
