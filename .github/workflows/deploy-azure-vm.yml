@@ -112,8 +112,11 @@ jobs:
           # resolves to the exact Git checkout at /opt/voiceforge/src.
           compose_file="$deploy_root/docker-compose.azure.yml"
           env_file="$deploy_root/.env"
-          nginx_source="$source_dir/infra/nginx/nginx.azure.conf"
           nginx_target="$deploy_root/nginx/nginx.conf"
+          # Each release's compose + nginx are archived here under the SHA.
+          # Rolling back only image tags would leave the new deployment
+          # definition active, which is not a release rollback.
+          bundle_root="$state_dir/releases"
           current_file="$state_dir/current-sha"
           previous_file="$state_dir/previous-sha"
           current_livekit_file="$state_dir/current-livekit"
@@ -122,7 +125,19 @@ jobs:
           livekit_enabled=false
           previous_livekit=false
           previous_sha=""
+          previous_bundle=""
           replacement_started=false
+
+          # TLS_MODE selects the nginx config. Production terminates HTTPS, so
+          # defaulting to the HTTP-only file would silently drop TLS on every
+          # deploy. Default to https and require an explicit opt-out.
+          tls_mode="$(awk -F= '$1 == "TLS_MODE" { sub(/^[^=]*=/, ""); print; exit }' "$env_file" 2>/dev/null || true)"
+          tls_mode="${tls_mode:-https}"
+          case "$tls_mode" in
+            https) nginx_source="$source_dir/infra/nginx/nginx.azure-https.conf" ;;
+            http)  nginx_source="$source_dir/infra/nginx/nginx.azure.conf" ;;
+            *) echo "TLS_MODE must be https or http" >&2; exit 1 ;;
+          esac
 
           if ! printf '%s' "$deploy_sha" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Invalid deploy SHA" >&2
@@ -137,7 +152,53 @@ jobs:
           deploy_group="$(id -gn)"
           sudo install -d -m 755 "$deploy_root" "$state_dir" "$deploy_root/nginx"
           sudo chown "$deploy_user:$deploy_group" "$state_dir"
+          install -d -m 755 "$bundle_root"
           test -s "$env_file" || { echo "$env_file is missing or empty" >&2; exit 1; }
+
+          # Adopt whatever is already running before the first managed deploy.
+          # Without this the inaugural run takes the "no previous SHA" branch and
+          # has no way back to the stack currently serving production.
+          adopt_running_release() {
+            adopted_dir="$bundle_root/adopted"
+            api_image="$(docker inspect --format '{{.Image}}' vf-api 2>/dev/null || true)"
+            web_image="$(docker inspect --format '{{.Image}}' vf-web 2>/dev/null || true)"
+            if [ -z "$api_image" ] || [ -z "$web_image" ]; then
+              echo "No running stack to adopt; treating this as a first install" >&2
+              return 0
+            fi
+
+            # Retag by image ID so the rollback target survives even if the
+            # original tag is later reused. The adopted compose file may pin
+            # its own tags (the hand-built stack pins :local); restoring that
+            # file is what actually selects the images, and these tags satisfy
+            # the pre-replacement existence check below.
+            install -d -m 755 "$adopted_dir"
+            docker tag "$api_image" voiceforge-api:adopted
+            docker tag "$web_image" voiceforge-web:adopted
+            if docker inspect vf-livekit-agent >/dev/null 2>&1; then
+              lk_image="$(docker inspect --format '{{.Image}}' vf-livekit-agent)"
+              docker tag "$lk_image" voiceforge-livekit-agent:adopted
+              printf 'true\n' > "$current_livekit_file"
+            else
+              printf 'false\n' > "$current_livekit_file"
+            fi
+
+            # Preserve the definition that is actually live, not the candidate's.
+            # Both files must exist or the bundle is not a usable rollback target.
+            if [ ! -f "$compose_file" ] || [ ! -f "$nginx_target" ]; then
+              echo "Running stack has no on-disk compose/nginx to adopt; cannot build a rollback bundle" >&2
+              echo "Copy the live docker-compose.azure.yml and nginx.conf into $deploy_root first" >&2
+              exit 1
+            fi
+            cp "$compose_file" "$adopted_dir/docker-compose.azure.yml"
+            cp "$nginx_target" "$adopted_dir/nginx.conf"
+            printf 'adopted\n' > "$current_file"
+            echo "Adopted the running stack as rollback target 'adopted'" >&2
+          }
+
+          if [ ! -s "$current_file" ]; then
+            adopt_running_release
+          fi
 
           if [ ! -d "$source_dir/.git" ]; then
             if [ -e "$source_dir" ] && [ -n "$(ls -A "$source_dir" 2>/dev/null)" ]; then
@@ -169,7 +230,7 @@ jobs:
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY
             STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
             STRIPE_GROWTH_PRICE_ID STRIPE_ENTERPRISE_PRICE_ID BILLING_MODE
-            WORKERS_ENABLED TRUST_PROXY_HOPS
+            WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
           )
           missing=()
           invalid=()
@@ -187,6 +248,13 @@ jobs:
           }
           [ "$(env_value NODE_ENV)" = production ] || invalid+=(NODE_ENV)
           [ "$(env_value BILLING_MODE)" = live ] || invalid+=(BILLING_MODE)
+          # Stripe redirects customers back to WEB_BASE_URL after checkout, so a
+          # localhost value would strand paying users. The API enforces this too;
+          # checking here fails the deploy before any service is replaced.
+          printf '%s' "$(env_value WEB_BASE_URL)" | grep -Eq '^https://' || invalid+=(WEB_BASE_URL)
+          case "$(env_value WEB_BASE_URL)" in
+            *localhost*|*127.0.0.1*) invalid+=(WEB_BASE_URL) ;;
+          esac
           printf '%s' "$(env_value WORKERS_ENABLED)" | grep -Eqi '^(1|true|yes|on|0|false|no|off)$' || invalid+=(WORKERS_ENABLED)
           printf '%s' "$(env_value TRUST_PROXY_HOPS)" | grep -Eq '^[0-5]$' || invalid+=(TRUST_PROXY_HOPS)
           if [ "${#invalid[@]}" -ne 0 ]; then
@@ -205,6 +273,21 @@ jobs:
             exit 1
           fi
 
+          # Validate the candidate nginx config BEFORE it replaces the live one.
+          # nginx: only the syntax is checkable here; upstream names resolve at runtime.
+          docker run --rm -v "$nginx_source:/etc/nginx/nginx.conf:ro" nginx:1.27-alpine nginx -t \
+            || { echo "Candidate nginx config failed validation" >&2; exit 1; }
+          if [ "$tls_mode" = https ]; then
+            grep -q 'listen 443' "$nginx_source" \
+              || { echo "TLS_MODE=https but the selected nginx config has no 443 listener" >&2; exit 1; }
+          fi
+
+          # Archive the release bundle so rollback restores the definition too.
+          candidate_bundle="$bundle_root/$deploy_sha"
+          install -d -m 755 "$candidate_bundle"
+          cp infra/docker/docker-compose.azure.yml "$candidate_bundle/docker-compose.azure.yml"
+          cp "$nginx_source" "$candidate_bundle/nginx.conf"
+
           sudo install -m 644 infra/docker/docker-compose.azure.yml "$compose_file"
           sudo install -m 644 "$nginx_source" "$nginx_target"
           export IMAGE_TAG="$deploy_sha"
@@ -220,7 +303,9 @@ jobs:
 
           if [ -s "$current_file" ]; then
             previous_sha="$(tr -d '\r\n' < "$current_file")"
-            if ! printf '%s' "$previous_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            # 'adopted' is the pre-existing stack captured on the first managed
+            # run; every later release is identified by its full SHA.
+            if ! printf '%s' "$previous_sha" | grep -Eq '^([0-9a-f]{40}|adopted)$'; then
               echo "Recorded current SHA is invalid; refusing an unrollbackable replacement" >&2
               exit 1
             fi
@@ -232,6 +317,13 @@ jobs:
             if [ "$previous_livekit" = true ]; then
               docker image inspect "voiceforge-livekit-agent:$previous_sha" >/dev/null
             fi
+            # A rollback bundle is what makes the rollback a release rollback
+            # rather than just an image-tag swap. Refuse to proceed without one.
+            previous_bundle="$bundle_root/$previous_sha"
+            if [ ! -f "$previous_bundle/docker-compose.azure.yml" ] || [ ! -f "$previous_bundle/nginx.conf" ]; then
+              echo "No rollback bundle for $previous_sha; refusing an unrollbackable replacement" >&2
+              exit 1
+            fi
           fi
           printf '%s\n' "$deploy_sha" > "$candidate_file"
 
@@ -239,7 +331,13 @@ jobs:
             exit_code=$?
             trap - ERR
             if [ "$replacement_started" = true ] && [ -n "$previous_sha" ]; then
-              echo "Deployment failed after replacement; rolling services back to the prior SHA" >&2
+              echo "Deployment failed after replacement; restoring the previous release" >&2
+              # Restore the previous DEFINITION first. Rolling back images while
+              # leaving the candidate's compose/nginx active is not a release
+              # rollback: an incompatible compose change or, worse, an HTTP-only
+              # nginx would survive the rollback.
+              sudo install -m 644 "$previous_bundle/docker-compose.azure.yml" "$compose_file"
+              sudo install -m 644 "$previous_bundle/nginx.conf" "$nginx_target"
               export IMAGE_TAG="$previous_sha"
               rollback_profile=()
               if [ "$previous_livekit" = true ]; then
@@ -249,10 +347,17 @@ jobs:
               if [ "$previous_livekit" = false ]; then
                 "${compose[@]}" --profile livekit rm -sf livekit-agent || true
               fi
-              printf '%s\n' "$previous_sha" > "$current_file"
-              printf '%s\n' "$previous_livekit" > "$current_livekit_file"
+              # Only record the rollback as current once it is actually serving.
+              if curl -fsS --max-time 10 http://127.0.0.1:4000/api/v1/health >/dev/null \
+                 && curl -fsS --max-time 10 http://127.0.0.1:3000/api/health >/dev/null; then
+                printf '%s\n' "$previous_sha" > "$current_file"
+                printf '%s\n' "$previous_livekit" > "$current_livekit_file"
+                echo "Rollback to $previous_sha verified healthy" >&2
+              else
+                echo "ROLLBACK FAILED HEALTH CHECK — production needs manual intervention" >&2
+              fi
             elif [ "$replacement_started" = true ]; then
-              echo "Initial deployment failed and no previous SHA exists for automatic rollback" >&2
+              echo "Initial deployment failed and no previous release exists for automatic rollback" >&2
             fi
             rm -f "$candidate_file"
             exit "$exit_code"
@@ -271,8 +376,23 @@ jobs:
             docker build --pull -f infra/docker/Dockerfile.livekit-agent -t "voiceforge-livekit-agent:$deploy_sha" .
           fi
 
+          # Preflight: the baseline migration uses unconditional CREATE TABLE, so
+          # if production was never baselined into _prisma_migrations, `migrate
+          # deploy` will try to recreate existing tables and fail. Surface that as
+          # an explicit, actionable error instead of an opaque SQL error mid-deploy.
+          migrate_status=0
+          "${compose[@]}" run --rm --no-deps api \
+            npx prisma migrate status --schema=apps/api/prisma/schema.prisma || migrate_status=$?
+          if [ "$migrate_status" -ne 0 ]; then
+            echo "prisma migrate status reported drift or an un-baselined database." >&2
+            echo "Reconcile the schema and baseline _prisma_migrations before deploying;" >&2
+            echo "see docs/RUNBOOK.md. Refusing to run migrate deploy." >&2
+            exit 1
+          fi
+
           # Migrations happen while the old services remain active. Database migrations
-          # are forward-only and are intentionally not rerun during service rollback.
+          # are forward-only and are intentionally not rerun during service rollback,
+          # so every migration must be backward-compatible with the previous release.
           "${compose[@]}" run --rm --no-deps api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
 
           replacement_started=true

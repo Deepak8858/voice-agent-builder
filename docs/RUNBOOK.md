@@ -33,28 +33,76 @@
 
 ## 2. Deployment Procedures
 
+Production is deployed **only** through the `deploy-azure-vm.yml` GitHub Actions
+workflow. Do not deploy by hand: a manual `git pull` on the VM produces a
+release that cannot be traced to a commit and has no rollback bundle.
+
 ### Standard Deploy
+Run the **Deploy to Azure VM** workflow with:
+- `git_sha` — the full 40-character commit SHA to deploy
+- `confirm_production` — the literal string `deploy-production`
+
+The workflow builds images on the VM tagged with the SHA, runs migrations while
+the previous release is still serving, replaces the services, and then verifies
+both local and public health before recording the release as current.
+
+### Deploy prerequisites (one time)
+
+**1. Baseline the database.** The workflow runs `prisma migrate status` before
+`migrate deploy` and refuses to continue if it fails. The baseline migration uses
+unconditional `CREATE TABLE`, so a production database that was never recorded in
+`_prisma_migrations` will otherwise fail mid-deploy trying to recreate existing
+tables. Compare the live schema against the migration history first, and only
+then mark the baseline as applied:
 ```bash
-# On the VM
-cd /opt/voiceforge
-git pull origin main
-docker compose -f docker-compose.prod.yml build vf-api vf-web
-docker compose -f docker-compose.prod.yml up -d
+npx prisma migrate status --schema=apps/api/prisma/schema.prisma
+# Only after confirming the live schema matches the baseline:
+npx prisma migrate resolve --applied 20260401000000_init --schema=apps/api/prisma/schema.prisma
 ```
+Do not run `migrate resolve` speculatively — marking a migration applied without
+verifying schema equivalence hides real drift.
+
+**2. Confirm `TLS_MODE`.** `/opt/voiceforge/.env` selects which nginx config is
+installed. It defaults to `https`, which installs `infra/nginx/nginx.azure-https.conf`
+(ports 80 + 443, certificates from `/opt/voiceforge/data/certs`). Set
+`TLS_MODE=http` **only** for a VM that has no certificates yet; on a domain that
+already serves HTTPS this would take TLS down.
+
+**3. Let the first run adopt the existing stack.** If no release has been
+recorded yet, the workflow retags the running API/web images as `:adopted` and
+archives the live compose + nginx files as a rollback bundle. This requires
+`/opt/voiceforge/docker-compose.azure.yml` and `/opt/voiceforge/nginx/nginx.conf`
+to exist; the workflow fails fast if they do not.
 
 ### Database Migration
+Migrations run automatically as part of the deploy, before service replacement.
+They are **forward-only and are never rolled back**, so every migration must be
+backward-compatible with the previous release (expand/contract). A migration that
+drops or renames a column makes automatic image rollback unsafe — land the
+destructive half in a later release, after the new code is stable.
 ```bash
+# Manual invocation (rare — prefer the workflow)
 cd /opt/voiceforge/apps/api
 npx prisma migrate deploy
 # NEVER use db:push in production
 ```
 
 ### Rollback
+Rollback is automatic: if health checks fail after replacement, the workflow
+restores the previous release **bundle** (compose file, nginx config, and image
+tags together) and re-verifies health before recording it as current. Restoring
+images alone would leave the failed release's deployment definition active.
+
+To roll back deliberately, re-run the workflow with the previous SHA, which you
+can read from the VM:
 ```bash
-cd /opt/voiceforge
-git reset --hard HEAD~1
-docker compose -f docker-compose.prod.yml up -d --build
+cat /opt/voiceforge/deploy-state/current-sha
+cat /opt/voiceforge/deploy-state/previous-sha
+ls /opt/voiceforge/deploy-state/releases/
 ```
+If a rollback itself fails its health check the workflow says so explicitly and
+stops; production then needs manual intervention and the recorded current release
+is deliberately left unchanged.
 
 ---
 
