@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# Git Bash for Windows (MSYS2) rewrites arguments that look like absolute POSIX
+# paths into Windows paths. That corrupts AWS CLI values which are not paths at
+# all, such as the SSM parameter name /aws/service/... and the EBS device name
+# /dev/sda1. Disable the conversion for the whole script; both variables are
+# inert on Linux hosts and in CI.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 REGION="us-east-1"
 ACCOUNT_ID="543777713748"
 VPC_ID="vpc-0153c477887328ad8"
@@ -65,6 +73,18 @@ aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" >/dev/null
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# The AWS CLI may be a native Windows binary while this script runs under Git
+# Bash, in which case it cannot resolve a POSIX path such as /tmp/tmp.XXXX in a
+# file:// parameter. Convert to a Windows path only when cygpath is present, so
+# the script stays correct on Linux hosts and in CI.
+awsfile() {
+  if command -v cygpath >/dev/null 2>&1; then
+    printf 'file://%s' "$(cygpath -w "$1")"
+  else
+    printf 'file://%s' "$1"
+  fi
+}
+
 cat >"$TMP_DIR/oidc-trust.json" <<JSON
 {
   "Version": "2012-10-17",
@@ -91,11 +111,11 @@ fi
 
 if ! aws iam get-role --role-name "$DEPLOY_ROLE" >/dev/null 2>&1; then
   aws iam create-role --role-name "$DEPLOY_ROLE" \
-    --assume-role-policy-document "file://$TMP_DIR/oidc-trust.json" \
+    --assume-role-policy-document "$(awsfile "$TMP_DIR/oidc-trust.json")" \
     --description "GitHub OIDC deployment role for ${REPO_SLUG}" >/dev/null
 else
   aws iam update-assume-role-policy --role-name "$DEPLOY_ROLE" \
-    --policy-document "file://$TMP_DIR/oidc-trust.json"
+    --policy-document "$(awsfile "$TMP_DIR/oidc-trust.json")"
 fi
 
 ECR_RESOURCE_ARNS=()
@@ -131,7 +151,7 @@ cat >"$TMP_DIR/deploy-policy.json" <<JSON
 }
 JSON
 aws iam put-role-policy --role-name "$DEPLOY_ROLE" --policy-name VoiceForgeEcrPushPull \
-  --policy-document "file://$TMP_DIR/deploy-policy.json"
+  --policy-document "$(awsfile "$TMP_DIR/deploy-policy.json")"
 
 if ! aws s3api head-bucket --region "$REGION" --bucket "$BUCKET_NAME" >/dev/null 2>&1; then
   aws s3api create-bucket --region "$REGION" --bucket "$BUCKET_NAME" >/dev/null
@@ -144,16 +164,16 @@ aws s3api put-bucket-versioning --region "$REGION" --bucket "$BUCKET_NAME" --ver
 cat >"$TMP_DIR/bucket-policy.json" <<JSON
 {"Version":"2012-10-17","Statement":[{"Sid":"DenyInsecureTransport","Effect":"Deny","Principal":"*","Action":"s3:*","Resource":["arn:aws:s3:::${BUCKET_NAME}","arn:aws:s3:::${BUCKET_NAME}/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
 JSON
-aws s3api put-bucket-policy --region "$REGION" --bucket "$BUCKET_NAME" --policy "file://$TMP_DIR/bucket-policy.json"
+aws s3api put-bucket-policy --region "$REGION" --bucket "$BUCKET_NAME" --policy "$(awsfile "$TMP_DIR/bucket-policy.json")"
 
 cat >"$TMP_DIR/ec2-trust.json" <<'JSON'
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}
 JSON
 if ! aws iam get-role --role-name "$INSTANCE_ROLE" >/dev/null 2>&1; then
-  aws iam create-role --role-name "$INSTANCE_ROLE" --assume-role-policy-document "file://$TMP_DIR/ec2-trust.json" \
+  aws iam create-role --role-name "$INSTANCE_ROLE" --assume-role-policy-document "$(awsfile "$TMP_DIR/ec2-trust.json")" \
     --description "VoiceForge EC2 runtime role" >/dev/null
 else
-  aws iam update-assume-role-policy --role-name "$INSTANCE_ROLE" --policy-document "file://$TMP_DIR/ec2-trust.json"
+  aws iam update-assume-role-policy --role-name "$INSTANCE_ROLE" --policy-document "$(awsfile "$TMP_DIR/ec2-trust.json")"
 fi
 cat >"$TMP_DIR/instance-policy.json" <<JSON
 {
@@ -167,7 +187,7 @@ cat >"$TMP_DIR/instance-policy.json" <<JSON
 }
 JSON
 aws iam put-role-policy --role-name "$INSTANCE_ROLE" --policy-name VoiceForgeRuntimeAccess \
-  --policy-document "file://$TMP_DIR/instance-policy.json"
+  --policy-document "$(awsfile "$TMP_DIR/instance-policy.json")"
 if ! aws iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE" >/dev/null 2>&1; then
   aws iam create-instance-profile --instance-profile-name "$INSTANCE_PROFILE" >/dev/null
 fi
@@ -224,7 +244,7 @@ if [[ "$INSTANCE_ID" == "None" ]]; then
     --iam-instance-profile "Name=${INSTANCE_PROFILE}" \
     --metadata-options HttpTokens=required,HttpEndpoint=enabled \
     --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=30,VolumeType=gp3,DeleteOnTermination=true,Encrypted=true}' \
-    --user-data "file://$(dirname "$0")/bootstrap-ubuntu.sh" \
+    --user-data "$(awsfile "$(dirname "$0")/bootstrap-ubuntu.sh")" \
     --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=voiceforge-production},{Key=Project,Value=VoiceForge}]' \
     --query 'Instances[0].InstanceId' --output text)"
 fi
@@ -273,10 +293,10 @@ cat >"$TMP_DIR/notifications.json" <<JSON
 JSON
 # The Budgets API is global and is served from us-east-1.
 if aws budgets describe-budget --region "$REGION" --account-id "$ACCOUNT_ID" --budget-name "$BUDGET_NAME" >/dev/null 2>&1; then
-  aws budgets update-budget --region "$REGION" --account-id "$ACCOUNT_ID" --new-budget "file://$TMP_DIR/budget.json"
+  aws budgets update-budget --region "$REGION" --account-id "$ACCOUNT_ID" --new-budget "$(awsfile "$TMP_DIR/budget.json")"
 else
-  aws budgets create-budget --region "$REGION" --account-id "$ACCOUNT_ID" --budget "file://$TMP_DIR/budget.json" \
-    --notifications-with-subscribers "file://$TMP_DIR/notifications.json"
+  aws budgets create-budget --region "$REGION" --account-id "$ACCOUNT_ID" --budget "$(awsfile "$TMP_DIR/budget.json")" \
+    --notifications-with-subscribers "$(awsfile "$TMP_DIR/notifications.json")"
 fi
 
 DEPLOY_ROLE_ARN="$(aws iam get-role --role-name "$DEPLOY_ROLE" --query 'Role.Arn' --output text)"
