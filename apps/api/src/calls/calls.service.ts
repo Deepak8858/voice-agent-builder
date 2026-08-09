@@ -191,7 +191,13 @@ export class CallsService {
         workspaceId,
         agentId: agent.id,
         eventType: 'call.blocked',
-        payload: { reasons: checkResult.reasons, to_number: dto.to_number },
+        payload: {
+          reasons: checkResult.reasons,
+          to_number: dto.to_number,
+          // No call row exists yet; the compliance check ID is the opaque
+          // per-event scope ID for downstream analytics.
+          compliance_check_id: checkResult.id,
+        },
       });
       throw new ComplianceBlockedError({ reasons: checkResult.reasons });
     }

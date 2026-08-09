@@ -23,7 +23,8 @@ on:
           - production
 
 env:
-  NODE_VERSION: "20"
+  # Matches the root package.json engines floor (^20.20.0 || >=22.22.0).
+  NODE_VERSION: "20.20"
   PNPM_VERSION: "10.33.2"
   AWS_REGION: ap-south-1
 
@@ -171,6 +172,9 @@ jobs:
             NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_POSTHOG_ENABLED=${{ vars.NEXT_PUBLIC_POSTHOG_ENABLED }}
+            NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=${{ vars.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN }}
+            NEXT_PUBLIC_POSTHOG_HOST=${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
 
       - name: Summarize image tags
         run: |

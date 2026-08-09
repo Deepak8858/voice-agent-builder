@@ -284,7 +284,9 @@ export default function CampaignsPage() {
   // ---- Step 1: Upload ----
   if (step === 'upload') {
     return (
-      <div className="flex flex-col gap-8">
+      /* ph-no-capture: raw contact list — phone numbers, names and emails are
+         typed or pasted directly into this step. */
+      <div className="ph-no-capture flex flex-col gap-8">
         <PageHeader
           eyebrow="Step 1"
           title="Upload contacts"
@@ -364,7 +366,9 @@ export default function CampaignsPage() {
   // ---- Step 2: Preview ----
   if (step === 'preview') {
     return (
-      <div className="flex flex-col gap-8">
+      /* ph-no-capture: renders the normalized contact table and validation
+         errors, both of which echo the dialled numbers back to the screen. */
+      <div className="ph-no-capture flex flex-col gap-8">
         <PageHeader
           eyebrow="Step 2"
           title="Preview and validate"
@@ -457,7 +461,8 @@ export default function CampaignsPage() {
   // ---- Step 3: Schedule ----
   if (step === 'schedule') {
     return (
-      <div className="flex flex-col gap-8">
+      /* ph-no-capture: campaign name and agent selection are customer-authored. */
+      <div className="ph-no-capture flex flex-col gap-8">
         <PageHeader
           eyebrow="Step 3"
           title="Schedule and launch"

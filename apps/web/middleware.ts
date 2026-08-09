@@ -20,10 +20,19 @@ export async function middleware(req: NextRequest) {
   return response;
 }
 
+/**
+ * The PostHog proxy prefix is excluded below. Middleware must not run on it:
+ * the matcher would otherwise intercept ingestion requests, attach a CSP and a
+ * Supabase session refresh to every capture, and break the proxy. The literal
+ * is kept in sync with `POSTHOG_PROXY_PREFIX` by `middleware-utils.test.ts`;
+ * it cannot be interpolated here because Next.js statically analyses this
+ * export at build time and rejects non-literal matcher values.
+ */
 export const config = {
   matcher: [
     {
-      source: '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif)$).*)',
+      source:
+        '/((?!api|vf-relay|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif)$).*)',
       missing: [
         { type: 'header', key: 'next-router-prefetch' },
         { type: 'header', key: 'purpose', value: 'prefetch' },

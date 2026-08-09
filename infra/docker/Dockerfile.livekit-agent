@@ -4,7 +4,8 @@
 # Build context: repository root (monorepo)
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-slim AS builder
+# Node pinned to 20.20 to match the engines floor the monorepo now requires.
+FROM --platform=linux/amd64 node:20.20-slim AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ openssl \
@@ -31,7 +32,7 @@ RUN npx prisma generate --schema=apps/api/prisma/schema.prisma
 RUN npm run build -w @voiceforge/shared
 RUN npm run build -w @voiceforge/livekit-agent
 
-FROM --platform=linux/amd64 node:20-slim AS production
+FROM --platform=linux/amd64 node:20.20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production

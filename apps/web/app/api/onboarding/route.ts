@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
+import { captureServerEvent } from '@/lib/analytics/posthog-server';
 
 interface OnboardingBody {
   orgName?: string;
@@ -40,6 +41,17 @@ export async function POST(req: NextRequest) {
   }
 
   let appUser = existingByAuth;
+
+  /**
+   * Whether this request is the one that created the app user row.
+   *
+   * This is the idempotency guard for `user_signed_up`. The API emits that
+   * event from `supabase-auth.service.ts` when *it* provisions the user, so a
+   * user who reached `/auth/me` before onboarding has already been counted.
+   * Emitting again on every onboarding submission would inflate the signup
+   * funnel and, on a repeat submission, count one person twice.
+   */
+  let createdAppUser = false;
 
   if (appUser) {
     const { error: profileUpdateError } = await adminClient
@@ -99,6 +111,7 @@ export async function POST(req: NextRequest) {
       }
 
       appUser = insertedUser;
+      createdAppUser = true;
     }
   }
 
@@ -166,6 +179,29 @@ export async function POST(req: NextRequest) {
   if (metadataError) {
     return NextResponse.json({ error: metadataError.message }, { status: 500 });
   }
+
+  // Emitted only here, after every write above has committed, so the events
+  // mean "onboarding completed" rather than "onboarding was attempted". This
+  // route provisions users directly and never touches the API's emitter, so
+  // without this the whole web onboarding path was invisible in the funnel.
+  // Both calls are best-effort and cannot fail the request.
+  const analyticsContext = {
+    workspaceId: workspace.id,
+    organizationId: org.id,
+    userId: appUser.id,
+  };
+  await Promise.all([
+    ...(createdAppUser
+      ? [
+          captureServerEvent(
+            'user_signed_up',
+            { workspace_id: workspace.id },
+            analyticsContext,
+          ),
+        ]
+      : []),
+    captureServerEvent('workspace_created', { workspace_id: workspace.id }, analyticsContext),
+  ]);
 
   return NextResponse.json({
     success: true,

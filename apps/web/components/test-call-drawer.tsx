@@ -65,7 +65,11 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
       </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="flex h-full w-full flex-col p-0 sm:max-w-xl">
+        {/* ph-no-capture: the drawer renders the test-call transcript. */}
+        <SheetContent
+          side="right"
+          className="ph-no-capture flex h-full w-full flex-col p-0 sm:max-w-xl"
+        >
           <SheetHeader className="border-b border-border px-6 py-5 pr-12 text-left">
             <div className="flex flex-wrap items-center gap-2">
               <SheetTitle>Browser test call</SheetTitle>

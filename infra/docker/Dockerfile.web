@@ -5,7 +5,8 @@
 # Build args: NEXT_PUBLIC_* vars for build-time injection
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-slim AS builder
+# Node pinned to 20.20 to match the engines floor the monorepo now requires.
+FROM --platform=linux/amd64 node:20.20-slim AS builder
 WORKDIR /app
 
 # Build arguments for environment injection at build time
@@ -15,11 +16,30 @@ ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 
+# PostHog browser analytics.
+#
+# These MUST be build args, not runtime env: Next.js inlines NEXT_PUBLIC_* into
+# the client bundle at build time, so a value supplied only to the running
+# container is never seen by the browser. Omitting them is a supported state —
+# `posthogWebSettingsFromEnv` returns null and the SDK is never initialised —
+# but the failure is silent, so an image built without them can never emit
+# browser analytics no matter how the container is configured later.
+#
+# The project token is a public, write-only key that ships in the client bundle
+# by design; it is not a secret. The server-side tier reads its own
+# POSTHOG_* vars at runtime and is unaffected by anything here.
+ARG NEXT_PUBLIC_POSTHOG_ENABLED
+ARG NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN
+ARG NEXT_PUBLIC_POSTHOG_HOST
+
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
 ENV NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+ENV NEXT_PUBLIC_POSTHOG_ENABLED=${NEXT_PUBLIC_POSTHOG_ENABLED}
+ENV NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=${NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}
+ENV NEXT_PUBLIC_POSTHOG_HOST=${NEXT_PUBLIC_POSTHOG_HOST}
 
 # Copy workspace manifests first for layer caching
 COPY package*.json ./
@@ -53,7 +73,7 @@ RUN npm run build -w @voiceforge/web
 # =============================================================================
 # Production stage — minimal standalone runner
 # =============================================================================
-FROM --platform=linux/amd64 node:20-slim AS production
+FROM --platform=linux/amd64 node:20.20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production

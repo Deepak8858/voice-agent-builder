@@ -13,6 +13,7 @@ import type {
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AppError, ForbiddenError, ValidationError } from '../common/errors';
+import { PostHogService } from '../posthog/posthog.service';
 
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
 const DEFAULT_INVITE_EXPIRY_DAYS = 14;
@@ -38,6 +39,7 @@ export class WhiteLabelService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly posthog?: PostHogService,
   ) {}
 
   // --- settings -------------------------------------------------------
@@ -202,6 +204,15 @@ export class WhiteLabelService {
       resourceId: created.id,
       metadata: { name: dto.name, slug: dto.slug },
     });
+
+    this.posthog?.capture(
+      { event: 'workspace_created', properties: { workspace_id: created.id } },
+      {
+        workspaceId: created.id,
+        organizationId: agency.organizationId,
+        userId: actorUserId,
+      },
+    );
 
     return {
       id: created.id,

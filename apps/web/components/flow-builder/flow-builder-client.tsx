@@ -53,7 +53,9 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
   );
 
   return (
-    <div className="h-[600px] rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+    /* ph-no-capture: flow nodes render spoken scripts and transfer numbers on
+       the canvas itself, not only inside the config panel. */
+    <div className="ph-no-capture h-[600px] rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
       <FlowBuilder
         initialNodes={initialFlow?.nodes}
         initialEdges={initialFlow?.edges}

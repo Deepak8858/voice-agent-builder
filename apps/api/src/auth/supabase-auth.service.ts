@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
 import { CacheService } from '../cache/cache.service';
+import { PostHogService } from '../posthog/posthog.service';
 
 const SESSION_USER_TTL = 300;
 const SESSION_WORKSPACE_TTL = 300;
@@ -46,6 +47,7 @@ export class SupabaseAuthService extends AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly posthog?: PostHogService,
   ) {
     super();
     const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -265,12 +267,14 @@ export class SupabaseAuthService extends AuthService {
     }
 
     try {
+      // No user existed by auth ID or email, so this is a genuine first sign-up.
       const user = await this.prisma.user.upsert({
         where: { authUserId },
         create: { authUserId, email, name },
         update: { email, name },
       });
-      await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      const membership = await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      this.captureSignedUp(user.id, membership.workspace.id, membership.workspace.organizationId);
       return user;
     } catch (err: unknown) {
       const prismaErr = err as { code?: string };
@@ -327,6 +331,28 @@ export class SupabaseAuthService extends AuthService {
       update: {},
       include: { workspace: true },
     });
+  }
+
+  /**
+   * Best-effort product analytics for first sign-up. The workspace is created
+   * as part of provisioning, so both events are emitted from here where the
+   * app user ID and the server-resolved organization ID are both known.
+   */
+  private captureSignedUp(
+    userId: string,
+    workspaceId: string,
+    organizationId: string,
+  ): void {
+    if (!this.posthog) return;
+    const context = { workspaceId, organizationId, userId };
+    this.posthog.capture(
+      { event: 'user_signed_up', properties: { workspace_id: workspaceId } },
+      context,
+    );
+    this.posthog.capture(
+      { event: 'workspace_created', properties: { workspace_id: workspaceId } },
+      context,
+    );
   }
 
   private extractBearerToken(req: Request): string | null {

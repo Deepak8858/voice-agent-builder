@@ -21,7 +21,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "20"
+  # 20.20 is the floor, not a preference: posthog-node declares
+  # "^20.20.0 || >=22.22.0" and a bare "20" would let a runner image resolve to
+  # an earlier 20.x that cannot install it. Keep in sync with the root
+  # package.json engines field and infra/docker/Dockerfile.*.
+  NODE_VERSION: "20.20"
   PNPM_VERSION: "10.33.2"
 
 permissions:

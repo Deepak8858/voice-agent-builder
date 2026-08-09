@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import nextConfig from './next.config';
 import { buildContentSecurityPolicy } from './lib/content-security-policy';
+import { POSTHOG_PROXY_PREFIX } from './lib/analytics/posthog-config';
 
 const TEST_NONCE = 'dGVzdC1ub25jZQ==';
 
@@ -88,6 +89,22 @@ describe('next.config security headers', () => {
     ]);
   });
 
+  it('proxies PostHog through the same origin instead of widening connect-src', () => {
+    const directives = cspDirectives();
+
+    for (const [name, values] of directives) {
+      for (const value of values) {
+        expect(value, `${name} must not name a PostHog origin directly`).not.toContain('posthog.com');
+      }
+    }
+    expect(directives.get('connect-src')).toContain("'self'");
+    // The replay compression worker is a blob worker served from this origin.
+    expect(directives.get('worker-src')).toContain("'self'");
+    expect(directives.get('worker-src')).toContain('blob:');
+    // Lazily-loaded SDK bundles arrive through the proxy under 'self'.
+    expect(directives.get('script-src')).toContain("'self'");
+  });
+
   it('sets hardening headers on every route', async () => {
     const headers = await headerMap();
 
@@ -97,5 +114,48 @@ describe('next.config security headers', () => {
     expect(headers.get('Permissions-Policy')).toBe(
       'camera=(), microphone=(self), geolocation=(), payment=()',
     );
+  });
+});
+
+describe('next.config PostHog proxy', () => {
+  async function beforeFilesRewrites() {
+    if (typeof nextConfig.rewrites !== 'function') {
+      throw new Error('next.config.ts must export a rewrites() function');
+    }
+    const rewrites = await nextConfig.rewrites();
+    if (Array.isArray(rewrites) || !rewrites.beforeFiles) {
+      throw new Error('rewrites() must return phased rewrites so beforeFiles ordering is explicit');
+    }
+    return rewrites.beforeFiles;
+  }
+
+  it('registers the proxy in beforeFiles so no app route can shadow it', async () => {
+    const rewrites = await beforeFilesRewrites();
+
+    expect(rewrites.length).toBeGreaterThan(0);
+    for (const rewrite of rewrites) {
+      expect(rewrite.source.startsWith(`${POSTHOG_PROXY_PREFIX}/`)).toBe(true);
+    }
+  });
+
+  it('matches asset and remote-config routes before the ingestion catch-all', async () => {
+    const sources = (await beforeFilesRewrites()).map((r) => r.source);
+    const catchAll = sources.indexOf(`${POSTHOG_PROXY_PREFIX}/:path*`);
+
+    expect(catchAll).toBeGreaterThan(-1);
+    expect(sources.indexOf(`${POSTHOG_PROXY_PREFIX}/static/:path*`)).toBeLessThan(catchAll);
+    expect(sources.indexOf(`${POSTHOG_PROXY_PREFIX}/array/:path*`)).toBeLessThan(catchAll);
+    expect(catchAll).toBe(sources.length - 1);
+  });
+
+  it('routes only to PostHog hosts over https', async () => {
+    for (const { destination } of await beforeFilesRewrites()) {
+      expect(destination.startsWith('https://')).toBe(true);
+      expect(destination).toContain('posthog.com');
+    }
+  });
+
+  it('does not redirect trailing slashes, which PostHog ingestion paths use', () => {
+    expect(nextConfig.skipTrailingSlashRedirect).toBe(true);
   });
 });

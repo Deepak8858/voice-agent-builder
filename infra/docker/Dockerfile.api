@@ -2,9 +2,14 @@
 # VoiceForge AI — API Container (NestJS)
 # =============================================================================
 # Build context: repository root (monorepo)
+#
+# Pinned to 20.20 rather than the 20 tag: posthog-node declares
+# "^20.20.0 || >=22.22.0", and a floating 20 tag would install fine today and
+# break the moment the base image is rebuilt against an earlier 20.x. Keep in
+# sync with the root package.json engines field and .github/workflows.
 # ---------------------------------------------------------------------------
 
-FROM --platform=linux/amd64 node:20-slim AS builder
+FROM --platform=linux/amd64 node:20.20-slim AS builder
 WORKDIR /app
 
 # Install build dependencies (python3/make for native modules like sharp)
@@ -47,7 +52,7 @@ RUN npm run build -w @voiceforge/api
 # =============================================================================
 # Production stage
 # =============================================================================
-FROM --platform=linux/amd64 node:20-slim AS production
+FROM --platform=linux/amd64 node:20.20-slim AS production
 
 WORKDIR /app
 ENV NODE_ENV=production

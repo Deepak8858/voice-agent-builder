@@ -86,7 +86,9 @@ export function AgentPreviewPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    /* ph-no-capture: renders the generated agent spec, which carries the system
+       prompt, spoken scripts and the assigned phone number. */
+    <div className="ph-no-capture flex flex-col gap-4">
       <Card className="overflow-hidden bg-card/90">
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
