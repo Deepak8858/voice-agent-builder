@@ -87,6 +87,11 @@ const EnvSchema = z.object({
     ),
   WEEKLY_DIGEST_TIMEZONE: z.string().default('UTC'),
 
+  // Knowledge file storage
+  KNOWLEDGE_STORAGE_PROVIDER: z.enum(['supabase', 's3']).default('supabase'),
+  AWS_REGION: z.string().min(1).default('us-east-1'),
+  S3_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
+
   // Supabase (used by backend for service-role operations)
   SUPABASE_URL: z.string().optional(),
   SUPABASE_JWT_SECRET: z.string().optional(),
