@@ -1,0 +1,85 @@
+# Local development stack. Builds images from this repository.
+#   docker compose -f infra/docker/docker-compose.yml up --build
+# Requires a .env at the repository root (see .env.example).
+name: voiceforge-dev
+
+services:
+  redis:
+    image: redis:7.4.2-alpine
+    container_name: vf-dev-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: vf-dev-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    env_file:
+      - ../../.env
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      REDIS_URL: redis://redis:6379
+      WORKERS_ENABLED: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  api-worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    container_name: vf-dev-api-worker
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      REDIS_URL: redis://redis:6379
+      WORKERS_ENABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+        NEXT_PUBLIC_BILLING_MODE: ${NEXT_PUBLIC_BILLING_MODE:-demo}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:?set NEXT_PUBLIC_SUPABASE_URL in .env}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:?set NEXT_PUBLIC_SUPABASE_ANON_KEY in .env}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_DEMO_SHARE_PATH: ${NEXT_PUBLIC_DEMO_SHARE_PATH:-}
+        NEXT_PUBLIC_SALES_EMAIL: ${NEXT_PUBLIC_SALES_EMAIL:-}
+    container_name: vf-dev-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - ../../.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  redis_data:
