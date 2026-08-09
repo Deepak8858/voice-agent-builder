@@ -6,6 +6,7 @@ name: Deploy production to AWS EC2
 #   DEPOT_WEB_PROJECT_ID         Depot project in us-east-1 for the web image
 #   DEPOT_LIVEKIT_PROJECT_ID     Depot project in us-east-1 for the LiveKit image
 #   NEXT_PUBLIC_API_URL, NEXT_PUBLIC_APP_URL, NEXT_PUBLIC_SUPABASE_URL
+#   NEXT_PUBLIC_BILLING_MODE      Public billing behavior baked into the web image
 # Required repository secrets:
 #   AWS_EC2_HOST, AWS_EC2_USER, AWS_EC2_SSH_KEY, AWS_EC2_KNOWN_HOSTS
 #   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -84,6 +85,7 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
@@ -93,8 +95,8 @@ jobs:
             AWS_DEPLOY_ROLE_ARN DEPOT_API_PROJECT_ID DEPOT_WEB_PROJECT_ID \
             DEPOT_LIVEKIT_PROJECT_ID AWS_EC2_HOST AWS_EC2_USER AWS_EC2_SSH_KEY \
             AWS_EC2_KNOWN_HOSTS NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL \
-            NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
-            NEXT_PUBLIC_SUPABASE_ANON_KEY; do
+            NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_BILLING_MODE \
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY; do
             if [ -z "${!name:-}" ]; then missing+=("$name"); fi
           done
           if [ "${#missing[@]}" -ne 0 ]; then
@@ -106,6 +108,12 @@ jobs:
           test -s infra/docker/Dockerfile.livekit-agent
           test -s infra/docker/docker-compose.aws.yml
           test -s infra/nginx/nginx.conf
+          test -s infra/nginx/http.conf
+          test -s infra/nginx/http-redirect.conf
+          test -s infra/nginx/https.conf.template
+          test -x infra/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh
+          test -s infra/nginx/systemd/voiceforge-certbot-renew.service
+          test -s infra/nginx/systemd/voiceforge-certbot-renew.timer
 
       - name: Configure AWS credentials through OIDC
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
@@ -157,6 +165,7 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
@@ -172,6 +181,7 @@ jobs:
               --build-arg "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL" \
               --build-arg "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" \
               --build-arg "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" \
+              --build-arg "NEXT_PUBLIC_BILLING_MODE=$NEXT_PUBLIC_BILLING_MODE" \
               --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" \
               --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
               --tag "$ECR_REGISTRY/voiceforge-web:$DEPLOY_SHA" .
@@ -219,10 +229,21 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             infra/docker/docker-compose.aws.yml \
             "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-compose-$DEPLOY_SHA.yml"
-          scp -i ~/.ssh/deploy_key \
-            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            infra/nginx/nginx.conf \
+          scp_args=(-i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${scp_args[@]}" infra/nginx/nginx.conf \
             "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-nginx-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/http.conf \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-http-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/http-redirect.conf \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-http-redirect-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/https.conf.template \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-https-$DEPLOY_SHA.conf.template"
+          scp "${scp_args[@]}" infra/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-enable-tls-$DEPLOY_SHA.sh"
+          scp "${scp_args[@]}" infra/nginx/systemd/voiceforge-certbot-renew.service \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-certbot-renew-$DEPLOY_SHA.service"
+          scp "${scp_args[@]}" infra/nginx/systemd/voiceforge-certbot-renew.timer \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-certbot-renew-$DEPLOY_SHA.timer"
 
       - name: Deploy SHA-tagged images on EC2
         env:
@@ -258,6 +279,12 @@ jobs:
           candidate_file="$state_dir/candidate-sha"
           uploaded_compose="/tmp/voiceforge-compose-$deploy_sha.yml"
           uploaded_nginx="/tmp/voiceforge-nginx-$deploy_sha.conf"
+          uploaded_http="/tmp/voiceforge-http-$deploy_sha.conf"
+          uploaded_http_redirect="/tmp/voiceforge-http-redirect-$deploy_sha.conf"
+          uploaded_https="/tmp/voiceforge-https-$deploy_sha.conf.template"
+          uploaded_tls_hook="/tmp/voiceforge-enable-tls-$deploy_sha.sh"
+          uploaded_certbot_service="/tmp/voiceforge-certbot-renew-$deploy_sha.service"
+          uploaded_certbot_timer="/tmp/voiceforge-certbot-renew-$deploy_sha.timer"
           previous_sha=""
           previous_livekit=false
           previous_bundle=""
@@ -277,13 +304,22 @@ jobs:
             echo "Public endpoint repository variables are required" >&2
             exit 1
           }
-          test -s "$uploaded_compose" || { echo "Uploaded compose file is missing" >&2; exit 1; }
-          test -s "$uploaded_nginx" || { echo "Uploaded nginx file is missing" >&2; exit 1; }
+          for uploaded_file in \
+            "$uploaded_compose" "$uploaded_nginx" "$uploaded_http" \
+            "$uploaded_http_redirect" "$uploaded_https" "$uploaded_tls_hook" \
+            "$uploaded_certbot_service" "$uploaded_certbot_timer"; do
+            test -f "$uploaded_file" && test -s "$uploaded_file" || {
+              echo "Uploaded deployment artifact is missing or is not a regular file: $uploaded_file" >&2
+              exit 1
+            }
+          done
           test -s "$env_file" || { echo "$env_file is missing or empty" >&2; exit 1; }
 
           deploy_user="$(id -un)"
           deploy_group="$(id -gn)"
-          sudo install -d -m 755 "$deploy_root" "$deploy_root/nginx" "$state_dir"
+          sudo install -d -m 755 "$deploy_root" "$deploy_root/nginx" \
+            "$deploy_root/nginx/docker-entrypoint.d" "$deploy_root/data/certbot/conf" \
+            "$deploy_root/data/certbot/www" "$state_dir"
           sudo chown "$deploy_user:$deploy_group" "$state_dir"
           install -d -m 755 "$release_dir"
 
@@ -319,6 +355,18 @@ jobs:
             '^(1|true|yes|on|0|false|no|off)$' || invalid+=(WORKERS_ENABLED)
           printf '%s' "$(env_value TRUST_PROXY_HOPS)" | grep -Eq '^[0-5]$' \
             || invalid+=(TRUST_PROXY_HOPS)
+          # Knowledge uploads fail at request time rather than at boot when the
+          # selected provider has no bucket, so the misconfiguration is rejected
+          # here instead of surfacing as a broken customer upload later.
+          knowledge_provider="$(env_value KNOWLEDGE_STORAGE_PROVIDER)"
+          case "$knowledge_provider" in
+            ''|supabase) ;;
+            s3)
+              [ -n "$(env_value S3_KNOWLEDGE_BUCKET)" ] || invalid+=(S3_KNOWLEDGE_BUCKET)
+              [ "$(env_value AWS_REGION)" = us-east-1 ] || invalid+=(AWS_REGION)
+              ;;
+            *) invalid+=(KNOWLEDGE_STORAGE_PROVIDER) ;;
+          esac
           if [ "${#invalid[@]}" -ne 0 ]; then
             printf 'Invalid production setting: %s\n' "${invalid[@]}" >&2
             exit 1
@@ -336,9 +384,18 @@ jobs:
           fi
 
           candidate_bundle="$release_dir/$deploy_sha"
-          install -d -m 755 "$candidate_bundle"
+          install -d -m 755 "$candidate_bundle/nginx/docker-entrypoint.d" "$candidate_bundle/systemd"
           install -m 644 "$uploaded_compose" "$candidate_bundle/docker-compose.aws.yml"
-          install -m 644 "$uploaded_nginx" "$candidate_bundle/nginx.conf"
+          install -m 644 "$uploaded_nginx" "$candidate_bundle/nginx/nginx.conf"
+          install -m 644 "$uploaded_http" "$candidate_bundle/nginx/http.conf"
+          install -m 644 "$uploaded_http_redirect" "$candidate_bundle/nginx/http-redirect.conf"
+          install -m 644 "$uploaded_https" "$candidate_bundle/nginx/https.conf.template"
+          install -m 755 "$uploaded_tls_hook" \
+            "$candidate_bundle/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"
+          install -m 644 "$uploaded_certbot_service" \
+            "$candidate_bundle/systemd/voiceforge-certbot-renew.service"
+          install -m 644 "$uploaded_certbot_timer" \
+            "$candidate_bundle/systemd/voiceforge-certbot-renew.timer"
 
           if [ -s "$current_file" ]; then
             previous_sha="$(tr -d '\r\n' < "$current_file")"
@@ -351,10 +408,15 @@ jobs:
               echo "Previous release has no compose rollback bundle" >&2
               exit 1
             }
-            test -s "$previous_bundle/nginx.conf" || {
-              echo "Previous release has no nginx rollback bundle" >&2
-              exit 1
-            }
+            for relative_file in \
+              nginx/nginx.conf nginx/http.conf nginx/http-redirect.conf \
+              nginx/https.conf.template nginx/docker-entrypoint.d/40-enable-tls-if-present.sh \
+              systemd/voiceforge-certbot-renew.service systemd/voiceforge-certbot-renew.timer; do
+              test -f "$previous_bundle/$relative_file" && test -s "$previous_bundle/$relative_file" || {
+                echo "Previous release is missing rollback artifact: $relative_file" >&2
+                exit 1
+              }
+            done
             if [ -s "$current_livekit_file" ] \
               && [ "$(tr -d '\r\n' < "$current_livekit_file")" = true ]; then
               previous_livekit=true
@@ -370,6 +432,56 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$deploy_sha" > "$candidate_file"
+
+          install_release_assets() {
+            bundle="$1"
+            sudo install -d -m 755 "$deploy_root/nginx/docker-entrypoint.d" \
+              "$deploy_root/data/certbot/conf" "$deploy_root/data/certbot/www"
+            sudo install -m 644 "$bundle/nginx/nginx.conf" "$deploy_root/nginx/nginx.conf"
+            sudo install -m 644 "$bundle/nginx/http.conf" "$deploy_root/nginx/http.conf"
+            sudo install -m 644 "$bundle/nginx/http-redirect.conf" "$deploy_root/nginx/http-redirect.conf"
+            sudo install -m 644 "$bundle/nginx/https.conf.template" "$deploy_root/nginx/https.conf.template"
+            sudo install -m 755 "$bundle/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh" \
+              "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"
+            sudo install -m 644 "$bundle/systemd/voiceforge-certbot-renew.service" \
+              /etc/systemd/system/voiceforge-certbot-renew.service
+            sudo install -m 644 "$bundle/systemd/voiceforge-certbot-renew.timer" \
+              /etc/systemd/system/voiceforge-certbot-renew.timer
+          }
+          assert_bind_sources() {
+            for source_file in \
+              "$deploy_root/nginx/nginx.conf" "$deploy_root/nginx/http.conf" \
+              "$deploy_root/nginx/http-redirect.conf" "$deploy_root/nginx/https.conf.template" \
+              "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"; do
+              test -f "$source_file" || { echo "Required bind-mount file is missing: $source_file" >&2; return 1; }
+            done
+            test -x "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh" || {
+              echo "TLS entrypoint hook is not executable" >&2
+              return 1
+            }
+            for source_dir in "$deploy_root/data/certbot/conf" "$deploy_root/data/certbot/www"; do
+              test -d "$source_dir" || { echo "Required bind-mount directory is missing: $source_dir" >&2; return 1; }
+            done
+          }
+          # api and web deliberately publish no host ports, so health is probed
+          # inside the container rather than on the host. Both the deploy and the
+          # rollback path use this, so a rollback is verified the same way.
+          wait_for_service_health() {
+            label="$1"
+            service="$2"
+            url="$3"
+            attempts="$4"
+            probe="const h=require('http');const r=h.get('$url',x=>{x.resume();process.exit(x.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"
+            for attempt in $(seq 1 "$attempts"); do
+              if docker compose --env-file "$env_file" -f "$compose_file" \
+                exec -T "$service" node -e "$probe" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "$label health check failed" >&2
+            return 1
+          }
 
           export ECR_REGISTRY="$ecr_registry"
           export IMAGE_TAG="$deploy_sha"
@@ -389,7 +501,8 @@ jobs:
             if [ "$replacement_started" = true ] && [ -n "$previous_sha" ]; then
               echo "Deployment failed after replacement; restoring previous release" >&2
               sudo install -m 644 "$previous_bundle/docker-compose.aws.yml" "$compose_file"
-              sudo install -m 644 "$previous_bundle/nginx.conf" "$nginx_file"
+              install_release_assets "$previous_bundle"
+              assert_bind_sources
               export IMAGE_TAG="$previous_sha"
               rollback_compose=(docker compose --env-file "$env_file" -f "$compose_file")
               rollback_profile=()
@@ -398,8 +511,8 @@ jobs:
               if [ "$previous_livekit" = false ]; then
                 "${rollback_compose[@]}" --profile livekit rm -sf livekit-agent || true
               fi
-              if curl -fsS --max-time 10 http://127.0.0.1:4000/api/v1/health >/dev/null \
-                && curl -fsS --max-time 10 http://127.0.0.1:3000/api/health >/dev/null; then
+              if wait_for_service_health API api http://127.0.0.1:4000/api/v1/health 24 \
+                && wait_for_service_health Web web http://127.0.0.1:3000/api/health 24; then
                 printf '%s\n' "$previous_sha" > "$current_file"
                 printf '%s\n' "$previous_livekit" > "$current_livekit_file"
                 echo "Rollback to $previous_sha verified healthy" >&2
@@ -430,7 +543,10 @@ jobs:
             npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
 
           sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
-          sudo install -m 644 "$candidate_bundle/nginx.conf" "$nginx_file"
+          install_release_assets "$candidate_bundle"
+          assert_bind_sources
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now voiceforge-certbot-renew.timer
           replacement_started=true
           live_compose=(docker compose --env-file "$env_file" -f "$compose_file")
           "${live_compose[@]}" "${candidate_profile[@]}" up -d --no-build --remove-orphans "${services[@]}"
@@ -459,8 +575,8 @@ jobs:
             echo "$service is not running" >&2
             return 1
           }
-          check_url API http://127.0.0.1:4000/api/v1/health
-          check_url Web http://127.0.0.1:3000/api/health
+          wait_for_service_health API api http://127.0.0.1:4000/api/v1/health 30
+          wait_for_service_health Web web http://127.0.0.1:3000/api/health 30
           check_running api-worker
           if [ "$livekit_enabled" = true ]; then check_running livekit-agent; fi
           check_url "Public API" "${public_api_url%/}/health"
@@ -472,7 +588,9 @@ jobs:
           fi
           printf '%s\n' "$deploy_sha" > "$current_file"
           printf '%s\n' "$livekit_enabled" > "$current_livekit_file"
-          rm -f "$candidate_file" "$uploaded_compose" "$uploaded_nginx"
+          rm -f "$candidate_file" "$uploaded_compose" "$uploaded_nginx" "$uploaded_http" \
+            "$uploaded_http_redirect" "$uploaded_https" "$uploaded_tls_hook" \
+            "$uploaded_certbot_service" "$uploaded_certbot_timer"
           trap - ERR
 
           prune_old_releases() {
