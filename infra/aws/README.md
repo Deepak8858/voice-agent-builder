@@ -21,11 +21,11 @@ Do not continue while the CLI is configured with root access keys.
 
 - AWS CLI v2 configured for the hardened administrator.
 - An existing EC2 key pair in `us-east-1`; the script never creates or prints private key material.
-- Your current public IPv4 address expressed as a narrow CIDR, normally `x.x.x.x/32`. The provisioner rejects `0.0.0.0/0` and replaces stale SSH CIDRs on rerun.
+- Your current public IPv4 address expressed as exactly `x.x.x.x/32`. The provisioner validates every octet, rejects broader networks, and reconciles the complete ingress ruleset on rerun.
 - A monitored email address for AWS Budgets notifications. AWS may require the recipient to confirm the subscription.
 - Bash for running the scripts. Authoring on Windows is supported, but execute using a Unix-compatible shell with LF line endings.
 
-The deterministic uploads bucket is `voiceforge-knowledge-543777713748-us-east-1`. Application objects are restricted to the `knowledge/` prefix. Configure the application adapter with this bucket, region `us-east-1`, and prefix `knowledge`; do not make objects public.
+The deterministic uploads bucket is `voiceforge-knowledge-543777713748-us-east-1`. Application objects are restricted to the `knowledge/` prefix. Configure `KNOWLEDGE_STORAGE_PROVIDER=s3`, this bucket as `S3_KNOWLEDGE_BUCKET`, region `us-east-1`, and `S3_KNOWLEDGE_PREFIX=knowledge`; do not make objects public. The API fails at boot when S3 is selected without a bucket.
 
 ## 3. Provision
 
@@ -43,7 +43,7 @@ chmod +x provision.sh teardown.sh bootstrap-ubuntu.sh
 
 Rerunning is supported. Resources use deterministic names and are updated toward the declared configuration. The script resolves the current Canonical Ubuntu 24.04 amd64 gp3 AMI through the public SSM parameter; it does not hardcode an AMI ID. It creates:
 
-- GitHub Actions OIDC provider and `VoiceForgeGitHubDeployRole`, trusted only for `Deepak8858/voice-agent-builder` tokens with the `sts.amazonaws.com` audience.
+- GitHub Actions OIDC provider and `VoiceForgeGitHubDeployRole`, trusted only for the `production` environment in `Deepak8858/voice-agent-builder` with the `sts.amazonaws.com` audience.
 - Immutable, scan-on-push ECR repositories for API, web, and LiveKit agent SHA-tagged images, retaining the newest 10 images.
 - Private, versioned, AES-256-encrypted S3 storage with public access blocked and non-TLS requests denied.
 - Web ingress on ports 80/443 and restricted SSH ingress on port 22.
@@ -73,5 +73,7 @@ Teardown permanently deletes images, all current and historical versions of uplo
 cd infra/aws
 ./teardown.sh --confirm-account-id 543777713748
 ```
+
+Before any destructive call, teardown verifies that the live AWS caller account matches both the hard-coded target and `--confirm-account-id`. Instance, Elastic IP, and security-group discovery is also constrained by the VoiceForge project tags and intended VPC where supported.
 
 The administrator user and root MFA are deliberately not removed. The teardown is rerunnable and reports the identifiers it found or deleted. If AWS reports dependency violations, inspect the named resource rather than broadening permissions or deleting unrelated infrastructure.

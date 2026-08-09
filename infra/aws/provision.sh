@@ -44,8 +44,20 @@ while (($#)); do
 done
 
 [[ -n "$SSH_CIDR" && -n "$KEY_NAME" && -n "$BUDGET_EMAIL" ]] || { usage >&2; exit 2; }
-[[ "$SSH_CIDR" != "0.0.0.0/0" ]] || { echo 'Refusing world-open SSH CIDR.' >&2; exit 2; }
-[[ "$SSH_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || { echo 'SSH CIDR must be an IPv4 CIDR.' >&2; exit 2; }
+validate_ssh_cidr() {
+  local cidr="$1" address prefix octet
+  [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] \
+    || { echo 'SSH CIDR must be a valid IPv4 CIDR.' >&2; return 1; }
+  address="${cidr%/*}"
+  prefix="${cidr#*/}"
+  IFS=. read -r -a octets <<<"$address"
+  for octet in "${octets[@]}"; do
+    ((10#$octet <= 255)) || { echo 'SSH CIDR contains an invalid IPv4 octet.' >&2; return 1; }
+  done
+  [[ "$prefix" == "32" ]] \
+    || { echo 'SSH CIDR must restrict access to one public IPv4 address using /32.' >&2; return 1; }
+}
+validate_ssh_cidr "$SSH_CIDR"
 [[ "$MONTHLY_BUDGET_USD" =~ ^[0-9]+([.][0-9]{1,2})?$ ]] || { echo 'Budget must be a positive numeric USD amount.' >&2; exit 2; }
 command -v aws >/dev/null || { echo 'AWS CLI is required.' >&2; exit 1; }
 aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" >/dev/null
@@ -61,8 +73,10 @@ cat >"$TMP_DIR/oidc-trust.json" <<JSON
     "Principal": {"Federated": "${OIDC_ARN}"},
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
-      "StringEquals": {"${OIDC_HOST}:aud": "sts.amazonaws.com"},
-      "StringLike": {"${OIDC_HOST}:sub": "repo:${REPO_SLUG}:*"}
+      "StringEquals": {
+        "${OIDC_HOST}:aud": "sts.amazonaws.com",
+        "${OIDC_HOST}:sub": "repo:${REPO_SLUG}:environment:production"
+      }
     }
   }]
 }
@@ -167,6 +181,7 @@ fi
 
 SG_ID="$(aws ec2 describe-security-groups --region "$REGION" \
   --filters "Name=vpc-id,Values=${VPC_ID}" "Name=group-name,Values=${SECURITY_GROUP_NAME}" \
+    'Name=tag:Project,Values=VoiceForge' \
   --query 'SecurityGroups[0].GroupId' --output text)"
 if [[ "$SG_ID" == "None" ]]; then
   SG_ID="$(aws ec2 create-security-group --region "$REGION" --vpc-id "$VPC_ID" \
@@ -182,22 +197,26 @@ ensure_ingress() {
         --query "SecurityGroups[0].IpPermissions[?FromPort==\`${port}\`].IpRanges[].CidrIp" --output text | grep -qw "$cidr"
     }
 }
+# Reconcile the complete ingress set so a reused group cannot retain stale IPv4,
+# IPv6, port-range, or security-group-reference access.
+INGRESS_RULE_IDS="$(aws ec2 describe-security-group-rules --region "$REGION" \
+  --filters "Name=group-id,Values=${SG_ID}" \
+  --query 'SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId' --output text)"
+if [[ -n "$INGRESS_RULE_IDS" && "$INGRESS_RULE_IDS" != "None" ]]; then
+  read -r -a INGRESS_RULE_ARRAY <<<"$INGRESS_RULE_IDS"
+  aws ec2 revoke-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
+    --security-group-rule-ids "${INGRESS_RULE_ARRAY[@]}" >/dev/null
+fi
 ensure_ingress 80 0.0.0.0/0
 ensure_ingress 443 0.0.0.0/0
 ensure_ingress 22 "$SSH_CIDR"
-# Remove stale SSH CIDRs so rerunning with a new caller CIDR does not accumulate access.
-STALE_SSH_CIDRS="$(aws ec2 describe-security-groups --region "$REGION" --group-ids "$SG_ID" \
-  --query 'SecurityGroups[0].IpPermissions[?FromPort==`22` && ToPort==`22`].IpRanges[].CidrIp' --output text | tr '\t' '\n' | grep -v "^${SSH_CIDR}$" || true)"
-for cidr in $STALE_SSH_CIDRS; do
-  aws ec2 revoke-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
-    --protocol tcp --port 22 --cidr "$cidr" >/dev/null
-done
 
 AMI_ID="$(aws ssm get-parameter --region "$REGION" --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id --query 'Parameter.Value' --output text)"
 SUBNET_ID="$(aws ec2 describe-subnets --region "$REGION" --filters "Name=vpc-id,Values=${VPC_ID}" "Name=default-for-az,Values=true" \
   --query 'sort_by(Subnets,&AvailabilityZone)[0].SubnetId' --output text)"
 INSTANCE_ID="$(aws ec2 describe-instances --region "$REGION" \
-  --filters 'Name=tag:Name,Values=voiceforge-production' 'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+  --filters 'Name=tag:Name,Values=voiceforge-production' 'Name=tag:Project,Values=VoiceForge' \
+    "Name=vpc-id,Values=${VPC_ID}" 'Name=instance-state-name,Values=pending,running,stopping,stopped' \
   --query 'Reservations[].Instances[].InstanceId | [0]' --output text)"
 if [[ "$INSTANCE_ID" == "None" ]]; then
   INSTANCE_ID="$(aws ec2 run-instances --region "$REGION" --image-id "$AMI_ID" --instance-type t3.large \
@@ -210,8 +229,29 @@ if [[ "$INSTANCE_ID" == "None" ]]; then
     --query 'Instances[0].InstanceId' --output text)"
 fi
 aws ec2 wait instance-running --region "$REGION" --instance-ids "$INSTANCE_ID"
+EXPECTED_PROFILE_ARN="$(aws iam get-instance-profile --instance-profile-name "$INSTANCE_PROFILE" \
+  --query 'InstanceProfile.Arn' --output text)"
+ACTUAL_PROFILE_ARN="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)"
+[[ "$ACTUAL_PROFILE_ARN" == "$EXPECTED_PROFILE_ARN" ]] \
+  || { echo "Instance $INSTANCE_ID has unexpected instance profile: $ACTUAL_PROFILE_ARN" >&2; exit 1; }
+ACTUAL_SECURITY_GROUPS="$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' --output text)"
+[[ "$ACTUAL_SECURITY_GROUPS" == "$SG_ID" ]] \
+  || { echo "Instance $INSTANCE_ID must use only security group $SG_ID; found: $ACTUAL_SECURITY_GROUPS" >&2; exit 1; }
+aws ec2 modify-instance-metadata-options --region "$REGION" --instance-id "$INSTANCE_ID" \
+  --http-tokens required --http-endpoint enabled >/dev/null
+for _ in {1..30}; do
+  read -r METADATA_TOKENS METADATA_STATE <<<"$(aws ec2 describe-instances --region "$REGION" --instance-ids "$INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].MetadataOptions.[HttpTokens,State]' --output text)"
+  [[ "$METADATA_TOKENS" == "required" && "$METADATA_STATE" == "applied" ]] && break
+  sleep 2
+done
+[[ "$METADATA_TOKENS" == "required" && "$METADATA_STATE" == "applied" ]] \
+  || { echo "Instance $INSTANCE_ID did not apply required IMDSv2 metadata options." >&2; exit 1; }
 
-ALLOCATION_ID="$(aws ec2 describe-addresses --region "$REGION" --filters 'Name=tag:Name,Values=voiceforge-production' \
+ALLOCATION_ID="$(aws ec2 describe-addresses --region "$REGION" \
+  --filters 'Name=tag:Name,Values=voiceforge-production' 'Name=tag:Project,Values=VoiceForge' \
   --query 'Addresses[0].AllocationId' --output text)"
 if [[ "$ALLOCATION_ID" == "None" ]]; then
   ALLOCATION_ID="$(aws ec2 allocate-address --region "$REGION" --domain vpc \
