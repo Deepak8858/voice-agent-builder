@@ -109,6 +109,8 @@ if ! aws iam get-open-id-connect-provider --open-id-connect-provider-arn "$OIDC_
     --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1 >/dev/null
 fi
 
+# The deploy role's inline policy is attached later, once the security group ID
+# it must reference is known. See VoiceForgeEcrPushPull below.
 if ! aws iam get-role --role-name "$DEPLOY_ROLE" >/dev/null 2>&1; then
   aws iam create-role --role-name "$DEPLOY_ROLE" \
     --assume-role-policy-document "$(awsfile "$TMP_DIR/oidc-trust.json")" \
@@ -137,21 +139,6 @@ for repo in "${ECR_REPOS[@]}"; do
 done
 
 printf '%s\n' "${ECR_RESOURCE_ARNS[@]}" | sed 's/.*/"&",/' | sed '$ s/,$//' >"$TMP_DIR/ecr-arns.txt"
-cat >"$TMP_DIR/deploy-policy.json" <<JSON
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {"Sid":"EcrLogin","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
-    {"Sid":"PushPullOnlyVoiceForgeRepositories","Effect":"Allow","Action":[
-      "ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:CompleteLayerUpload",
-      "ecr:GetDownloadUrlForLayer","ecr:InitiateLayerUpload","ecr:ListImages",
-      "ecr:PutImage","ecr:UploadLayerPart"
-    ],"Resource":[$(cat "$TMP_DIR/ecr-arns.txt")]}
-  ]
-}
-JSON
-aws iam put-role-policy --role-name "$DEPLOY_ROLE" --policy-name VoiceForgeEcrPushPull \
-  --policy-document "$(awsfile "$TMP_DIR/deploy-policy.json")"
 
 if ! aws s3api head-bucket --region "$REGION" --bucket "$BUCKET_NAME" >/dev/null 2>&1; then
   aws s3api create-bucket --region "$REGION" --bucket "$BUCKET_NAME" >/dev/null
@@ -209,6 +196,60 @@ if [[ "$SG_ID" == "None" ]]; then
     --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${SECURITY_GROUP_NAME}},{Key=Project,Value=VoiceForge}]" \
     --query GroupId --output text)"
 fi
+SECURITY_GROUP_ARN="arn:aws:ec2:${REGION}:${ACCOUNT_ID}:security-group/${SG_ID}"
+
+# The deploy role's inline policy is written here, rather than beside the ECR
+# repositories it also covers, because JustInTimeSshIngress must name the
+# security group ARN and SG_ID is only known once the group above exists.
+#
+# JustInTimeSshIngress exists because the deploy workflow runs ssh/scp from a
+# GitHub-hosted runner whose public IP is dynamic and therefore cannot be
+# pre-authorized. The workflow opens TCP 22 to its own runner IP as a /32
+# immediately before it needs SSH and revokes that exact rule afterwards,
+# including on failure. The grant is confined to this one security group, so the
+# role cannot reach any other group in the account, and it carries no
+# ec2:CreateTags, so the runner cannot tag the rules it creates.
+#
+# Two consequences the deploy workflow must respect:
+#   * Do not pass --tag-specifications to authorize-security-group-ingress.
+#     ec2:AuthorizeSecurityGroupIngress additionally authorizes against the
+#     security-group-rule resource type when, and only when, the request carries
+#     TagSpecifications, and that ARN is not granted here. Label the temporary
+#     rule using the per-CIDR Description field inside --ip-permissions instead;
+#     that needs no extra permission.
+#   * The revoke must target the runner's own /32, by rule ID or by an exact
+#     IpPermissions match. The operator's persistent /32 is a separate rule and
+#     must be left in place.
+#
+# DescribeSecurityGroupRules resolves the temporary rule's SecurityGroupRuleId
+# for a precise revoke; DescribeSecurityGroups backs a post-revoke assertion
+# that port 22 was not left open. EC2 Describe* actions do not support
+# resource-level permissions at all, so IAM rejects any Resource other than "*"
+# for them. That wildcard is an AWS constraint, not an oversight, which is why
+# these read-only actions are isolated in their own statement rather than folded
+# into the scoped one above.
+cat >"$TMP_DIR/deploy-policy.json" <<JSON
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid":"EcrLogin","Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
+    {"Sid":"PushPullOnlyVoiceForgeRepositories","Effect":"Allow","Action":[
+      "ecr:BatchCheckLayerAvailability","ecr:BatchGetImage","ecr:CompleteLayerUpload",
+      "ecr:GetDownloadUrlForLayer","ecr:InitiateLayerUpload","ecr:ListImages",
+      "ecr:PutImage","ecr:UploadLayerPart"
+    ],"Resource":[$(cat "$TMP_DIR/ecr-arns.txt")]},
+    {"Sid":"JustInTimeSshIngress","Effect":"Allow","Action":[
+      "ec2:AuthorizeSecurityGroupIngress","ec2:RevokeSecurityGroupIngress"
+    ],"Resource":"${SECURITY_GROUP_ARN}"},
+    {"Sid":"ReadSecurityGroupRulesWildcardRequiredByEc2","Effect":"Allow","Action":[
+      "ec2:DescribeSecurityGroups","ec2:DescribeSecurityGroupRules"
+    ],"Resource":"*"}
+  ]
+}
+JSON
+aws iam put-role-policy --role-name "$DEPLOY_ROLE" --policy-name VoiceForgeEcrPushPull \
+  --policy-document "$(awsfile "$TMP_DIR/deploy-policy.json")"
+
 ensure_ingress() {
   local port="$1" cidr="$2"
   aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$SG_ID" \
