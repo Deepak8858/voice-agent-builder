@@ -34,21 +34,26 @@ export class S3KnowledgeFileStorage implements KnowledgeFileStorage {
   private readonly logger = new Logger(S3KnowledgeFileStorage.name);
   private readonly client: S3ClientLike;
   private readonly bucket: string | undefined;
+  private readonly prefix: string;
 
-  constructor(client?: S3ClientLike, config?: Pick<S3ClientConfig, 'region'> & { bucket?: string }) {
+  constructor(
+    client?: S3ClientLike,
+    config?: Pick<S3ClientConfig, 'region'> & { bucket?: string; prefix?: string },
+  ) {
     this.bucket = config?.bucket ?? env.S3_KNOWLEDGE_BUCKET;
+    this.prefix = config?.prefix ?? env.S3_KNOWLEDGE_PREFIX;
     this.client = client ?? new S3Client({ region: config?.region ?? env.AWS_REGION });
   }
 
   async saveUploadedFile(input: SaveKnowledgeFileInput): Promise<StoredKnowledgeFile> {
     const bucket = this.requireBucket();
     this.validateInput(input);
-    const path = buildKnowledgeStoragePath({
+    const path = `${this.prefix}/${buildKnowledgeStoragePath({
       workspaceId: input.workspaceId,
       organizationId: input.organizationId,
       agentId: input.agentId,
       filename: input.filename,
-    });
+    })}`;
 
     try {
       await this.client.send(new PutObjectCommand({

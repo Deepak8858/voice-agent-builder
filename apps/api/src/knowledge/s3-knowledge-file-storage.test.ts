@@ -14,6 +14,7 @@ describe('S3KnowledgeFileStorage', () => {
     const storage = new S3KnowledgeFileStorage(client, {
       region: 'us-east-1',
       bucket: 'private-knowledge',
+      prefix: 'knowledge',
     });
 
     const stored = await storage.saveUploadedFile({
@@ -32,7 +33,7 @@ describe('S3KnowledgeFileStorage', () => {
     expect(command.input).toEqual(expect.objectContaining({
       Bucket: 'private-knowledge',
       Key: expect.stringMatching(
-        /^organizations\/org-1\/workspaces\/workspace-1\/agents\/agent-1\/[0-9a-f-]+-FAQ_copy\.pdf$/,
+        /^knowledge\/organizations\/org-1\/workspaces\/workspace-1\/agents\/agent-1\/[0-9a-f-]+-FAQ_copy\.pdf$/,
       ),
       ContentType: 'application/pdf',
     }));
