@@ -1,98 +1,59 @@
-# =============================================================================
-# VoiceForge AI — API Container (NestJS)
-# =============================================================================
-# Build context: repository root (monorepo)
-#
-# This image installs with pnpm and a FROZEN lockfile. That is a security
-# requirement, not a style preference: the security patches for transitive
-# advisories are expressed as `pnpm.overrides` in the root package.json, and
-# npm does not read that field (it only honours a top-level `overrides`).
-# Installing with npm — or deleting the lockfile — silently resolves a
-# different, unpatched dependency graph than the one CI audits, and makes the
-# image unreproducible from its commit SHA.
-#
-# `--node-linker=hoisted` produces a flat node_modules so the runtime stage can
-# copy a single self-contained tree (pnpm's default symlinked store does not
-# survive a `COPY --from`).
-# ---------------------------------------------------------------------------
-
-FROM --platform=linux/amd64 node:20-slim AS builder
-WORKDIR /app
-
-# Install build dependencies (python3/make for native modules like sharp)
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Pin pnpm via corepack; the version must match packageManager in package.json.
-ENV PNPM_HOME=/pnpm
-ENV PATH="$PNPM_HOME:$PATH"
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN corepack enable
-
-# Copy the lockfile and every workspace manifest first. pnpm needs the complete
-# set of manifests referenced by pnpm-workspace.yaml to satisfy --frozen-lockfile.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/api/package.json ./apps/api/
-COPY apps/livekit-agent/package.json ./apps/livekit-agent/
-COPY apps/voice-edge/package.json ./apps/voice-edge/
-COPY apps/web/package.json ./apps/web/
-COPY packages/shared/package.json ./packages/shared/
-COPY packages/ui/package.json ./packages/ui/
-
-# Install with the lockfile as the source of truth. --frozen-lockfile fails the
-# build if package.json and pnpm-lock.yaml have drifted, which is what keeps the
-# audited override graph and the shipped image in agreement.
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-    pnpm config set store-dir /pnpm/store --global && \
-    pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
-
-# Copy source
-COPY apps/api ./apps/api
-COPY packages/shared ./packages/shared
-COPY packages/ui ./packages/ui
-COPY tsconfig.base.json ./
-
-# Generate Prisma client before building (if schema exists)
-RUN if [ -f apps/api/prisma/schema.prisma ]; then \
-      pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma; \
-    fi
-
-# Build shared packages then API
-RUN pnpm --filter @voiceforge/shared run build
-RUN pnpm --filter @voiceforge/api run build
-
-# =============================================================================
-# Production stage
-# =============================================================================
-FROM --platform=linux/amd64 node:20-slim AS production
+# syntax=docker/dockerfile:1.7
+FROM --platform=linux/amd64 node:20-bookworm-slim AS build
 
 WORKDIR /app
-ENV NODE_ENV=production
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-# Add tini + openssl for Prisma runtime
-RUN apt-get update && apt-get install -y --no-install-recommends tini openssl \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ openssl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -g 1001 nodegroup \
-    && useradd -u 1001 -g nodegroup -s /bin/sh -M nodeuser \
-    && chown -R nodeuser:nodegroup /app
+    && corepack enable \
+    && corepack prepare pnpm@10.33.2 --activate
 
-# Copy built artifacts (owned by nodeuser)
-COPY --chown=1001:1001 --from=builder /app/apps/api/dist ./apps/api/dist
-COPY --chown=1001:1001 --from=builder /app/apps/api/prisma ./apps/api/prisma
-COPY --chown=1001:1001 --from=builder /app/apps/api/package.json ./apps/api/package.json
-COPY --chown=1001:1001 --from=builder /app/packages/shared/package.json ./packages/shared/package.json
-COPY --chown=1001:1001 --from=builder /app/packages/shared/dist ./packages/shared/dist
-COPY --chown=1001:1001 --from=builder /app/node_modules ./node_modules
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/livekit-agent/package.json apps/livekit-agent/package.json
+COPY apps/voice-edge/package.json apps/voice-edge/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ui/package.json packages/ui/package.json
 
-# Switch to non-root user
-USER nodeuser
+RUN --mount=type=cache,id=voiceforge-pnpm,target=/pnpm/store,sharing=locked \
+    pnpm config set store-dir /pnpm/store --global \
+    && pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
 
-# Health-check endpoint (NestJS default)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:4000/api/v1/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY apps/api apps/api
 
+RUN pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma \
+    && pnpm --filter @voiceforge/shared run build \
+    && pnpm --filter @voiceforge/api run build
+
+FROM --platform=linux/amd64 node:20-bookworm-slim AS runtime
+
+WORKDIR /app
+ENV NODE_ENV=production \
+    API_PORT=4000
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 voiceforge \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
+
+COPY --from=build --chown=10001:10001 /app/node_modules node_modules
+COPY --from=build --chown=10001:10001 /app/apps/api/dist apps/api/dist
+COPY --from=build --chown=10001:10001 /app/apps/api/package.json apps/api/package.json
+COPY --from=build --chown=10001:10001 /app/apps/api/prisma apps/api/prisma
+COPY --from=build --chown=10001:10001 /app/packages/shared/dist packages/shared/dist
+COPY --from=build --chown=10001:10001 /app/packages/shared/package.json packages/shared/package.json
+
+USER voiceforge
 EXPOSE 4000
-
-# Use tini as init system to properly handle SIGTERM and forward to Node.js
-ENTRYPOINT ["tini", "--"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "const http=require('http');const r=http.get({host:'127.0.0.1',port:process.env.API_PORT||4000,path:'/api/v1/health'},res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/api/dist/main.js"]
