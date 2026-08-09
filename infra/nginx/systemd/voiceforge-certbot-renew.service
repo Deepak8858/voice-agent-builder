@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew VoiceForge Let's Encrypt certificate
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker run --rm --name voiceforge-certbot-renew -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt -v /opt/voiceforge/data/certbot/www:/var/www/certbot certbot/certbot:v3.2.0 renew --webroot --webroot-path /var/www/certbot --quiet
+ExecStartPost=/usr/bin/docker kill --signal=HUP vf-nginx
