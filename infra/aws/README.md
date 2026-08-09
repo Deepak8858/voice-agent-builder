@@ -54,6 +54,8 @@ Rerunning is supported. Resources use deterministic names and are updated toward
 
 The final labeled output block contains the values needed for GitHub repository secrets/variables. It contains resource identifiers only and no credentials. Capture it in an approved operational record; never add credentials, private keys, GitHub secrets, Stripe keys, or application environment files to command output.
 
+Operational caveat on immutable tags: because the repositories reject tag overwrites, pushing an image tag that already exists fails. This is intentional, since it guarantees a given SHA tag always refers to one image. It does mean re-running a deploy for a commit whose images were already pushed must either skip the push or tolerate that failure rather than retagging. Deployment-pipeline behavior is owned outside this directory; flag it there rather than relaxing immutability here.
+
 ## 4. Post-provision checks
 
 1. Confirm the budget email subscription if AWS sends a confirmation request.
