@@ -8,7 +8,7 @@ export interface SaveKnowledgeFileInput {
 }
 
 export interface StoredKnowledgeFile {
-  provider: 'supabase';
+  provider: 'supabase' | 's3';
   bucket: string;
   path: string;
   fileUrl: string;
