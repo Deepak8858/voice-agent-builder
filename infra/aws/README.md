@@ -67,6 +67,8 @@ The deploy workflow runs `ssh` and `scp` from a GitHub-hosted runner. GitHub doe
 
 The role is deliberately not granted `ec2:CreateTags`, so it cannot tag the rules it creates. A consequence for the workflow: it must not pass `--tag-specifications` to `authorize-security-group-ingress`, because doing so makes the call additionally authorize against the `security-group-rule` resource type, which is not granted here. Identify the temporary rule with the per-CIDR `Description` field inside `--ip-permissions` instead.
 
+The workflow needs to know which group to open, so set the repository variable `AWS_SECURITY_GROUP_ID` to the security group ID printed in the provisioning summary. It is a variable rather than a secret because a group ID is not sensitive and masking it would only obscure deployment error messages. The deploy job validates its shape before building anything and fails fast when it is missing or malformed.
+
 The operator `/32` supplied through `--ssh-cidr` is a separate, persistent rule. The workflow's temporary rule is scoped to a different address and is added and removed independently, so a deploy never disturbs operator access, and revoking the temporary rule never removes it. Port 22 is never opened to `0.0.0.0/0` by either path.
 
 A workflow that is hard-killed between authorize and revoke — a cancelled run, a runner that disappears — can leave an orphaned `/32` behind. Re-running `provision.sh` clears it: the provisioner revokes every existing ingress rule on the group by rule ID and then re-adds exactly 80/tcp and 443/tcp from `0.0.0.0/0` plus 22/tcp from the supplied `--ssh-cidr`. Any rule that is not part of that declared set, including a stale runner `/32`, is removed. This is a full reconciliation of the ingress set, not an additive pass. It follows that provisioning must not be run concurrently with a deploy, since reconciliation would revoke the in-flight runner rule and break the deploy's SSH session.
@@ -88,7 +90,7 @@ Anything on port 22 other than the operator `/32` is a leftover and should be re
 2. Verify the EC2 instance reports both system and instance status checks as passed.
 3. Connect using the existing private key and the printed Elastic IP. Do not loosen SSH ingress if access fails; update `--ssh-cidr` and rerun instead.
 4. On the host, verify `docker version`, `docker compose version`, and ownership/mode of `/opt/voiceforge`.
-5. Populate GitHub with the printed deploy-role ARN, region, ECR URIs, instance address, bucket name, and bucket prefix. Treat SSH private keys and application environment values as secrets even though resource IDs are not secret.
+5. Populate GitHub with the printed deploy-role ARN, region, ECR URIs, security group ID as `AWS_SECURITY_GROUP_ID`, instance address, bucket name, and bucket prefix. Treat SSH private keys and application environment values as secrets even though resource IDs are not secret.
 6. Leave the LiveKit agent disabled until its environment exists. The AWS foundation does not require LiveKit configuration.
 
 ## 6. Teardown

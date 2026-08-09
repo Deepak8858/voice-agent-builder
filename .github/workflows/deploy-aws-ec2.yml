@@ -2,6 +2,7 @@ name: Deploy production to AWS EC2
 
 # Required repository variables:
 #   AWS_DEPLOY_ROLE_ARN          GitHub OIDC role allowed to push to ECR
+#   AWS_SECURITY_GROUP_ID        Instance security group this job opens SSH on
 #   DEPOT_API_PROJECT_ID         Depot project in us-east-1 for the API image
 #   DEPOT_WEB_PROJECT_ID         Depot project in us-east-1 for the web image
 #   DEPOT_LIVEKIT_PROJECT_ID     Depot project in us-east-1 for the LiveKit image
@@ -75,6 +76,7 @@ jobs:
       - name: Validate deployment configuration
         env:
           AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
           DEPOT_API_PROJECT_ID: ${{ vars.DEPOT_API_PROJECT_ID }}
           DEPOT_WEB_PROJECT_ID: ${{ vars.DEPOT_WEB_PROJECT_ID }}
           DEPOT_LIVEKIT_PROJECT_ID: ${{ vars.DEPOT_LIVEKIT_PROJECT_ID }}
@@ -92,7 +94,8 @@ jobs:
           set -euo pipefail
           missing=()
           for name in \
-            AWS_DEPLOY_ROLE_ARN DEPOT_API_PROJECT_ID DEPOT_WEB_PROJECT_ID \
+            AWS_DEPLOY_ROLE_ARN AWS_SECURITY_GROUP_ID DEPOT_API_PROJECT_ID \
+            DEPOT_WEB_PROJECT_ID \
             DEPOT_LIVEKIT_PROJECT_ID AWS_EC2_HOST AWS_EC2_USER AWS_EC2_SSH_KEY \
             AWS_EC2_KNOWN_HOSTS NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL \
             NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_BILLING_MODE \
@@ -101,6 +104,13 @@ jobs:
           done
           if [ "${#missing[@]}" -ne 0 ]; then
             printf '::error::Missing required repository configuration: %s\n' "${missing[@]}"
+            exit 1
+          fi
+          # Checked here rather than at first use so a typo fails before any
+          # image is built, and so the value can never be interpolated into an
+          # ec2 call as something other than a single group ID.
+          if ! printf '%s' "$AWS_SECURITY_GROUP_ID" | grep -Eq '^sg-[0-9a-f]{8,17}$'; then
+            echo "::error::AWS_SECURITY_GROUP_ID must be a single sg-... identifier."
             exit 1
           fi
           test -s infra/docker/Dockerfile.api
@@ -217,6 +227,58 @@ jobs:
           install -m 600 /dev/null ~/.ssh/known_hosts
           printf '%s\n' "$AWS_EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
           ssh-keygen -l -f ~/.ssh/known_hosts >/dev/null
+
+      # GitHub-hosted runners have no stable egress address, so port 22 cannot be
+      # pre-authorized for them and is never opened to 0.0.0.0/0. The deploy role
+      # is instead allowed to add TCP 22 for this runner's own /32 on the single
+      # voiceforge-production security group, and the revoke step below removes it
+      # again. The operator's persistent /32 from --ssh-cidr is a separate rule and
+      # is never touched by either step.
+      #
+      # No --tag-specifications here: ec2:AuthorizeSecurityGroupIngress
+      # additionally authorizes against the security-group-rule resource type when
+      # the request carries TagSpecifications, and the deploy role is not granted
+      # that ARN, so tagging would fail the call with UnauthorizedOperation. The
+      # per-CIDR Description field labels the rule instead and needs no extra
+      # permission.
+      #
+      # The aws-ec2-production concurrency group sets cancel-in-progress: false, so
+      # two runs of this workflow cannot race on the same rule. A hard-cancelled run
+      # whose revoke never executed can still leave a rule behind, so an identical
+      # pre-existing rule is treated as success rather than as an error.
+      - name: Open just-in-time SSH ingress for this runner
+        id: ssh_ingress
+        env:
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          runner_ip="$(curl -fsS --max-time 10 --retry 3 --retry-delay 2 \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
+          if ! printf '%s' "$runner_ip" | grep -Eq \
+            '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$'; then
+            echo "::error::Could not determine a valid runner IPv4 address for SSH ingress."
+            exit 1
+          fi
+          runner_cidr="$runner_ip/32"
+          echo "cidr=$runner_cidr" >> "$GITHUB_OUTPUT"
+          echo "Authorizing TCP 22 from $runner_cidr on $AWS_SECURITY_GROUP_ID"
+          authorize_error="$(mktemp)"
+          if aws ec2 authorize-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$AWS_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$runner_cidr,Description=github-actions-run-${{ github.run_id }}}]" \
+            >/dev/null 2>"$authorize_error"; then
+            echo "revoke_required=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'InvalidPermission.Duplicate' "$authorize_error"; then
+            # A previous run of this workflow was killed before it could revoke.
+            # The rule we need already exists, so proceed and still revoke it.
+            echo "Rule for $runner_cidr already exists; reusing it"
+            echo "revoke_required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Failed to authorize SSH ingress for $runner_cidr"
+            cat "$authorize_error" >&2
+            exit 1
+          fi
 
       - name: Upload exact deployment definition
         env:
@@ -624,6 +686,57 @@ jobs:
           prune_old_releases || echo "Retention pass failed; deployment is healthy" >&2
           echo "Deployment completed for commit $deploy_sha"
           REMOTE
+
+      # Runs on success, failure, and cancellation, because leaving the hole open
+      # is worse than any deploy outcome. Guarded on the authorize step having
+      # actually created or adopted the rule, so a job that failed earlier does not
+      # revoke a rule it does not own.
+      - name: Revoke just-in-time SSH ingress
+        if: always() && steps.ssh_ingress.outputs.revoke_required == 'true'
+        env:
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
+          RUNNER_CIDR: ${{ steps.ssh_ingress.outputs.cidr }}
+        run: |
+          set -euo pipefail
+          echo "Revoking TCP 22 from $RUNNER_CIDR on $AWS_SECURITY_GROUP_ID"
+          revoke_output="$(mktemp)"
+          revoke_error="$(mktemp)"
+          # The two VPC flavors report an already-absent rule differently. In a
+          # default VPC, which is what this instance runs in, a rule that does not
+          # match returns exit status 0 and is listed under UnknownIpPermissions
+          # instead of raising. In a non-default VPC the same case raises
+          # InvalidPermission.NotFound. Both mean the same thing here and are
+          # tolerated; anything else is a real failure. The describe assertion below
+          # is what actually proves the rule is gone, since a silent no-op revoke
+          # would otherwise look identical to a successful one.
+          if aws ec2 revoke-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$AWS_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$RUNNER_CIDR}]" \
+            >"$revoke_output" 2>"$revoke_error"; then
+            if grep -q '"UnknownIpPermissions"' "$revoke_output"; then
+              echo "Rule for $RUNNER_CIDR was already absent"
+            else
+              echo "Revoked $RUNNER_CIDR"
+            fi
+          elif grep -q 'InvalidPermission.NotFound' "$revoke_error"; then
+            echo "Rule for $RUNNER_CIDR was already absent"
+          else
+            echo "::error::Failed to revoke SSH ingress for $RUNNER_CIDR; it may still be open"
+            cat "$revoke_error" >&2
+            exit 1
+          fi
+          # Independent confirmation that this job left no port 22 rule other than
+          # the operator's persistent one, so a silent revoke failure cannot pass.
+          remaining="$(aws ec2 describe-security-group-rules \
+            --region "$AWS_REGION" \
+            --filters "Name=group-id,Values=$AWS_SECURITY_GROUP_ID" \
+            --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`22\` && CidrIpv4=='$RUNNER_CIDR'].SecurityGroupRuleId" \
+            --output text)"
+          if [ -n "$remaining" ]; then
+            echo "::error::SSH rule for $RUNNER_CIDR is still present: $remaining"
+            exit 1
+          fi
 
       - name: Record deployment summary
         env:

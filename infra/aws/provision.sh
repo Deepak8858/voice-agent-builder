@@ -352,7 +352,7 @@ ECR web URI: ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/voiceforge-web
 ECR LiveKit agent URI: ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/voiceforge-livekit-agent
 Knowledge bucket: ${BUCKET_NAME}
 Knowledge bucket prefix: ${BUCKET_PREFIX}/
-Security group ID: ${SG_ID}
+Security group ID (GitHub variable AWS_SECURITY_GROUP_ID): ${SG_ID}
 Instance profile ARN: ${INSTANCE_PROFILE_ARN}
 Instance ID: ${INSTANCE_ID}
 Elastic IP allocation ID: ${ALLOCATION_ID}
