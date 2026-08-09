@@ -123,6 +123,14 @@ jobs:
         with:
           oidc: true
 
+      # The ECR repositories use immutable tags, so re-pushing an existing SHA is
+      # rejected with ImageTagAlreadyExistsException and fails the build step.
+      # Re-dispatching the same git_sha is the normal recovery path after a
+      # transient SSH or health-check failure, so each build is guarded by an
+      # existence check and skipped when the exact tag is already published.
+      # The lookup uses ecr:ListImages because the deploy role is not granted
+      # ecr:DescribeImages. A failed lookup aborts the step rather than falling
+      # through to a push that would fail anyway.
       - name: Build and push API image with Depot
         env:
           DEPOT_PROJECT_ID: ${{ vars.DEPOT_API_PROJECT_ID }}
@@ -130,9 +138,16 @@ jobs:
           DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
         run: |
           set -euo pipefail
-          depot build --project "$DEPOT_PROJECT_ID" --push \
-            --file infra/docker/Dockerfile.api \
-            --tag "$ECR_REGISTRY/voiceforge-api:$DEPLOY_SHA" .
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-api --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-api:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.api \
+              --tag "$ECR_REGISTRY/voiceforge-api:$DEPLOY_SHA" .
+          fi
 
       - name: Build and push web image with Depot
         env:
@@ -146,14 +161,21 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
-          depot build --project "$DEPOT_PROJECT_ID" --push \
-            --file infra/docker/Dockerfile.web \
-            --build-arg "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL" \
-            --build-arg "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" \
-            --build-arg "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" \
-            --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" \
-            --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
-            --tag "$ECR_REGISTRY/voiceforge-web:$DEPLOY_SHA" .
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-web --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-web:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.web \
+              --build-arg "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL" \
+              --build-arg "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+              --tag "$ECR_REGISTRY/voiceforge-web:$DEPLOY_SHA" .
+          fi
 
       - name: Build and push LiveKit agent image with Depot
         env:
@@ -162,9 +184,16 @@ jobs:
           DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
         run: |
           set -euo pipefail
-          depot build --project "$DEPOT_PROJECT_ID" --push \
-            --file infra/docker/Dockerfile.livekit-agent \
-            --tag "$ECR_REGISTRY/voiceforge-livekit-agent:$DEPLOY_SHA" .
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-livekit-agent --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-livekit-agent:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.livekit-agent \
+              --tag "$ECR_REGISTRY/voiceforge-livekit-agent:$DEPLOY_SHA" .
+          fi
 
       - name: Install pinned SSH configuration
         env:
