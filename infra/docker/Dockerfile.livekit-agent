@@ -45,6 +45,9 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
 
 COPY --from=build --chown=10001:10001 /app/node_modules node_modules
+# Same reason as Dockerfile.api: the @voiceforge/shared link and any
+# un-hoistable dependency live in the package's own node_modules.
+COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/node_modules apps/livekit-agent/node_modules
 COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/dist apps/livekit-agent/dist
 COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/package.json apps/livekit-agent/package.json
 COPY --from=build --chown=10001:10001 /app/apps/api/prisma apps/api/prisma

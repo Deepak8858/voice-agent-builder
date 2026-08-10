@@ -45,6 +45,11 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
 
 COPY --from=build --chown=10001:10001 /app/node_modules node_modules
+# pnpm keeps the @voiceforge/shared workspace link, and any dependency it could
+# not hoist to the root, in the package's own node_modules. Without this the
+# runtime image has packages/shared/dist on disk but no resolvable
+# @voiceforge/shared, and the API crashes on boot with MODULE_NOT_FOUND.
+COPY --from=build --chown=10001:10001 /app/apps/api/node_modules apps/api/node_modules
 COPY --from=build --chown=10001:10001 /app/apps/api/dist apps/api/dist
 COPY --from=build --chown=10001:10001 /app/apps/api/package.json apps/api/package.json
 COPY --from=build --chown=10001:10001 /app/apps/api/prisma apps/api/prisma
