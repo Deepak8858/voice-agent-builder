@@ -535,8 +535,11 @@ jobs:
             attempts="$4"
             probe="const h=require('http');const r=h.get('$url',x=>{x.resume();process.exit(x.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"
             for attempt in $(seq 1 "$attempts"); do
+              # </dev/null for the same reason as the migrate commands below:
+              # this script is delivered on stdin, and `exec` attaches stdin to
+              # the container.
               if docker compose --env-file "$env_file" -f "$compose_file" \
-                exec -T "$service" node -e "$probe" >/dev/null 2>&1; then
+                exec -T "$service" node -e "$probe" </dev/null >/dev/null 2>&1; then
                 return 0
               fi
               sleep 5
@@ -593,16 +596,23 @@ jobs:
             | docker login --username AWS --password-stdin "$ecr_registry"
           "${candidate_compose[@]}" "${candidate_profile[@]}" pull "${services[@]}"
 
+          # This whole script is piped to `bash -s` over SSH, so it arrives on
+          # stdin. `docker compose run` attaches stdin by default, which lets the
+          # container consume the rest of this script: bash then reaches EOF and
+          # exits 0 without ever starting the services, producing a green run
+          # that deployed nothing. `--no-TTY` plus redirecting stdin from
+          # /dev/null keeps the remaining commands intact.
           migrate_status=0
-          "${candidate_compose[@]}" run --rm --no-deps api \
+          "${candidate_compose[@]}" run --rm --no-TTY --no-deps api \
             npx prisma migrate status --schema=apps/api/prisma/schema.prisma \
-            || migrate_status=$?
+            </dev/null || migrate_status=$?
           if [ "$migrate_status" -ne 0 ]; then
             echo "Prisma migration status reported drift or an un-baselined database" >&2
             exit 1
           fi
-          "${candidate_compose[@]}" run --rm --no-deps api \
-            npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
+          "${candidate_compose[@]}" run --rm --no-TTY --no-deps api \
+            npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma \
+            </dev/null
 
           sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
           install_release_assets "$candidate_bundle"
