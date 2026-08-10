@@ -7,9 +7,17 @@ import {
 } from './embeddings/embedding.provider.interface';
 import { OpenAIEmbeddingAdapter } from './embeddings/openai.embedding.adapter';
 import { KnowledgeController } from './knowledge.controller';
+import {
+  createKnowledgeFileStorage,
+  type KnowledgeStorageProvider,
+} from './knowledge-file-storage-router';
+import {
+  KNOWLEDGE_FILE_STORAGE_TOKEN,
+  type KnowledgeFileStorage,
+} from './knowledge-file-storage.interface';
 import { KnowledgeService } from './knowledge.service';
-import { KNOWLEDGE_FILE_STORAGE_TOKEN } from './knowledge-file-storage.interface';
 import { FileParser } from './parsers/file-parser';
+import { S3KnowledgeFileStorage } from './s3-knowledge-file-storage.service';
 import { SupabaseKnowledgeFileStorage } from './supabase-knowledge-file-storage.service';
 
 const embeddingProvider: Provider = {
@@ -25,6 +33,19 @@ const embeddingProvider: Provider = {
   },
 };
 
+const knowledgeFileStorageProvider: Provider = {
+  provide: KNOWLEDGE_FILE_STORAGE_TOKEN,
+  inject: [SupabaseKnowledgeFileStorage, S3KnowledgeFileStorage],
+  useFactory: (
+    supabase: SupabaseKnowledgeFileStorage,
+    s3: S3KnowledgeFileStorage,
+  ): KnowledgeFileStorage => createKnowledgeFileStorage(
+    env.KNOWLEDGE_STORAGE_PROVIDER as KnowledgeStorageProvider,
+    supabase,
+    s3,
+  ),
+};
+
 @Module({
   controllers: [KnowledgeController],
   providers: [
@@ -32,10 +53,8 @@ const embeddingProvider: Provider = {
     WorkspaceGuard,
     FileParser,
     SupabaseKnowledgeFileStorage,
-    {
-      provide: KNOWLEDGE_FILE_STORAGE_TOKEN,
-      useExisting: SupabaseKnowledgeFileStorage,
-    },
+    S3KnowledgeFileStorage,
+    knowledgeFileStorageProvider,
     embeddingProvider,
   ],
   exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN],

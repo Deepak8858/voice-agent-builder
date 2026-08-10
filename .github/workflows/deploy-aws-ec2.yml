@@ -1,0 +1,751 @@
+name: Deploy production to AWS EC2
+
+# Required repository variables:
+#   AWS_DEPLOY_ROLE_ARN          GitHub OIDC role allowed to push to ECR
+#   AWS_SECURITY_GROUP_ID        Instance security group this job opens SSH on
+#   DEPOT_API_PROJECT_ID         Depot project in us-east-1 for the API image
+#   DEPOT_WEB_PROJECT_ID         Depot project in us-east-1 for the web image
+#   DEPOT_LIVEKIT_PROJECT_ID     Depot project in us-east-1 for the LiveKit image
+#   NEXT_PUBLIC_API_URL, NEXT_PUBLIC_APP_URL, NEXT_PUBLIC_SUPABASE_URL
+#   NEXT_PUBLIC_BILLING_MODE      Public billing behavior baked into the web image
+# Required repository secrets:
+#   AWS_EC2_HOST, AWS_EC2_USER, AWS_EC2_SSH_KEY, AWS_EC2_KNOWN_HOSTS
+#   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, NEXT_PUBLIC_SUPABASE_ANON_KEY
+# Depot and AWS authentication both use GitHub OIDC; no static cloud tokens are used.
+on:
+  workflow_dispatch:
+    inputs:
+      git_sha:
+        description: "Full 40-character commit SHA to build and deploy"
+        required: true
+        type: string
+      confirm_production:
+        description: "Type deploy-production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: aws-ec2-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Build and deploy exact commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate exact commit
+        id: revision
+        env:
+          REQUESTED_SHA: ${{ inputs.git_sha }}
+          CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_PRODUCTION" != "deploy-production" ]; then
+            echo "::error::Production confirmation did not match deploy-production."
+            exit 1
+          fi
+          if ! printf '%s' "$REQUESTED_SHA" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error::git_sha must be a full 40-character hexadecimal commit SHA."
+            exit 1
+          fi
+          sha="$(printf '%s' "$REQUESTED_SHA" | tr 'A-F' 'a-f')"
+          git fetch --no-tags origin "$sha"
+          resolved="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [ "$resolved" != "$sha" ]; then
+            echo "::error::Requested revision did not resolve to the exact commit."
+            exit 1
+          fi
+          git checkout --detach --force "$sha"
+          test "$(git rev-parse HEAD)" = "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Validate deployment configuration
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
+          DEPOT_API_PROJECT_ID: ${{ vars.DEPOT_API_PROJECT_ID }}
+          DEPOT_WEB_PROJECT_ID: ${{ vars.DEPOT_WEB_PROJECT_ID }}
+          DEPOT_LIVEKIT_PROJECT_ID: ${{ vars.DEPOT_LIVEKIT_PROJECT_ID }}
+          AWS_EC2_HOST: ${{ secrets.AWS_EC2_HOST }}
+          AWS_EC2_USER: ${{ secrets.AWS_EC2_USER }}
+          AWS_EC2_SSH_KEY: ${{ secrets.AWS_EC2_SSH_KEY }}
+          AWS_EC2_KNOWN_HOSTS: ${{ secrets.AWS_EC2_KNOWN_HOSTS }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            AWS_DEPLOY_ROLE_ARN AWS_SECURITY_GROUP_ID DEPOT_API_PROJECT_ID \
+            DEPOT_WEB_PROJECT_ID \
+            DEPOT_LIVEKIT_PROJECT_ID AWS_EC2_HOST AWS_EC2_USER AWS_EC2_SSH_KEY \
+            AWS_EC2_KNOWN_HOSTS NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL \
+            NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_BILLING_MODE \
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf '::error::Missing required repository configuration: %s\n' "${missing[@]}"
+            exit 1
+          fi
+          # Checked here rather than at first use so a typo fails before any
+          # image is built, and so the value can never be interpolated into an
+          # ec2 call as something other than a single group ID.
+          if ! printf '%s' "$AWS_SECURITY_GROUP_ID" | grep -Eq '^sg-[0-9a-f]{8,17}$'; then
+            echo "::error::AWS_SECURITY_GROUP_ID must be a single sg-... identifier."
+            exit 1
+          fi
+          test -s infra/docker/Dockerfile.api
+          test -s infra/docker/Dockerfile.web
+          test -s infra/docker/Dockerfile.livekit-agent
+          test -s infra/docker/docker-compose.aws.yml
+          test -s infra/nginx/nginx.conf
+          test -s infra/nginx/http.conf
+          test -s infra/nginx/http-redirect.conf
+          test -s infra/nginx/https.conf.template
+          test -x infra/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh
+          test -s infra/nginx/systemd/voiceforge-certbot-renew.service
+          test -s infra/nginx/systemd/voiceforge-certbot-renew.timer
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: voiceforge-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+
+      - name: Set up Depot CLI with OIDC
+        uses: depot/setup-action@15c09a5f77a0840ad4bce955686522a257853461 # v1
+        with:
+          oidc: true
+
+      # The ECR repositories use immutable tags, so re-pushing an existing SHA is
+      # rejected with ImageTagAlreadyExistsException and fails the build step.
+      # Re-dispatching the same git_sha is the normal recovery path after a
+      # transient SSH or health-check failure, so each build is guarded by an
+      # existence check and skipped when the exact tag is already published.
+      # The lookup uses ecr:ListImages because the deploy role is not granted
+      # ecr:DescribeImages. A failed lookup aborts the step rather than falling
+      # through to a push that would fail anyway.
+      - name: Build and push API image with Depot
+        env:
+          DEPOT_PROJECT_ID: ${{ vars.DEPOT_API_PROJECT_ID }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          set -euo pipefail
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-api --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-api:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.api \
+              --tag "$ECR_REGISTRY/voiceforge-api:$DEPLOY_SHA" .
+          fi
+
+      - name: Build and push web image with Depot
+        env:
+          DEPOT_PROJECT_ID: ${{ vars.DEPOT_WEB_PROJECT_ID }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-web --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-web:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.web \
+              --build-arg "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL" \
+              --build-arg "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" \
+              --build-arg "NEXT_PUBLIC_BILLING_MODE=$NEXT_PUBLIC_BILLING_MODE" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" \
+              --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+              --tag "$ECR_REGISTRY/voiceforge-web:$DEPLOY_SHA" .
+          fi
+
+      - name: Build and push LiveKit agent image with Depot
+        env:
+          DEPOT_PROJECT_ID: ${{ vars.DEPOT_LIVEKIT_PROJECT_ID }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          set -euo pipefail
+          published="$(aws ecr list-images --region "$AWS_REGION" \
+            --repository-name voiceforge-livekit-agent --filter tagStatus=TAGGED \
+            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+          if [ -n "$published" ]; then
+            echo "voiceforge-livekit-agent:$DEPLOY_SHA is already published; skipping build"
+          else
+            depot build --project "$DEPOT_PROJECT_ID" --push \
+              --file infra/docker/Dockerfile.livekit-agent \
+              --tag "$ECR_REGISTRY/voiceforge-livekit-agent:$DEPLOY_SHA" .
+          fi
+
+      - name: Install pinned SSH configuration
+        env:
+          AWS_EC2_SSH_KEY: ${{ secrets.AWS_EC2_SSH_KEY }}
+          AWS_EC2_KNOWN_HOSTS: ${{ secrets.AWS_EC2_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/deploy_key
+          printf '%s\n' "$AWS_EC2_SSH_KEY" > ~/.ssh/deploy_key
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$AWS_EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh-keygen -l -f ~/.ssh/known_hosts >/dev/null
+
+      # GitHub-hosted runners have no stable egress address, so port 22 cannot be
+      # pre-authorized for them and is never opened to 0.0.0.0/0. The deploy role
+      # is instead allowed to add TCP 22 for this runner's own /32 on the single
+      # voiceforge-production security group, and the revoke step below removes it
+      # again. The operator's persistent /32 from --ssh-cidr is a separate rule and
+      # is never touched by either step.
+      #
+      # No --tag-specifications here: ec2:AuthorizeSecurityGroupIngress
+      # additionally authorizes against the security-group-rule resource type when
+      # the request carries TagSpecifications, and the deploy role is not granted
+      # that ARN, so tagging would fail the call with UnauthorizedOperation. The
+      # per-CIDR Description field labels the rule instead and needs no extra
+      # permission.
+      #
+      # The aws-ec2-production concurrency group sets cancel-in-progress: false, so
+      # two runs of this workflow cannot race on the same rule. A hard-cancelled run
+      # whose revoke never executed can still leave a rule behind, so an identical
+      # pre-existing rule is treated as success rather than as an error.
+      - name: Open just-in-time SSH ingress for this runner
+        id: ssh_ingress
+        env:
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          runner_ip="$(curl -fsS --max-time 10 --retry 3 --retry-delay 2 \
+            https://checkip.amazonaws.com | tr -d '[:space:]')"
+          if ! printf '%s' "$runner_ip" | grep -Eq \
+            '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$'; then
+            echo "::error::Could not determine a valid runner IPv4 address for SSH ingress."
+            exit 1
+          fi
+          runner_cidr="$runner_ip/32"
+          echo "cidr=$runner_cidr" >> "$GITHUB_OUTPUT"
+          echo "Authorizing TCP 22 from $runner_cidr on $AWS_SECURITY_GROUP_ID"
+          authorize_error="$(mktemp)"
+          if aws ec2 authorize-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$AWS_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$runner_cidr,Description=github-actions-run-${{ github.run_id }}}]" \
+            >/dev/null 2>"$authorize_error"; then
+            echo "revoke_required=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'InvalidPermission.Duplicate' "$authorize_error"; then
+            # A previous run of this workflow was killed before it could revoke.
+            # The rule we need already exists, so proceed and still revoke it.
+            echo "Rule for $runner_cidr already exists; reusing it"
+            echo "revoke_required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Failed to authorize SSH ingress for $runner_cidr"
+            cat "$authorize_error" >&2
+            exit 1
+          fi
+
+      - name: Upload exact deployment definition
+        env:
+          AWS_EC2_HOST: ${{ secrets.AWS_EC2_HOST }}
+          AWS_EC2_USER: ${{ secrets.AWS_EC2_USER }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            infra/docker/docker-compose.aws.yml \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-compose-$DEPLOY_SHA.yml"
+          scp_args=(-i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          scp "${scp_args[@]}" infra/nginx/nginx.conf \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-nginx-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/http.conf \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-http-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/http-redirect.conf \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-http-redirect-$DEPLOY_SHA.conf"
+          scp "${scp_args[@]}" infra/nginx/https.conf.template \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-https-$DEPLOY_SHA.conf.template"
+          scp "${scp_args[@]}" infra/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-enable-tls-$DEPLOY_SHA.sh"
+          scp "${scp_args[@]}" infra/nginx/systemd/voiceforge-certbot-renew.service \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-certbot-renew-$DEPLOY_SHA.service"
+          scp "${scp_args[@]}" infra/nginx/systemd/voiceforge-certbot-renew.timer \
+            "$AWS_EC2_USER@$AWS_EC2_HOST:/tmp/voiceforge-certbot-renew-$DEPLOY_SHA.timer"
+
+      - name: Deploy SHA-tagged images on EC2
+        env:
+          AWS_EC2_HOST: ${{ secrets.AWS_EC2_HOST }}
+          AWS_EC2_USER: ${{ secrets.AWS_EC2_USER }}
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/deploy_key \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$AWS_EC2_USER@$AWS_EC2_HOST" \
+            bash -s -- "$DEPLOY_SHA" "$ECR_REGISTRY" "$AWS_REGION" \
+              "$PUBLIC_APP_URL" "$PUBLIC_API_URL" <<'REMOTE'
+          set -euo pipefail
+          deploy_sha="$1"
+          ecr_registry="$2"
+          aws_region="$3"
+          public_app_url="$4"
+          public_api_url="$5"
+          deploy_root=/opt/voiceforge
+          env_file="$deploy_root/.env"
+          compose_file="$deploy_root/docker-compose.aws.yml"
+          nginx_file="$deploy_root/nginx/nginx.conf"
+          state_dir="$deploy_root/deploy-state"
+          release_dir="$state_dir/releases"
+          current_file="$state_dir/current-sha"
+          previous_file="$state_dir/previous-sha"
+          current_livekit_file="$state_dir/current-livekit"
+          previous_livekit_file="$state_dir/previous-livekit"
+          candidate_file="$state_dir/candidate-sha"
+          uploaded_compose="/tmp/voiceforge-compose-$deploy_sha.yml"
+          uploaded_nginx="/tmp/voiceforge-nginx-$deploy_sha.conf"
+          uploaded_http="/tmp/voiceforge-http-$deploy_sha.conf"
+          uploaded_http_redirect="/tmp/voiceforge-http-redirect-$deploy_sha.conf"
+          uploaded_https="/tmp/voiceforge-https-$deploy_sha.conf.template"
+          uploaded_tls_hook="/tmp/voiceforge-enable-tls-$deploy_sha.sh"
+          uploaded_certbot_service="/tmp/voiceforge-certbot-renew-$deploy_sha.service"
+          uploaded_certbot_timer="/tmp/voiceforge-certbot-renew-$deploy_sha.timer"
+          previous_sha=""
+          previous_livekit=false
+          previous_bundle=""
+          livekit_enabled=false
+          replacement_started=false
+
+          if ! printf '%s' "$deploy_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Invalid deploy SHA" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$ecr_registry" | grep -Eq '^[0-9]{12}\.dkr\.ecr\.us-east-1\.amazonaws\.com$'; then
+            echo "Unexpected ECR registry" >&2
+            exit 1
+          fi
+          [ "$aws_region" = us-east-1 ] || { echo "AWS region must be us-east-1" >&2; exit 1; }
+          [ -n "$public_app_url" ] && [ -n "$public_api_url" ] || {
+            echo "Public endpoint repository variables are required" >&2
+            exit 1
+          }
+          for uploaded_file in \
+            "$uploaded_compose" "$uploaded_nginx" "$uploaded_http" \
+            "$uploaded_http_redirect" "$uploaded_https" "$uploaded_tls_hook" \
+            "$uploaded_certbot_service" "$uploaded_certbot_timer"; do
+            test -f "$uploaded_file" && test -s "$uploaded_file" || {
+              echo "Uploaded deployment artifact is missing or is not a regular file: $uploaded_file" >&2
+              exit 1
+            }
+          done
+          test -s "$env_file" || { echo "$env_file is missing or empty" >&2; exit 1; }
+
+          deploy_user="$(id -un)"
+          deploy_group="$(id -gn)"
+          sudo install -d -m 755 "$deploy_root" "$deploy_root/nginx" \
+            "$deploy_root/nginx/docker-entrypoint.d" "$deploy_root/data/certbot/conf" \
+            "$deploy_root/data/certbot/www" "$state_dir"
+          sudo chown "$deploy_user:$deploy_group" "$state_dir"
+          install -d -m 755 "$release_dir"
+
+          env_value() {
+            awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$env_file"
+          }
+          required=(
+            NODE_ENV DATABASE_URL DIRECT_URL JWT_SECRET ENCRYPTION_KEY
+            VOICE_WEBHOOK_SECRET ALLOWED_ORIGINS SUPABASE_URL
+            SUPABASE_JWT_SECRET SUPABASE_SERVICE_ROLE_KEY INTERNAL_API_KEY
+            NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY
+            STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
+            STRIPE_GROWTH_PRICE_ID STRIPE_ENTERPRISE_PRICE_ID BILLING_MODE
+            WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
+          )
+          missing=()
+          invalid=()
+          for name in "${required[@]}"; do
+            if [ -z "$(env_value "$name")" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required production variable: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+          [ "$(env_value NODE_ENV)" = production ] || invalid+=(NODE_ENV)
+          [ "$(env_value BILLING_MODE)" = live ] || invalid+=(BILLING_MODE)
+          printf '%s' "$(env_value WEB_BASE_URL)" | grep -Eq '^https://' || invalid+=(WEB_BASE_URL)
+          case "$(env_value WEB_BASE_URL)" in
+            *localhost*|*127.0.0.1*) invalid+=(WEB_BASE_URL) ;;
+          esac
+          printf '%s' "$(env_value WORKERS_ENABLED)" | grep -Eqi \
+            '^(1|true|yes|on|0|false|no|off)$' || invalid+=(WORKERS_ENABLED)
+          printf '%s' "$(env_value TRUST_PROXY_HOPS)" | grep -Eq '^[0-5]$' \
+            || invalid+=(TRUST_PROXY_HOPS)
+          # Knowledge uploads fail at request time rather than at boot when the
+          # selected provider has no bucket, so the misconfiguration is rejected
+          # here instead of surfacing as a broken customer upload later.
+          knowledge_provider="$(env_value KNOWLEDGE_STORAGE_PROVIDER)"
+          case "$knowledge_provider" in
+            ''|supabase) ;;
+            s3)
+              [ -n "$(env_value S3_KNOWLEDGE_BUCKET)" ] || invalid+=(S3_KNOWLEDGE_BUCKET)
+              [ "$(env_value AWS_REGION)" = us-east-1 ] || invalid+=(AWS_REGION)
+              ;;
+            *) invalid+=(KNOWLEDGE_STORAGE_PROVIDER) ;;
+          esac
+          if [ "${#invalid[@]}" -ne 0 ]; then
+            printf 'Invalid production setting: %s\n' "${invalid[@]}" >&2
+            exit 1
+          fi
+
+          livekit_count=0
+          for name in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+            if [ -n "$(env_value "$name")" ]; then livekit_count=$((livekit_count + 1)); fi
+          done
+          if [ "$livekit_count" -eq 3 ]; then
+            livekit_enabled=true
+          elif [ "$livekit_count" -ne 0 ]; then
+            echo "LiveKit configuration is partial; set all three variables or none" >&2
+            exit 1
+          fi
+
+          candidate_bundle="$release_dir/$deploy_sha"
+          install -d -m 755 "$candidate_bundle/nginx/docker-entrypoint.d" "$candidate_bundle/systemd"
+          install -m 644 "$uploaded_compose" "$candidate_bundle/docker-compose.aws.yml"
+          install -m 644 "$uploaded_nginx" "$candidate_bundle/nginx/nginx.conf"
+          install -m 644 "$uploaded_http" "$candidate_bundle/nginx/http.conf"
+          install -m 644 "$uploaded_http_redirect" "$candidate_bundle/nginx/http-redirect.conf"
+          install -m 644 "$uploaded_https" "$candidate_bundle/nginx/https.conf.template"
+          install -m 755 "$uploaded_tls_hook" \
+            "$candidate_bundle/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"
+          install -m 644 "$uploaded_certbot_service" \
+            "$candidate_bundle/systemd/voiceforge-certbot-renew.service"
+          install -m 644 "$uploaded_certbot_timer" \
+            "$candidate_bundle/systemd/voiceforge-certbot-renew.timer"
+
+          if [ -s "$current_file" ]; then
+            previous_sha="$(tr -d '\r\n' < "$current_file")"
+            if ! printf '%s' "$previous_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "Recorded current SHA is invalid; refusing an unrollbackable replacement" >&2
+              exit 1
+            fi
+            previous_bundle="$release_dir/$previous_sha"
+            test -s "$previous_bundle/docker-compose.aws.yml" || {
+              echo "Previous release has no compose rollback bundle" >&2
+              exit 1
+            }
+            for relative_file in \
+              nginx/nginx.conf nginx/http.conf nginx/http-redirect.conf \
+              nginx/https.conf.template nginx/docker-entrypoint.d/40-enable-tls-if-present.sh \
+              systemd/voiceforge-certbot-renew.service systemd/voiceforge-certbot-renew.timer; do
+              test -f "$previous_bundle/$relative_file" && test -s "$previous_bundle/$relative_file" || {
+                echo "Previous release is missing rollback artifact: $relative_file" >&2
+                exit 1
+              }
+            done
+            if [ -s "$current_livekit_file" ] \
+              && [ "$(tr -d '\r\n' < "$current_livekit_file")" = true ]; then
+              previous_livekit=true
+            fi
+            for repo in voiceforge-api voiceforge-web; do
+              docker image inspect "$ecr_registry/$repo:$previous_sha" >/dev/null
+            done
+            if [ "$previous_livekit" = true ]; then
+              docker image inspect "$ecr_registry/voiceforge-livekit-agent:$previous_sha" >/dev/null
+            fi
+          elif docker ps --format '{{.Names}}' | grep -Eq '^vf-(api|web|nginx)$'; then
+            echo "Unmanaged VoiceForge containers are running; establish deploy state before replacing them" >&2
+            exit 1
+          fi
+          printf '%s\n' "$deploy_sha" > "$candidate_file"
+
+          install_release_assets() {
+            bundle="$1"
+            sudo install -d -m 755 "$deploy_root/nginx/docker-entrypoint.d" \
+              "$deploy_root/data/certbot/conf" "$deploy_root/data/certbot/www"
+            sudo install -m 644 "$bundle/nginx/nginx.conf" "$deploy_root/nginx/nginx.conf"
+            sudo install -m 644 "$bundle/nginx/http.conf" "$deploy_root/nginx/http.conf"
+            sudo install -m 644 "$bundle/nginx/http-redirect.conf" "$deploy_root/nginx/http-redirect.conf"
+            sudo install -m 644 "$bundle/nginx/https.conf.template" "$deploy_root/nginx/https.conf.template"
+            sudo install -m 755 "$bundle/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh" \
+              "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"
+            sudo install -m 644 "$bundle/systemd/voiceforge-certbot-renew.service" \
+              /etc/systemd/system/voiceforge-certbot-renew.service
+            sudo install -m 644 "$bundle/systemd/voiceforge-certbot-renew.timer" \
+              /etc/systemd/system/voiceforge-certbot-renew.timer
+          }
+          assert_bind_sources() {
+            for source_file in \
+              "$deploy_root/nginx/nginx.conf" "$deploy_root/nginx/http.conf" \
+              "$deploy_root/nginx/http-redirect.conf" "$deploy_root/nginx/https.conf.template" \
+              "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"; do
+              test -f "$source_file" || { echo "Required bind-mount file is missing: $source_file" >&2; return 1; }
+            done
+            test -x "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh" || {
+              echo "TLS entrypoint hook is not executable" >&2
+              return 1
+            }
+            for source_dir in "$deploy_root/data/certbot/conf" "$deploy_root/data/certbot/www"; do
+              test -d "$source_dir" || { echo "Required bind-mount directory is missing: $source_dir" >&2; return 1; }
+            done
+          }
+          # api and web deliberately publish no host ports, so health is probed
+          # inside the container rather than on the host. Both the deploy and the
+          # rollback path use this, so a rollback is verified the same way.
+          wait_for_service_health() {
+            label="$1"
+            service="$2"
+            url="$3"
+            attempts="$4"
+            probe="const h=require('http');const r=h.get('$url',x=>{x.resume();process.exit(x.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"
+            for attempt in $(seq 1 "$attempts"); do
+              if docker compose --env-file "$env_file" -f "$compose_file" \
+                exec -T "$service" node -e "$probe" >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "$label health check failed" >&2
+            return 1
+          }
+
+          export ECR_REGISTRY="$ecr_registry"
+          export IMAGE_TAG="$deploy_sha"
+          export COMPOSE_PROJECT_NAME=voiceforge
+          candidate_compose=(docker compose --env-file "$env_file" -f "$candidate_bundle/docker-compose.aws.yml")
+          candidate_profile=()
+          services=(redis api api-worker web nginx)
+          if [ "$livekit_enabled" = true ]; then
+            candidate_profile=(--profile livekit)
+            services+=(livekit-agent)
+          fi
+          "${candidate_compose[@]}" "${candidate_profile[@]}" config --quiet
+
+          rollback() {
+            exit_code=$?
+            trap - ERR
+            if [ "$replacement_started" = true ] && [ -n "$previous_sha" ]; then
+              echo "Deployment failed after replacement; restoring previous release" >&2
+              sudo install -m 644 "$previous_bundle/docker-compose.aws.yml" "$compose_file"
+              install_release_assets "$previous_bundle"
+              assert_bind_sources
+              export IMAGE_TAG="$previous_sha"
+              rollback_compose=(docker compose --env-file "$env_file" -f "$compose_file")
+              rollback_profile=()
+              if [ "$previous_livekit" = true ]; then rollback_profile=(--profile livekit); fi
+              "${rollback_compose[@]}" "${rollback_profile[@]}" up -d --no-build --remove-orphans
+              if [ "$previous_livekit" = false ]; then
+                "${rollback_compose[@]}" --profile livekit rm -sf livekit-agent || true
+              fi
+              if wait_for_service_health API api http://127.0.0.1:4000/api/v1/health 24 \
+                && wait_for_service_health Web web http://127.0.0.1:3000/api/health 24; then
+                printf '%s\n' "$previous_sha" > "$current_file"
+                printf '%s\n' "$previous_livekit" > "$current_livekit_file"
+                echo "Rollback to $previous_sha verified healthy" >&2
+              else
+                echo "ROLLBACK FAILED HEALTH CHECK; manual intervention is required" >&2
+              fi
+            elif [ "$replacement_started" = true ]; then
+              echo "Initial deployment failed; no previous managed release exists" >&2
+            fi
+            rm -f "$candidate_file"
+            exit "$exit_code"
+          }
+          trap rollback ERR
+
+          aws ecr get-login-password --region "$aws_region" \
+            | docker login --username AWS --password-stdin "$ecr_registry"
+          "${candidate_compose[@]}" "${candidate_profile[@]}" pull "${services[@]}"
+
+          migrate_status=0
+          "${candidate_compose[@]}" run --rm --no-deps api \
+            npx prisma migrate status --schema=apps/api/prisma/schema.prisma \
+            || migrate_status=$?
+          if [ "$migrate_status" -ne 0 ]; then
+            echo "Prisma migration status reported drift or an un-baselined database" >&2
+            exit 1
+          fi
+          "${candidate_compose[@]}" run --rm --no-deps api \
+            npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
+
+          sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
+          install_release_assets "$candidate_bundle"
+          assert_bind_sources
+          sudo systemctl daemon-reload
+          sudo systemctl enable --now voiceforge-certbot-renew.timer
+          replacement_started=true
+          live_compose=(docker compose --env-file "$env_file" -f "$compose_file")
+          "${live_compose[@]}" "${candidate_profile[@]}" up -d --no-build --remove-orphans "${services[@]}"
+          if [ "$livekit_enabled" = false ]; then
+            "${live_compose[@]}" --profile livekit rm -sf livekit-agent
+          fi
+
+          check_url() {
+            label="$1"
+            url="$2"
+            for attempt in $(seq 1 30); do
+              if curl -fsS --max-time 10 "$url" >/dev/null; then return 0; fi
+              sleep 5
+            done
+            echo "$label health check failed" >&2
+            return 1
+          }
+          check_running() {
+            service="$1"
+            for attempt in $(seq 1 12); do
+              if [ "$("${live_compose[@]}" ps --status running --quiet "$service" | wc -l)" -ge 1 ]; then
+                return 0
+              fi
+              sleep 5
+            done
+            echo "$service is not running" >&2
+            return 1
+          }
+          wait_for_service_health API api http://127.0.0.1:4000/api/v1/health 30
+          wait_for_service_health Web web http://127.0.0.1:3000/api/health 30
+          check_running api-worker
+          if [ "$livekit_enabled" = true ]; then check_running livekit-agent; fi
+          check_url "Public API" "${public_api_url%/}/health"
+          check_url "Public web" "$public_app_url"
+
+          if [ -n "$previous_sha" ] && [ "$previous_sha" != "$deploy_sha" ]; then
+            printf '%s\n' "$previous_sha" > "$previous_file"
+            printf '%s\n' "$previous_livekit" > "$previous_livekit_file"
+          fi
+          printf '%s\n' "$deploy_sha" > "$current_file"
+          printf '%s\n' "$livekit_enabled" > "$current_livekit_file"
+          rm -f "$candidate_file" "$uploaded_compose" "$uploaded_nginx" "$uploaded_http" \
+            "$uploaded_http_redirect" "$uploaded_https" "$uploaded_tls_hook" \
+            "$uploaded_certbot_service" "$uploaded_certbot_timer"
+          trap - ERR
+
+          prune_old_releases() {
+            keep_current="$deploy_sha"
+            keep_previous=""
+            if [ -s "$previous_file" ]; then
+              keep_previous="$(tr -d '\r\n' < "$previous_file")"
+            fi
+            is_kept() {
+              [ "$1" = "$keep_current" ] && return 0
+              [ -n "$keep_previous" ] && [ "$1" = "$keep_previous" ] && return 0
+              return 1
+            }
+            for repo in voiceforge-api voiceforge-web voiceforge-livekit-agent; do
+              docker image ls "$ecr_registry/$repo" --format '{{.Tag}}' | while read -r tag; do
+                case "$tag" in ''|'<none>') continue ;; esac
+                if ! is_kept "$tag"; then
+                  docker image rm "$ecr_registry/$repo:$tag" >/dev/null 2>&1 || true
+                fi
+              done
+            done
+            for bundle in "$release_dir"/*; do
+              [ -d "$bundle" ] || continue
+              bundle_sha="$(basename "$bundle")"
+              if ! is_kept "$bundle_sha"; then rm -rf "$bundle" || true; fi
+            done
+            docker image prune -f >/dev/null 2>&1 || true
+            docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+            docker system df >&2 || true
+          }
+          prune_old_releases || echo "Retention pass failed; deployment is healthy" >&2
+          echo "Deployment completed for commit $deploy_sha"
+          REMOTE
+
+      # Runs on success, failure, and cancellation, because leaving the hole open
+      # is worse than any deploy outcome. Guarded on the authorize step having
+      # actually created or adopted the rule, so a job that failed earlier does not
+      # revoke a rule it does not own.
+      - name: Revoke just-in-time SSH ingress
+        if: always() && steps.ssh_ingress.outputs.revoke_required == 'true'
+        env:
+          AWS_SECURITY_GROUP_ID: ${{ vars.AWS_SECURITY_GROUP_ID }}
+          RUNNER_CIDR: ${{ steps.ssh_ingress.outputs.cidr }}
+        run: |
+          set -euo pipefail
+          echo "Revoking TCP 22 from $RUNNER_CIDR on $AWS_SECURITY_GROUP_ID"
+          revoke_output="$(mktemp)"
+          revoke_error="$(mktemp)"
+          # The two VPC flavors report an already-absent rule differently. In a
+          # default VPC, which is what this instance runs in, a rule that does not
+          # match returns exit status 0 and is listed under UnknownIpPermissions
+          # instead of raising. In a non-default VPC the same case raises
+          # InvalidPermission.NotFound. Both mean the same thing here and are
+          # tolerated; anything else is a real failure. The describe assertion below
+          # is what actually proves the rule is gone, since a silent no-op revoke
+          # would otherwise look identical to a successful one.
+          if aws ec2 revoke-security-group-ingress \
+            --region "$AWS_REGION" \
+            --group-id "$AWS_SECURITY_GROUP_ID" \
+            --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$RUNNER_CIDR}]" \
+            >"$revoke_output" 2>"$revoke_error"; then
+            if grep -q '"UnknownIpPermissions"' "$revoke_output"; then
+              echo "Rule for $RUNNER_CIDR was already absent"
+            else
+              echo "Revoked $RUNNER_CIDR"
+            fi
+          elif grep -q 'InvalidPermission.NotFound' "$revoke_error"; then
+            echo "Rule for $RUNNER_CIDR was already absent"
+          else
+            echo "::error::Failed to revoke SSH ingress for $RUNNER_CIDR; it may still be open"
+            cat "$revoke_error" >&2
+            exit 1
+          fi
+          # Independent confirmation that this job left no port 22 rule other than
+          # the operator's persistent one, so a silent revoke failure cannot pass.
+          remaining="$(aws ec2 describe-security-group-rules \
+            --region "$AWS_REGION" \
+            --filters "Name=group-id,Values=$AWS_SECURITY_GROUP_ID" \
+            --query "SecurityGroupRules[?IsEgress==\`false\` && FromPort==\`22\` && CidrIpv4=='$RUNNER_CIDR'].SecurityGroupRuleId" \
+            --output text)"
+          if [ -n "$remaining" ]; then
+            echo "::error::SSH rule for $RUNNER_CIDR is still present: $remaining"
+            exit 1
+          fi
+
+      - name: Record deployment summary
+        env:
+          DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          {
+            echo "### AWS EC2 production deployment"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Registry: \`$ECR_REGISTRY\`"
+            echo "- Images: API, web, and LiveKit agent built by Depot and tagged with the full commit SHA"
+          } >> "$GITHUB_STEP_SUMMARY"
