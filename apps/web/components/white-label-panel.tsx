@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { useApi } from '@/lib/use-api';
 import { Palette, Save, Eye } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface WhiteLabelPanelProps {
   workspaceId: string;
@@ -75,6 +76,10 @@ export function WhiteLabelPanel({ workspaceId }: WhiteLabelPanelProps) {
         }),
       }),
     onSuccess: () => {
+      posthog.capture('white_label_settings_saved', {
+        custom_domain_configured: Boolean(form.custom_domain),
+        platform_branding_hidden: form.hide_platform_branding,
+      });
       toast.success('Branding saved.');
       qc.invalidateQueries({ queryKey: ['white-label', workspaceId] });
     },

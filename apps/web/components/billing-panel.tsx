@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useApi } from '@/lib/use-api';
 import { CreditCard, ExternalLink, CheckCircle2, XCircle } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface BillingPanelProps {
   workspaceId: string;
@@ -106,6 +107,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
       if (!isTrustedCheckoutUrl(data.url)) {
         throw new Error('Untrusted redirect URL received from server');
       }
+      posthog.capture('checkout_started', { plan });
       window.location.href = data.url;
     },
   });
@@ -122,6 +124,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
       if (!isTrustedCheckoutUrl(data.url)) {
         throw new Error('Untrusted redirect URL received from server');
       }
+      posthog.capture('billing_portal_opened');
       window.location.href = data.url;
     },
   });

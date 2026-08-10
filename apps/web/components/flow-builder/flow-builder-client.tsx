@@ -9,6 +9,7 @@ import type { ToolSummary } from '@voiceforge/shared';
 import { FlowBuilder } from './flow-builder';
 import { convertReactFlowToAgentFlow, validateAgentFlow } from './flow-builder-model';
 import { useApi } from '@/lib/use-api';
+import posthog from 'posthog-js';
 
 interface FlowBuilderClientProps {
   workspaceId: string;
@@ -33,6 +34,7 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
       });
     },
     onSuccess: () => {
+      posthog.capture('agent_flow_saved');
       toast.success('Flow saved.');
       router.refresh();
     },

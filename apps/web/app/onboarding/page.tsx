@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
+import posthog from 'posthog-js';
 
 function sanitizeNext(next: string | null): string {
   if (!next) return '/dashboard';
@@ -52,6 +53,7 @@ function OnboardingInner() {
       if (!res.ok) throw new Error(data?.error ?? `Onboarding failed (${res.status})`);
 
       await supabase.auth.refreshSession();
+      posthog.capture('onboarding_completed');
       router.push(next);
       router.refresh();
     } catch (err) {

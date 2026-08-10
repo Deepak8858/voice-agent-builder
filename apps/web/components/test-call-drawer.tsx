@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { cn } from '@/lib/cn';
 import { ArrowRight, Clock3, MessageSquareText, Phone } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface TestCallDrawerProps {
   workspaceId: string;
@@ -38,6 +39,7 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
     onSuccess: (res) => {
       setCallId(res.call_id);
       setOpen(true);
+      posthog.capture('test_call_started');
       toast.success('Test session created.');
     },
     onError: (err: Error) => toast.error(err.message),
