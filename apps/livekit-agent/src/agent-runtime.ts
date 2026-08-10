@@ -65,6 +65,9 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
     `Goals:\n${spec.goals.map((goal) => `- ${goal}`).join('\n')}`,
     requiredFields ? `Capture fields:\n${requiredFields}` : 'No required fields are configured.',
     `Conversation rules: ${rules.join('; ')}.`,
+    spec.knowledge.retrieval_mode !== 'none' && spec.knowledge.max_chunks > 0
+      ? 'For factual questions about the business, its products, services, policies, or procedures, call search_knowledge_base before answering. Use only retrieved passages. If retrieval finds nothing or fails, say the returned fallback message exactly and do not invent an answer.'
+      : 'Knowledge retrieval is disabled. Do not claim to have looked up business knowledge.',
     spec.knowledge.fallback_message ? `Knowledge fallback: ${spec.knowledge.fallback_message}` : null,
     spec.handoff.enabled
       ? `Handoff is enabled. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}.`
