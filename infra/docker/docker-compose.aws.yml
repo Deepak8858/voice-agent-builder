@@ -159,6 +159,14 @@ services:
       APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
       LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-voiceforge-agent}
       OPENAI_REALTIME_VOICE: ${OPENAI_REALTIME_VOICE:-marin}
+      # Reached over the compose network, so this is the api service address and
+      # never the public hostname: a public round trip would leave the internal
+      # shared secret in nginx access logs and depend on TLS for an in-host hop.
+      # INTERNAL_API_KEY is deliberately absent here because it already arrives
+      # through the shared env_file, exactly as it does for the api service.
+      # Without both variables the agent builds a stub that throws on every
+      # lookup, so knowledge retrieval silently degrades to the fallback message.
+      INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://api:4000}
     mem_limit: 1536m
     mem_reservation: 512m
     cpus: "0.75"
