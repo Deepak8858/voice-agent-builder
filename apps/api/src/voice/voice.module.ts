@@ -5,6 +5,8 @@ import { MockVoiceAdapter } from './adapters/mock.adapter';
 import { OpenAIRealtimeVoiceAdapter } from './adapters/openai-realtime.adapter';
 import { RetellVoiceAdapter } from './adapters/retell.adapter';
 import { VapiVoiceAdapter } from './adapters/vapi.adapter';
+import { KnowledgeModule } from '../knowledge/knowledge.module';
+import { LiveKitKnowledgeController } from './livekit-knowledge.controller';
 import { VoiceProviderRegistry } from './voice-provider.registry';
 
 export const VOICE_PROVIDER_TOKEN = Symbol.for('VOICE_PROVIDER_TOKEN');
@@ -57,6 +59,8 @@ export const resolveVoiceProviderForTest = resolveVoiceProvider;
 
 @Global()
 @Module({
+  imports: [KnowledgeModule],
+  controllers: [LiveKitKnowledgeController],
   providers: [
     VapiVoiceAdapter,
     TwilioVoiceAdapter,
