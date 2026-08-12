@@ -10,12 +10,15 @@ import { ComplianceManifestService } from './compliance-manifest.service';
 import { RetentionController } from './retention.controller';
 import { RetentionService } from './retention.service';
 import { EmailModule } from '../email/email.module';
+import { KnowledgeModule } from '../knowledge/knowledge.module';
 
 @Module({
   controllers: [ContactsController, ComplianceController, ErasureController, ComplianceManifestController, RetentionController],
   providers: [ComplianceService, ErasureService, ComplianceManifestService, RetentionService, WorkspaceGuard],
   exports: [ComplianceService, ErasureService, RetentionService],
-  imports: [EmailModule],
+  // KnowledgeModule supplies KNOWLEDGE_FILE_STORAGE_TOKEN so GDPR erasure can
+  // delete the customer files behind knowledge sources, not just their rows.
+  imports: [EmailModule, KnowledgeModule],
 })
 export class ComplianceModule {}
 
