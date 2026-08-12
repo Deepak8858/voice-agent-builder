@@ -68,6 +68,6 @@ const knowledgeFileStorageProvider: Provider = {
     knowledgeFileStorageProvider,
     embeddingProvider,
   ],
-  exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN],
+  exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN, KNOWLEDGE_FILE_STORAGE_TOKEN],
 })
 export class KnowledgeModule {}
