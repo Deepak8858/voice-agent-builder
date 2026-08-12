@@ -1,61 +1,61 @@
-# =============================================================================
-# VoiceForge AI — LiveKit Agent Container
-# =============================================================================
-# Build context: repository root (monorepo)
-# ---------------------------------------------------------------------------
+# syntax=docker/dockerfile:1.7
+FROM --platform=linux/amd64 node:20-bookworm-slim AS build
 
-# Node pinned to 20.20 to match the engines floor the monorepo now requires.
-FROM --platform=linux/amd64 node:20.20-slim AS builder
 WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ openssl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable \
+    && corepack prepare pnpm@10.33.2 --activate
 
-COPY package*.json ./
-COPY pnpm-workspace.yaml ./
-COPY apps/livekit-agent/package*.json ./apps/livekit-agent/
-COPY packages/shared/package*.json ./packages/shared/
-COPY apps/api/package*.json ./apps/api/
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/livekit-agent/package.json apps/livekit-agent/package.json
+COPY apps/voice-edge/package.json apps/voice-edge/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ui/package.json packages/ui/package.json
 
-COPY packages/shared ./packages/shared
-COPY apps/api/prisma ./apps/api/prisma
+RUN --mount=type=cache,id=voiceforge-pnpm,target=/pnpm/store,sharing=locked \
+    pnpm config set store-dir /pnpm/store --global \
+    && pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
 
-RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/livekit-agent/package.json && \
-    sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/api/package.json
-RUN rm -f package-lock.json pnpm-lock.yaml
-RUN npm install --ignore-scripts --no-audit --no-fund
-
-COPY apps/livekit-agent ./apps/livekit-agent
 COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY apps/api/prisma apps/api/prisma
+COPY apps/livekit-agent apps/livekit-agent
 
-RUN npx prisma generate --schema=apps/api/prisma/schema.prisma
-RUN npm run build -w @voiceforge/shared
-RUN npm run build -w @voiceforge/livekit-agent
+RUN pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma \
+    && pnpm --filter @voiceforge/shared run build \
+    && pnpm --filter @voiceforge/livekit-agent run build
 
-FROM --platform=linux/amd64 node:20.20-slim AS production
+FROM --platform=linux/amd64 node:20-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini openssl \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini openssl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -g 1001 nodegroup \
-    && useradd -u 1001 -g nodegroup -s /bin/sh -M nodeuser \
-    && chown -R nodeuser:nodegroup /app
+    && groupadd --gid 10001 voiceforge \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
 
-COPY --chown=1001:1001 --from=builder /app/apps/livekit-agent/dist ./apps/livekit-agent/dist
-COPY --chown=1001:1001 --from=builder /app/apps/livekit-agent/package.json ./apps/livekit-agent/package.json
-COPY --chown=1001:1001 --from=builder /app/apps/api/prisma ./apps/api/prisma
-COPY --chown=1001:1001 --from=builder /app/packages/shared/package.json ./packages/shared/package.json
-COPY --chown=1001:1001 --from=builder /app/packages/shared/dist ./packages/shared/dist
-COPY --chown=1001:1001 --from=builder /app/node_modules ./node_modules
+COPY --from=build --chown=10001:10001 /app/node_modules node_modules
+# Same reason as Dockerfile.api: the @voiceforge/shared link and any
+# un-hoistable dependency live in the package's own node_modules.
+COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/node_modules apps/livekit-agent/node_modules
+COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/dist apps/livekit-agent/dist
+COPY --from=build --chown=10001:10001 /app/apps/livekit-agent/package.json apps/livekit-agent/package.json
+COPY --from=build --chown=10001:10001 /app/apps/api/prisma apps/api/prisma
+COPY --from=build --chown=10001:10001 /app/packages/shared/dist packages/shared/dist
+COPY --from=build --chown=10001:10001 /app/packages/shared/package.json packages/shared/package.json
 
-USER nodeuser
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "require('http').get('http://127.0.0.1:8081/', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1)).on('error', () => process.exit(1))"
-
-EXPOSE 8081
-
-ENTRYPOINT ["tini", "--"]
+USER voiceforge
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["node", "-e", "process.kill(1,0)"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/livekit-agent/dist/index.js", "start"]

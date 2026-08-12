@@ -7,9 +7,17 @@ import {
 } from './embeddings/embedding.provider.interface';
 import { OpenAIEmbeddingAdapter } from './embeddings/openai.embedding.adapter';
 import { KnowledgeController } from './knowledge.controller';
+import {
+  createKnowledgeFileStorage,
+  type KnowledgeStorageProvider,
+} from './knowledge-file-storage-router';
+import {
+  KNOWLEDGE_FILE_STORAGE_TOKEN,
+  type KnowledgeFileStorage,
+} from './knowledge-file-storage.interface';
 import { KnowledgeService } from './knowledge.service';
-import { KNOWLEDGE_FILE_STORAGE_TOKEN } from './knowledge-file-storage.interface';
 import { FileParser } from './parsers/file-parser';
+import { S3KnowledgeFileStorage } from './s3-knowledge-file-storage.service';
 import { SupabaseKnowledgeFileStorage } from './supabase-knowledge-file-storage.service';
 
 const embeddingProvider: Provider = {
@@ -25,6 +33,30 @@ const embeddingProvider: Provider = {
   },
 };
 
+// S3KnowledgeFileStorage accepts a client and config as optional constructor
+// seams for unit tests. Registering the class directly makes Nest reflect both
+// interface-shaped parameters as injectable `Object` tokens, so the production
+// application fails to boot before the default AWS SDK client can be created.
+// Construct it explicitly with no arguments in the application container while
+// preserving direct constructor injection in focused unit tests.
+const s3KnowledgeFileStorageProvider: Provider = {
+  provide: S3KnowledgeFileStorage,
+  useFactory: (): S3KnowledgeFileStorage => new S3KnowledgeFileStorage(),
+};
+
+const knowledgeFileStorageProvider: Provider = {
+  provide: KNOWLEDGE_FILE_STORAGE_TOKEN,
+  inject: [SupabaseKnowledgeFileStorage, S3KnowledgeFileStorage],
+  useFactory: (
+    supabase: SupabaseKnowledgeFileStorage,
+    s3: S3KnowledgeFileStorage,
+  ): KnowledgeFileStorage => createKnowledgeFileStorage(
+    env.KNOWLEDGE_STORAGE_PROVIDER as KnowledgeStorageProvider,
+    supabase,
+    s3,
+  ),
+};
+
 @Module({
   controllers: [KnowledgeController],
   providers: [
@@ -32,10 +64,8 @@ const embeddingProvider: Provider = {
     WorkspaceGuard,
     FileParser,
     SupabaseKnowledgeFileStorage,
-    {
-      provide: KNOWLEDGE_FILE_STORAGE_TOKEN,
-      useExisting: SupabaseKnowledgeFileStorage,
-    },
+    s3KnowledgeFileStorageProvider,
+    knowledgeFileStorageProvider,
     embeddingProvider,
   ],
   exports: [KnowledgeService, EMBEDDING_PROVIDER_TOKEN],

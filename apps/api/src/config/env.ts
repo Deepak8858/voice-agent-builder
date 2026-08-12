@@ -87,6 +87,15 @@ const EnvSchema = z.object({
     ),
   WEEKLY_DIGEST_TIMEZONE: z.string().default('UTC'),
 
+  // Knowledge file storage
+  KNOWLEDGE_STORAGE_PROVIDER: z.enum(['supabase', 's3']).default('supabase'),
+  AWS_REGION: z.string().min(1).default('us-east-1'),
+  S3_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
+  S3_KNOWLEDGE_PREFIX: z.string().regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9!_.*'()-]*(\/[a-zA-Z0-9][a-zA-Z0-9!_.*'()-]*)*$/,
+    'S3_KNOWLEDGE_PREFIX must be a relative S3 key prefix without leading or trailing slashes',
+  ).default('knowledge'),
+
   // Supabase (used by backend for service-role operations)
   SUPABASE_URL: z.string().optional(),
   SUPABASE_JWT_SECRET: z.string().optional(),
@@ -146,6 +155,13 @@ const EnvSchema = z.object({
     .default('')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 }).superRefine((value, ctx) => {
+  if (value.KNOWLEDGE_STORAGE_PROVIDER === 's3' && !value.S3_KNOWLEDGE_BUCKET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['S3_KNOWLEDGE_BUCKET'],
+      message: 'S3_KNOWLEDGE_BUCKET is required when KNOWLEDGE_STORAGE_PROVIDER=s3',
+    });
+  }
   if (value.NODE_ENV === 'production' && value.ALLOWED_ORIGINS.length === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

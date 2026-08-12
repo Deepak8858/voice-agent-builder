@@ -57,7 +57,12 @@ voiceforge-ai/
       constants/
     ui/
   docs/
-  docker-compose.yml
+  infra/
+    aws/
+    docker/
+      docker-compose.yml       # local development
+      docker-compose.aws.yml   # production (EC2)
+    nginx/
   package.json
   README.md
 ```
