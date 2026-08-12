@@ -30,6 +30,19 @@ describe('AWS production compose', () => {
     expect(compose).toContain('LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-voiceforge-agent}');
   });
 
+  it('routes LiveKit knowledge retrieval over the private API service', () => {
+    const compose = readFileSync(composePath, 'utf8');
+    const livekitService = compose.slice(compose.indexOf('  livekit-agent:'));
+
+    expect(livekitService).toContain('INTERNAL_API_BASE_URL: http://api:4000');
+    // Retrieval targets the api service, so the worker must not start before it
+    // is healthy. Matched tolerantly because this file is stored with CRLF.
+    expect(livekitService).toMatch(/depends_on:\s+api:\s+condition: service_healthy/);
+    // INTERNAL_API_KEY is secret material inherited from the production env_file;
+    // it must never be hard-coded into the deployment definition.
+    expect(livekitService).not.toMatch(/INTERNAL_API_KEY:\s*\S+/);
+  });
+
   // Deploys must be pinned to an immutable full git SHA. ECR repositories are
   // created with imageTagMutability=IMMUTABLE, so a floating tag such as
   // `latest` would make a deployed commit unidentifiable and break rollback.

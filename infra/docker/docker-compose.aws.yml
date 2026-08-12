@@ -157,6 +157,9 @@ services:
     environment:
       NODE_ENV: production
       APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+      # Keep service-to-service retrieval on the private Docker network. The
+      # shared INTERNAL_API_KEY is inherited from /opt/voiceforge/.env.
+      INTERNAL_API_BASE_URL: http://api:4000
       LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-voiceforge-agent}
       OPENAI_REALTIME_VOICE: ${OPENAI_REALTIME_VOICE:-marin}
     mem_limit: 1536m
@@ -169,6 +172,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    depends_on:
+      api:
+        condition: service_healthy
 
 networks:
   voiceforge:
