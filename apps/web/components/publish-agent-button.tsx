@@ -7,6 +7,7 @@ import type { AgentDetail } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
 import { useApi } from '@/lib/use-api';
 import { Rocket } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface PublishAgentButtonProps {
   workspaceId: string;
@@ -23,6 +24,7 @@ export function PublishAgentButton({ workspaceId, agentId }: PublishAgentButtonP
         method: 'POST',
       }),
     onSuccess: () => {
+      posthog.capture('agent_published');
       toast.success('Agent published.');
       router.refresh();
     },

@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useApi } from '@/lib/use-api';
 import { Building2, Mail, Users, BarChart3 } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface ClientsPanelProps {
   workspaceId: string;
@@ -58,6 +59,7 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
         body: JSON.stringify({ name, slug }),
       }),
     onSuccess: () => {
+      posthog.capture('client_workspace_created');
       toast.success('Client workspace created.');
       setName('');
       setSlug('');
@@ -77,6 +79,7 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
         }),
       }),
     onSuccess: (i) => {
+      posthog.capture('client_invite_sent', { role });
       toast.success('Invite sent.');
       setEmail('');
       navigator.clipboard?.writeText(i.token).catch(() => undefined);
@@ -91,6 +94,7 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
         method: 'DELETE',
       }),
     onSuccess: () => {
+      posthog.capture('client_invite_revoked');
       toast.success('Invite revoked.');
       qc.invalidateQueries({ queryKey: invitesKey });
     },
