@@ -50,7 +50,7 @@ export class TwilioVoiceAdapter implements VoiceRuntimeProvider {
   }
 
   async createBrowserTestSession(
-    input: CreateBrowserTestSessionInput,
+    _input: CreateBrowserTestSessionInput,
   ): Promise<BrowserTestSessionResult> {
     return {
       test_session_id: `browser_test_${Date.now()}`,
@@ -93,11 +93,11 @@ export class TwilioVoiceAdapter implements VoiceRuntimeProvider {
     await this.twilioUpdateCall(input.callId, { Status: 'completed' });
   }
 
-  async getTranscript(input: GetTranscriptInput): Promise<TranscriptResult> {
+  async getTranscript(_input: GetTranscriptInput): Promise<TranscriptResult> {
     return { transcript: '', turns: [] };
   }
 
-  async getRecording(input: GetRecordingInput): Promise<RecordingResult> {
+  async getRecording(_input: GetRecordingInput): Promise<RecordingResult> {
     return { url: null, duration_seconds: null };
   }
 

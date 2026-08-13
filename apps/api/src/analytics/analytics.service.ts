@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentMetricsResponse,
@@ -14,6 +14,8 @@ import type {
 import { SUCCESS_OUTCOMES } from '@voiceforge/shared';
 import { CacheService } from '../cache/cache.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PostHogService } from '../posthog/posthog.service';
+import { eventScopeIdFor, toPostHogEvent } from './posthog-event.adapter';
 
 interface ResolvedRange {
   from: Date;
@@ -40,13 +42,20 @@ const ANALYTICS_CACHE_TTL_SECONDS = 30;
 
 @Injectable()
 export class AnalyticsService {
+  private readonly logger = new Logger(AnalyticsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache?: CacheService,
+    private readonly posthog?: PostHogService,
   ) {}
 
   // --- ingestion --------------------------------------------------------
 
+  /**
+   * Public ingestion endpoint. Event types and payloads are user-supplied, so
+   * this path is deliberately NOT mirrored to PostHog.
+   */
   async recordEvent(
     workspaceId: string,
     dto: RecordAnalyticsEventDto,
@@ -66,6 +75,10 @@ export class AnalyticsService {
     return this.toEventDto(row);
   }
 
+  /**
+   * Internal, trusted ingestion path. Postgres is the system of record; the
+   * PostHog mirror runs afterwards and can never affect it.
+   */
   async recordEventInternal(input: {
     workspaceId: string;
     agentId?: string | null;
@@ -73,8 +86,10 @@ export class AnalyticsService {
     eventType: string;
     payload?: Record<string, unknown>;
   }): Promise<void> {
+    let organizationId: string | null = null;
+    let persisted = false;
     try {
-      const organizationId = await this.prisma.organizationIdFor(input.workspaceId);
+      organizationId = await this.prisma.organizationIdFor(input.workspaceId);
       await this.prisma.analyticsEvent.create({
         data: {
           workspaceId: input.workspaceId,
@@ -86,8 +101,59 @@ export class AnalyticsService {
             (input.payload as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
         },
       });
-    } catch {
-      // best-effort; analytics never breaks call flow
+      persisted = true;
+    } catch (error) {
+      // Never include the payload or database message: either may contain
+      // customer data. The event name and error class are enough to alert on
+      // loss while analytics remains off the call's correctness path.
+      this.logger.warn(
+        `[analytics.persist] event=${input.eventType} error=${errorName(error)}`,
+      );
+    }
+
+    if (persisted) this.mirrorToPostHog(input, organizationId);
+  }
+
+  /**
+   * Best-effort mirror of a known internal event to PostHog. Unknown and
+   * dynamically-named events (`outcome.*`) map to null and are dropped. Never
+   * throws and never awaits: PostHog must not be on the call path.
+   *
+   * Only called after the Postgres write succeeded. Postgres is the system of
+   * record, so mirroring an event it does not contain would let PostHog report
+   * activity that never happened and distort every funnel built on it.
+   *
+   * A missing `organizationId` also drops the event rather than sending
+   * workspace-only attribution: partial tenant attribution is silently wrong in
+   * a multi-tenant product and is worse than an absent data point.
+   */
+  private mirrorToPostHog(
+    input: {
+      workspaceId: string;
+      agentId?: string | null;
+      callId?: string | null;
+      eventType: string;
+      payload?: Record<string, unknown>;
+    },
+    organizationId: string | null,
+  ): void {
+    if (!this.posthog) return;
+    if (!organizationId) {
+      this.logger.warn(`[analytics.mirror] event=${input.eventType} missing organization`);
+      return;
+    }
+    try {
+      const event = toPostHogEvent(input);
+      if (!event) return;
+      this.posthog.capture(event, {
+        workspaceId: input.workspaceId,
+        organizationId,
+        eventScopeId: eventScopeIdFor(input),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `[analytics.mirror] event=${input.eventType} error=${errorName(error)}`,
+      );
     }
   }
 
@@ -589,6 +655,10 @@ export class AnalyticsService {
       occurred_at: row.occurredAt.toISOString(),
     };
   }
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error && error.name ? error.name : 'UnknownError';
 }
 
 function getWeekKey(d: Date): string {

@@ -1,8 +1,8 @@
 import type { Metadata } from 'next';
 import { DM_Sans, DM_Serif_Display, IBM_Plex_Mono } from 'next/font/google';
 import { Toaster } from 'sonner';
+import { ClientChrome } from '@/components/layout/client-chrome';
 import { QueryProvider } from '@/components/providers/query-provider';
-import { SiteHeader } from '@/components/site-header';
 import './globals.css';
 
 const dmSans = DM_Sans({
@@ -34,8 +34,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${dmSans.variable} ${dmSerif.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
-        <SiteHeader />
+<body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
+        <ClientChrome />
         <QueryProvider>
           <main className="flex flex-1 flex-col">{children}</main>
         </QueryProvider>

@@ -213,7 +213,8 @@ export default function AiGenerateAgentPage() {
   });
 
   return (
-    <div className="flex flex-col gap-6">
+    /* ph-no-capture: free-text generation prompts and the resulting spec. */
+    <div className="ph-no-capture flex flex-col gap-6">
       <PageHeader
         eyebrow="AI generator"
         title="Describe the outcome. Generate the voice-agent spec."

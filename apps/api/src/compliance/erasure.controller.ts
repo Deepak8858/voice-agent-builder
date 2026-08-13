@@ -1,4 +1,4 @@
-import { Controller, Delete, Param, UseGuards, Post } from '@nestjs/common';
+import { Controller, Delete, Param, UseGuards } from '@nestjs/common';
 import { ErasureService } from './erasure.service';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';

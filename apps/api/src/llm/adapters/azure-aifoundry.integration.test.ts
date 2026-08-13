@@ -78,7 +78,6 @@ async function buildAdapter(opts: {
 
   const { AzureAiFoundryAdapter } = await import('./azure-aifoundry.adapter');
   const { LlmCacheService } = await import('../llm-cache.service');
-  const { CacheService } = await import('../../cache/cache.service');
 
   inMemoryCacheStore.clear();
 
@@ -211,7 +210,6 @@ describe('AzureAiFoundryAdapter (missing API key)', () => {
 
     const { AzureAiFoundryAdapter } = await import('./azure-aifoundry.adapter');
     const { LlmCacheService } = await import('../llm-cache.service');
-    const { CacheService } = await import('../../cache/cache.service');
 
     const innerCache = new Map<string, unknown>();
     const cacheService = new LlmCacheService({

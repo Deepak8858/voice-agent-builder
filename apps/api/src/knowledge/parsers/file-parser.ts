@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { extractText, getDocumentProxy } from 'unpdf';
 import { KnowledgeFileInvalidError } from '../../common/errors';
 
 export type SupportedMimeKind = 'pdf' | 'csv' | 'txt';
@@ -17,8 +18,8 @@ const TXT_MIMES = new Set(['text/plain', 'text/markdown', 'application/json']);
 
 /**
  * File ingestion adapter. Detects kind from mime + filename, extracts plain
- * text, returns it for chunking. PDF parsing uses `pdf-parse` (lazy import so
- * the module can boot even before the dep is installed).
+ * text, returns it for chunking. PDF parsing uses the maintained `unpdf`
+ * serverless PDF.js build.
  */
 @Injectable()
 export class FileParser {
@@ -60,21 +61,12 @@ export class FileParser {
   }
 
   private async parsePdf(buffer: Buffer): Promise<string> {
-    let pdfParse: (b: Buffer) => Promise<{ text: string }>;
     try {
-      // Lazy require so vitest + dev startup don't fail if dep absent.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-      pdfParse = require('pdf-parse') as (b: Buffer) => Promise<{ text: string }>;
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const result = await extractText(pdf, { mergePages: true });
+      return result.text;
     } catch (err) {
-      this.logger.error(`pdf-parse not installed: ${(err as Error).message}`);
-      throw new KnowledgeFileInvalidError(
-        'PDF parsing dependency is not installed. Run `npm install` in apps/api.',
-      );
-    }
-    try {
-      const result = await pdfParse(buffer);
-      return result.text ?? '';
-    } catch (err) {
+      this.logger.warn(`PDF extraction failed: ${(err as Error).message}`);
       throw new KnowledgeFileInvalidError(`Failed to parse PDF: ${(err as Error).message}`);
     }
   }

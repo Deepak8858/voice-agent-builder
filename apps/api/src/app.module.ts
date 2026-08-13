@@ -19,6 +19,8 @@ import { EvaluationsModule } from './evaluations/evaluations.module';
 import { HealthModule } from './health/health.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { LlmModule } from './llm/llm.module';
+import { PostHogModule } from './posthog/posthog.module';
+import { PostHogService } from './posthog/posthog.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { QueueModule } from './queue/queue.module';
 import { WorkersModule } from './workers/workers.module';
@@ -47,6 +49,7 @@ import { env } from './config/env';
 @Module({
   imports: [
     MetricsModule,
+    PostHogModule,
     PrismaModule,
     AuditModule,
     QueueModule,
@@ -92,7 +95,12 @@ import { env } from './config/env';
   ],
 })
 export class AppModule implements OnApplicationShutdown {
+  constructor(private readonly posthog: PostHogService) {}
+
   async onApplicationShutdown(signal: string): Promise<void> {
     logger.info({ signal }, 'Application shutdown signal received');
+    // Flush queued analytics. No-op when disabled and never throws, so it
+    // cannot delay or fail shutdown.
+    await this.posthog.shutdown();
   }
 }

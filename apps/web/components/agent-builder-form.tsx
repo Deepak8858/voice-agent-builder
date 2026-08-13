@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useApi } from '@/lib/use-api';
 import { useAgentDraftStore } from '@/lib/stores/agent-draft';
 import { Bot, PhoneIncoming, PhoneOutgoing, Phone, Sparkles } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface TemplateSummary {
   slug: string;
@@ -59,6 +60,12 @@ export function AgentBuilderForm() {
     },
     onSuccess: (res) => {
       setGenerated(res);
+      posthog.capture('agent_generation_started', {
+        template_selected: Boolean(templateSlug),
+        crm_provider_count: crmProviders.length,
+        call_direction: callDirection,
+        voice_configured: Boolean(voiceConfig),
+      });
       toast.success('Generation started. Watch the preview panel for progress.');
     },
     onError: (err: Error) => toast.error(err.message),
@@ -67,7 +74,8 @@ export function AgentBuilderForm() {
   const isGenerating = generated && generated.status_url;
 
   return (
-    <div className="flex flex-col gap-6">
+    /* ph-no-capture: free-text prompt and business identity fields. */
+    <div className="ph-no-capture flex flex-col gap-6">
       {/* Agent Persona */}
       <Card>
         <CardHeader>

@@ -1,33 +1,24 @@
+#!/bin/bash
 # =============================================================================
-# VoiceForge AI — Let's Encrypt Setup Script
+# VoiceForge AI — retired SSL setup script
 # =============================================================================
-# Run this on EC2 to obtain SSL certificates via certbot.
-# Usage: chmod +x infra/scripts/setup-ssl.sh && ./infra/scripts/setup-ssl.sh
+# This issued a certificate for a default voiceforge.ai domain by starting a
+# long-lived certbot container bound to ports 80 and 443. On the current host
+# those ports belong to nginx, so running it would either fail to bind or take
+# the site down. It is kept only as a signpost and refuses to run.
 # =============================================================================
 
 set -euo pipefail
 
-DOMAIN="${1:-voiceforge.ai}"
-EMAIL="${2:-admin@voiceforge.ai}"
+cat >&2 <<'NOTICE'
+infra/scripts/setup-ssl.sh has been retired and does nothing.
 
-echo "🔒 Setting up Let's Encrypt SSL for ${DOMAIN}..."
+TLS is bootstrapped through nginx itself. Until a certificate exists nginx
+serves the app over HTTP and answers the ACME webroot; once the certificate is
+present its entrypoint hook enables the TLS server and redirects plain HTTP.
 
-# Create certbot directories
-sudo mkdir -p /opt/voiceforge/data/certbot/conf
-sudo mkdir -p /opt/voiceforge/data/certbot/www
-
-# Pull nginx with certbot
-docker run -d \
-  --name certbot \
-  -p 80:80 \
-  -p 443:443 \
-  -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt \
-  -v /opt/voiceforge/data/certbot/www:/var/www/certbot \
-  --restart unless-stopped \
-  certbot/certbot \
-  certonly --webroot -w /var/www/certbot -d ${DOMAIN} --email ${EMAIL} --agree-tos --no-eff-email
-
-echo ""
-echo "✅ Certbot container started."
-echo "   Check status: docker logs certbot"
-echo "   Certificates will be at: /opt/voiceforge/data/certbot/conf/live/${DOMAIN}/"
+Follow infra/nginx/TLS-BOOTSTRAP.txt to issue the first certificate. Renewal is
+handled by the voiceforge-certbot-renew systemd timer, which the deploy workflow
+installs and enables; no cron entry and no standing certbot container are used.
+NOTICE
+exit 1

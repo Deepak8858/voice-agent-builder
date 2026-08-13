@@ -13,19 +13,21 @@ const BooleanEnvSchema = z.preprocess((value) => {
  * We intentionally load from process.env and validate once at boot so a
  * misconfigured environment fails fast with a readable error.
  *
- * RULE: mock providers are REMOVED. Only real providers are allowed.
+ * Mock providers are available for credential-less development and tests but
+ * are rejected in production.
  */
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().min(1).optional(),
   WEB_PORT: z.coerce.number().int().min(1).optional(),
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
 
   DATABASE_URL: z.string().optional(),
   DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
-  VOICE_PROVIDER: z.enum(['vapi', 'twilio', 'openai-realtime']).optional(),
+  VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
@@ -33,6 +35,11 @@ const EnvSchema = z.object({
   VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
+
+  RETELL_API_KEY: z.string().optional(),
+  RETELL_BASE_URL: z.string().url().default('https://api.retellai.com'),
+  RETELL_FROM_NUMBER: z.string().optional(),
+  RETELL_VOICE_ID: z.string().default('11labs-Adrian'),
 
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -65,6 +72,29 @@ const EnvSchema = z.object({
   EMAIL_FROM: z.string().optional(),
   WEB_BASE_URL: z.string().default('http://localhost:3000'),
   DEFAULT_COUNTRY: z.string().default('US'),
+
+  // Weekly digest schedule. Defaults to Monday 09:00 UTC. The cron pattern is
+  // handed to BullMQ's scheduler, so it must be a 5- or 6-field expression.
+  WEEKLY_DIGEST_CRON: z
+    .string()
+    .default('0 9 * * 1')
+    .refine(
+      (v) => {
+        const fields = v.trim().split(/\s+/).length;
+        return fields === 5 || fields === 6;
+      },
+      'WEEKLY_DIGEST_CRON must be a 5- or 6-field cron expression',
+    ),
+  WEEKLY_DIGEST_TIMEZONE: z.string().default('UTC'),
+
+  // Knowledge file storage
+  KNOWLEDGE_STORAGE_PROVIDER: z.enum(['supabase', 's3']).default('supabase'),
+  AWS_REGION: z.string().min(1).default('us-east-1'),
+  S3_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
+  S3_KNOWLEDGE_PREFIX: z.string().regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9!_.*'()-]*(\/[a-zA-Z0-9][a-zA-Z0-9!_.*'()-]*)*$/,
+    'S3_KNOWLEDGE_PREFIX must be a relative S3 key prefix without leading or trailing slashes',
+  ).default('knowledge'),
 
   // Supabase (used by backend for service-role operations)
   SUPABASE_URL: z.string().optional(),
@@ -112,12 +142,35 @@ const EnvSchema = z.object({
   VOICE_WEBHOOK_SECRET: z.string().optional(),
   WORKERS_ENABLED: BooleanEnvSchema.default(false),
 
+  // PostHog product analytics. Entirely optional: when the flag is off or the
+  // project token is absent the API never constructs a client. Host validation
+  // happens only when configuration is resolved so disabled analytics can never
+  // block boot because of a stale optional value.
+  POSTHOG_ENABLED: BooleanEnvSchema.default(false),
+  POSTHOG_PROJECT_TOKEN: z.string().optional(),
+  POSTHOG_HOST: z.string().default('https://us.i.posthog.com'),
+  APP_VERSION: z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/).default('dev'),
+
   // Comma-separated list of allowed origins for CORS (no wildcards in production)
   ALLOWED_ORIGINS: z
     .string()
     .default('')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 }).superRefine((value, ctx) => {
+  if (value.KNOWLEDGE_STORAGE_PROVIDER === 's3' && !value.S3_KNOWLEDGE_BUCKET) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['S3_KNOWLEDGE_BUCKET'],
+      message: 'S3_KNOWLEDGE_BUCKET is required when KNOWLEDGE_STORAGE_PROVIDER=s3',
+    });
+  }
+  if (value.NODE_ENV === 'production' && value.ALLOWED_ORIGINS.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ALLOWED_ORIGINS'],
+      message: 'ALLOWED_ORIGINS must contain at least one explicit origin in production',
+    });
+  }
   if (value.NODE_ENV === 'production' && !value.VOICE_WEBHOOK_SECRET) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -125,7 +178,46 @@ const EnvSchema = z.object({
       message: 'VOICE_WEBHOOK_SECRET is required in production',
     });
   }
+  if (value.NODE_ENV === 'production' && value.VOICE_PROVIDER === 'mock') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['VOICE_PROVIDER'],
+      message: 'VOICE_PROVIDER=mock is not allowed in production',
+    });
+  }
+  // WEB_BASE_URL is the origin Stripe redirects customers back to after
+  // checkout and from the billing portal. It defaults to localhost, so a live
+  // deployment that omits it takes payments and then bounces the customer to a
+  // dead address. That failure is invisible to a boot check, hence this guard.
+  if (value.BILLING_MODE === 'live') {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(value.WEB_BASE_URL);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.protocol !== 'https:' || isLocalHostname(parsed.hostname)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['WEB_BASE_URL'],
+        message:
+          'WEB_BASE_URL must be an absolute non-local HTTPS URL when BILLING_MODE=live, ' +
+          'because Stripe redirects customers back to it',
+      });
+    }
+  }
 });
+
+function isLocalHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '::1' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    /^127\./.test(host)
+  );
+}
 
 export type Env = z.infer<typeof EnvSchema>;
 

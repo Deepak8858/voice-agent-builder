@@ -157,9 +157,11 @@ function NavSections({ mobile = false }: { mobile?: boolean }) {
           </p>
           <div className="flex flex-col gap-1">
             {section.items.map((item) => {
+              const normalizedPathname =
+                pathname && pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
               const active =
-                pathname === item.href ||
-                (item.href !== '/dashboard' && pathname?.startsWith(item.href));
+                normalizedPathname === item.href ||
+                (item.href !== '/dashboard' && normalizedPathname?.startsWith(`${item.href}/`));
               const link = (
                 <Link
                   href={item.href}

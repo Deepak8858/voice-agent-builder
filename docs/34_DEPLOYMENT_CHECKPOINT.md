@@ -1,160 +1,81 @@
-# VoiceForge AI — Azure VM Deployment Checkpoint
+# VoiceForge AI — Azure VM Deployment Checkpoint (SUPERSEDED)
 
-> **Created:** 2026-04-29
-> **Status:** Infrastructure live, real app builds partially blocked, SSL + CI/CD pending
-> **Resume from:** Step 4 (Web Docker image build)
-
----
-
-## 1. Successfully Deployed
-
-| Resource | Status | Details |
-|---|---|---|
-| Azure Resource Group | Done | `voiceforge-staging-rg` in `eastus2` |
-| Virtual Network + Subnet | Done | `10.0.0.0/16`, `vm-subnet` `10.0.1.0/24` |
-| NSG | Done | HTTP, HTTPS open; SSH temporarily open to all (needs lockdown) |
-| Public IP + DNS | Done | `20.122.143.176` / `voiceforge-staging-app.eastus2.cloudapp.azure.com` |
-| Ubuntu 22.04 VM | Done | `Standard_D2s_v3`, Docker 29.x, Nginx 1.18, cloud-init applied |
-| VM MSI + Key Vault access | Done | System-assigned identity has `Key Vault Secrets User` |
-| Log Analytics Workspace | Done | `voiceforge-staging-logs` |
-| Application Insights | Done | `voiceforge-staging-appinsights` |
-| Azure Key Vault | Done | `voiceforgestagingkv` — stores DB url, direct url, App Insights CS |
-| Supabase DB connection | Configured | Secrets injected into Key Vault (from `.env`) |
-
-### Live Endpoints (Placeholder)
-```
-http://20.122.143.176/              -> nginx welcome page (200 OK)
-http://20.122.143.176/api/v1/health -> API stub (200 OK)
-```
+> **Status:** HISTORICAL. Superseded by the AWS EC2 migration.
+> **Original date:** 2026-04-29 · **Superseded:** 2026-08-09
+>
+> Nothing in this document is an instruction. It describes the retired Azure
+> staging VM and the state of that effort at the point it was abandoned. It is
+> kept only to explain why certain code and Dockerfile decisions exist.
+>
+> For anything operational, use:
+> - `docs/RUNBOOK.md` — current on-call, deploy, rollback, and observability
+> - `infra/README.md` — current infrastructure layout and GitHub configuration
+> - `infra/aws/README.md` — provisioning
+> - `.github/workflows/deploy-aws-ec2.yml` — the only production deploy path
+>
+> **Do not run any command in this file.** The Azure resource group, VM, public
+> IP, Key Vault, and the `docker-compose.prod.yml`, `Dockerfile.api` /
+> `Dockerfile.web` root-level paths and `ci-cd-vm.yml` workflow it references no
+> longer exist. The Dockerfiles now live under `infra/docker/` and production
+> uses `infra/docker/docker-compose.aws.yml` with images pulled from ECR.
 
 ---
 
-## 2. Code Fixes Applied (Committed to `main`)
+## What replaced it
 
-| File | Fix |
+| Then (Azure) | Now (AWS) |
 |---|---|
-| `apps/api/src/tracing.ts` | Replaced OpenTelemetry SDK with no-op stub |
-| `apps/api/src/common/metrics.service.ts` | Added missing `getMetrics(): Promise<string>` |
-| `apps/api/src/common/metrics.module.ts` | Replaced broken `APP_MIDDLEWARE` with `NestModule.configure` |
-| `apps/api/src/common/http-exception.filter.ts` | Fixed `Request` → `Record` casts via `unknown` |
-| `apps/api/src/common/request-logging.middleware.ts` | Fixed `Request` → `Record` casts via `unknown` |
-| `apps/api/src/auth/auth.controller.ts` | Explicitly typed `SignupDto` / `LoginDto` to avoid Zod inference issues |
-| `apps/api/tsconfig.build.json` | Added `noEmitOnError: false`, `strict: false`, `skipLibCheck: true`, `useDefineForClassFields: false` |
-| `Dockerfile.api` | `npm ci` → `npm install`, conditional Prisma generate, fixed production `WORKDIR` order |
-| `Dockerfile.web` | `npm ci` → `npm install`, fixed production `WORKDIR` order, switched to `node:20-slim` |
+| `Standard_D2s_v3` VM in `eastus2` | single `t3.large` in `us-east-1`, account `543777713748` |
+| Images built on the VM with `docker build` | built by Depot, pushed to ECR, tagged with the full commit SHA |
+| `docker-compose.prod.yml` | `infra/docker/docker-compose.aws.yml` |
+| `vocal.devdeepak.me` | `deep-ak.dev` |
+| Azure Key Vault + VM managed identity | `/opt/voiceforge/.env` on the host + EC2 instance profile for S3 |
+| `certbot --nginx` on the host | containerised nginx with a two-state TLS entrypoint and a certbot renewal systemd timer |
+| Application Insights, Log Analytics | PostHog, CloudWatch, and capped `json-file` container logs |
+| `ci-cd-vm.yml` / `deploy-azure-vm.yml` | `deploy-aws-ec2.yml`, `workflow_dispatch`-only |
+
+Supabase Postgres was and remains external to the compute stack, and was not
+affected by the migration.
 
 ---
 
-## 3. Current Blocker: Web Docker Image Build
+## Why this record is still useful
 
-**Problem:** `lightningcss` native binary missing on Alpine Linux.
+The blocker that dominated this checkpoint was a real, non-Azure-specific
+problem: **`lightningcss` has no prebuilt binary for musl**, so a Next.js 16 +
+Tailwind v4 web image cannot be built on Alpine:
 
-**Error:**
 ```
 Error: Cannot find module '../lightningcss.linux-x64-musl.node'
 ```
 
-**Context:**
-- Next.js 16 + Tailwind v4 uses `lightningcss` for CSS processing.
-- Alpine Linux uses `musl` libc instead of `glibc`.
-- The `lightningcss` npm package provides optional native deps, but they don't install correctly on Alpine even with `npm rebuild`.
+That is why the web image is built on a glibc Debian base rather than Alpine.
+Do not "simplify" the web Dockerfile back to Alpine — it will fail the same way.
 
-**Attempted Fixes:**
-1. `npm install --ignore-scripts && npm rebuild` → Failed
-2. `npm install` (with postinstall scripts) → Failed
-3. Switch builder stage from `node:20-alpine` to `node:20-slim` → **Not yet tested** (current state)
+The other fixes recorded here (the no-op OpenTelemetry stub in
+`apps/api/src/tracing.ts`, the metrics module wiring, the explicit auth DTO
+types) landed on `main` long ago and are simply part of the codebase now.
 
-**Next Attempt:**
-Push the latest `Dockerfile.web` change (`node:20-slim`) and rebuild on the VM.
-
----
-
-## 4. Remaining Tasks (Resume Priority Order)
-
-### P0 — Unblock App Build
-- [ ] Rebuild `voiceforge-web:latest` with `node:20-slim` Dockerfile
-- [ ] If slim works, rebuild `voiceforge-api:latest` with slim too (for consistency)
-- [ ] Deploy real stack: `docker compose -f docker-compose.prod.yml up -d`
-- [ ] Write `.env` file on VM with Supabase credentials + runtime secrets
-- [ ] Run Prisma migrations against Supabase
-- [ ] Verify real endpoints:
-  - `GET /api/v1/health` → API health
-  - `GET /` → Next.js app
-  - `POST /api/v1/auth/signup` → Auth flow
-
-### P1 — SSL (Let's Encrypt)
-- [ ] Confirm DNS A record for `vocal.devdeepak.me` → `20.122.143.176`
-- [ ] On VM: `sudo certbot --nginx -d vocal.devdeepak.me`
-- [ ] Update `NEXT_PUBLIC_*` build args to `https://vocal.devdeepak.me`
-- [ ] Rebuild Web image with HTTPS URLs
-- [ ] Update NSG SSH rule to restrict to office IP only
-
-### P2 — GitHub Actions CI/CD
-- [ ] Add repository secrets: `AZURE_VM_HOST`, `AZURE_VM_USER`, `AZURE_VM_SSH_KEY`
-- [ ] Add repository variables: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_APP_URL`, etc.
-- [ ] Verify `.github/workflows/ci-cd-vm.yml` references correct image tags
-- [ ] Test pipeline with a dummy push to `main`
-
-### P3 — Observability Validation
-- [ ] Confirm Application Insights is receiving telemetry
-- [ ] Verify VM logs flowing to Log Analytics (`ContainerLog` table)
-- [ ] Test metric alerts (CPU > 80%)
-
-### P4 — Security Hardening
-- [ ] Revoke exposed GitHub PAT (`ghp_25ece...`) and generate new one
-- [ ] Remove SSH open-to-world rule, restrict to user's IP (`152.59.185.239/32`)
-- [ ] Ensure `.env` on VM has `chmod 600`
-- [ ] Disable Azure VM password auth (already done via cloud-init)
+The Dockerfile notes in the original table are **obsolete and were actively
+harmful**: the `npm ci` → `npm install` change described there was a workaround
+for the Alpine failure and was reverted during the AWS migration. The repo is
+pnpm-native and installs with `pnpm --frozen-lockfile`, which is what honours the
+`pnpm.overrides` in the root `package.json`. Re-introducing `npm install` would
+silently drop those overrides.
 
 ---
 
-## 5. Quick Resume Commands
+## Closed security items
 
-From the local development machine:
+These were open action items against the Azure VM. They are closed because the
+resources they refer to were destroyed, **not** because they were remediated in
+place:
 
-```powershell
-# 1. Set context
-$env:RG = "voiceforge-staging-rg"
-$env:VM_NAME = "voiceforge-staging-vm"
-$env:VM_IP = "20.122.143.176"
-
-# 2. Pull latest code on VM and rebuild images
-az vm run-command invoke `
-  --resource-group $env:RG --name $env:VM_NAME `
-  --command-id RunShellScript `
-  --scripts "cd /opt/voiceforge && git pull origin main && docker build -f Dockerfile.api -t voiceforge-api:latest . && docker build -f Dockerfile.web -t voiceforge-web:latest --build-arg NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1 --build-arg NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me --build-arg NEXT_PUBLIC_SUPABASE_URL=https://nsgshzxxhytjmiiasobc.supabase.co --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=<KEY> ."
-
-# 3. Deploy stack
-az vm run-command invoke `
-  --resource-group $env:RG --name $env:VM_NAME `
-  --command-id RunShellScript `
-  --scripts "cd /opt/voiceforge && docker compose -f docker-compose.prod.yml up -d"
-```
-
----
-
-## 6. Critical Notes
-
-- **GitHub PAT exposed:** The PAT used for GHCR/git operations was shown in plaintext in several CLI outputs. It must be revoked and rotated before going to production.
-- **VM SSH temporarily open to all IPs:** The NSG `AllowSSH` rule was changed from the user's IP to `*` during troubleshooting. Restore it to `152.59.185.239/32` ASAP.
-- **Placeholder containers running:** `api-test` and `web-test` containers are still running on the VM. They should be removed (`docker rm -f api-test web-test`) before deploying the real stack.
-- **Next.js URL mismatch:** The current Web image was built with `http://20.122.143.176` URLs. After SSL is configured, it must be rebuilt with `https://vocal.devdeepak.me`.
-
----
-
-## 7. Architecture Summary
-
-```
-Internet ──► NSG (80/443/22) ──► Azure VM (20.122.143.176)
-                                      ├─ Nginx (:80)
-                                      │    ├─ /api/v1/* → NestJS API (:4000)
-                                      │    └─ /*        → Next.js Web (:3000)
-                                      ├─ Redis (:6379, Docker internal)
-                                      └─ Azure Monitor Agent
-
-Data Layer (external):
-  └─ Supabase PostgreSQL (aws-1-ap-northeast-1.pooler.supabase.com)
-
-Secrets:
-  └─ Azure Key Vault (voiceforgestagingkv)
-```
+- The GitHub PAT exposed in plaintext CLI output during that effort must be
+  treated as compromised and revoked if it has not been already. Nothing in the
+  current stack uses a PAT: AWS and Depot both authenticate through GitHub OIDC.
+- The Azure NSG rule that allowed SSH from `0.0.0.0/0` died with the NSG. On AWS,
+  `infra/aws/provision.sh` requires an explicit `--ssh-cidr` and refuses an
+  open-world value.
+- The `api-test` / `web-test` placeholder containers and the VM-built images with
+  hardcoded `http://<ip>` URLs no longer exist anywhere.

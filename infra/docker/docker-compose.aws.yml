@@ -1,0 +1,185 @@
+name: voiceforge
+
+x-runtime: &runtime
+  restart: always
+  env_file:
+    - /opt/voiceforge/.env
+  networks:
+    - voiceforge
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  REDIS_URL: redis://redis:6379
+  APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+
+services:
+  web:
+    <<: *runtime
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-web:${WEB_IMAGE_TAG:?WEB_IMAGE_TAG must identify the immutable web build}
+    container_name: vf-web
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+    mem_limit: 1g
+    mem_reservation: 512m
+    cpus: "0.60"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const r=http.get('http://127.0.0.1:3000/api/health',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    <<: *runtime
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-api:${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+    container_name: vf-api
+    environment:
+      <<: *app-environment
+      API_PORT: "4000"
+      WORKERS_ENABLED: "false"
+    mem_limit: 2g
+    mem_reservation: 768m
+    cpus: "0.85"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const r=http.get('http://127.0.0.1:4000/api/v1/health',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  api-worker:
+    <<: *runtime
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-api:${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+    container_name: vf-api-worker
+    environment:
+      <<: *app-environment
+      API_PORT: "4000"
+      WORKERS_ENABLED: "true"
+    mem_limit: 1536m
+    mem_reservation: 512m
+    cpus: "0.65"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http=require('http');const r=http.get('http://127.0.0.1:4000/api/v1/health',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7.4.2-alpine
+    container_name: vf-redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "384mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - voiceforge
+    mem_limit: 512m
+    mem_reservation: 256m
+    cpus: "0.25"
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  nginx:
+    image: nginx:1.27.5-alpine
+    container_name: vf-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /opt/voiceforge/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /opt/voiceforge/nginx/http.conf:/opt/voiceforge-nginx/http.conf:ro
+      - /opt/voiceforge/nginx/http-redirect.conf:/opt/voiceforge-nginx/http-redirect.conf:ro
+      - /opt/voiceforge/nginx/https.conf.template:/opt/voiceforge-nginx/https.conf.template:ro
+      - /opt/voiceforge/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh:/docker-entrypoint.d/40-enable-tls-if-present.sh:ro
+      - /opt/voiceforge/data/certbot/conf:/etc/letsencrypt:ro
+      - /opt/voiceforge/data/certbot/www:/var/www/certbot:ro
+    networks:
+      - voiceforge
+    mem_limit: 256m
+    mem_reservation: 64m
+    cpus: "0.20"
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  livekit-agent:
+    <<: *runtime
+    profiles: [livekit]
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-livekit-agent:${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+    container_name: vf-livekit-agent
+    environment:
+      NODE_ENV: production
+      APP_VERSION: ${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+      # Keep service-to-service retrieval on the private Docker network. The
+      # shared INTERNAL_API_KEY is inherited from /opt/voiceforge/.env.
+      INTERNAL_API_BASE_URL: http://api:4000
+      LIVEKIT_AGENT_NAME: ${LIVEKIT_AGENT_NAME:-voiceforge-agent}
+      OPENAI_REALTIME_VOICE: ${OPENAI_REALTIME_VOICE:-marin}
+    mem_limit: 1536m
+    mem_reservation: 512m
+    cpus: "0.75"
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.kill(1,0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  voiceforge:
+    driver: bridge
+
+volumes:
+  redis_data:
+    name: voiceforge_redis_data

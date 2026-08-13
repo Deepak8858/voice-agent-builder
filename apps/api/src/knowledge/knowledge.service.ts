@@ -258,10 +258,18 @@ export class KnowledgeService {
     });
     if (!existing) throw new KnowledgeSourceNotFoundError(sourceId);
 
+    const storedFile = existing.sourceType === 'file'
+      ? this.storedFileFromMetadata(existing.fileUrl, existing.metadata)
+      : null;
+
     await this.prisma.$transaction(async (tx) => {
       await tx.knowledgeChunk.deleteMany({ where: { sourceId } });
       await tx.knowledgeSource.delete({ where: { id: sourceId } });
     });
+
+    if (storedFile) {
+      await this.fileStorage.deleteStoredFile(storedFile);
+    }
 
     await this.audit.log({
       workspaceId,
@@ -590,6 +598,35 @@ export class KnowledgeService {
       storage_bucket: storedFile.bucket,
       storage_path: storedFile.path,
       storage_public_url: storedFile.publicUrl ?? null,
+    };
+  }
+
+  private storedFileFromMetadata(
+    fileUrl: string | null,
+    metadata: Prisma.JsonValue | null,
+  ): StoredKnowledgeFile | null {
+    if (!fileUrl || !metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    const provider = metadata.storage_provider;
+    const bucket = metadata.storage_bucket;
+    const path = metadata.storage_path;
+    const publicUrl = metadata.storage_public_url;
+    if (
+      (provider !== 'supabase' && provider !== 's3')
+      || typeof bucket !== 'string'
+      || typeof path !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      provider,
+      bucket,
+      path,
+      fileUrl,
+      publicUrl: typeof publicUrl === 'string' ? publicUrl : null,
     };
   }
 

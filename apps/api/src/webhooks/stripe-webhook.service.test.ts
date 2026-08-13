@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { StripeWebhookService } from './stripe-webhook.service';
 import { env } from '../config/env';
 
+// Mirrors the shape Stripe actually delivers on api_version >= 2025-03-31.basil:
+// the billing period lives on each subscription item, NOT at the top level.
 function makeSubscriptionEvent(type = 'customer.subscription.created') {
   return {
     id: `evt_${type}`,
@@ -16,11 +18,17 @@ function makeSubscriptionEvent(type = 'customer.subscription.created') {
         id: 'sub_123',
         customer: 'cus_123',
         status: 'active',
-        current_period_start: 1_800_000_000,
-        current_period_end: 1_802_592_000,
         cancel_at_period_end: false,
         trial_end: null,
-        items: { data: [{ price: { id: 'price_starter' } }] },
+        items: {
+          data: [
+            {
+              price: { id: 'price_starter' },
+              current_period_start: 1_800_000_000,
+              current_period_end: 1_802_592_000,
+            },
+          ],
+        },
         metadata: { organizationId: 'org-1' },
       },
     },
@@ -142,6 +150,8 @@ describe('StripeWebhookService production webhook handling', () => {
           stripeSubscriptionId: 'sub_123',
           plan: 'starter',
           status: 'active',
+          currentPeriodStart: new Date(1_800_000_000 * 1000),
+          currentPeriodEnd: new Date(1_802_592_000 * 1000),
         }),
       }),
     );
@@ -276,6 +286,84 @@ describe('StripeWebhookService production webhook handling', () => {
       where: { stripeCustomerId: 'cus_123' },
       data: { status: 'active' },
     });
+  });
+
+  it('falls back to top-level period fields for pre-Basil webhook endpoints', async () => {
+    const event = makeSubscriptionEvent('customer.subscription.updated');
+    // Legacy endpoints pinned before 2025-03-31.basil still send the period at
+    // the root and omit it from the items.
+    event.data.object.items = { data: [{ price: { id: 'price_starter' } }] } as never;
+    Object.assign(event.data.object, {
+      current_period_start: 1_700_000_000,
+      current_period_end: 1_702_592_000,
+    });
+    const prisma = makePrisma();
+    const svc = makeService(prisma, event);
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    expect(result).toMatchObject({ handled: true, statusCode: 200 });
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentPeriodStart: new Date(1_700_000_000 * 1000),
+          currentPeriodEnd: new Date(1_702_592_000 * 1000),
+        }),
+      }),
+    );
+  });
+
+  it('spans the widest window across mixed-interval subscription items', async () => {
+    const event = makeSubscriptionEvent('customer.subscription.updated');
+    event.data.object.items = {
+      data: [
+        {
+          price: { id: 'price_starter' },
+          current_period_start: 1_800_000_000,
+          current_period_end: 1_802_592_000,
+        },
+        {
+          price: { id: 'price_growth' },
+          current_period_start: 1_790_000_000,
+          current_period_end: 1_830_000_000,
+        },
+      ],
+    } as never;
+    const prisma = makePrisma();
+    const svc = makeService(prisma, event);
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    expect(result).toMatchObject({ handled: true, statusCode: 200 });
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentPeriodStart: new Date(1_790_000_000 * 1000),
+          currentPeriodEnd: new Date(1_830_000_000 * 1000),
+        }),
+      }),
+    );
+  });
+
+  it('persists a null period instead of failing when Stripe omits it entirely', async () => {
+    const event = makeSubscriptionEvent('customer.subscription.updated');
+    event.data.object.items = { data: [{ price: { id: 'price_starter' } }] } as never;
+    const prisma = makePrisma();
+    const svc = makeService(prisma, event);
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    // Must not 500: a 500 makes Stripe retry and eventually disable the endpoint.
+    expect(result).toMatchObject({ handled: true, statusCode: 200 });
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          currentPeriodStart: null,
+          currentPeriodEnd: null,
+        }),
+      }),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('missing a billing period'));
   });
 
   it('persists and acknowledges unknown events without changing billing state', async () => {

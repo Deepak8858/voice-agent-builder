@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash } from 'crypto';
 import type { Request, Response } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
 import { CacheService } from '../cache/cache.service';
+import { PostHogService } from '../posthog/posthog.service';
 
 const SESSION_USER_TTL = 300;
 const SESSION_WORKSPACE_TTL = 300;
@@ -46,6 +47,7 @@ export class SupabaseAuthService extends AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    @Optional() private readonly posthog?: PostHogService,
   ) {
     super();
     const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -118,6 +120,10 @@ export class SupabaseAuthService extends AuthService {
       try {
         return jwt.verify(token, env.SUPABASE_JWT_SECRET, {
           algorithms: ['HS256'],
+          audience: 'authenticated',
+          ...(this.supabaseUrl
+            ? { issuer: `${this.supabaseUrl.replace(/\/$/, '')}/auth/v1` }
+            : {}),
         }) as SupabaseJWTPayload;
       } catch (err) {
         this.logger.debug(`[supabase] local token verify failed: ${(err as Error).message}`);
@@ -221,7 +227,7 @@ export class SupabaseAuthService extends AuthService {
     });
 
     const activeMembership = membership
-      ?? await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      ?? (await this.provisionPersonalWorkspace(user.id, supabaseUserId)).membership;
 
     const sessionUser: SessionUser = {
       id: user.id,
@@ -261,12 +267,19 @@ export class SupabaseAuthService extends AuthService {
     }
 
     try {
+      // No user existed by auth ID or email, so this is a genuine first sign-up.
       const user = await this.prisma.user.upsert({
         where: { authUserId },
         create: { authUserId, email, name },
         update: { email, name },
       });
-      await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      const provisioned = await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      this.captureSignedUp(
+        user.id,
+        provisioned.membership.workspace.id,
+        provisioned.membership.workspace.organizationId,
+        provisioned.workspaceCreated,
+      );
       return user;
     } catch (err: unknown) {
       const prismaErr = err as { code?: string };
@@ -291,21 +304,37 @@ export class SupabaseAuthService extends AuthService {
   }
 
   private async provisionPersonalWorkspace(userId: string, supabaseUserId: string) {
-    const orgSlug = `user-${supabaseUserId.slice(0, 8)}`;
-    const organization = await this.prisma.organization.upsert({
-      where: { slug: orgSlug },
-      create: {
-        slug: orgSlug,
-        name: 'Personal',
-        ownerUserId: userId,
-      },
-      update: {},
+    // A truncated auth ID can collide and attach one user's workspace to
+    // another organization. A bounded SHA-256 suffix is deterministic while
+    // preserving the opaque source ID.
+    const orgSlug = `user-${createHash('sha256').update(supabaseUserId).digest('hex').slice(0, 24)}`;
+
+    // Slug migration: releases before the hash-based slug used
+    // `user-${supabaseUserId.slice(0, 8)}`. An existing user whose membership
+    // was lost would otherwise get a second organization and workspace here,
+    // so look up the legacy organization (verified by owner) first.
+    const legacySlug = `user-${supabaseUserId.slice(0, 8)}`;
+    const legacyOrganization = await this.prisma.organization.findFirst({
+      where: { slug: legacySlug, ownerUserId: userId },
     });
+
+    const organization =
+      legacyOrganization ??
+      (await this.prisma.organization.upsert({
+        where: { slug: orgSlug },
+        create: {
+          slug: orgSlug,
+          name: 'Personal',
+          ownerUserId: userId,
+        },
+        update: {},
+      }));
 
     let workspace = await this.prisma.workspace.findFirst({
       where: { organizationId: organization.id },
       orderBy: { createdAt: 'asc' },
     });
+    const workspaceCreated = !workspace;
     if (!workspace) {
       workspace = await this.prisma.workspace.create({
         data: {
@@ -317,12 +346,38 @@ export class SupabaseAuthService extends AuthService {
       });
     }
 
-    return this.prisma.membership.upsert({
+    const membership = await this.prisma.membership.upsert({
       where: { userId_workspaceId: { userId, workspaceId: workspace.id } },
       create: { userId, workspaceId: workspace.id, role: 'owner' },
       update: {},
       include: { workspace: true },
     });
+    return { membership, workspaceCreated };
+  }
+
+  /**
+   * Best-effort product analytics for first sign-up. The workspace is created
+   * as part of provisioning, so both events are emitted from here where the
+   * app user ID and the server-resolved organization ID are both known.
+   */
+  private captureSignedUp(
+    userId: string,
+    workspaceId: string,
+    organizationId: string,
+    workspaceCreated: boolean,
+  ): void {
+    if (!this.posthog) return;
+    const context = { workspaceId, organizationId, userId };
+    this.posthog.capture(
+      { event: 'user_signed_up', properties: { workspace_id: workspaceId } },
+      context,
+    );
+    if (workspaceCreated) {
+      this.posthog.capture(
+        { event: 'workspace_created', properties: { workspace_id: workspaceId } },
+        context,
+      );
+    }
   }
 
   private extractBearerToken(req: Request): string | null {

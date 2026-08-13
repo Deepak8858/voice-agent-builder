@@ -1,33 +1,64 @@
 import type { NextConfig } from "next";
+import {
+  assetHostFor,
+  posthogProxyRewrites,
+  resolvePostHogHost,
+} from "./lib/analytics/posthog-config";
+
+/**
+ * Ingestion host for the proxy destinations.
+ *
+ * Resolved through the same normalizer the browser SDK uses, so the rewrite
+ * destination and the SDK's notion of the host can never disagree — a drift
+ * there would silently 404 every capture.
+ *
+ * Read from the environment rather than through `posthogWebSettingsFromEnv` on
+ * purpose: the rewrites are static build-time config and must exist even when
+ * the analytics kill switch is off, so that turning PostHog on is a runtime
+ * change and not a rebuild. The rewrites are inert while the browser SDK is
+ * never initialised.
+ *
+ * Strict for any production build (`next build` sets NODE_ENV=production,
+ * including in CI): a malformed host fails the build rather than shipping a
+ * proxy silently pointed at the default region. Only `next dev` stays
+ * non-strict and falls back. An absent value is always fine — it resolves to
+ * the default region.
+ */
+const posthogHost = resolvePostHogHost(process.env.NEXT_PUBLIC_POSTHOG_HOST, {
+  strict: process.env.NODE_ENV === "production",
+  envVar: "NEXT_PUBLIC_POSTHOG_HOST",
+});
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  /**
+   * PostHog appends a trailing slash to some ingestion paths; without this,
+   * Next.js answers with a 308 redirect that the SDK does not follow, and
+   * capture silently fails.
+   */
+  skipTrailingSlashRedirect: true,
+  async rewrites() {
+    return {
+      /**
+       * `beforeFiles` so the proxy cannot be shadowed by a page, a static file
+       * or a same-named app route. `posthogProxyRewrites` returns the `/static/`
+       * and `/array/` asset rules ahead of the ingestion catch-all, and that
+       * order is load-bearing.
+       */
+      beforeFiles: posthogProxyRewrites({
+        host: posthogHost,
+        assetHost: assetHostFor(posthogHost),
+      }),
+      afterFiles: [],
+      fallback: [],
+    };
+  },
   async headers() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-    const supabaseOrigins = [
-      'https://*.supabase.co',
-      'https://*.supabase.com',
-    ].join(' ');
-    const monacoCdn = 'https://cdn.jsdelivr.net';
-    const csp = [
-      "default-src 'self'",
-      `script-src 'self' 'unsafe-eval' 'unsafe-inline' ${supabaseOrigins} ${monacoCdn}`,
-      `style-src 'self' 'unsafe-inline' ${monacoCdn}`,
-      `img-src 'self' data: blob: ${supabaseOrigins}`,
-      `font-src 'self' data: ${monacoCdn}`,
-      `connect-src 'self' ${apiUrl} ${supabaseOrigins} https://api.stripe.com`,
-      `frame-src 'self' https://checkout.stripe.com ${supabaseOrigins}`,
-      "worker-src 'self' blob:",
-      "object-src 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-    ].join('; ');
 
     return [
       {
         source: "/:path*",
         headers: [
-          { key: "Content-Security-Policy", value: csp },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

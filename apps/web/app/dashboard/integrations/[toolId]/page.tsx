@@ -122,7 +122,11 @@ export default function ToolDetailPage({ params }: PageProps) {
   const calendarConfig = isCalendarConfig(tool.config) ? tool.config : null;
 
   return (
-    <div className="flex flex-col gap-8">
+    /*
+     * ph-no-capture: tool arguments, webhook URLs, credential state and
+     * invocation errors can all embed customer data.
+     */
+    <div className="ph-no-capture flex flex-col gap-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link

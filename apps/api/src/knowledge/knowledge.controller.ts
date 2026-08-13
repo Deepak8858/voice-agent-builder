@@ -96,10 +96,10 @@ export class KnowledgeController {
     });
   }
 
-  @Get('knowledge-sources/search')
+  @Post('knowledge-sources/search')
   async search(
     @Param('workspaceId') workspaceId: string,
-    @Query(new ZodValidationPipe(KnowledgeSearchQuerySchema))
+    @Body(new ZodValidationPipe(KnowledgeSearchQuerySchema))
     query: KnowledgeSearchQuery,
   ) {
     const hits = await this.knowledge.search(workspaceId, query.query, {
@@ -154,10 +154,11 @@ export class KnowledgeController {
   @Post('knowledge-sources/:sourceId/reindex')
   @HttpCode(202)
   async reindex(
-    @Param('workspaceId') _workspaceId: string,
+    @Param('workspaceId') workspaceId: string,
     @Param('sourceId') sourceId: string,
     @CurrentUser() _user: SessionUser,
   ): Promise<{ jobId: string; message: string }> {
+    await this.knowledge.get(workspaceId, sourceId);
     await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
       sourceId,
       force: false,

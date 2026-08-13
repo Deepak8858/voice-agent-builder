@@ -24,6 +24,24 @@ interface StripeWebhookEvent {
 
 type StripeEventClaim = 'claimed' | 'processed' | 'processing';
 
+interface StripeSubscriptionItem {
+  price?: { id?: string };
+  current_period_start?: number;
+  current_period_end?: number;
+}
+
+/**
+ * Converts a Stripe UNIX timestamp (seconds) to a Date, returning null for any
+ * value that would produce an `Invalid Date`. Prisma throws
+ * `PrismaClientValidationError` on invalid Date objects, which would turn an
+ * otherwise-recoverable webhook into a 500 and trigger Stripe retries.
+ */
+function toDateFromUnixSeconds(value: unknown): Date | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const date = new Date(value * 1000);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 interface StripeWebhookClient {
   webhooks: {
     constructEvent(
@@ -126,11 +144,20 @@ export class StripeWebhookService {
       stripeEventId: event.id,
       type: event.type,
       apiVersion: event.api_version ?? null,
-      created: new Date(event.created * 1000),
+      created: this.eventCreatedAt(event),
       data: event.data.object as unknown as Prisma.InputJsonValue,
       livemode: event.livemode,
       pendingWebhooks: event.pending_webhooks,
     };
+  }
+
+  /**
+   * `StripeEvent.created` is non-nullable, so fall back to the receive time when
+   * Stripe omits or malforms the timestamp rather than letting Prisma reject the
+   * row and lose our idempotency record for the event entirely.
+   */
+  private eventCreatedAt(event: StripeWebhookEvent): Date {
+    return toDateFromUnixSeconds(event.created) ?? new Date();
   }
 
   private isUniqueConstraintError(err: unknown): boolean {
@@ -144,7 +171,7 @@ export class StripeWebhookService {
         stripeEventId: event.id,
         type: event.type,
         apiVersion: event.api_version ?? null,
-        created: new Date(event.created * 1000),
+        created: this.eventCreatedAt(event),
         data: event.data.object as unknown as Prisma.InputJsonValue,
         livemode: event.livemode,
         pendingWebhooks: event.pending_webhooks,
@@ -239,12 +266,9 @@ export class StripeWebhookService {
     const status = data['status'] as string;
     const priceId = this.extractPriceId(data);
     const plan = this.inferPlanFromPriceId(priceId);
-    const periodStart = new Date((data['current_period_start'] as number) * 1000);
-    const periodEnd = new Date((data['current_period_end'] as number) * 1000);
+    const { periodStart, periodEnd } = this.extractBillingPeriod(data);
     const cancelAtPeriodEnd = data['cancel_at_period_end'] as boolean;
-    const trialEnd = data['trial_end']
-      ? new Date((data['trial_end'] as number) * 1000)
-      : null;
+    const trialEnd = toDateFromUnixSeconds(data['trial_end']);
 
     await this.prisma.subscription.updateMany({
       where: { stripeCustomerId: customerId },
@@ -318,10 +342,54 @@ export class StripeWebhookService {
   }
 
   private extractPriceId(data: Record<string, unknown>): string | null {
-    const priceId = (data['items'] as { data: Array<{ price?: { id?: string } }> } | undefined)
-      ?.data?.[0]?.price?.id;
+    return this.extractItems(data)[0]?.price?.id ?? null;
+  }
 
-    return priceId ?? null;
+  private extractItems(data: Record<string, unknown>): StripeSubscriptionItem[] {
+    const items = (data['items'] as { data?: StripeSubscriptionItem[] } | undefined)?.data;
+    return Array.isArray(items) ? items : [];
+  }
+
+  /**
+   * Resolves the subscription's billing period.
+   *
+   * Stripe removed the top-level `current_period_start`/`current_period_end`
+   * fields from the Subscription object in API version `2025-03-31.basil` and
+   * moved them onto each SubscriptionItem, so a subscription can now carry
+   * items with differing billing cycles. We therefore span the widest window
+   * across all items (earliest start, latest end), which matches the legacy
+   * top-level semantics for the common single-item case.
+   *
+   * The top-level fields are still read as a fallback so that events delivered
+   * by webhook endpoints pinned to a pre-Basil API version keep working.
+   */
+  private extractBillingPeriod(data: Record<string, unknown>): {
+    periodStart: Date | null;
+    periodEnd: Date | null;
+  } {
+    const items = this.extractItems(data);
+    const starts = items
+      .map((item) => toDateFromUnixSeconds(item?.current_period_start))
+      .filter((date): date is Date => date !== null);
+    const ends = items
+      .map((item) => toDateFromUnixSeconds(item?.current_period_end))
+      .filter((date): date is Date => date !== null);
+
+    const periodStart = starts.length
+      ? new Date(Math.min(...starts.map((date) => date.getTime())))
+      : toDateFromUnixSeconds(data['current_period_start']);
+    const periodEnd = ends.length
+      ? new Date(Math.max(...ends.map((date) => date.getTime())))
+      : toDateFromUnixSeconds(data['current_period_end']);
+
+    if (!periodStart || !periodEnd) {
+      this.logger.warn(
+        `Subscription ${String(data['id'])} is missing a billing period; ` +
+          `persisting null (items=${items.length}).`,
+      );
+    }
+
+    return { periodStart, periodEnd };
   }
 
   private inferPlanFromPriceId(priceId: string | null): string {

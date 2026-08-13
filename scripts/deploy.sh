@@ -1,124 +1,30 @@
 #!/bin/bash
 # =============================================================================
-# VoiceForge AI — Direct Deploy Script
+# VoiceForge AI — retired deploy script
 # =============================================================================
-# Rebuilds and deploys all Docker containers to EC2
-# Usage: ./deploy.sh [api|web|all]
+# This deployed to the pre-migration EC2 host in ap-south-1 by building images
+# on the server and pushing the mutable `latest` tag. It is kept only as a
+# signpost and refuses to run.
+#
+# It is not merely outdated, it is unsafe: it targeted a different AWS account
+# and host, and `latest` cannot identify which commit is in production, which is
+# exactly what the SHA-tagged pipeline exists to guarantee.
 # =============================================================================
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EC2_HOST="${EC2_HOST:-13.234.56.188}"
-EC2_USER="${EC2_USER:-ubuntu}"
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/voiceforge_ec2.pem}"
-REGION="${AWS_REGION:-ap-south-1}"
-ECR_REGISTRY="${AWS_ACCOUNT_ID:-393060838606}.dkr.ecr.${REGION}.amazonaws.com"
-TARGET="${1:-all}"
+cat >&2 <<'NOTICE'
+scripts/deploy.sh has been retired and does nothing.
 
-echo "🚀 VoiceForge Direct Deploy"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Host: $EC2_HOST"
-echo "Target: $TARGET"
-echo "ECR: $ECR_REGISTRY"
-echo ""
+Production deploys run only through the "Deploy production to AWS EC2" GitHub
+Actions workflow (.github/workflows/deploy-aws-ec2.yml), dispatched with:
+  git_sha             the full 40-character commit SHA to deploy
+  confirm_production  the literal string deploy-production
 
-# SSH command helper
-SSH_CMD="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -i $SSH_KEY $EC2_USER@$EC2_HOST"
+That workflow builds on Depot, pushes immutable SHA-tagged images to ECR in
+us-east-1, records a rollback bundle, and verifies health before marking the
+release current. Building on the host or pushing `latest` bypasses all of it.
 
-# Deploy function
-deploy_to_ec2() {
-    local SERVICE=$1
-    local DOCKERFILE=$2
-    local IMAGE_NAME=$3
-
-    echo "📦 Building $SERVICE image..."
-    $SSH_CMD << SSHEND
-        set -euo pipefail
-        cd /opt/voiceforge
-
-        echo "🔨 Building $SERVICE..."
-        docker build -t voiceforge-$SERVICE:latest -f $DOCKERFILE .
-
-        echo "🏷️ Tagging for ECR..."
-        docker tag voiceforge-$SERVICE:latest $ECR_REGISTRY/voiceforge-$SERVICE:latest
-
-        echo "📤 Pushing to ECR..."
-        export PATH=\$HOME/.local/bin:\$PATH
-        aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-        docker push $ECR_REGISTRY/voiceforge-$SERVICE:latest
-
-        echo "✅ $SERVICE built and pushed"
-SSHEND
-}
-
-# Deploy to EC2
-deploy_services() {
-    echo "🔐 Logging in to ECR..."
-    $SSH_CMD << 'SSHEND'
-        set -euo pipefail
-        export PATH=$HOME/.local/bin:$PATH
-        aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 393060838606.dkr.ecr.ap-south-1.amazonaws.com
-        echo "✅ ECR login OK"
-SSHEND
-
-    if [ "$TARGET" = "all" ] || [ "$TARGET" = "api" ]; then
-        echo ""
-        echo "━━━ Building API ━━━"
-        $SSH_CMD << 'SSHEND'
-            set -euo pipefail
-            cd /opt/voiceforge
-            docker build -t voiceforge-api:latest -f Dockerfile.api .
-            docker tag voiceforge-api:latest 393060838606.dkr.ecr.ap-south-1.amazonaws.com/voiceforge-api:latest
-            docker push 393060838606.dkr.ecr.ap-south-1.amazonaws.com/voiceforge-api:latest
-            echo "✅ API built and pushed"
-SSHEND
-    fi
-
-    if [ "$TARGET" = "all" ] || [ "$TARGET" = "web" ]; then
-        echo ""
-        echo "━━━ Building Web ━━━"
-        $SSH_CMD << 'SSHEND'
-            set -euo pipefail
-            cd /opt/voiceforge
-            docker build -t voiceforge-web:latest -f Dockerfile.web .
-            docker tag voiceforge-web:latest 393060838606.dkr.ecr.ap-south-1.amazonaws.com/voiceforge-web:latest
-            docker push 393060838606.dkr.ecr.ap-south-1.amazonaws.com/voiceforge-web:latest
-            echo "✅ Web built and pushed"
-SSHEND
-    fi
-
-    echo ""
-    echo "━━━ Deploying to EC2 ━━━"
-    $SSH_CMD << 'SSHEND'
-        set -euo pipefail
-        cd /opt/voiceforge
-
-        echo "📥 Pulling images..."
-        docker compose -f docker-compose.prod.yml pull
-
-        echo "🚀 Restarting services..."
-        docker compose -f docker-compose.prod.yml up -d --remove-orphans
-
-        echo "🧹 Pruning old images..."
-        docker image prune -af --filter "until=168h"
-
-        echo "⏳ Waiting for services..."
-        sleep 20
-
-        echo "🩺 Health checks..."
-        curl -sf http://localhost:4000/api/v1/health && echo " ✅ API OK" || echo " ❌ API FAIL"
-        curl -sf -o /dev/null -w "%{http_code}" http://localhost:3000/api/health && echo " ✅ Web OK" || echo " ❌ Web FAIL"
-
-        echo ""
-        echo "📋 Container status:"
-        docker ps --format "table {{.Names}}\t{{.Status}}"
-SSHEND
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "✅ Deployment complete!"
-}
-
-# Main execution
-deploy_services
+See docs/RUNBOOK.md for the deployment and rollback procedure.
+NOTICE
+exit 1

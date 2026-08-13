@@ -14,8 +14,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@livekit/agents": "1.4.5",
-    "@livekit/agents-plugin-openai": "1.4.5",
+    "@livekit/agents": "1.5.5",
+    "@livekit/agents-plugin-openai": "1.5.5",
+    "@livekit/rtc-node": "0.13.31",
     "@prisma/client": "^5.22.0",
     "@voiceforge/shared": "workspace:*",
     "zod": "^3.23.8"
@@ -26,6 +27,6 @@
     "vitest": "^2.1.1"
   },
   "engines": {
-    "node": ">=20.11.0"
+    "node": "^20.20.0 || >=22.22.0"
   }
 }

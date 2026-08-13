@@ -26,6 +26,74 @@ describe('splitIntoChunks', () => {
   });
 });
 
+describe('KnowledgeService.remove', () => {
+  function createService(source: Record<string, unknown>) {
+    const transaction = {
+      knowledgeChunk: { deleteMany: vi.fn(async () => ({ count: 1 })) },
+      knowledgeSource: { delete: vi.fn(async () => source) },
+    };
+    const prisma = {
+      knowledgeSource: { findFirst: vi.fn(async () => source) },
+      $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<void>) => callback(transaction)),
+    };
+    const storage: KnowledgeFileStorage = {
+      saveUploadedFile: vi.fn(),
+      deleteStoredFile: vi.fn(async () => undefined),
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const service = new KnowledgeService(
+      prisma as never,
+      audit as never,
+      { name: 'test', dimensions: 3, embed: vi.fn() },
+      new FileParser(),
+      storage,
+    );
+    return { audit, service, storage, transaction };
+  }
+
+  it('deletes the stored object after deleting an uploaded file source', async () => {
+    const { audit, service, storage, transaction } = createService({
+      id: 'source-1',
+      sourceType: 'file',
+      fileUrl: 's3://knowledge-bucket/knowledge/source-1.txt',
+      metadata: {
+        storage_provider: 's3',
+        storage_bucket: 'knowledge-bucket',
+        storage_path: 'knowledge/source-1.txt',
+        storage_public_url: null,
+      },
+    });
+
+    await service.remove('workspace-1', 'source-1', 'user-1');
+
+    expect(transaction.knowledgeSource.delete).toHaveBeenCalledWith({ where: { id: 'source-1' } });
+    expect(storage.deleteStoredFile).toHaveBeenCalledWith({
+      provider: 's3',
+      bucket: 'knowledge-bucket',
+      path: 'knowledge/source-1.txt',
+      fileUrl: 's3://knowledge-bucket/knowledge/source-1.txt',
+      publicUrl: null,
+    });
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'knowledge_source.delete',
+      resourceId: 'source-1',
+    }));
+  });
+
+  it('does not invoke storage deletion for a text source', async () => {
+    const { service, storage } = createService({
+      id: 'source-1',
+      sourceType: 'text',
+      fileUrl: null,
+      metadata: null,
+    });
+
+    await service.remove('workspace-1', 'source-1', 'user-1');
+
+    expect(storage.deleteStoredFile).not.toHaveBeenCalled();
+  });
+});
+
 describe('cosineSim', () => {
   it('returns 1 for identical vectors', () => {
     expect(cosineSim([1, 2, 3], [1, 2, 3])).toBeCloseTo(1, 6);

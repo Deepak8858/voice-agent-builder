@@ -1,85 +1,100 @@
-# =============================================================================
-# VoiceForge AI — Web Container (Next.js standalone)
-# =============================================================================
-# Build context: repository root (monorepo)
-# Build args: NEXT_PUBLIC_* vars for build-time injection
-# ---------------------------------------------------------------------------
+# syntax=docker/dockerfile:1.7
+FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
 
-FROM --platform=linux/amd64 node:20-alpine AS builder
 WORKDIR /app
+ENV PNPM_HOME=/pnpm \
+    PATH=/pnpm:$PATH \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
-# Build arguments for environment injection at build time
 ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_BILLING_MODE
 ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_DEMO_SHARE_PATH
+ARG NEXT_PUBLIC_SALES_EMAIL
 
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
-ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
-ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
-ENV NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+# PostHog browser analytics.
+#
+# These MUST be build args, not runtime env: Next.js inlines NEXT_PUBLIC_* into
+# the client bundle at build time, so a value supplied only to the running
+# container is never seen by the browser. Omitting them is a supported state —
+# `posthogWebSettingsFromEnv` returns null and the SDK is never initialised —
+# which is why they are deliberately absent from the require_arg checks below.
+#
+# The project token is a public, write-only key that ships in the client bundle
+# by design; it is not a secret. The server-side tier reads its own
+# POSTHOG_* vars at runtime and is unaffected by anything here.
+ARG NEXT_PUBLIC_POSTHOG_ENABLED
+ARG NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN
+ARG NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_APP_ENV
+ARG NEXT_PUBLIC_APP_VERSION
 
-# Copy workspace manifests first for layer caching
-COPY package*.json ./
-COPY pnpm-workspace.yaml ./
-COPY apps/web/package*.json ./apps/web/
-COPY packages/shared/package*.json ./packages/shared/
-COPY packages/ui/package*.json ./packages/ui/
+RUN require_arg() { eval "value=\${$1}"; test -n "$value" || { echo "Required build argument $1 is missing" >&2; exit 1; }; }; \
+    require_arg NEXT_PUBLIC_API_URL; \
+    require_arg NEXT_PUBLIC_BILLING_MODE; \
+    require_arg NEXT_PUBLIC_SUPABASE_URL; \
+    require_arg NEXT_PUBLIC_SUPABASE_ANON_KEY; \
+    case "$NEXT_PUBLIC_BILLING_MODE" in demo|live) ;; *) echo "NEXT_PUBLIC_BILLING_MODE must be demo or live" >&2; exit 1 ;; esac
 
-# Copy package source so file: references work
-COPY packages/shared ./packages/shared
-COPY packages/ui ./packages/ui
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_BILLING_MODE=$NEXT_PUBLIC_BILLING_MODE \
+    NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \
+    NEXT_PUBLIC_DEMO_SHARE_PATH=$NEXT_PUBLIC_DEMO_SHARE_PATH \
+    NEXT_PUBLIC_SALES_EMAIL=$NEXT_PUBLIC_SALES_EMAIL \
+    NEXT_PUBLIC_POSTHOG_ENABLED=$NEXT_PUBLIC_POSTHOG_ENABLED \
+    NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=$NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN \
+    NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST \
+    NEXT_PUBLIC_APP_ENV=$NEXT_PUBLIC_APP_ENV \
+    NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 
-# Replace pnpm workspace:* with npm-compatible file: paths
-RUN sed -i 's|"workspace:\*"|"file:./packages/shared"|g' apps/web/package.json && \
-    sed -i 's|"workspace:\*"|"file:./packages/ui"|g' apps/web/package.json 2>/dev/null || true
+RUN corepack enable \
+    && corepack prepare pnpm@10.33.2 --activate
 
-# Remove Windows-generated lock files and install fresh for Linux
-RUN rm -f package-lock.json pnpm-lock.yaml
-RUN npm install --ignore-scripts --no-audit --no-fund
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/livekit-agent/package.json apps/livekit-agent/package.json
+COPY apps/voice-edge/package.json apps/voice-edge/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ui/package.json packages/ui/package.json
 
-# Copy source
-COPY apps/web ./apps/web
-COPY packages/shared ./packages/shared
-COPY packages/ui ./packages/ui
+RUN --mount=type=cache,id=voiceforge-pnpm,target=/pnpm/store,sharing=locked \
+    pnpm config set store-dir /pnpm/store --global \
+    && pnpm install --frozen-lockfile --ignore-scripts --node-linker=hoisted
+
 COPY tsconfig.base.json ./
+COPY packages/shared packages/shared
+COPY packages/ui packages/ui
+COPY apps/web apps/web
 
-# Build shared packages then web
-RUN npm run build -w @voiceforge/shared
-RUN npm run build -w @voiceforge/web
+RUN pnpm --filter @voiceforge/shared run build
+RUN --mount=type=cache,id=voiceforge-next,target=/app/apps/web/.next/cache,sharing=locked \
+    pnpm --filter @voiceforge/web run build
 
-# =============================================================================
-# Production stage — minimal standalone runner
-# =============================================================================
-FROM --platform=linux/amd64 node:20-alpine AS production
+FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS runtime
 
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
 
-RUN apk add --no-cache tini \
-    && addgroup -g 1001 nodegroup \
-    && adduser -u 1001 -G nodegroup -s /bin/sh -D nodeuser \
-    && chown -R nodeuser:nodegroup /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 voiceforge \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
 
-ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
+COPY --from=build --chown=10001:10001 /app/apps/web/.next/standalone ./
+COPY --from=build --chown=10001:10001 /app/apps/web/.next/static apps/web/.next/static
+COPY --from=build --chown=10001:10001 /app/apps/web/public apps/web/public
 
-# Copy ALL node_modules from builder (includes all monorepo deps, no npm ci needed)
-COPY --chown=1001:1001 --from=builder /app/node_modules ./
-
-# Copy standalone output from builder
-COPY --chown=1001:1001 --from=builder /app/apps/web/.next/standalone ./
-COPY --chown=1001:1001 --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-COPY --chown=1001:1001 --from=builder /app/apps/web/public ./apps/web/public
-
-USER nodeuser
-
+USER voiceforge
 EXPOSE 3000
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "require('http').get('http://127.0.0.1:' + (process.env.PORT || 3000) + '/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
-
-ENTRYPOINT ["/sbin/tini", "--"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "const http=require('http');const r=http.get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/api/health'},res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(4000,()=>{r.destroy();process.exit(1)})"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/web/server.js"]

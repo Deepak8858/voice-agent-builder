@@ -35,10 +35,13 @@
       "Bash(scp -i ~/.ssh/voice-agent-builder apps/api/src/email/email.service.ts aditya_bedrock@34.55.40.175:/tmp/)",
       "Bash(scp -i ~/.ssh/voice-agent-builder apps/web/app/dashboard/settings/retention/page.tsx aditya_bedrock@34.55.40.175:/tmp/)",
       "Bash(docker tag *)",
-      "Bash(dir ~/.ssh)"
+      "Bash(dir ~/.ssh)",
+      "Bash(pnpm install *)",
+      "Bash(npm --version)",
+      "Bash(npx pnpm *)",
+      "Bash(npx prisma@5.22 generate --schema=apps/api/prisma/schema.prisma)",
+      "Bash(node apps/api/node_modules/prisma/build/index.js generate --schema=apps/api/prisma/schema.prisma)"
     ]
   },
-  "enabledPlugins": {
-    "databases-on-aws@claude-plugins-official": true
-  }
+  "enabledPlugins": {}
 }

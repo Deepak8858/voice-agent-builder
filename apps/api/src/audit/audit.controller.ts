@@ -1,4 +1,5 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Controller('workspaces/:workspaceId/audit-logs')
@@ -13,7 +14,7 @@ export class AuditController {
     @Query('action') action: string | undefined,
   ) {
     const take = Math.min(parseInt(limit ?? '20', 10), 100);
-    const where: any = { workspaceId };
+    const where: Prisma.AuditLogWhereInput = { workspaceId };
     if (action) where.action = { contains: action, mode: 'insensitive' };
     const logs = await this.prisma.auditLog.findMany({
       where,

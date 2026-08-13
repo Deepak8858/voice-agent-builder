@@ -263,7 +263,10 @@ export default function NewToolPage() {
   });
 
   return (
-    <div className="flex flex-col gap-8">
+    /* ph-no-capture: this form collects live credentials — OAuth refresh tokens,
+       client secrets, CRM API tokens, webhook signing secrets and endpoint URLs.
+       Blocked at the root so every conditional provider branch inherits it. */
+    <div className="ph-no-capture flex flex-col gap-8">
       <div>
         <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">New tool</h1>
         <p className="mt-1 text-sm text-muted-foreground">

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -23,6 +23,7 @@ import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
 import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 import { BillingService } from '../billing/billing.service';
+import { PostHogService } from '../posthog/posthog.service';
 
 export interface ListAgentsResult {
   agents: AgentSummary[];
@@ -63,7 +64,8 @@ export class AgentsService {
     private readonly cache: CacheService,
     private readonly cacheInvalidator: CacheInvalidator,
     private readonly billing: BillingService,
-    private readonly voiceRegistry?: VoiceProviderRegistry,
+    @Optional() private readonly voiceRegistry?: VoiceProviderRegistry,
+    @Optional() private readonly posthog?: PostHogService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -177,6 +179,11 @@ export class AgentsService {
     });
 
     await this.cacheInvalidator.invalidateAgentList(workspaceId);
+
+    this.posthog?.capture(
+      { event: 'agent_created', properties: { agent_id: agent.id } },
+      { workspaceId, organizationId, userId: actorUserId },
+    );
 
     // Phase 9: warn at 80% agent creation capacity
     try {
@@ -392,6 +399,18 @@ export class AgentsService {
     }
 
     await this.cacheInvalidator.invalidateAgentList(workspaceId);
+
+    this.posthog?.capture(
+      {
+        event: 'agent_published',
+        properties: {
+          agent_id: agentId,
+          agent_version_id: versionToPublish.id,
+          version_number: versionToPublish.versionNumber,
+        },
+      },
+      { workspaceId, organizationId: ws.organizationId, userId: actorUserId },
+    );
 
     return this.get(workspaceId, agentId);
   }

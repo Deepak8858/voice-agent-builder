@@ -3,15 +3,22 @@ import type { Request, Response } from 'express';
 import { logger } from '../logging';
 import { isProduction } from '../config/env';
 import type { ApiError, ApiErrorCode } from '@voiceforge/shared';
+import type { PostHogService } from '../posthog/posthog.service';
 
 /**
  * Global exception filter — translates all thrown exceptions into the shared envelope:
  *   { success: false, data: null, error: { code, message, details? } }
  *
  * Uses pino structured logging with request correlation ID when available.
+ *
+ * Unexpected (non-`HttpException`) errors are additionally mirrored to PostHog
+ * error tracking when analytics is enabled. The mirror is best-effort and
+ * fire-and-forget: the response envelope never depends on it.
  */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
+  constructor(private readonly posthog?: PostHogService) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const req = ctx.getRequest<Request>();
@@ -39,7 +46,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         error = {
           code: obj.code,
           message: obj.message ?? exception.message,
-          details: obj.details,
+          details: isProduction() ? undefined : obj.details,
         };
       } else if (resp && typeof resp === 'object' && 'message' in resp) {
         error = {
@@ -49,6 +56,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       }
     } else if (exception instanceof Error) {
       logger.error({ err: exception, correlationId, method: req.method, url: req.url }, exception.message);
+      this.posthog?.captureException(exception, correlationId);
       error.message = isProduction()
         ? 'Unexpected server error.'
         : exception.message;

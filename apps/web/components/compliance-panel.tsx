@@ -37,7 +37,10 @@ interface CompliancePanelProps {
 
 export function CompliancePanel({ workspaceId }: CompliancePanelProps) {
   return (
-    <Tabs defaultValue="contacts" className="w-full">
+    /* ph-no-capture: every tab under this panel is contact PII — phone numbers,
+       names, emails, consent records and the DNC list. Blocked at the root so a
+       new tab cannot be added without inheriting the boundary. */
+    <Tabs defaultValue="contacts" className="ph-no-capture w-full">
       <TabsList>
         <TabsTrigger value="contacts" className="gap-1.5">
           <Users className="h-3.5 w-3.5" />

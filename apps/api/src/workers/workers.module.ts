@@ -3,9 +3,11 @@ import { EvaluationWorker } from './evaluation.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
 import { EmbeddingsWorker } from './embeddings.worker';
+import { DigestWorker } from './digest.worker';
 import { OutboundCallWorker } from '../outbound-campaign/workers/outbound-call.worker';
 import { OrchestratorWorker } from './orchestrator.worker';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { EmailModule } from '../email/email.module';
 import { LlmModule } from '../llm/llm.module';
 import { QueueModule } from '../queue/queue.module';
 import { TwilioModule } from '../twilio-adapter/twilio.module';
@@ -26,12 +28,14 @@ import { TelephonyModule } from '../telephony/telephony.module';
     OutboundCampaignModule,
     CrmRoutingModule,
     TelephonyModule,
+    EmailModule,
   ],
   providers: [
     EvaluationWorker,
     AnalyticsWorker,
     AuditWorker,
     EmbeddingsWorker,
+    DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
   ],
@@ -40,6 +44,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     AnalyticsWorker,
     AuditWorker,
     EmbeddingsWorker,
+    DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
   ],

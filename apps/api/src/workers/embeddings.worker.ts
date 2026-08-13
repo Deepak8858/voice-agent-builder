@@ -1,5 +1,5 @@
 import { type Job } from 'bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { BaseWorker } from './base.worker';
 import { QueueService } from '../queue/queue.service';
 import { PrismaService } from '../prisma/prisma.service';

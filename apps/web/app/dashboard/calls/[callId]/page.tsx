@@ -27,7 +27,11 @@ export default async function CallDetailPage({ params }: PageProps) {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    /*
+     * ph-no-capture on the whole page: the header, stat cards, metadata rows
+     * and transcript all render caller names, dialled numbers and call content.
+     */
+    <div className="ph-no-capture flex flex-col gap-8">
       <PageHeader
         eyebrow="Call detail"
         title={detail.contact_name ?? detail.to_number ?? 'Call'}

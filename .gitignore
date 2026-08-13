@@ -34,6 +34,17 @@ yarn-error.log*
 
 # worktrees
 .worktrees/
+.claude/worktrees/
+
+# Browser automation profiles and local captures may contain cookies,
+# passwords, session storage, and other credentials.
+.codex-browser-shots/
+**/Default/
+*.sqlite
+*.sqlite-journal
+
+# Supabase CLI link metadata is machine-local and may disclose project details.
+supabase/.temp/
 
 # env files (commit .env.example only)
 .env

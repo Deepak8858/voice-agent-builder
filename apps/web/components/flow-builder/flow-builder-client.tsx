@@ -9,6 +9,7 @@ import type { ToolSummary } from '@voiceforge/shared';
 import { FlowBuilder } from './flow-builder';
 import { convertReactFlowToAgentFlow, validateAgentFlow } from './flow-builder-model';
 import { useApi } from '@/lib/use-api';
+import posthog from 'posthog-js';
 
 interface FlowBuilderClientProps {
   workspaceId: string;
@@ -33,6 +34,7 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
       });
     },
     onSuccess: () => {
+      posthog.capture('agent_flow_saved');
       toast.success('Flow saved.');
       router.refresh();
     },
@@ -53,7 +55,9 @@ export function FlowBuilderClient({ workspaceId, agentId, initialFlow }: FlowBui
   );
 
   return (
-    <div className="h-[600px] rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
+    /* ph-no-capture: flow nodes render spoken scripts and transfer numbers on
+       the canvas itself, not only inside the config panel. */
+    <div className="ph-no-capture h-[600px] rounded-xl border border-zinc-200 overflow-hidden dark:border-zinc-800">
       <FlowBuilder
         initialNodes={initialFlow?.nodes}
         initialEdges={initialFlow?.edges}

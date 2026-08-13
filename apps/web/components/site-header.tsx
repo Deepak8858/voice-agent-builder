@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import { ArrowUpRight } from 'lucide-react';
 import { HeaderAuth } from '@/components/auth/header-auth';
 import { Logo } from '@/components/logo';
@@ -25,7 +26,12 @@ function isCurrent(pathname: string, href: string) {
 }
 
 export function SiteHeader() {
+  // Avoid calling usePathname during the first SSR/prerender pass of special
+  // routes (Next 16 workStore invariant on /_not-found and /_global-error).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const pathname = usePathname();
+  if (!mounted) return null;
   if (pathname?.startsWith('/dashboard')) return null;
 
   return (

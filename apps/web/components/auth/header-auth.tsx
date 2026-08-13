@@ -17,19 +17,37 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 export function HeaderAuth() {
   const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
   const [user, setUser] = useState<{ email?: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => {
-      setUser(data.user);
-      setLoading(false);
-    });
+    let cancelled = false;
+    try {
+      const supabase = createBrowserSupabaseClient();
+      void supabase.auth.getUser().then(({ data }) => {
+        if (!cancelled) {
+          setUser(data.user);
+          setLoading(false);
+        }
+      });
+    } catch {
+      if (!cancelled) {
+        setUser(null);
+        setLoading(false);
+      }
+    }
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function handleSignOut() {
-    await supabase.auth.signOut();
+    try {
+      const supabase = createBrowserSupabaseClient();
+      await supabase.auth.signOut();
+    } catch {
+      // ignore sign-out failures during degraded client init
+    }
     router.push('/');
     router.refresh();
   }

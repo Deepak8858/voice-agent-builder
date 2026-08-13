@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { safeFetch } from '../common/safe-fetch';
 
 export type CrmProvider = 'pipedrive' | 'hubspot' | 'salesforce' | 'generic' | 'generic_webhook';
 
@@ -22,29 +23,6 @@ export interface CrmResult {
   provider: CrmProvider;
 }
 
-/** Blocked IP ranges and hostnames that indicate internal/private resources. */
-const BLOCKED_URL_PATTERNS = [
-  /^127\./,
-  /^localhost$/i,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^169\.254\./,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /\.internal$/i,
-  /\.local$/i,
-];
-
-function isUrlBlocked(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    return BLOCKED_URL_PATTERNS.some((re) => re.test(host));
-  } catch {
-    return true;
-  }
-}
 
 @Injectable()
 export class CrmExecutor {
@@ -72,7 +50,6 @@ export class CrmExecutor {
     const apiToken = config.api_key;
 
     if (!apiToken) throw new CrmAuthError('Pipedrive API key required');
-    if (isUrlBlocked(baseUrl)) throw new CrmAuthError('CRM base_url resolves to a blocked address.');
 
     const nameParts = args.full_name.trim().split(/\s+/);
     const firstName = nameParts[0] ?? '';
@@ -135,9 +112,6 @@ export class CrmExecutor {
   private async salesforceCreate(config: CrmConfig, args: CrmContactArgs): Promise<CrmResult> {
     const apiKey = config.api_key;
     if (!apiKey) throw new CrmAuthError('Salesforce API key required');
-    if (config.base_url && isUrlBlocked(config.base_url)) {
-      throw new CrmAuthError('CRM base_url resolves to a blocked address.');
-    }
 
     const nameParts = args.full_name.trim().split(/\s+/);
     const firstName = nameParts[0] ?? '';
@@ -171,7 +145,6 @@ export class CrmExecutor {
   ): Promise<CrmResult> {
     const url = config.base_url;
     if (!url) throw new CrmAuthError('Generic CRM requires a base_url');
-    if (isUrlBlocked(url)) throw new CrmAuthError('CRM base_url resolves to a blocked address.');
 
     const response = await this.httpPost(url, {
       name: args.full_name,
@@ -194,15 +167,14 @@ export class CrmExecutor {
     body: Record<string, unknown>,
     extraHeaders: Record<string, string> = {},
   ): Promise<unknown> {
-    const start = Date.now();
-    const response = await fetch(url, {
+    const response = await safeFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...extraHeaders,
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
+      timeoutMs: 10_000,
     });
 
     if (!response.ok) {

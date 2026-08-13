@@ -22,6 +22,7 @@ import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { BookOpen, Search, Trash2, Upload, FileText } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface KnowledgePanelProps {
   workspaceId: string;
@@ -81,6 +82,10 @@ export function KnowledgePanel({
       );
     },
     onSuccess: () => {
+      posthog.capture('knowledge_source_added', {
+        source_type: sourceType,
+        scope: agentId ? 'agent' : 'workspace',
+      });
       toast.success('Knowledge source added.');
       setTitle('');
       setContent('');
@@ -97,6 +102,9 @@ export function KnowledgePanel({
         method: 'DELETE',
       }),
     onSuccess: () => {
+      posthog.capture('knowledge_source_removed', {
+        scope: agentId ? 'agent' : 'workspace',
+      });
       toast.success('Knowledge source removed.');
       qc.invalidateQueries({ queryKey: listKey });
     },
@@ -105,10 +113,11 @@ export function KnowledgePanel({
 
   const searchMutation = useMutation({
     mutationFn: async () => {
-      const params = new URLSearchParams({ query: searchInput, k: '5' });
-      if (agentId) params.set('agent_id', agentId);
+      const body: Record<string, unknown> = { query: searchInput, k: 5 };
+      if (agentId) body.agent_id = agentId;
       return call<KnowledgeSearchResult>(
-        `/workspaces/${workspaceId}/knowledge-sources/search?${params.toString()}`,
+        `/workspaces/${workspaceId}/knowledge-sources/search`,
+        { method: 'POST', body: JSON.stringify(body) },
       );
     },
     onSuccess: (data) => setSearchResult(data),
@@ -137,7 +146,8 @@ export function KnowledgePanel({
   };
 
   return (
-    <Card className="overflow-hidden">
+    /* ph-no-capture: knowledge titles, uploaded content and search queries. */
+    <Card className="ph-no-capture overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">

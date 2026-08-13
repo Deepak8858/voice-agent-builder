@@ -12,6 +12,7 @@ export * from './schemas/analytics';
 export * from './schemas/white-label';
 export * from './schemas/billing';
 export * from './schemas/telephony';
+export * from './analytics/posthog-events';
 export * from './billing/catalog';
 export * from './constants/templates';
 export * from './constants/industries';

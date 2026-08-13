@@ -46,6 +46,8 @@ function makeService(opts: {
       }),
     },
     callEvent: {
+      findUnique: vi.fn(async ({ where }: { where: { providerEventId: string } }) =>
+        events.find((event) => event.providerEventId === where.providerEventId) ?? null),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const row = {
           id: `evt_${events.length + 1}`,
@@ -240,6 +242,31 @@ describe('CallsService.ingestEvent', () => {
     expect(events[0]).toMatchObject({ eventType: 'agent.booking_created' });
     expect(updates).toHaveLength(0);
   });
+
+  it('deduplicates provider events by their stable event id', async () => {
+    const { service, events } = makeService({
+      callByProviderCallId: {
+        id: 'c1',
+        workspaceId: 'w1',
+        agentId: 'a1',
+        agentVersionId: 'v1',
+        startedAt: new Date(),
+        status: 'in_progress',
+        providerCallId: 'call_xyz',
+      },
+    });
+    const payload = {
+      event_type: 'call.ringing',
+      provider_call_id: 'call_xyz',
+      provider_event_id: 'evt_provider_1',
+    };
+
+    await service.ingestEvent('vapi', payload);
+    await service.ingestEvent('vapi', payload);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ providerEventId: 'evt_provider_1' });
+  });
 });
 
 describe('Webhook security', () => {
@@ -307,6 +334,33 @@ describe('Webhook security', () => {
     try {
       await expect(
         controller.receive('vapi', signature, {} as never, body),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(callsService.ingestEvent).not.toHaveBeenCalled();
+    } finally {
+      Object.assign(env, { VOICE_WEBHOOK_SECRET: originalSecret });
+    }
+  });
+
+  it('rejects a webhook with a stale signed timestamp', async () => {
+    const originalSecret = env.VOICE_WEBHOOK_SECRET;
+    Object.assign(env, { VOICE_WEBHOOK_SECRET: 'test-voice-webhook-secret' });
+    const callsService = { ingestEvent: vi.fn(async () => undefined) };
+    const controller = new VoiceWebhookController(callsService as never);
+    const rawBody = Buffer.from('{"event_type":"call.started"}', 'utf8');
+    const timestamp = String(Math.floor(Date.now() / 1000) - 601);
+    const signature = createHmac('sha256', env.VOICE_WEBHOOK_SECRET ?? '')
+      .update(Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), rawBody]))
+      .digest('hex');
+
+    try {
+      await expect(
+        controller.receive(
+          'vapi',
+          signature,
+          { rawBody } as never,
+          { event_type: 'call.started' },
+          timestamp,
+        ),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(callsService.ingestEvent).not.toHaveBeenCalled();
     } finally {

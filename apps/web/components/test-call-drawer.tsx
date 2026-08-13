@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { cn } from '@/lib/cn';
 import { ArrowRight, Clock3, MessageSquareText, Phone } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface TestCallDrawerProps {
   workspaceId: string;
@@ -38,6 +39,7 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
     onSuccess: (res) => {
       setCallId(res.call_id);
       setOpen(true);
+      posthog.capture('test_call_started');
       toast.success('Test session created.');
     },
     onError: (err: Error) => toast.error(err.message),
@@ -65,7 +67,11 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
       </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="flex h-full w-full flex-col p-0 sm:max-w-xl">
+        {/* ph-no-capture: the drawer renders the test-call transcript. */}
+        <SheetContent
+          side="right"
+          className="ph-no-capture flex h-full w-full flex-col p-0 sm:max-w-xl"
+        >
           <SheetHeader className="border-b border-border px-6 py-5 pr-12 text-left">
             <div className="flex flex-wrap items-center gap-2">
               <SheetTitle>Browser test call</SheetTitle>
