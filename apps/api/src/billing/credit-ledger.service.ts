@@ -10,6 +10,8 @@ import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 
 const CREDIT_SECONDS_PER_MINUTE = 60;
+/** Window used to warn a customer that credit is about to expire. */
+const CREDIT_EXPIRY_HORIZON_DAYS = 30;
 const PURCHASED_PACK_SECONDS = 6_000;
 const PURCHASED_PACK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1_000;
 
@@ -252,6 +254,22 @@ export interface CreditBalance extends CreditBalanceDto {
   availableSeconds: number;
   reservedSeconds: number;
   totalOwnedSeconds: number;
+  status: string;
+  reviewReason: string | null;
+}
+
+/**
+ * Seconds a customer can see on the billing page, reported by source. Minutes
+ * are deliberately not used here: the ledger meters in seconds and rounding to
+ * minutes before display loses the remainder that is actually spendable.
+ */
+export interface CreditSummary {
+  organizationId: string;
+  includedSeconds: number;
+  purchasedSeconds: number;
+  reservedSeconds: number;
+  availableSeconds: number;
+  expiringSeconds: number;
   status: string;
   reviewReason: string | null;
 }
@@ -1023,6 +1041,60 @@ export class CreditLedgerService {
     );
   }
 
+  /**
+   * Read-only view for the dashboard. It deliberately does not take the balance
+   * row lock or create a projection row: displaying a balance must never block
+   * an in-flight call, and an organization that has never been granted credit
+   * simply has zero.
+   */
+  async getCreditSummary(
+    organizationId: string,
+    expiringWithinDays = CREDIT_EXPIRY_HORIZON_DAYS,
+  ): Promise<CreditSummary> {
+    const validatedOrganizationId = IdentifierSchema.parse(organizationId);
+    const now = new Date();
+    const horizon = new Date(now.getTime() + expiringWithinDays * 24 * 60 * 60 * 1_000);
+
+    const [balance, buckets] = await Promise.all([
+      this.prisma.organizationCreditBalance.findUnique({
+        where: { organizationId: validatedOrganizationId },
+        select: { availableSeconds: true, reservedSeconds: true, status: true, reviewReason: true },
+      }),
+      this.prisma.billingCreditBucket.findMany({
+        where: {
+          organizationId: validatedOrganizationId,
+          status: 'active',
+          validFrom: { lte: now },
+          expiresAt: { gt: now },
+          remainingSeconds: { gt: 0 },
+        },
+        select: { sourceType: true, remainingSeconds: true, expiresAt: true },
+      }),
+    ]);
+
+    let includedSeconds = 0;
+    let purchasedSeconds = 0;
+    let expiringSeconds = 0;
+    for (const bucket of buckets) {
+      if (bucket.sourceType === 'included') includedSeconds += bucket.remainingSeconds;
+      if (bucket.sourceType === 'purchased') purchasedSeconds += bucket.remainingSeconds;
+      if (bucket.expiresAt.getTime() <= horizon.getTime()) {
+        expiringSeconds += bucket.remainingSeconds;
+      }
+    }
+
+    return {
+      organizationId: validatedOrganizationId,
+      includedSeconds,
+      purchasedSeconds,
+      reservedSeconds: balance?.reservedSeconds ?? 0,
+      availableSeconds: balance?.availableSeconds ?? 0,
+      expiringSeconds,
+      status: balance?.status ?? 'active',
+      reviewReason: balance?.reviewReason ?? null,
+    };
+  }
+
   private async withLockedBalance<T>(
     organizationId: string,
     operation: (tx: TransactionClient, balance: OrganizationCreditBalance) => Promise<T>,
@@ -1448,7 +1520,29 @@ export class CreditLedgerService {
       reason: this.reasonFromLedger(entry.entryType, entry.reasonCode),
       seconds: this.sumAllocations(allocations),
       allocations,
-      creditBalance: metadata.creditBalance,
+      creditBalance: this.snapshotToCreditBalance(metadata.creditBalance),
+    };
+  }
+
+  /**
+   * Rebuilds the balance field by field rather than passing the parsed snapshot
+   * through. The schema's inferred shape marks every property optional under
+   * the non-strict build config, so a direct assignment does not satisfy
+   * {@link CreditBalance} there even though the schema requires each field.
+   */
+  private snapshotToCreditBalance(
+    snapshot: z.infer<typeof CreditBalanceReplaySchema>,
+  ): CreditBalance {
+    return {
+      organizationId: snapshot.organizationId,
+      includedMinutesRemaining: snapshot.includedMinutesRemaining,
+      purchasedMinutesRemaining: snapshot.purchasedMinutesRemaining,
+      lifetimeBrowserTestSecondsRemaining: snapshot.lifetimeBrowserTestSecondsRemaining,
+      availableSeconds: snapshot.availableSeconds,
+      reservedSeconds: snapshot.reservedSeconds,
+      totalOwnedSeconds: snapshot.totalOwnedSeconds,
+      status: snapshot.status,
+      reviewReason: snapshot.reviewReason,
     };
   }
 

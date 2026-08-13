@@ -10,12 +10,15 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import type {
+  BillingSummaryDto,
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
+  CreateTopUpCheckoutDto,
 } from '@voiceforge/shared';
 import {
   CreateCheckoutSessionDtoSchema,
   CreatePortalSessionDtoSchema,
+  CreateTopUpCheckoutDtoSchema,
 } from '@voiceforge/shared';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -50,6 +53,16 @@ export class BillingController {
     return this.billing.getBillingStatus();
   }
 
+  /**
+   * Billing is owned by the organization, so this returns organization totals
+   * even though it is reached through a workspace the caller has access to.
+   */
+  @Get('summary')
+  async getSummary(@Param('workspaceId') workspaceId: string): Promise<BillingSummaryDto> {
+    const orgId = await this.getOrgId(workspaceId);
+    return this.billing.getBillingSummary(orgId);
+  }
+
   @Get('usage')
   async getUsage(
     @Param('workspaceId') workspaceId: string,
@@ -75,6 +88,19 @@ export class BillingController {
       if (err instanceof ForbiddenPlanError) throw err;
       throw err;
     }
+  }
+
+  /**
+   * The pack price is server-owned; the request body carries only the return
+   * paths so a client can never name a price or an amount.
+   */
+  @Post('topup-checkout')
+  async createTopUpCheckout(
+    @Param('workspaceId') workspaceId: string,
+    @Body(new ZodValidationPipe(CreateTopUpCheckoutDtoSchema)) dto: CreateTopUpCheckoutDto,
+  ): Promise<{ url: string }> {
+    const orgId = await this.getOrgId(workspaceId);
+    return this.billing.createTopUpCheckoutSession(orgId, dto);
   }
 
   @Post('portal')

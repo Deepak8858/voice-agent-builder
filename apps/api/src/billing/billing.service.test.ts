@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
+import { BILLING_CATALOG_VERSION } from '@voiceforge/shared';
 import { BillingService, ForbiddenPlanError } from './billing.service';
 import { env } from '../config/env';
 
 function makePrisma(overrides?: {
   subscription?: unknown;
   agentCount?: number;
+  workspaceCount?: number;
+  integrationToolCount?: number;
+  creditBalance?: unknown;
+  creditBuckets?: unknown[];
   usageRecords?: unknown[];
   workspace?: { organizationId: string };
   auditLog?: { create?: ReturnType<typeof vi.fn> };
@@ -13,6 +18,10 @@ function makePrisma(overrides?: {
   const state = {
     subscription: overrides?.subscription ?? null,
     agentCount: overrides?.agentCount ?? 0,
+    workspaceCount: overrides?.workspaceCount ?? 0,
+    integrationToolCount: overrides?.integrationToolCount ?? 0,
+    creditBalance: overrides?.creditBalance ?? null,
+    creditBuckets: overrides?.creditBuckets ?? [],
     usageRecords: overrides?.usageRecords ?? [],
     workspace: overrides?.workspace ?? { organizationId: 'org-1' },
   };
@@ -28,9 +37,19 @@ function makePrisma(overrides?: {
     workspace: {
       findUniqueOrThrow: vi.fn(async () => state.workspace),
       findUnique: vi.fn(async () => state.workspace),
+      count: vi.fn(async () => state.workspaceCount),
     },
     agent: {
       count: vi.fn(async () => state.agentCount),
+    },
+    integrationTool: {
+      count: vi.fn(async () => state.integrationToolCount),
+    },
+    organizationCreditBalance: {
+      findUnique: vi.fn(async () => state.creditBalance),
+    },
+    billingCreditBucket: {
+      findMany: vi.fn(async () => state.creditBuckets),
     },
     usageRecord: {
       findMany: vi.fn(async () => state.usageRecords),
@@ -58,11 +77,13 @@ describe('BillingService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(env, {
-      BILLING_MODE: 'live',
       STRIPE_SECRET_KEY: 'rk_test_123',
+      STRIPE_WEBHOOK_SECRET: 'whsec_test_123',
       STRIPE_STARTER_PRICE_ID: 'price_starter',
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
       STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
+      STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+      STRIPE_TAX_ENABLED: false,
       WEB_BASE_URL: 'https://app.voiceforge.test',
     });
     mockStripe = {
@@ -73,23 +94,41 @@ describe('BillingService', () => {
   });
 
   describe('getBillingStatus', () => {
-    it('reports demo mode when live Stripe billing is disabled by env', () => {
-      Object.assign(env, { BILLING_MODE: 'demo' });
+    it('reports checkout configured when every server-owned identifier is present', () => {
       const prisma = makePrisma();
       const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       expect(svc.getBillingStatus()).toEqual({
-        mode: 'demo',
+        checkoutConfigured: true,
+        liveCheckoutEnabled: true,
+        message: 'Live Stripe checkout and customer portal actions are enabled.',
+      });
+    });
+
+    /**
+     * A partially configured deployment must fail closed. It reports checkout
+     * as unavailable rather than advertising a free allowance, because the
+     * webhook that grants what a customer pays for would not be verifiable.
+     */
+    it('reports checkout unavailable when the minute-pack price is missing', () => {
+      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
+      const prisma = makePrisma();
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      expect(svc.getBillingStatus()).toEqual({
+        checkoutConfigured: false,
         liveCheckoutEnabled: false,
         message:
-          'Live Stripe billing is disabled for this demo. Free trial limits remain active.',
+          'Stripe checkout is temporarily unavailable. No plan change was made and no free allowance was granted.',
       });
     });
   });
 
   describe('createCheckoutSession', () => {
-    it('disables live checkout in demo billing mode without calling Stripe', async () => {
-      Object.assign(env, { BILLING_MODE: 'demo' });
+    it('refuses checkout without calling Stripe when the webhook secret is missing', async () => {
+      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
       const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
@@ -122,14 +161,22 @@ describe('BillingService', () => {
           customer: 'cus_123',
           mode: 'subscription',
           line_items: [{ price: 'price_starter', quantity: 1 }],
-          automatic_tax: { enabled: true },
+          automatic_tax: { enabled: false },
           billing_address_collection: 'required',
           tax_id_collection: { enabled: true },
           success_url: 'https://app.voiceforge.test/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}',
           cancel_url: 'https://app.voiceforge.test/dashboard/billing?checkout=cancel',
-          metadata: { organizationId: 'org-1', plan: 'starter' },
+          metadata: expect.objectContaining({
+            organizationId: 'org-1',
+            plan: 'starter',
+            catalogVersion: BILLING_CATALOG_VERSION,
+          }),
           subscription_data: {
-            metadata: { organizationId: 'org-1', plan: 'starter' },
+            metadata: {
+              organizationId: 'org-1',
+              plan: 'starter',
+              catalogVersion: BILLING_CATALOG_VERSION,
+            },
           },
         }),
       );
@@ -144,6 +191,31 @@ describe('BillingService', () => {
       );
     });
 
+    /**
+     * The identifier correlates one attempt between our audit log and Stripe's
+     * dashboard, so it must be unique per request rather than per deployment.
+     */
+    it('stamps a distinct integration identifier on every Checkout attempt', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      const dto = {
+        plan: 'starter' as const,
+        successPath: '/dashboard/billing?checkout=success',
+        cancelPath: '/dashboard/billing?checkout=cancel',
+      };
+
+      await svc.createCheckoutSession('org-1', dto);
+      await svc.createCheckoutSession('org-1', dto);
+
+      const [first, second] = mockStripe.checkout.sessions.create.mock.calls.map(
+        (call) => (call[0] as { metadata: Record<string, string> }).metadata.integration_identifier,
+      );
+      expect(first).toMatch(/^vf_[0-9a-f]{24}$/);
+      expect(second).toMatch(/^vf_[0-9a-f]{24}$/);
+      expect(first).not.toBe(second);
+    });
+
     it('rejects unsafe checkout paths before calling Stripe', async () => {
       const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
@@ -156,11 +228,216 @@ describe('BillingService', () => {
       })).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
+
+    /**
+     * Enterprise is sales-assisted and has no self-service Price. A forged plan
+     * value must be refused before Stripe is contacted.
+     */
+    it('rejects a plan outside the self-service checkout catalog', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'enterprise' as never,
+        successPath: '/dashboard/billing',
+        cancelPath: '/dashboard/billing',
+      })).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createTopUpCheckoutSession', () => {
+    const topUpDto = {
+      successPath: '/dashboard/billing?topup=success',
+      cancelPath: '/dashboard/billing?topup=cancel',
+    };
+
+    it('starts a one-time Checkout against the server-owned minute-pack price', async () => {
+      const prisma = makePrisma({
+        subscription: {
+          stripeCustomerId: 'cus_123',
+          plan: 'growth',
+          status: 'active',
+          trialEnd: null,
+          concurrentCallLimitOverride: null,
+        },
+      });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await svc.createTopUpCheckoutSession('org-1', topUpDto);
+
+      expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customer: 'cus_123',
+          mode: 'payment',
+          line_items: [{ price: 'price_minute_pack', quantity: 1 }],
+          metadata: expect.objectContaining({
+            organizationId: 'org-1',
+            purchaseType: 'minute_pack',
+            catalogVersion: BILLING_CATALOG_VERSION,
+          }),
+        }),
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ action: 'billing.topup_checkout_started' }),
+        }),
+      );
+    });
+
+    /**
+     * Packs are consumed after included minutes, so an organization without a
+     * funded subscription must not be able to buy one.
+     */
+    it('refuses a pack for an organization without paid access', async () => {
+      const prisma = makePrisma({
+        subscription: {
+          stripeCustomerId: 'cus_123',
+          plan: 'growth',
+          status: 'past_due',
+          trialEnd: null,
+          concurrentCallLimitOverride: null,
+        },
+      });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+        ForbiddenPlanError,
+      );
+      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getBillingSummary', () => {
+    const growthSubscription = {
+      id: '5f7d4d3a-9a1f-4a2f-8f1a-2b3c4d5e6f70',
+      plan: 'growth',
+      status: 'active',
+      currentPeriodStart: new Date('2026-08-01T00:00:00.000Z'),
+      currentPeriodEnd: new Date('2026-09-01T00:00:00.000Z'),
+      cancelAtPeriodEnd: false,
+      trialEnd: null,
+      concurrentCallLimitOverride: null,
+      stripeCustomerId: 'cus_123',
+    };
+
+    function makeSummaryPrisma() {
+      const soon = new Date(Date.now() + 5 * 24 * 60 * 60 * 1_000);
+      const later = new Date(Date.now() + 200 * 24 * 60 * 60 * 1_000);
+      return makePrisma({
+        subscription: growthSubscription,
+        agentCount: 4,
+        workspaceCount: 2,
+        integrationToolCount: 3,
+        creditBalance: {
+          availableSeconds: 9_000,
+          reservedSeconds: 120,
+          status: 'active',
+          reviewReason: null,
+        },
+        creditBuckets: [
+          { sourceType: 'included', remainingSeconds: 3_000, expiresAt: soon },
+          { sourceType: 'purchased', remainingSeconds: 6_000, expiresAt: later },
+        ],
+      });
+    }
+
+    it('separates included, purchased, reserved, and expiring seconds', async () => {
+      const svc = makeService(makeSummaryPrisma());
+
+      const summary = await svc.getBillingSummary('org-1');
+
+      expect(summary).toMatchObject({
+        organizationId: 'org-1',
+        plan: 'growth',
+        status: 'active',
+        paidAccess: true,
+        catalogVersion: BILLING_CATALOG_VERSION,
+        currentPeriodEnd: '2026-09-01T00:00:00.000Z',
+        cancelAtPeriodEnd: false,
+        includedSeconds: 3_000,
+        purchasedSeconds: 6_000,
+        reservedSeconds: 120,
+        expiringSeconds: 3_000,
+        availableSeconds: 9_000,
+        balanceStatus: 'active',
+        blockedReason: 'allowed',
+      });
+      expect(summary.entitlements).toMatchObject({
+        includedMinutes: 1_000,
+        agents: 10,
+        workspaces: 5,
+        concurrentCalls: 10,
+        whiteLabel: true,
+      });
+    });
+
+    /**
+     * Quotas and credit belong to the organization, so the same totals must be
+     * returned no matter which of its workspaces the dashboard was opened from.
+     */
+    it('returns organization totals rather than workspace-scoped counts', async () => {
+      const prisma = makeSummaryPrisma();
+      const svc = makeService(prisma);
+
+      const summary = await svc.getBillingSummary('org-1');
+
+      expect(summary.usage).toEqual({ agents: 4, workspaces: 2, integrations: 3 });
+      expect(prisma.agent.count).toHaveBeenCalledWith({
+        where: { workspace: { organizationId: 'org-1' } },
+      });
+      expect(prisma.workspace.count).toHaveBeenCalledWith({
+        where: { organizationId: 'org-1' },
+      });
+      expect(prisma.integrationTool.count).toHaveBeenCalledWith({
+        where: { organizationId: 'org-1' },
+      });
+    });
+
+    /**
+     * The summary is what a customer reads to understand why calls are not
+     * running, so it must report the same denial the runtime would produce.
+     */
+    it('reports the reason a paid call would currently be refused', async () => {
+      const prisma = makePrisma({
+        subscription: { ...growthSubscription, status: 'past_due' },
+      });
+      const svc = makeService(prisma);
+
+      const summary = await svc.getBillingSummary('org-1');
+
+      expect(summary).toMatchObject({
+        plan: 'free',
+        status: 'past_due',
+        paidAccess: false,
+        blockedReason: 'subscription_inactive',
+      });
+    });
+
+    it('reports zeroes for an organization that has never been granted credit', async () => {
+      const svc = makeService(makePrisma({ subscription: null }));
+
+      const summary = await svc.getBillingSummary('org-new');
+
+      expect(summary).toMatchObject({
+        plan: 'free',
+        status: 'none',
+        includedSeconds: 0,
+        purchasedSeconds: 0,
+        reservedSeconds: 0,
+        expiringSeconds: 0,
+        availableSeconds: 0,
+        currentPeriodEnd: null,
+      });
+    });
   });
 
   describe('createPortalSession', () => {
-    it('disables the customer portal in demo billing mode without calling Stripe', async () => {
-      Object.assign(env, { BILLING_MODE: 'demo' });
+    it('refuses the customer portal without calling Stripe when checkout is unconfigured', async () => {
+      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
       const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
