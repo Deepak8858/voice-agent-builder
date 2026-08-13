@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PostHogConfig } from './posthog.config';
-import { posthogConfigFromEnv } from './posthog.config';
 import {
   PostHogService,
   type PostHogClientFactory,
@@ -22,6 +21,11 @@ const CONFIG: PostHogConfig = {
 
 interface FakeClient extends PostHogClientLike {
   captures: Array<Parameters<PostHogClientLike['capture']>[0]>;
+  exceptions: Array<{
+    error: unknown;
+    distinctId?: string;
+    additionalProperties?: Record<string, unknown>;
+  }>;
   registered: Array<Record<string, unknown>>;
   shutdownCalls: number;
 }
@@ -29,10 +33,14 @@ interface FakeClient extends PostHogClientLike {
 function makeClient(overrides: Partial<PostHogClientLike> = {}): FakeClient {
   const client: FakeClient = {
     captures: [],
+    exceptions: [],
     registered: [],
     shutdownCalls: 0,
     capture(message) {
       client.captures.push(message);
+    },
+    captureException(error, distinctId, additionalProperties) {
+      client.exceptions.push({ error, distinctId, additionalProperties });
     },
     register(properties) {
       client.registered.push(properties);
@@ -71,8 +79,20 @@ describe('PostHogService when unconfigured', () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
-  it('posthogConfigFromEnv is null without POSTHOG_ENABLED', () => {
-    expect(posthogConfigFromEnv()).toBeNull();
+  it('posthogConfigFromEnv is null without POSTHOG_ENABLED', async () => {
+    // Pin the precondition: an ambient POSTHOG_ENABLED in a developer shell or
+    // CI job must not be able to flip this assertion. The validated `env`
+    // object is parsed at module load, so the module graph must be re-imported
+    // under the stubbed environment for the stub to take effect.
+    vi.stubEnv('POSTHOG_ENABLED', '');
+    vi.resetModules();
+    try {
+      const { posthogConfigFromEnv: fromEnv } = await import('./posthog.config');
+      expect(fromEnv()).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 
   it('stays inert when the client factory throws', () => {
@@ -184,13 +204,73 @@ describe('PostHogService.capture', () => {
     ).not.toThrow();
   });
 
-  it('never propagates a failing super-property registration', () => {
+  it('never propagates a failing super-property registration', async () => {
     const client = makeClient({
       register() {
         return Promise.reject(new Error('register failed'));
       },
     });
+    const unhandled = vi.fn();
+    process.once('unhandledRejection', unhandled);
+
     expect(() => makeService(client)).not.toThrow();
+    // Let the rejected registration promise settle before asserting: the
+    // constructor must have attached its own catch handler.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    process.removeListener('unhandledRejection', unhandled);
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe('PostHogService.captureException', () => {
+  it('is an inert no-op when unconfigured', () => {
+    const service = new PostHogService(null, vi.fn());
+    expect(() => service.captureException(new Error('boom'))).not.toThrow();
+  });
+
+  it('forwards the error without a person profile', () => {
+    const client = makeClient();
+    const { service } = makeService(client);
+
+    service.captureException(new Error('boom'), 'corr-1');
+
+    expect(client.exceptions).toHaveLength(1);
+    const sent = client.exceptions[0]!;
+    expect((sent.error as Error).message).toBe('boom');
+    expect(sent.distinctId).toBe('corr-1');
+    expect(sent.additionalProperties).toEqual({ $process_person_profile: false });
+  });
+
+  it('falls back to a server identity when no correlation ID exists', () => {
+    const client = makeClient();
+    const { service } = makeService(client);
+
+    service.captureException(new Error('boom'));
+
+    expect(client.exceptions[0]!.distinctId).toBe('api-server');
+  });
+
+  it('wraps non-Error values so the SDK always receives an Error', () => {
+    const client = makeClient();
+    const { service } = makeService(client);
+
+    service.captureException('string failure');
+
+    const sent = client.exceptions[0]!.error;
+    expect(sent).toBeInstanceOf(Error);
+    expect((sent as Error).message).toBe('string failure');
+  });
+
+  it('never propagates an SDK failure to the caller', () => {
+    const client = makeClient({
+      captureException() {
+        throw new Error('posthog exploded');
+      },
+    });
+    const { service } = makeService(client);
+
+    expect(() => service.captureException(new Error('boom'))).not.toThrow();
   });
 });
 

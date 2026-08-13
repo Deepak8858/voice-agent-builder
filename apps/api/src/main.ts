@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/http-exception.filter';
+import { PostHogService } from './posthog/posthog.service';
 import { RequestLoggingMiddleware } from './common/request-logging.middleware';
 import { ResponseEnvelopeInterceptor } from './common/response-envelope.interceptor';
 import { env, isProduction } from './config/env';
@@ -79,7 +80,7 @@ async function bootstrap() {
     type: ['application/json', 'application/*+json', 'application/webhook+json'],
   });
 
-  app.useGlobalFilters(new HttpExceptionFilter());
+  app.useGlobalFilters(new HttpExceptionFilter(app.get(PostHogService)));
   app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
   const requestLoggingMiddleware = new RequestLoggingMiddleware();
   app.use(requestLoggingMiddleware.use.bind(requestLoggingMiddleware));
