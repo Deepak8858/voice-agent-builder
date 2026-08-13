@@ -135,6 +135,32 @@ const EnvSchema = z.object({
   BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
   BILLING_LEASE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(90),
 
+  // Assumed variable cost per connected minute, used to record a provider cost
+  // estimate before the provider reports actual usage. Bounded above zero so a
+  // misconfigured deployment cannot silently report infinite margin.
+  BILLING_VARIABLE_COST_RESERVE_USD_PER_MINUTE: z.coerce
+    .number()
+    .positive()
+    .max(10)
+    .default(0.12),
+  // Reconciliation cadence. Defaults to every 15 minutes; each run is bounded
+  // by BILLING_RECONCILIATION_BATCH_SIZE so a backlog is drained over several
+  // runs instead of one long transaction.
+  BILLING_RECONCILIATION_CRON: z
+    .string()
+    .default('*/15 * * * *')
+    .refine(
+      (v) => {
+        const fields = v.trim().split(/\s+/).length;
+        return fields === 5 || fields === 6;
+      },
+      'BILLING_RECONCILIATION_CRON must be a 5- or 6-field cron expression',
+    ),
+  BILLING_RECONCILIATION_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+  // A call that never reported connection is finalized and its reservation
+  // released after this many minutes, so credit is not held indefinitely.
+  BILLING_STALE_CALL_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
+
   LLM_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),

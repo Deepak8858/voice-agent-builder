@@ -1,0 +1,259 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { env } from '../config/env';
+import { MetricsService } from '../common/metrics.service';
+import { PrismaService } from '../prisma/prisma.service';
+
+/**
+ * Provider cost tracking.
+ *
+ * These records answer "what did serving this traffic cost us", which is a
+ * different question from "what did we charge the customer". They are kept in
+ * `provider_cost_events` and are never written to `billing_ledger_entries`:
+ * a cost correction must never move a customer balance.
+ *
+ * Actual provider usage arrives late (hours, sometimes a day), so a connected
+ * call is recorded immediately as a versioned estimate and replaced in place
+ * when the real figure lands.
+ */
+
+/** Cost categories are tracked separately so margin regressions are attributable. */
+export const PROVIDER_COST_CATEGORIES = {
+  /** LLM inference for the conversation itself. */
+  llm: 'llm',
+  /** Voice agent runtime (media pipeline, STT/TTS bundled by the provider). */
+  agentRuntime: 'agent_runtime',
+  /** PSTN/SIP trunking minutes. */
+  sipTrunk: 'sip_trunk',
+} as const;
+
+export type ProviderCostCategory =
+  (typeof PROVIDER_COST_CATEGORIES)[keyof typeof PROVIDER_COST_CATEGORIES];
+
+/**
+ * Bumped whenever the estimation formula changes, so an old estimate is
+ * distinguishable from a current one and can be re-estimated deliberately.
+ */
+export const PROVIDER_COST_ESTIMATE_VERSION = 1;
+
+const SECONDS_PER_MINUTE = 60;
+
+export interface ProviderCostInput {
+  organizationId: string;
+  workspaceId?: string | null;
+  callId?: string | null;
+  provider: string;
+  serviceCategory: ProviderCostCategory | string;
+  /** Stable per-provider key. Re-recording the same key updates in place. */
+  idempotencyKey: string;
+  measuredUnit: string;
+  quantity: number;
+  amountUsd: number;
+  occurredAt: Date;
+  providerUsageId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EstimateConnectedCallInput {
+  organizationId: string;
+  workspaceId?: string | null;
+  callId: string;
+  provider: string;
+  connectedSeconds: number;
+  occurredAt: Date;
+  serviceCategory?: ProviderCostCategory | string;
+}
+
+export interface ProviderCostCoverage {
+  finalizedCalls: number;
+  callsMissingCost: number;
+  /** Fraction in [0, 1]. Zero when there is nothing to cover. */
+  missingRatio: number;
+}
+
+@Injectable()
+export class ProviderCostService {
+  private readonly logger = new Logger(ProviderCostService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly metrics: MetricsService,
+  ) {}
+
+  /** USD reserved per connected minute when no actual provider figure exists yet. */
+  get reservePerMinuteUsd(): number {
+    return env.BILLING_VARIABLE_COST_RESERVE_USD_PER_MINUTE;
+  }
+
+  /**
+   * Record a connected call at the configured reserve rate.
+   *
+   * Started minutes are charged as whole minutes, matching how the customer
+   * side rounds, so estimated margin is not flattered by partial minutes.
+   */
+  async estimateConnectedCall(input: EstimateConnectedCallInput): Promise<void> {
+    const minutes = Math.ceil(Math.max(input.connectedSeconds, 0) / SECONDS_PER_MINUTE);
+    const amountUsd = this.round6(minutes * this.reservePerMinuteUsd);
+
+    await this.record(
+      {
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId ?? null,
+        callId: input.callId,
+        provider: input.provider,
+        serviceCategory: input.serviceCategory ?? PROVIDER_COST_CATEGORIES.agentRuntime,
+        idempotencyKey: this.estimateKey(input.callId, input.serviceCategory),
+        measuredUnit: 'minute',
+        quantity: minutes,
+        amountUsd,
+        occurredAt: input.occurredAt,
+        metadata: {
+          reserveUsdPerMinute: this.reservePerMinuteUsd,
+          connectedSeconds: input.connectedSeconds,
+        },
+      },
+      true,
+    );
+  }
+
+  /** Record a figure reported by the provider, replacing any prior estimate. */
+  async recordActualCost(input: ProviderCostInput): Promise<void> {
+    await this.record(input, false);
+  }
+
+  private async record(input: ProviderCostInput, isEstimate: boolean): Promise<void> {
+    const quantity = new Prisma.Decimal(this.round6(input.quantity));
+    const amount = new Prisma.Decimal(this.round6(input.amountUsd));
+
+    await this.prisma.providerCostEvent.upsert({
+      where: {
+        provider_idempotencyKey: {
+          provider: input.provider,
+          idempotencyKey: input.idempotencyKey,
+        },
+      },
+      create: {
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId ?? null,
+        callId: input.callId ?? null,
+        provider: input.provider,
+        serviceCategory: input.serviceCategory,
+        providerUsageId: input.providerUsageId ?? null,
+        idempotencyKey: input.idempotencyKey,
+        measuredUnit: input.measuredUnit,
+        quantity,
+        amount,
+        isEstimate,
+        estimateVersion: isEstimate ? PROVIDER_COST_ESTIMATE_VERSION : 0,
+        occurredAt: input.occurredAt,
+        reconciledAt: isEstimate ? null : new Date(),
+        metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
+      },
+      update: {
+        // An actual figure supersedes an estimate. An estimate must never
+        // overwrite an actual, so the estimate path leaves settled rows alone.
+        ...(isEstimate
+          ? {}
+          : {
+              quantity,
+              amount,
+              isEstimate: false,
+              estimateVersion: 0,
+              reconciledAt: new Date(),
+              providerUsageId: input.providerUsageId ?? null,
+              metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
+            }),
+      },
+    });
+
+    this.metrics.providerCostUsdTotal
+      .labels(input.provider, String(input.serviceCategory), isEstimate ? 'true' : 'false')
+      .inc(this.round6(input.amountUsd));
+  }
+
+  /**
+   * Estimate costs for finalized calls that still have no cost event.
+   *
+   * Bounded by `limit` so a backlog is worked down over successive runs rather
+   * than in one unbounded transaction.
+   */
+  async estimateMissingCallCosts(limit = 100): Promise<number> {
+    const calls = await this.prisma.callUsage.findMany({
+      where: {
+        finalizationState: 'finalized',
+        connectedAt: { not: null },
+        call: { providerCostEvents: { none: {} } },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+      select: {
+        organizationId: true,
+        workspaceId: true,
+        callId: true,
+        provider: true,
+        rawConnectedSeconds: true,
+        billableSeconds: true,
+        endedAt: true,
+        connectedAt: true,
+      },
+    });
+
+    let estimated = 0;
+    for (const call of calls) {
+      try {
+        await this.estimateConnectedCall({
+          organizationId: call.organizationId,
+          workspaceId: call.workspaceId,
+          callId: call.callId,
+          provider: call.provider,
+          connectedSeconds: call.rawConnectedSeconds || call.billableSeconds,
+          occurredAt: call.endedAt ?? call.connectedAt ?? new Date(),
+        });
+        estimated += 1;
+      } catch (err) {
+        // One malformed row must not stop the batch.
+        this.logger.error(
+          `Failed to estimate provider cost for call ${call.callId}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return estimated;
+  }
+
+  /**
+   * Share of finalized calls with no provider cost attached.
+   *
+   * The plan treats sustained coverage below 99% as an alert: it means margin
+   * reporting is running on incomplete data.
+   */
+  async costCoverage(since: Date): Promise<ProviderCostCoverage> {
+    const [finalizedCalls, callsMissingCost] = await Promise.all([
+      this.prisma.callUsage.count({
+        where: { finalizationState: 'finalized', endedAt: { gte: since } },
+      }),
+      this.prisma.callUsage.count({
+        where: {
+          finalizationState: 'finalized',
+          endedAt: { gte: since },
+          call: { providerCostEvents: { none: {} } },
+        },
+      }),
+    ]);
+
+    return {
+      finalizedCalls,
+      callsMissingCost,
+      missingRatio: finalizedCalls === 0 ? 0 : callsMissingCost / finalizedCalls,
+    };
+  }
+
+  private estimateKey(callId: string, category?: ProviderCostCategory | string): string {
+    const suffix = category ?? PROVIDER_COST_CATEGORIES.agentRuntime;
+    return `estimate:call:${callId}:${suffix}:v${PROVIDER_COST_ESTIMATE_VERSION}`;
+  }
+
+  /** Match the Decimal(20,6) column so round-tripping never shifts a total. */
+  private round6(value: number): number {
+    return Math.round(value * 1_000_000) / 1_000_000;
+  }
+}
