@@ -44,6 +44,35 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_PROVIDER=mock/);
   });
 
+  it('does not reject a malformed optional PostHog host while analytics is disabled', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      POSTHOG_ENABLED: 'false',
+      POSTHOG_HOST: 'not-a-url',
+    });
+
+    const mod = await import('./env');
+    expect(mod.env.POSTHOG_ENABLED).toBe(false);
+    expect(mod.env.POSTHOG_HOST).toBe('not-a-url');
+  });
+
+  it('rejects unsafe release metadata', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      APP_VERSION: 'release with spaces',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/APP_VERSION/);
+  });
+
   it('parses WORKERS_ENABLED explicitly and defaults it off', async () => {
     vi.resetModules();
     restoreEnv();

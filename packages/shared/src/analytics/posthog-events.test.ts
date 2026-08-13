@@ -73,7 +73,11 @@ describe('buildPostHogEvent — PII stripping', () => {
     expect(JSON.stringify(result?.properties)).not.toContain('DNC list');
   });
 
-  it('drops a blocked event with malformed reasons rather than reporting zero', () => {
+  it('drops a blocked event with missing, empty, or malformed reasons', () => {
+    expect(buildPostHogEvent({ event: 'call.blocked', properties: {} })).toBeNull();
+    expect(
+      buildPostHogEvent({ event: 'call.blocked', properties: { reasons: [] } }),
+    ).toBeNull();
     expect(
       buildPostHogEvent({ event: 'call.blocked', properties: { reasons: 'dnc_listed' } }),
     ).toBeNull();

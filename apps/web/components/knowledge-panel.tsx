@@ -22,6 +22,7 @@ import { RichTextEditor } from '@/components/ui/rich-text-editor';
 import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { BookOpen, Search, Trash2, Upload, FileText } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface KnowledgePanelProps {
   workspaceId: string;
@@ -81,6 +82,10 @@ export function KnowledgePanel({
       );
     },
     onSuccess: () => {
+      posthog.capture('knowledge_source_added', {
+        source_type: sourceType,
+        scope: agentId ? 'agent' : 'workspace',
+      });
       toast.success('Knowledge source added.');
       setTitle('');
       setContent('');
@@ -97,6 +102,9 @@ export function KnowledgePanel({
         method: 'DELETE',
       }),
     onSuccess: () => {
+      posthog.capture('knowledge_source_removed', {
+        scope: agentId ? 'agent' : 'workspace',
+      });
       toast.success('Knowledge source removed.');
       qc.invalidateQueries({ queryKey: listKey });
     },

@@ -12,6 +12,7 @@ const posthogMock = vi.hoisted(() => ({
   __loaded: true,
   properties: new Map<string, unknown>(),
   reset: vi.fn(),
+  resetGroups: vi.fn(),
   identify: vi.fn(),
   group: vi.fn(),
   get_distinct_id: vi.fn(() => ''),
@@ -111,7 +112,7 @@ describe('identifyUser', () => {
     expect(posthogMock.identify).toHaveBeenCalledWith(USER_A);
   });
 
-  it('never sends person properties', async () => {
+  it('never sends person properties and clears a stale workspace group', async () => {
     const { identifyUser } = await load();
 
     identifyUser({ userId: USER_A, workspaceId: null });
@@ -119,6 +120,7 @@ describe('identifyUser', () => {
     expect(posthogMock.identify).toHaveBeenCalledWith(USER_A);
     expect(posthogMock.identify.mock.calls[0]).toHaveLength(1);
     expect(posthogMock.group).not.toHaveBeenCalled();
+    expect(posthogMock.resetGroups).toHaveBeenCalledTimes(1);
   });
 
   it('accepts a non-UUID auth-provider ID', async () => {

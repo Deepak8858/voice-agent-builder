@@ -99,7 +99,7 @@ const CallEndedPropertiesSchema = z.object({
 const CallBlockedPropertiesSchema = z.object({
   agent_id: uuid.optional(),
   direction: CallDirectionSchema.default('outbound'),
-  reason_codes: z.array(ComplianceReasonCodeSchema).max(10),
+  reason_codes: z.array(ComplianceReasonCodeSchema).min(1).max(10),
 });
 
 const AgentCreatedPropertiesSchema = z.object({
@@ -387,8 +387,7 @@ function normalizeProperties(
   if ('reason_codes' in properties) return properties;
 
   const { reasons, ...rest } = properties;
-  if (reasons === undefined) return { ...rest, reason_codes: [] };
-  if (!Array.isArray(reasons)) return rest; // malformed: fail validation
+  if (!Array.isArray(reasons)) return rest; // missing or malformed: fail validation
 
   const codes = reasons.map((reason) =>
     reason !== null && typeof reason === 'object' && !Array.isArray(reason)

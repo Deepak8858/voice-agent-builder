@@ -148,10 +148,15 @@ describe('next.config PostHog proxy', () => {
     expect(catchAll).toBe(sources.length - 1);
   });
 
-  it('routes only to PostHog hosts over https', async () => {
+  it('routes only to the supported PostHog ingestion and asset hosts', async () => {
     for (const { destination } of await beforeFilesRewrites()) {
-      expect(destination.startsWith('https://')).toBe(true);
-      expect(destination).toContain('posthog.com');
+      const hostname = new URL(destination.replace('/:path*', '/')).hostname;
+      expect([
+        'us.i.posthog.com',
+        'eu.i.posthog.com',
+        'us-assets.i.posthog.com',
+        'eu-assets.i.posthog.com',
+      ]).toContain(hostname);
     }
   });
 

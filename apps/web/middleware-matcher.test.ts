@@ -49,9 +49,9 @@ describe('middleware matcher', () => {
     expect(matches('/favicon.ico')).toBe(false);
   });
 
-  it('does not accidentally exclude a route that merely starts with the prefix text', () => {
-    // The lookahead is prefix-based, so this documents the actual blast radius
-    // of the chosen prefix: no real app route may live under it.
+  it('does not exclude routes that merely start with reserved prefix text', () => {
+    expect(matches('/vf-relay-not-analytics')).toBe(true);
+    expect(matches('/apiary')).toBe(true);
     expect(matches('/dashboard/vf-relay')).toBe(true);
   });
 });

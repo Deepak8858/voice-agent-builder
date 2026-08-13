@@ -227,7 +227,7 @@ export class SupabaseAuthService extends AuthService {
     });
 
     const activeMembership = membership
-      ?? await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      ?? (await this.provisionPersonalWorkspace(user.id, supabaseUserId)).membership;
 
     const sessionUser: SessionUser = {
       id: user.id,
@@ -273,8 +273,13 @@ export class SupabaseAuthService extends AuthService {
         create: { authUserId, email, name },
         update: { email, name },
       });
-      const membership = await this.provisionPersonalWorkspace(user.id, supabaseUserId);
-      this.captureSignedUp(user.id, membership.workspace.id, membership.workspace.organizationId);
+      const provisioned = await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      this.captureSignedUp(
+        user.id,
+        provisioned.membership.workspace.id,
+        provisioned.membership.workspace.organizationId,
+        provisioned.workspaceCreated,
+      );
       return user;
     } catch (err: unknown) {
       const prismaErr = err as { code?: string };
@@ -299,7 +304,10 @@ export class SupabaseAuthService extends AuthService {
   }
 
   private async provisionPersonalWorkspace(userId: string, supabaseUserId: string) {
-    const orgSlug = `user-${supabaseUserId.slice(0, 8)}`;
+    // A truncated auth ID can collide and attach one user's workspace to
+    // another organization. A bounded SHA-256 suffix is deterministic while
+    // preserving the opaque source ID.
+    const orgSlug = `user-${createHash('sha256').update(supabaseUserId).digest('hex').slice(0, 24)}`;
     const organization = await this.prisma.organization.upsert({
       where: { slug: orgSlug },
       create: {
@@ -314,6 +322,7 @@ export class SupabaseAuthService extends AuthService {
       where: { organizationId: organization.id },
       orderBy: { createdAt: 'asc' },
     });
+    const workspaceCreated = !workspace;
     if (!workspace) {
       workspace = await this.prisma.workspace.create({
         data: {
@@ -325,12 +334,13 @@ export class SupabaseAuthService extends AuthService {
       });
     }
 
-    return this.prisma.membership.upsert({
+    const membership = await this.prisma.membership.upsert({
       where: { userId_workspaceId: { userId, workspaceId: workspace.id } },
       create: { userId, workspaceId: workspace.id, role: 'owner' },
       update: {},
       include: { workspace: true },
     });
+    return { membership, workspaceCreated };
   }
 
   /**
@@ -342,6 +352,7 @@ export class SupabaseAuthService extends AuthService {
     userId: string,
     workspaceId: string,
     organizationId: string,
+    workspaceCreated: boolean,
   ): void {
     if (!this.posthog) return;
     const context = { workspaceId, organizationId, userId };
@@ -349,10 +360,12 @@ export class SupabaseAuthService extends AuthService {
       { event: 'user_signed_up', properties: { workspace_id: workspaceId } },
       context,
     );
-    this.posthog.capture(
-      { event: 'workspace_created', properties: { workspace_id: workspaceId } },
-      context,
-    );
+    if (workspaceCreated) {
+      this.posthog.capture(
+        { event: 'workspace_created', properties: { workspace_id: workspaceId } },
+        context,
+      );
+    }
   }
 
   private extractBearerToken(req: Request): string | null {

@@ -12,7 +12,8 @@ name: Deploy production to AWS EC2
 #   NEXT_PUBLIC_POSTHOG_ENABLED, NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN,
 #   NEXT_PUBLIC_POSTHOG_HOST      Browser analytics, inlined into the web bundle
 #                                 at build time. Unset leaves analytics a no-op,
-#                                 so they are deliberately not required.
+#                                 so they are deliberately not required. The web
+#                                 tag fingerprints all build-time public config.
 # Required repository secrets:
 #   AWS_EC2_HOST, AWS_EC2_USER, AWS_EC2_SSH_KEY, AWS_EC2_KNOWN_HOSTS
 #   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -173,6 +174,7 @@ jobs:
           fi
 
       - name: Build and push web image with Depot
+        id: web_image
         env:
           DEPOT_PROJECT_ID: ${{ vars.DEPOT_WEB_PROJECT_ID }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
@@ -190,11 +192,23 @@ jobs:
           NEXT_PUBLIC_POSTHOG_HOST: ${{ vars.NEXT_PUBLIC_POSTHOG_HOST }}
         run: |
           set -euo pipefail
+          # The commit alone does not identify a Next.js bundle: NEXT_PUBLIC_*
+          # values are compiled into it. Hash every build input without printing
+          # values, then use the digest in the immutable image tag.
+          config_digest="$(printf '%s\0' \
+            "$NEXT_PUBLIC_API_URL" "$NEXT_PUBLIC_APP_URL" \
+            "$NEXT_PUBLIC_SUPABASE_URL" "$NEXT_PUBLIC_BILLING_MODE" \
+            "$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" "$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
+            "$NEXT_PUBLIC_POSTHOG_ENABLED" "$NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN" \
+            "$NEXT_PUBLIC_POSTHOG_HOST" production "$DEPLOY_SHA" \
+            | sha256sum | cut -c1-16)"
+          web_image_tag="$DEPLOY_SHA-$config_digest"
+          echo "tag=$web_image_tag" >> "$GITHUB_OUTPUT"
           published="$(aws ecr list-images --region "$AWS_REGION" \
             --repository-name voiceforge-web --filter tagStatus=TAGGED \
-            --query "imageIds[?imageTag=='$DEPLOY_SHA'].imageTag" --output text)"
+            --query "imageIds[?imageTag=='$web_image_tag'].imageTag" --output text)"
           if [ -n "$published" ]; then
-            echo "voiceforge-web:$DEPLOY_SHA is already published; skipping build"
+            echo "The configuration-specific web image is already published; skipping build"
           else
             depot build --project "$DEPOT_PROJECT_ID" --push \
               --file infra/docker/Dockerfile.web \
@@ -207,7 +221,9 @@ jobs:
               --build-arg "NEXT_PUBLIC_POSTHOG_ENABLED=$NEXT_PUBLIC_POSTHOG_ENABLED" \
               --build-arg "NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=$NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN" \
               --build-arg "NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST" \
-              --tag "$ECR_REGISTRY/voiceforge-web:$DEPLOY_SHA" .
+              --build-arg "NEXT_PUBLIC_APP_ENV=production" \
+              --build-arg "NEXT_PUBLIC_APP_VERSION=$DEPLOY_SHA" \
+              --tag "$ECR_REGISTRY/voiceforge-web:$web_image_tag" .
           fi
 
       - name: Build and push LiveKit agent image with Depot
@@ -325,6 +341,7 @@ jobs:
           AWS_EC2_HOST: ${{ secrets.AWS_EC2_HOST }}
           AWS_EC2_USER: ${{ secrets.AWS_EC2_USER }}
           DEPLOY_SHA: ${{ steps.revision.outputs.sha }}
+          WEB_IMAGE_TAG: ${{ steps.web_image.outputs.tag }}
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
           PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
@@ -333,14 +350,15 @@ jobs:
           ssh -i ~/.ssh/deploy_key \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "$AWS_EC2_USER@$AWS_EC2_HOST" \
-            bash -s -- "$DEPLOY_SHA" "$ECR_REGISTRY" "$AWS_REGION" \
+            bash -s -- "$DEPLOY_SHA" "$WEB_IMAGE_TAG" "$ECR_REGISTRY" "$AWS_REGION" \
               "$PUBLIC_APP_URL" "$PUBLIC_API_URL" <<'REMOTE'
           set -euo pipefail
           deploy_sha="$1"
-          ecr_registry="$2"
-          aws_region="$3"
-          public_app_url="$4"
-          public_api_url="$5"
+          web_image_tag="$2"
+          ecr_registry="$3"
+          aws_region="$4"
+          public_app_url="$5"
+          public_api_url="$6"
           deploy_root=/opt/voiceforge
           env_file="$deploy_root/.env"
           compose_file="$deploy_root/docker-compose.aws.yml"
@@ -351,6 +369,8 @@ jobs:
           previous_file="$state_dir/previous-sha"
           current_livekit_file="$state_dir/current-livekit"
           previous_livekit_file="$state_dir/previous-livekit"
+          current_web_tag_file="$state_dir/current-web-tag"
+          previous_web_tag_file="$state_dir/previous-web-tag"
           candidate_file="$state_dir/candidate-sha"
           uploaded_compose="/tmp/voiceforge-compose-$deploy_sha.yml"
           uploaded_nginx="/tmp/voiceforge-nginx-$deploy_sha.conf"
@@ -361,6 +381,7 @@ jobs:
           uploaded_certbot_service="/tmp/voiceforge-certbot-renew-$deploy_sha.service"
           uploaded_certbot_timer="/tmp/voiceforge-certbot-renew-$deploy_sha.timer"
           previous_sha=""
+          previous_web_tag=""
           previous_livekit=false
           previous_bundle=""
           livekit_enabled=false
@@ -368,6 +389,10 @@ jobs:
 
           if ! printf '%s' "$deploy_sha" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "Invalid deploy SHA" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$web_image_tag" | grep -Eq "^${deploy_sha}-[0-9a-f]{16}$"; then
+            echo "Invalid configuration-specific web image tag" >&2
             exit 1
           fi
           if ! printf '%s' "$ecr_registry" | grep -Eq '^[0-9]{12}\.dkr\.ecr\.us-east-1\.amazonaws\.com$'; then
@@ -496,9 +521,18 @@ jobs:
               && [ "$(tr -d '\r\n' < "$current_livekit_file")" = true ]; then
               previous_livekit=true
             fi
-            for repo in voiceforge-api voiceforge-web; do
-              docker image inspect "$ecr_registry/$repo:$previous_sha" >/dev/null
-            done
+            # Deployments created before configuration-specific tags used the
+            # commit SHA for web too; retain that as a rollback fallback.
+            previous_web_tag="$previous_sha"
+            if [ -s "$current_web_tag_file" ]; then
+              previous_web_tag="$(tr -d '\r\n' < "$current_web_tag_file")"
+            fi
+            printf '%s' "$previous_web_tag" | grep -Eq '^[0-9a-f]{40}(-[0-9a-f]{16})?$' || {
+              echo "Recorded web image tag is invalid" >&2
+              exit 1
+            }
+            docker image inspect "$ecr_registry/voiceforge-api:$previous_sha" >/dev/null
+            docker image inspect "$ecr_registry/voiceforge-web:$previous_web_tag" >/dev/null
             if [ "$previous_livekit" = true ]; then
               docker image inspect "$ecr_registry/voiceforge-livekit-agent:$previous_sha" >/dev/null
             fi
@@ -563,6 +597,7 @@ jobs:
 
           export ECR_REGISTRY="$ecr_registry"
           export IMAGE_TAG="$deploy_sha"
+          export WEB_IMAGE_TAG="$web_image_tag"
           export COMPOSE_PROJECT_NAME=voiceforge
           candidate_compose=(docker compose --env-file "$env_file" -f "$candidate_bundle/docker-compose.aws.yml")
           candidate_profile=()
@@ -582,6 +617,7 @@ jobs:
               install_release_assets "$previous_bundle"
               assert_bind_sources
               export IMAGE_TAG="$previous_sha"
+              export WEB_IMAGE_TAG="$previous_web_tag"
               rollback_compose=(docker compose --env-file "$env_file" -f "$compose_file")
               rollback_profile=()
               if [ "$previous_livekit" = true ]; then rollback_profile=(--profile livekit); fi
@@ -592,6 +628,7 @@ jobs:
               if wait_for_service_health API api http://127.0.0.1:4000/api/v1/health 24 \
                 && wait_for_service_health Web web http://127.0.0.1:3000/api/health 24; then
                 printf '%s\n' "$previous_sha" > "$current_file"
+                printf '%s\n' "$previous_web_tag" > "$current_web_tag_file"
                 printf '%s\n' "$previous_livekit" > "$current_livekit_file"
                 echo "Rollback to $previous_sha verified healthy" >&2
               else
@@ -669,9 +706,11 @@ jobs:
 
           if [ -n "$previous_sha" ] && [ "$previous_sha" != "$deploy_sha" ]; then
             printf '%s\n' "$previous_sha" > "$previous_file"
+            printf '%s\n' "$previous_web_tag" > "$previous_web_tag_file"
             printf '%s\n' "$previous_livekit" > "$previous_livekit_file"
           fi
           printf '%s\n' "$deploy_sha" > "$current_file"
+          printf '%s\n' "$web_image_tag" > "$current_web_tag_file"
           printf '%s\n' "$livekit_enabled" > "$current_livekit_file"
           rm -f "$candidate_file" "$uploaded_compose" "$uploaded_nginx" "$uploaded_http" \
             "$uploaded_http_redirect" "$uploaded_https" "$uploaded_tls_hook" \
@@ -689,13 +728,25 @@ jobs:
               [ -n "$keep_previous" ] && [ "$1" = "$keep_previous" ] && return 0
               return 1
             }
-            for repo in voiceforge-api voiceforge-web voiceforge-livekit-agent; do
+            keep_current_web="$web_image_tag"
+            keep_previous_web=""
+            if [ -s "$previous_web_tag_file" ]; then
+              keep_previous_web="$(tr -d '\r\n' < "$previous_web_tag_file")"
+            fi
+            for repo in voiceforge-api voiceforge-livekit-agent; do
               docker image ls "$ecr_registry/$repo" --format '{{.Tag}}' | while read -r tag; do
                 case "$tag" in ''|'<none>') continue ;; esac
                 if ! is_kept "$tag"; then
                   docker image rm "$ecr_registry/$repo:$tag" >/dev/null 2>&1 || true
                 fi
               done
+            done
+            docker image ls "$ecr_registry/voiceforge-web" --format '{{.Tag}}' | while read -r tag; do
+              case "$tag" in ''|'<none>') continue ;; esac
+              if [ "$tag" != "$keep_current_web" ] \
+                && { [ -z "$keep_previous_web" ] || [ "$tag" != "$keep_previous_web" ]; }; then
+                docker image rm "$ecr_registry/voiceforge-web:$tag" >/dev/null 2>&1 || true
+              fi
             done
             for bundle in "$release_dir"/*; do
               [ -d "$bundle" ] || continue

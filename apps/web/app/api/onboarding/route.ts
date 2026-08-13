@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { NextRequest, NextResponse } from 'next/server';
+import { after, NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { captureServerEvent } from '@/lib/analytics/posthog-server';
@@ -180,28 +180,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: metadataError.message }, { status: 500 });
   }
 
-  // Emitted only here, after every write above has committed, so the events
-  // mean "onboarding completed" rather than "onboarding was attempted". This
-  // route provisions users directly and never touches the API's emitter, so
-  // without this the whole web onboarding path was invisible in the funnel.
-  // Both calls are best-effort and cannot fail the request.
+  // Schedule analytics after the response instead of adding its network timeout
+  // to onboarding latency. Every write above has committed, so these events mean
+  // "completed", and `after` keeps the work inside Next's request lifecycle.
   const analyticsContext = {
     workspaceId: workspace.id,
     organizationId: org.id,
     userId: appUser.id,
   };
-  await Promise.all([
-    ...(createdAppUser
-      ? [
-          captureServerEvent(
-            'user_signed_up',
-            { workspace_id: workspace.id },
-            analyticsContext,
-          ),
-        ]
-      : []),
-    captureServerEvent('workspace_created', { workspace_id: workspace.id }, analyticsContext),
-  ]);
+  after(async () => {
+    await Promise.all([
+      ...(createdAppUser
+        ? [
+            captureServerEvent(
+              'user_signed_up',
+              { workspace_id: workspace.id },
+              analyticsContext,
+            ),
+          ]
+        : []),
+      captureServerEvent('workspace_created', { workspace_id: workspace.id }, analyticsContext),
+    ]);
+  });
 
   return NextResponse.json({
     success: true,

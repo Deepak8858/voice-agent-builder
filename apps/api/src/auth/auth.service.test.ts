@@ -34,6 +34,92 @@ describe('Session validation edge cases', () => {
     vi.clearAllMocks();
   });
 
+  describe('personal workspace provisioning analytics', () => {
+    const userId = '11111111-1111-4111-8111-111111111111';
+    const organizationId = '22222222-2222-4222-8222-222222222222';
+    const workspaceId = '33333333-3333-4333-8333-333333333333';
+    const workspace = {
+      id: workspaceId,
+      organizationId,
+      name: 'Demo Workspace',
+    };
+
+    function provisioningService() {
+      const capture = vi.fn();
+      const service = new SupabaseAuthService(
+        mockPrisma as never,
+        mockCache as never,
+        { capture } as never,
+      );
+      return {
+        capture,
+        provision: (service as unknown as {
+          provisionPersonalWorkspace: (
+            appUserId: string,
+            authUserId: string,
+          ) => Promise<{ workspaceCreated: boolean; membership: { workspace: typeof workspace } }>;
+        }).provisionPersonalWorkspace.bind(service),
+        captureSignedUp: (service as unknown as {
+          captureSignedUp: (
+            appUserId: string,
+            activeWorkspaceId: string,
+            activeOrganizationId: string,
+            workspaceCreated: boolean,
+          ) => void;
+        }).captureSignedUp.bind(service),
+      };
+    }
+
+    it('does not report workspace_created when provisioning reuses a workspace', async () => {
+      mockPrisma.organization.upsert.mockResolvedValue({ id: organizationId });
+      mockPrisma.workspace.findFirst.mockResolvedValue(workspace);
+      mockPrisma.membership.upsert.mockResolvedValue({ role: 'owner', workspace });
+      const { provision, captureSignedUp, capture } = provisioningService();
+
+      const result = await provision(userId, 'auth-user-123');
+      captureSignedUp(userId, workspaceId, organizationId, result.workspaceCreated);
+
+      expect(result.workspaceCreated).toBe(false);
+      expect(mockPrisma.workspace.create).not.toHaveBeenCalled();
+      expect(capture).toHaveBeenCalledTimes(1);
+      expect(capture.mock.calls[0]?.[0]).toMatchObject({ event: 'user_signed_up' });
+    });
+
+    it('reports workspace_created only after creating the workspace row', async () => {
+      mockPrisma.organization.upsert.mockResolvedValue({ id: organizationId });
+      mockPrisma.workspace.findFirst.mockResolvedValue(null);
+      mockPrisma.workspace.create.mockResolvedValue(workspace);
+      mockPrisma.membership.upsert.mockResolvedValue({ role: 'owner', workspace });
+      const { provision, captureSignedUp, capture } = provisioningService();
+
+      const result = await provision(userId, 'auth-user-123');
+      captureSignedUp(userId, workspaceId, organizationId, result.workspaceCreated);
+
+      expect(result.workspaceCreated).toBe(true);
+      expect(capture.mock.calls.map((call) => call[0].event)).toEqual([
+        'user_signed_up',
+        'workspace_created',
+      ]);
+    });
+
+    it('derives different organization slugs for auth IDs with the same prefix', async () => {
+      mockPrisma.organization.upsert.mockImplementation(async ({ create }) => ({
+        id: organizationId,
+        slug: create.slug,
+      }));
+      mockPrisma.workspace.findFirst.mockResolvedValue(workspace);
+      mockPrisma.membership.upsert.mockResolvedValue({ role: 'owner', workspace });
+      const { provision } = provisioningService();
+
+      await provision(userId, 'same-prefixed-auth-id-a');
+      await provision(userId, 'same-prefixed-auth-id-b');
+
+      const slugs = mockPrisma.organization.upsert.mock.calls.map((call) => call[0].create.slug);
+      expect(slugs[0]).not.toBe(slugs[1]);
+      expect(slugs.every((slug: string) => /^user-[0-9a-f]{24}$/.test(slug))).toBe(true);
+    });
+  });
+
   describe('JWT validation', () => {
     it('should reject expired JWT', () => {
       const secret = 'test-secret';

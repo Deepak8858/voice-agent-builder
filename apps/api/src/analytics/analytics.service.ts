@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentMetricsResponse,
@@ -42,6 +42,8 @@ const ANALYTICS_CACHE_TTL_SECONDS = 30;
 
 @Injectable()
 export class AnalyticsService {
+  private readonly logger = new Logger(AnalyticsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache?: CacheService,
@@ -100,8 +102,13 @@ export class AnalyticsService {
         },
       });
       persisted = true;
-    } catch {
-      // best-effort; analytics never breaks call flow
+    } catch (error) {
+      // Never include the payload or database message: either may contain
+      // customer data. The event name and error class are enough to alert on
+      // loss while analytics remains off the call's correctness path.
+      this.logger.warn(
+        `[analytics.persist] event=${input.eventType} error=${errorName(error)}`,
+      );
     }
 
     if (persisted) this.mirrorToPostHog(input, organizationId);
@@ -131,7 +138,10 @@ export class AnalyticsService {
     organizationId: string | null,
   ): void {
     if (!this.posthog) return;
-    if (!organizationId) return;
+    if (!organizationId) {
+      this.logger.warn(`[analytics.mirror] event=${input.eventType} missing organization`);
+      return;
+    }
     try {
       const event = toPostHogEvent(input);
       if (!event) return;
@@ -140,8 +150,10 @@ export class AnalyticsService {
         organizationId,
         eventScopeId: eventScopeIdFor(input),
       });
-    } catch {
-      // best-effort; analytics never breaks call flow
+    } catch (error) {
+      this.logger.warn(
+        `[analytics.mirror] event=${input.eventType} error=${errorName(error)}`,
+      );
     }
   }
 
@@ -643,6 +655,10 @@ export class AnalyticsService {
       occurred_at: row.occurredAt.toISOString(),
     };
   }
+}
+
+function errorName(error: unknown): string {
+  return error instanceof Error && error.name ? error.name : 'UnknownError';
 }
 
 function getWeekKey(d: Date): string {

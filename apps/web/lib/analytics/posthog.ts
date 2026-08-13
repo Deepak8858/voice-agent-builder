@@ -62,6 +62,11 @@ export function identifyUser({ userId, workspaceId }: IdentifyInput): void {
       const groups = buildGroups({ workspaceId });
       const workspaceGroup = groups?.[WORKSPACE_GROUP_TYPE];
       if (workspaceGroup) posthog.group(WORKSPACE_GROUP_TYPE, workspaceGroup);
+    } else {
+      // `identify()` does not clear persisted groups. Without an explicit reset,
+      // a user whose active workspace was removed keeps attributing browser
+      // events to the previous tenant.
+      posthog.resetGroups();
     }
   } catch {
     // ignore: analytics failures never surface to the product

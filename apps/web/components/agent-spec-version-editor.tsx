@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { FormModeEditor, type AgentSpecValidationState } from '@/components/form-mode-editor';
 import { useApi } from '@/lib/use-api';
 import { Save } from 'lucide-react';
+import posthog from 'posthog-js';
 
 interface AgentSpecVersionEditorProps {
   workspaceId: string;
@@ -58,6 +59,7 @@ export function AgentSpecVersionEditor({
     onSuccess: () => {
       const parsed = AgentSpecSchema.safeParse(spec);
       if (parsed.success) setBaselineSpec(parsed.data);
+      posthog.capture('agent_version_saved');
       toast.success('Agent version saved. Publish to deploy the latest version.');
     },
     onError: (err: Error) => toast.error(err.message),

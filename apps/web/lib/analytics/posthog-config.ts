@@ -32,8 +32,8 @@ const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com';
 /**
  * PostHog defaults bundle. Pinned to an explicit date rather than left unset so
  * an SDK upgrade can never silently switch on new capture behaviour; changing
- * it is a reviewed decision. `'2026-06-25'` also strips URL fragments from
- * captured URLs, which this product needs because fragments can carry IDs.
+ * it is a reviewed decision. URL fragments are separately denied from event
+ * properties because fragments can carry identifiers.
  */
 const POSTHOG_DEFAULTS: ConfigDefaults = '2026-06-25';
 

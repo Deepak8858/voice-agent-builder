@@ -50,7 +50,7 @@ function makeHarness(clientOverrides: Partial<PostHogClientLike> = {}) {
     payload: null,
     occurredAt: new Date('2026-01-01T00:00:00.000Z'),
   }));
-  const organizationIdFor = vi.fn(async () => ORGANIZATION_ID);
+  const organizationIdFor = vi.fn<() => Promise<string | null>>(async () => ORGANIZATION_ID);
   const prisma = { organizationIdFor, analyticsEvent: { create } };
 
   const service = new AnalyticsService(prisma as never, undefined, posthog);
@@ -237,6 +237,23 @@ describe('recordEventInternal → PostHog mirror', () => {
 
     // Postgres is the system of record: PostHog must not report an event that
     // never landed there.
+    expect(captures).toHaveLength(0);
+  });
+
+  it('drops the mirror when the organization resolves to null after persistence', async () => {
+    const { service, captures, organizationIdFor, create } = makeHarness();
+    organizationIdFor.mockResolvedValueOnce(null);
+
+    await expect(
+      service.recordEventInternal({
+        workspaceId: WORKSPACE_ID,
+        callId: CALL_ID,
+        eventType: 'call.started',
+        payload: { direction: 'outbound' },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(create).toHaveBeenCalledTimes(1);
     expect(captures).toHaveLength(0);
   });
 

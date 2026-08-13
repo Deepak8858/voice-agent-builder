@@ -8,19 +8,9 @@ import {
 /**
  * Client instrumentation hook, run once by Next.js before the app hydrates.
  *
- * `instrumentation-client.ts` is the current stable PostHog recommendation for
- * the Next.js App Router; the pre-release `@posthog/next` package is
- * deliberately not used.
- *
- * Initialisation is a no-op unless the kill switch is on AND a project token is
- * present. When it is a no-op, `posthog.__loaded` stays false and every capture
- * helper in `lib/analytics/posthog.ts` short-circuits, so no request is ever
- * made and nothing in the product depends on analytics being available.
- *
- * `process.env.NEXT_PUBLIC_*` is read through explicit member expressions
- * because Next.js inlines these at build time by literal substitution; a
- * computed or spread access would not be replaced and would be `undefined` in
- * the browser.
+ * Initialisation is a no-op unless the browser kill switch is on and its
+ * project token is present. Explicit environment reads are required because
+ * Next.js substitutes NEXT_PUBLIC_* values into the bundle at build time.
  */
 const settings = posthogWebSettingsFromEnv({
   NEXT_PUBLIC_POSTHOG_ENABLED: process.env.NEXT_PUBLIC_POSTHOG_ENABLED,
@@ -41,7 +31,6 @@ if (settings) {
       },
     });
   } catch {
-    // Analytics must never break page load. A failed init leaves the SDK
-    // unloaded, which the capture helpers already treat as "drop".
+    // Analytics must never break page load.
   }
 }

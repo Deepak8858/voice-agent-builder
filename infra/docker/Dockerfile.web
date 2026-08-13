@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=linux/amd64 node:20-bookworm-slim AS build
+FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
 
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
@@ -28,6 +28,8 @@ ARG NEXT_PUBLIC_SALES_EMAIL
 ARG NEXT_PUBLIC_POSTHOG_ENABLED
 ARG NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN
 ARG NEXT_PUBLIC_POSTHOG_HOST
+ARG NEXT_PUBLIC_APP_ENV
+ARG NEXT_PUBLIC_APP_VERSION
 
 RUN require_arg() { eval "value=\${$1}"; test -n "$value" || { echo "Required build argument $1 is missing" >&2; exit 1; }; }; \
     require_arg NEXT_PUBLIC_API_URL; \
@@ -45,7 +47,9 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_SALES_EMAIL=$NEXT_PUBLIC_SALES_EMAIL \
     NEXT_PUBLIC_POSTHOG_ENABLED=$NEXT_PUBLIC_POSTHOG_ENABLED \
     NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN=$NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN \
-    NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST
+    NEXT_PUBLIC_POSTHOG_HOST=$NEXT_PUBLIC_POSTHOG_HOST \
+    NEXT_PUBLIC_APP_ENV=$NEXT_PUBLIC_APP_ENV \
+    NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 
 RUN corepack enable \
     && corepack prepare pnpm@10.33.2 --activate
@@ -71,7 +75,7 @@ RUN pnpm --filter @voiceforge/shared run build
 RUN --mount=type=cache,id=voiceforge-next,target=/app/apps/web/.next/cache,sharing=locked \
     pnpm --filter @voiceforge/web run build
 
-FROM --platform=linux/amd64 node:20-bookworm-slim AS runtime
+FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \

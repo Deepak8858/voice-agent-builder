@@ -23,6 +23,9 @@ export function PublishAgentButton({ workspaceId, agentId }: PublishAgentButtonP
         method: 'POST',
       }),
     onSuccess: () => {
+      // Deliberately no client-side capture: the API mirrors the canonical
+      // `agent_published` contract event after the confirmed database write.
+      // Capturing here too would double-count the event in PostHog.
       toast.success('Agent published.');
       router.refresh();
     },
