@@ -144,16 +144,25 @@ export class PostHogService {
    *
    * Exceptions never create a person profile: the distinct ID is an opaque
    * correlation ID (or a fixed server identity), and
-   * `$process_person_profile: false` is always set. Only the error itself is
-   * sent — no request bodies, headers or user identifiers — because exception
-   * messages already risk embedding operational values. Never throws.
+   * `$process_person_profile: false` is always set. Never throws.
+   *
+   * `properties` carries triage context only — status code, HTTP method, route
+   * *pattern*. Callers must not pass request bodies, headers, resolved URLs or
+   * user identifiers: exception messages already risk embedding operational
+   * values, and this is not a second channel for request data. The person-
+   * profile opt-out is applied last so no caller can override it.
    */
-  captureException(error: unknown, correlationId?: string): void {
+  captureException(
+    error: unknown,
+    correlationId?: string,
+    properties?: Record<string, unknown>,
+  ): void {
     const client = this.client;
     if (!client) return;
     try {
       const err = error instanceof Error ? error : new Error(String(error));
       client.captureException(err, correlationId ?? 'api-server', {
+        ...properties,
         $process_person_profile: false,
       });
     } catch (err) {
