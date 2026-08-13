@@ -132,6 +132,8 @@ const EnvSchema = z.object({
   STRIPE_GROWTH_PRICE_ID: z.string().optional(),
   STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
   BILLING_MODE: z.enum(['demo', 'live']).default('demo'),
+  BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
+  BILLING_LEASE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(90),
 
   LLM_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
