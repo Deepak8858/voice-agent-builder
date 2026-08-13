@@ -243,7 +243,14 @@ describe('posthogInitOptions', () => {
     expect(options.rageclick).toBe(false);
     expect(options.capture_heatmaps).toBe(false);
     expect(options.capture_dead_clicks).toBe(false);
-    expect(options.capture_exceptions).toBe(false);
+  });
+
+  it('captures unhandled errors and rejections but never console output', () => {
+    expect(options.capture_exceptions).toEqual({
+      capture_unhandled_errors: true,
+      capture_unhandled_rejections: true,
+      capture_console_errors: false,
+    });
   });
 
   it('only profiles identified users', () => {

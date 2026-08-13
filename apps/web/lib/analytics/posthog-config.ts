@@ -187,8 +187,10 @@ export function posthogProxyRewrites(
  *    retention policy from Phase 0 is settled. The masking options below are
  *    still declared so that enabling replay is a one-line, already-safe change
  *    rather than a fresh privacy review.
- *  - `capture_exceptions: false` — error tracking is a separate guarded
- *    rollout; exception messages and stacks can embed customer values.
+ *  - `capture_exceptions` — error tracking is on for unhandled errors and
+ *    unhandled promise rejections only. Console errors stay off: console
+ *    output on these surfaces can embed transcripts and phone numbers, while
+ *    unhandled exception stacks carry code locations, not page content.
  */
 export function posthogInitOptions(settings: PostHogWebSettings): Partial<PostHogConfig> {
   return {
@@ -209,7 +211,11 @@ export function posthogInitOptions(settings: PostHogWebSettings): Partial<PostHo
     capture_heatmaps: false,
     capture_dead_clicks: false,
     capture_performance: false,
-    capture_exceptions: false,
+    capture_exceptions: {
+      capture_unhandled_errors: true,
+      capture_unhandled_rejections: true,
+      capture_console_errors: false,
+    },
     disable_capture_url_hashes: true,
     disable_surveys: true,
     disable_product_tours: true,

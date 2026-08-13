@@ -35,6 +35,7 @@ function makeHarness(clientOverrides: Partial<PostHogClientLike> = {}) {
     capture: (message) => {
       captures.push(message);
     },
+    captureException: () => {},
     register: () => {},
     shutdown: () => {},
     ...clientOverrides,

@@ -20,6 +20,7 @@ const mockPrisma = {
     upsert: vi.fn(),
   },
   organization: {
+    findFirst: vi.fn(),
     upsert: vi.fn(),
   },
 };
@@ -103,6 +104,7 @@ describe('Session validation edge cases', () => {
     });
 
     it('derives different organization slugs for auth IDs with the same prefix', async () => {
+      mockPrisma.organization.findFirst.mockResolvedValue(null);
       mockPrisma.organization.upsert.mockImplementation(async ({ create }) => ({
         id: organizationId,
         slug: create.slug,
@@ -117,6 +119,25 @@ describe('Session validation edge cases', () => {
       const slugs = mockPrisma.organization.upsert.mock.calls.map((call) => call[0].create.slug);
       expect(slugs[0]).not.toBe(slugs[1]);
       expect(slugs.every((slug: string) => /^user-[0-9a-f]{24}$/.test(slug))).toBe(true);
+    });
+
+    it('reuses a legacy-slug organization owned by the user instead of creating a second one', async () => {
+      const authUserId = 'legacy-auth-user-id';
+      mockPrisma.organization.findFirst.mockResolvedValue({
+        id: organizationId,
+        slug: `user-${authUserId.slice(0, 8)}`,
+      });
+      mockPrisma.workspace.findFirst.mockResolvedValue(workspace);
+      mockPrisma.membership.upsert.mockResolvedValue({ role: 'owner', workspace });
+      const { provision } = provisioningService();
+
+      const result = await provision(userId, authUserId);
+
+      expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
+        where: { slug: `user-${authUserId.slice(0, 8)}`, ownerUserId: userId },
+      });
+      expect(mockPrisma.organization.upsert).not.toHaveBeenCalled();
+      expect(result.workspaceCreated).toBe(false);
     });
   });
 

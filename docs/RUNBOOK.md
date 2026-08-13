@@ -29,8 +29,12 @@ not part of this stack.
    cd /opt/voiceforge
    ECR_REGISTRY=543777713748.dkr.ecr.us-east-1.amazonaws.com \
    IMAGE_TAG="$(cat deploy-state/current-sha)" \
+   WEB_IMAGE_TAG="$(cat deploy-state/current-web-tag 2>/dev/null || cat deploy-state/current-sha)" \
    docker compose --env-file .env -f docker-compose.aws.yml up -d --no-build api
    ```
+   `WEB_IMAGE_TAG` is required by the compose file even when recreating only
+   `api`; the web image carries a configuration digest suffix recorded in
+   `deploy-state/current-web-tag`.
 6. If Postgres is unreachable, verify Supabase status first; the API cannot heal a
    database outage on its own.
 

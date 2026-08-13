@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import type {
@@ -39,7 +39,7 @@ export class WhiteLabelService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
-    private readonly posthog?: PostHogService,
+    @Optional() private readonly posthog?: PostHogService,
   ) {}
 
   // --- settings -------------------------------------------------------

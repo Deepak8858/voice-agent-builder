@@ -1,4 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { env } from '../config/env';
+
+const logger = new Logger('PostHogConfig');
 
 /**
  * Resolved PostHog configuration. The service only ever constructs a client
@@ -36,7 +39,16 @@ export function posthogConfigFromEnv(): PostHogConfig | null {
   if (!env.POSTHOG_ENABLED) return null;
   const projectToken = env.POSTHOG_PROJECT_TOKEN?.trim();
   const host = resolveHost(env.POSTHOG_HOST);
-  if (!projectToken || !host) return null;
+  // A disabled flag is intentional silence; an enabled flag that still cannot
+  // produce a client is a misconfiguration an operator should hear about once.
+  if (!projectToken) {
+    logger.warn('POSTHOG_ENABLED is true but POSTHOG_PROJECT_TOKEN is unset; analytics stays off.');
+    return null;
+  }
+  if (!host) {
+    logger.warn('POSTHOG_ENABLED is true but POSTHOG_HOST is malformed; analytics stays off.');
+    return null;
+  }
   return {
     projectToken,
     host,

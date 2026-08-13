@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -64,8 +64,8 @@ export class AgentsService {
     private readonly cache: CacheService,
     private readonly cacheInvalidator: CacheInvalidator,
     private readonly billing: BillingService,
-    private readonly voiceRegistry?: VoiceProviderRegistry,
-    private readonly posthog?: PostHogService,
+    @Optional() private readonly voiceRegistry?: VoiceProviderRegistry,
+    @Optional() private readonly posthog?: PostHogService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {

@@ -18,9 +18,11 @@ import {
  * change and not a rebuild. The rewrites are inert while the browser SDK is
  * never initialised.
  *
- * Strict in production only: a malformed host fails the build rather than
- * shipping a proxy silently pointed at the default region, while local and CI
- * builds keep working with a sloppy or absent value.
+ * Strict for any production build (`next build` sets NODE_ENV=production,
+ * including in CI): a malformed host fails the build rather than shipping a
+ * proxy silently pointed at the default region. Only `next dev` stays
+ * non-strict and falls back. An absent value is always fine — it resolves to
+ * the default region.
  */
 const posthogHost = resolvePostHogHost(process.env.NEXT_PUBLIC_POSTHOG_HOST, {
   strict: process.env.NODE_ENV === "production",

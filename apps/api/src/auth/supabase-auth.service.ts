@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash } from 'crypto';
 import type { Request, Response } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
@@ -47,7 +47,7 @@ export class SupabaseAuthService extends AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
-    private readonly posthog?: PostHogService,
+    @Optional() private readonly posthog?: PostHogService,
   ) {
     super();
     const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -308,15 +308,27 @@ export class SupabaseAuthService extends AuthService {
     // another organization. A bounded SHA-256 suffix is deterministic while
     // preserving the opaque source ID.
     const orgSlug = `user-${createHash('sha256').update(supabaseUserId).digest('hex').slice(0, 24)}`;
-    const organization = await this.prisma.organization.upsert({
-      where: { slug: orgSlug },
-      create: {
-        slug: orgSlug,
-        name: 'Personal',
-        ownerUserId: userId,
-      },
-      update: {},
+
+    // Slug migration: releases before the hash-based slug used
+    // `user-${supabaseUserId.slice(0, 8)}`. An existing user whose membership
+    // was lost would otherwise get a second organization and workspace here,
+    // so look up the legacy organization (verified by owner) first.
+    const legacySlug = `user-${supabaseUserId.slice(0, 8)}`;
+    const legacyOrganization = await this.prisma.organization.findFirst({
+      where: { slug: legacySlug, ownerUserId: userId },
     });
+
+    const organization =
+      legacyOrganization ??
+      (await this.prisma.organization.upsert({
+        where: { slug: orgSlug },
+        create: {
+          slug: orgSlug,
+          name: 'Personal',
+          ownerUserId: userId,
+        },
+        update: {},
+      }));
 
     let workspace = await this.prisma.workspace.findFirst({
       where: { organizationId: organization.id },

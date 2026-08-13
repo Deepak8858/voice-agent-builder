@@ -35,6 +35,11 @@ export interface PostHogClientLike {
     groups?: Record<string, string>;
     disableGeoip?: boolean;
   }): void;
+  captureException(
+    error: unknown,
+    distinctId?: string,
+    additionalProperties?: Record<string, unknown>,
+  ): void;
   register(properties: Record<string, unknown>): Promise<void> | void;
   shutdown(shutdownTimeoutMs?: number): Promise<void> | void;
 }
@@ -131,6 +136,28 @@ export class PostHogService {
       });
     } catch (err) {
       this.logger.debug(`[posthog.capture:${event.event}] ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Best-effort error tracking for unexpected server failures.
+   *
+   * Exceptions never create a person profile: the distinct ID is an opaque
+   * correlation ID (or a fixed server identity), and
+   * `$process_person_profile: false` is always set. Only the error itself is
+   * sent — no request bodies, headers or user identifiers — because exception
+   * messages already risk embedding operational values. Never throws.
+   */
+  captureException(error: unknown, correlationId?: string): void {
+    const client = this.client;
+    if (!client) return;
+    try {
+      const err = error instanceof Error ? error : new Error(String(error));
+      client.captureException(err, correlationId ?? 'api-server', {
+        $process_person_profile: false,
+      });
+    } catch (err) {
+      this.logger.debug(`[posthog.captureException] ${(err as Error).message}`);
     }
   }
 
