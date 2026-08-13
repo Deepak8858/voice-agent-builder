@@ -3,10 +3,29 @@ import { ForbiddenPlanError } from '../billing/billing.service';
 import { ComplianceBlockedError } from '../common/errors';
 import { TelephonyService } from './telephony.service';
 
+function makeAdmission() {
+  return {
+    admitCall: vi.fn(async () => ({
+      admitted: true as const,
+      leaseToken: 'lease-1',
+      leaseExpiresAt: new Date('2026-06-07T10:01:00.000Z').toISOString(),
+      reservedSeconds: 60,
+    })),
+    compensate: vi.fn(async () => undefined),
+    releaseLease: vi.fn(async () => undefined),
+    finalizeUsage: vi.fn(async () => undefined),
+    toError: vi.fn(() => new Error('denied')),
+  };
+}
+
 function makePrisma() {
   return {
     workspace: {
-      findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      findUniqueOrThrow: vi.fn(async () => ({
+        id: 'workspace-1',
+        organizationId: 'org-1',
+        retentionDays: 30,
+      })),
     },
     telephonyPhoneNumber: {
       findFirst: vi.fn(async () => ({
@@ -31,6 +50,13 @@ function makePrisma() {
         ...data,
       })),
       findFirst: vi.fn(),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'call-1',
+        ...data,
+      })),
+    },
+    callUsage: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     agent: {
       findFirst: vi.fn(async () => ({
@@ -82,6 +108,7 @@ describe('TelephonyService', () => {
       billing as never,
       compliance as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     const result = await service.configureLiveKit('workspace-1', 'number-1', 'user-1');
@@ -164,6 +191,7 @@ describe('TelephonyService', () => {
       billing as never,
       compliance as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(
@@ -212,6 +240,7 @@ describe('TelephonyService', () => {
       check: vi.fn(async () => ({ id: 'check-1', status: 'passed', reasons: [], contact_id: 'contact-1' })),
       attachCheckToCall: vi.fn(async () => undefined),
     };
+    const admission = makeAdmission();
     const service = new TelephonyService(
       prisma as never,
       livekit as never,
@@ -221,6 +250,7 @@ describe('TelephonyService', () => {
       billing as never,
       compliance as never,
       {} as never,
+      admission as never,
     );
 
     await service.startOutboundCall('workspace-1', 'user-1', {
@@ -228,6 +258,16 @@ describe('TelephonyService', () => {
       to_number: '+14155559876',
       metadata: { purpose: 'outbound_campaign' },
     });
+
+    expect(admission.admitCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        workspaceId: 'workspace-1',
+        callId: 'call-1',
+        direction: 'outbound',
+      }),
+    );
+    expect(admission.compensate).not.toHaveBeenCalled();
 
     expect(livekit.createOutboundCall).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -273,6 +313,7 @@ describe('TelephonyService', () => {
       billing as never,
       compliance as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(
@@ -310,6 +351,7 @@ describe('TelephonyService', () => {
       billing as never,
       { check: vi.fn(), attachCheckToCall: vi.fn() } as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     let thrown: unknown;
@@ -385,6 +427,7 @@ describe('TelephonyService', () => {
         buildFallbackTwiml: vi.fn(() => '<Response><Hangup/></Response>'),
         buildLiveKitDialTwiml: vi.fn(() => '<Response><Dial><Sip>sip:tenant.sip.livekit.cloud</Sip></Dial></Response>'),
       } as never,
+      makeAdmission() as never,
     );
 
     await expect(
@@ -445,6 +488,7 @@ describe('TelephonyService', () => {
       {} as never,
       {} as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(
@@ -520,6 +564,7 @@ describe('TelephonyService', () => {
       {} as never,
       {} as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(service.handleLiveKitWebhook('{"id":"lk-event-1"}', 'Bearer token')).resolves.toEqual({
@@ -595,6 +640,7 @@ describe('TelephonyService', () => {
       {} as never,
       {} as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     const result = await service.importNumbers('workspace-1', 'user-1', {
@@ -668,6 +714,7 @@ describe('TelephonyService', () => {
       {} as never,
       {} as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(
@@ -718,6 +765,7 @@ describe('TelephonyService', () => {
       {} as never,
       {} as never,
       {} as never,
+      makeAdmission() as never,
     );
 
     await expect(

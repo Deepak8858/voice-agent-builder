@@ -23,18 +23,23 @@ function makePrisma(overrides?: {
   balance?: BalanceRow;
   agentCount?: number;
   workspaceCount?: number;
+  trialRedemption?: { maxDurationSeconds: number } | null;
 }) {
   const subscription = overrides?.subscription ?? null;
   const balance =
     overrides?.balance === undefined
       ? { availableSeconds: 6_000, reservedSeconds: 0, status: 'active', reviewReason: null }
       : overrides.balance;
+  const trialRedemption = overrides?.trialRedemption ?? null;
   return {
     subscription: {
       findUnique: vi.fn(async () => subscription),
     },
     organizationCreditBalance: {
       findUnique: vi.fn(async () => balance),
+    },
+    trialRedemption: {
+      findUnique: vi.fn(async () => trialRedemption),
     },
     agent: { count: vi.fn(async () => overrides?.agentCount ?? 0) },
     workspace: { count: vi.fn(async () => overrides?.workspaceCount ?? 0) },
@@ -233,6 +238,36 @@ describe('EntitlementService', () => {
         reason: 'allowed',
         limit: 180,
       });
+    });
+
+    it('refuses a second browser test once the lifetime allowance is redeemed', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: { plan: 'free', status: 'active' },
+          trialRedemption: { maxDurationSeconds: 180 },
+        }),
+      );
+
+      await expect(svc.check('org-1', { kind: 'browser_test' })).resolves.toMatchObject({
+        allowed: false,
+        reason: 'trial_already_used',
+        current: 180,
+        limit: 180,
+      });
+    });
+
+    it('does not spend the trial allowance for a paid organization', async () => {
+      const prisma = makePrisma({
+        subscription: { plan: 'starter', status: 'active' },
+        trialRedemption: { maxDurationSeconds: 180 },
+      });
+      const svc = makeService(prisma);
+
+      await expect(svc.check('org-1', { kind: 'browser_test' })).resolves.toMatchObject({
+        allowed: true,
+        reason: 'allowed',
+      });
+      expect(prisma.trialRedemption.findUnique).not.toHaveBeenCalled();
     });
 
     it('blocks paid calls while the credit balance is in manual review', async () => {

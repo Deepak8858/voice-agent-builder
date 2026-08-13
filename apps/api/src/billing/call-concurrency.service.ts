@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { env } from '../config/env';
@@ -65,11 +65,33 @@ return removedGlobal + removedOrg
 `;
 
 @Injectable()
-export class CallConcurrencyService {
+export class CallConcurrencyService implements OnModuleInit {
+  private readonly logger = new Logger(CallConcurrencyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
   ) {}
+
+  /**
+   * Redis holds the authoritative live count but is not durable. PostgreSQL
+   * holds the durable record. After a Redis restart the ZSETs are empty while
+   * calls are still running, so every in-flight lease is replayed into Redis
+   * before this process admits anything. A failure here must not stop boot:
+   * the reconciliation worker repeats the repair on its schedule.
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      const report = await this.recoverFromPostgres();
+      if (report.checked > 0) {
+        this.logger.log(
+          `Recovered ${report.recovered}/${report.checked} concurrency leases into Redis (${report.failed} failed).`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Concurrency lease recovery failed at startup: ${(err as Error).message}`);
+    }
+  }
 
   async acquire(rawInput: AcquireCallLeaseInput): Promise<CallLeaseDecision> {
     const input = AcquireSchema.parse(rawInput);
@@ -98,6 +120,12 @@ export class CallConcurrencyService {
       const separator = member.lastIndexOf('|');
       const resolvedToken = member.slice(separator + 1);
       const expiresAt = new Date(score);
+      // The call already holds a slot. Re-issuing a fresh token here would
+      // admit the same call twice and overwrite the durable lease record, so
+      // the existing lease is returned unchanged instead.
+      if (state === 'duplicate') {
+        return this.adoptExistingLease(input, resolvedToken, expiresAt);
+      }
       try {
         await this.prisma.callConcurrencyLease.upsert({
           where: { callId: input.callId },
@@ -177,6 +205,57 @@ export class CallConcurrencyService {
       }
     }
     return report;
+  }
+
+  /**
+   * Resolves a Redis member that already exists for this call. The lease is
+   * only handed back when the durable record agrees; any disagreement is real
+   * divergence and fails closed rather than guessing which store is right.
+   */
+  private async adoptExistingLease(
+    input: AcquireCallLeaseInput,
+    leaseToken: string,
+    expiresAt: Date,
+  ): Promise<CallLeaseDecision> {
+    try {
+      const existing = await this.prisma.callConcurrencyLease.findUnique({
+        where: { callId: input.callId },
+        select: { organizationId: true, leaseToken: true, state: true },
+      });
+
+      if (!existing) {
+        // The process died between ZADD and the durable write. Redis is
+        // counting a slot nothing owns, so the record is recreated to make the
+        // lease releasable and recoverable.
+        await this.prisma.callConcurrencyLease.create({
+          data: {
+            callId: input.callId,
+            organizationId: input.organizationId,
+            leaseToken,
+            state: 'active',
+            expiresAt,
+          },
+        });
+        return { allowed: true, leaseToken, expiresAt: expiresAt.toISOString() };
+      }
+
+      if (
+        existing.organizationId !== input.organizationId ||
+        existing.leaseToken !== leaseToken ||
+        existing.state !== 'active'
+      ) {
+        this.logger.error(
+          `Concurrency lease for call ${input.callId} diverged between Redis and PostgreSQL. Refusing admission.`,
+        );
+        return { allowed: false, reason: 'billing_temporarily_unavailable' };
+      }
+
+      return { allowed: true, leaseToken, expiresAt: expiresAt.toISOString() };
+    } catch {
+      // The Redis member may belong to a live call, so it is deliberately not
+      // released on this path.
+      return { allowed: false, reason: 'billing_temporarily_unavailable' };
+    }
   }
 
   private async releaseRedis(callId: string, organizationId: string, leaseToken: string): Promise<void> {

@@ -3,7 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { env } from '../config/env';
 import { CallConcurrencyService } from './call-concurrency.service';
 
-const redisUrl = process.env.REDIS_URL;
+// `vitest.setup.ts` always defines REDIS_URL so the env schema parses, which
+// means its presence says nothing about a reachable server. This suite talks to
+// a real Redis and is therefore opt-in: set BILLING_REDIS_INTEGRATION=1 (and a
+// reachable REDIS_URL) to run it.
+const redisUrl = process.env.BILLING_REDIS_INTEGRATION === '1' ? process.env.REDIS_URL : undefined;
 const describeWithRedis = redisUrl ? describe : describe.skip;
 
 describeWithRedis('CallConcurrencyService real Redis capacity', () => {

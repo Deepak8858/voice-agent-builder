@@ -89,6 +89,8 @@ function makeService(opts: {
     queue as never,
     retention as never,
     cache as never,
+    {} as never,
+    {} as never,
   );
   return { service, prisma, created, updates, events, evals, queue };
 }

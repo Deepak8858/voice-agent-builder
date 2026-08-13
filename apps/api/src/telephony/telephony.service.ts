@@ -14,6 +14,7 @@ import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/e
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
+import { CallAdmissionService } from '../billing/call-admission.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { EncryptionService } from '../security/encryption.service';
 import { LiveKitService } from '../livekit/livekit.service';
@@ -47,6 +48,7 @@ export class TelephonyService {
     private readonly billing: BillingService,
     private readonly compliance: ComplianceService,
     private readonly twilioFallback: TwilioProviderAdapter,
+    private readonly admission: CallAdmissionService,
   ) {}
 
   providers() {
@@ -478,10 +480,6 @@ export class TelephonyService {
     if (!featureAllowed) {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
     }
-    const outbound = await this.billing.canStartOutboundCall(workspaceId);
-    if (!outbound.allowed) {
-      throw new ForbiddenPlanError('Outbound calls are not available on your plan.');
-    }
 
     const purpose = typeof dto.metadata?.purpose === 'string' ? dto.metadata.purpose : null;
     const checkResult = await this.compliance.check({
@@ -522,23 +520,10 @@ export class TelephonyService {
     }
 
     const roomName = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-outbound-${Date.now()}`;
-    const result = await this.livekit.createOutboundCall({
-      phoneNumberId: number.id,
-      agentId: number.assignedAgentId,
-      agentName: env.LIVEKIT_AGENT_NAME,
-      outboundTrunkId: number.livekitConfig.outboundTrunkId,
-      toNumber: dto.to_number,
-      fromNumber: number.phoneNumberE164,
-      roomName,
-      metadata: {
-        workspaceId,
-        phoneNumberId: number.id,
-        provider: number.provider,
-        model: env.OPENAI_REALTIME_MODEL,
-        purpose,
-      },
-    });
     const expiresAt = new Date(new Date().getTime() + workspace.retentionDays * 24 * 60 * 60 * 1000);
+
+    // Persisted before dispatch so the concurrency lease, credit reservation,
+    // and usage record have a call to attach to.
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
@@ -546,11 +531,10 @@ export class TelephonyService {
         agentId: number.assignedAgentId,
         contactId: checkResult.contact_id,
         direction: 'outbound',
-        status: result.status,
+        status: 'queued',
         provider: 'livekit',
-        providerCallId: result.providerCallId,
         phoneNumberId: number.id,
-        livekitRoomName: result.roomName,
+        livekitRoomName: roomName,
         fromNumber: number.phoneNumberE164,
         toNumber: dto.to_number,
         contactName: dto.contact_name ?? null,
@@ -559,6 +543,63 @@ export class TelephonyService {
         retentionDays: workspace.retentionDays,
         metadata: (dto.metadata as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },
+    });
+
+    const admission = await this.admission.admitCall({
+      organizationId: number.organizationId,
+      workspaceId,
+      callId: call.id,
+      provider: 'livekit',
+      direction: 'outbound',
+    });
+    if (!admission.admitted) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
+      });
+      throw this.admission.toError(admission);
+    }
+
+    let result;
+    try {
+      result = await this.livekit.createOutboundCall({
+        phoneNumberId: number.id,
+        agentId: number.assignedAgentId,
+        agentName: env.LIVEKIT_AGENT_NAME,
+        outboundTrunkId: number.livekitConfig.outboundTrunkId,
+        toNumber: dto.to_number,
+        fromNumber: number.phoneNumberE164,
+        roomName,
+        metadata: {
+          workspaceId,
+          organizationId: number.organizationId,
+          callId: call.id,
+          phoneNumberId: number.id,
+          provider: number.provider,
+          model: env.OPENAI_REALTIME_MODEL,
+          purpose,
+        },
+      });
+    } catch (err) {
+      await this.admission.compensate(number.organizationId, call.id, 'provider_dispatch_failed');
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
+      });
+      throw err;
+    }
+
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: {
+        status: result.status,
+        providerCallId: result.providerCallId,
+        livekitRoomName: result.roomName,
+      },
+    });
+    await this.prisma.callUsage.updateMany({
+      where: { callId: call.id },
+      data: { providerCallId: result.providerCallId },
     });
     await this.compliance.attachCheckToCall(checkResult.id, call.id);
     await this.audit.log({

@@ -98,15 +98,7 @@ export class EntitlementService {
       case 'paid_call':
         return this.checkPaidCall(effective, request.minimumSeconds, correlationId);
       case 'browser_test':
-        return this.decision(effective, correlationId, {
-          allowed: effective.entitlements.lifetimeBrowserTestSeconds > 0,
-          reason:
-            effective.entitlements.lifetimeBrowserTestSeconds > 0
-              ? 'allowed'
-              : 'trial_already_used',
-          current: 0,
-          limit: effective.entitlements.lifetimeBrowserTestSeconds,
-        });
+        return this.checkBrowserTest(effective, correlationId);
       case 'agent_create':
         return this.checkQuota(
           effective,
@@ -158,6 +150,48 @@ export class EntitlementService {
       catalogVersion: decision.catalogVersion,
       correlationId: decision.correlationId,
       upgradePath: decision.plan === 'enterprise' ? 'contact_sales' : 'self_service_upgrade',
+    });
+  }
+
+  /**
+   * The free browser test is a lifetime allowance, not a per-request flag. It
+   * is spent against a persisted redemption, so a customer cannot repeat it by
+   * calling the endpoint again. A paid organization has already bought call
+   * minutes and does not consume the trial.
+   */
+  private async checkBrowserTest(
+    effective: EffectivePlan,
+    correlationId: string,
+  ): Promise<EntitlementDecision> {
+    const limit = effective.entitlements.lifetimeBrowserTestSeconds;
+    if (effective.paidAccess) {
+      return this.decision(effective, correlationId, {
+        allowed: true,
+        reason: 'allowed',
+        current: 0,
+        limit,
+      });
+    }
+    if (limit <= 0) {
+      return this.decision(effective, correlationId, {
+        allowed: false,
+        reason: 'trial_already_used',
+        current: 0,
+        limit,
+      });
+    }
+
+    const redemption = await this.prisma.trialRedemption.findUnique({
+      where: { organizationId: effective.organizationId },
+      select: { maxDurationSeconds: true },
+    });
+    const consumed = redemption ? redemption.maxDurationSeconds : 0;
+    const allowed = consumed < limit;
+    return this.decision(effective, correlationId, {
+      allowed,
+      reason: allowed ? 'allowed' : 'trial_already_used',
+      current: consumed,
+      limit,
     });
   }
 

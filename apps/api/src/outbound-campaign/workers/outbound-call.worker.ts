@@ -1,5 +1,6 @@
 import { BaseWorker } from '../../workers/base.worker';
 import { Injectable } from '@nestjs/common';
+import { AppError } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
 import { OutboundCampaignService } from '../outbound-campaign.service';
 import { CallsService } from '../../calls/calls.service';
@@ -16,6 +17,28 @@ interface OutboundCallJob {
   contactName?: string;
   customData?: Record<string, string>;
 }
+
+/**
+ * Admission denials that mean "not now" rather than "not ever". Retrying the
+ * same contact once capacity or credit returns is correct; burning it as a
+ * failed dial is not, because the contact was never actually called.
+ */
+const RETRYABLE_ADMISSION_REASONS: ReadonlySet<string> = new Set([
+  'organization_concurrency_reached',
+  'platform_concurrency_reached',
+  'billing_temporarily_unavailable',
+]);
+
+/**
+ * Denials that will not resolve without the customer acting. Continuing to dial
+ * the rest of the list would produce a wall of identical failures, so the
+ * campaign is paused instead.
+ */
+const BLOCKING_ADMISSION_REASONS: ReadonlySet<string> = new Set([
+  'credit_insufficient',
+  'subscription_required',
+  'subscription_inactive',
+]);
 
 @Injectable()
 export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
@@ -61,8 +84,57 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       await this.campaigns.incrementStat(campaignId, 'in_progress');
       this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
     } catch (err) {
-      this.logger.error(`Outbound call failed for ${to}: ${(err as Error).message}`);
+      await this.handleDispatchFailure(campaignId, to, err);
+    }
+  }
+
+  /**
+   * A billing denial is not a dial failure. Distinguishing them keeps campaign
+   * statistics honest and stops a drained balance from silently consuming an
+   * entire contact list.
+   */
+  private async handleDispatchFailure(
+    campaignId: string,
+    to: string,
+    err: unknown,
+  ): Promise<void> {
+    const reason = this.admissionReason(err);
+    const message = (err as Error).message;
+
+    if (reason && RETRYABLE_ADMISSION_REASONS.has(reason)) {
+      this.logger.warn(`Outbound campaign call to ${to} deferred (${reason}): ${message}`);
+      // Thrown so BullMQ retries the job rather than counting a dial that never
+      // happened.
+      throw err;
+    }
+
+    if (reason && BLOCKING_ADMISSION_REASONS.has(reason)) {
+      this.logger.error(`Pausing campaign ${campaignId}: ${reason}`);
       await this.campaigns.incrementStat(campaignId, 'failed');
+      await this.pauseCampaign(campaignId, reason);
+      return;
+    }
+
+    this.logger.error(`Outbound call failed for ${to}: ${message}`);
+    await this.campaigns.incrementStat(campaignId, 'failed');
+  }
+
+  private admissionReason(err: unknown): string | null {
+    if (!(err instanceof AppError)) return null;
+    const reason = (err.details as { reason?: unknown } | undefined)?.reason;
+    return typeof reason === 'string' ? reason : null;
+  }
+
+  private async pauseCampaign(campaignId: string, reason: string): Promise<void> {
+    try {
+      await this.prisma.outboundCampaign.updateMany({
+        where: { id: campaignId, status: 'running' },
+        data: { status: 'paused' },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to pause campaign ${campaignId} after ${reason}: ${(err as Error).message}`,
+      );
     }
   }
 

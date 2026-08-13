@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppError } from '../../common/errors';
 import { OutboundCallWorker } from './outbound-call.worker';
 
 vi.mock('../../workers/base.worker', () => ({
   BaseWorker: class {
     protected readonly logger = {
       log: vi.fn(),
+      warn: vi.fn(),
       error: vi.fn(),
     };
 
@@ -22,6 +24,9 @@ const campaigns = {
 const prisma = {
   telephonyPhoneNumber: {
     findFirst: vi.fn(),
+  },
+  outboundCampaign: {
+    updateMany: vi.fn(),
   },
 };
 const telephony = {
@@ -42,7 +47,28 @@ describe('OutboundCallWorker', () => {
       room_name: 'room-1',
     });
     prisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
+    prisma.outboundCampaign.updateMany.mockResolvedValue({ count: 1 });
   });
+
+  function makeWorker() {
+    return new (OutboundCallWorker as any)(
+      queue as never,
+      calls as never,
+      campaigns as never,
+      prisma as never,
+      telephony as never,
+    );
+  }
+
+  const job = {
+    data: {
+      campaignId: 'camp-1',
+      agentId: 'agent-1',
+      workspaceId: 'ws-1',
+      actorUserId: 'user-1',
+      to: '+15551111111',
+    },
+  } as never;
 
   it('starts campaign calls through the compliance-checked CallsService path', async () => {
     const worker = new (OutboundCallWorker as any)(
@@ -114,5 +140,42 @@ describe('OutboundCallWorker', () => {
     });
     expect(calls.startOutboundCall).not.toHaveBeenCalled();
     expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
+  });
+
+  it.each(['organization_concurrency_reached', 'billing_temporarily_unavailable'])(
+    'rethrows a %s denial for retry without counting a failed dial',
+    async (reason) => {
+      calls.startOutboundCall.mockRejectedValue(
+        new AppError('PLAN_LIMIT_EXCEEDED', 'denied', 403, { reason }),
+      );
+
+      await expect(makeWorker().processor(job)).rejects.toBeInstanceOf(AppError);
+
+      expect(campaigns.incrementStat).not.toHaveBeenCalled();
+      expect(prisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('pauses the campaign when the organization is out of credit', async () => {
+    calls.startOutboundCall.mockRejectedValue(
+      new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),
+    );
+
+    await expect(makeWorker().processor(job)).resolves.toBeUndefined();
+
+    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+      where: { id: 'camp-1', status: 'running' },
+      data: { status: 'paused' },
+    });
+  });
+
+  it('counts a non-billing dispatch error as a failed dial and keeps the campaign running', async () => {
+    calls.startOutboundCall.mockRejectedValue(new Error('provider timeout'));
+
+    await expect(makeWorker().processor(job)).resolves.toBeUndefined();
+
+    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    expect(prisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
   });
 });
