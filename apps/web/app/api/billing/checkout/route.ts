@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { apiFetch, ApiCallError } from '@/lib/api';
-import { buildDemoCheckoutFallback, isDemoBillingMode } from '@/lib/billing-mode';
+import {
+  buildCheckoutUnavailable,
+  isCheckoutUnavailableCode,
+} from '@/lib/checkout-availability';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import {
   CheckoutPlanSchema,
@@ -19,6 +22,10 @@ import {
  *   - the user can only checkout for a workspace they belong to (WorkspaceGuard
  *     re-checks membership server-side)
  *   - plan IDs are validated by Zod before we forward the request
+ *
+ * When Stripe is not configured the API answers with BILLING_UNAVAILABLE. We
+ * translate that into an explicit temporary-unavailable payload; it never
+ * grants demo or trial entitlements.
  */
 function isTrustedCheckoutUrl(url: string): boolean {
   try {
@@ -54,10 +61,6 @@ export async function POST(req: Request): Promise<NextResponse> {
   const parsed = CheckoutPlanSchema.safeParse(body.plan);
   if (!parsed.success) {
     return NextResponse.json({ error: 'Unknown plan.' }, { status: 400 });
-  }
-
-  if (isDemoBillingMode()) {
-    return NextResponse.json(buildDemoCheckoutFallback(parsed.data));
   }
 
   let me: SessionUser;
@@ -100,8 +103,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ url: session.url });
   } catch (err) {
     if (err instanceof ApiCallError) {
-      if (err.code === 'BILLING_UNAVAILABLE' && /demo/i.test(err.message)) {
-        return NextResponse.json(buildDemoCheckoutFallback(parsed.data));
+      if (isCheckoutUnavailableCode(err.code)) {
+        return NextResponse.json(buildCheckoutUnavailable(), { status: 503 });
       }
       return NextResponse.json(
         { error: err.message, code: err.code },

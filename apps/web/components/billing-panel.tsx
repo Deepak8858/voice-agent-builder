@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
+  MINUTE_PACK,
   PLAN_CATALOG,
   getPlanById,
+  getPlanEntitlements,
   getUpgradeTarget,
   isPaidPlan,
   type BillingStatusDto,
@@ -17,8 +19,19 @@ import {
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  BILLING_DISCLOSURES,
+  CHECKOUT_UNAVAILABLE_MESSAGE,
+  CHECKOUT_UNAVAILABLE_TITLE,
+  MINUTE_PACK_LABEL,
+} from '@/lib/billing-copy';
+import {
+  formatBalance,
+  toBalanceBuckets,
+  type BillingSummaryDto,
+} from '@/lib/billing-summary';
 import { useApi } from '@/lib/use-api';
-import { CreditCard, ExternalLink, CheckCircle2, XCircle } from 'lucide-react';
+import { CreditCard, ExternalLink, CheckCircle2, Wallet, XCircle } from 'lucide-react';
 import posthog from 'posthog-js';
 
 interface BillingPanelProps {
@@ -35,7 +48,7 @@ const PLAN_COLORS: Record<string, string> = {
 const METRIC_LABELS: Record<string, string> = {
   calls: 'Calls',
   minutes: 'Minutes',
-  tools: 'Tool invocations',
+  tools: 'Integration connections',
   agents: 'Agents',
 };
 
@@ -54,7 +67,7 @@ function isTrustedCheckoutUrl(url: string): boolean {
 export function BillingPanel({ workspaceId }: BillingPanelProps) {
   const { call } = useApi();
   const search = useSearchParams();
-  const checkoutBanner = search?.get('checkout') ?? null;
+  const checkoutBanner = search?.get('checkout') ?? search?.get('topup') ?? null;
   const [dismissedBanner, setDismissedBanner] = useState(false);
 
   const subscription = useQuery({
@@ -72,13 +85,23 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     queryFn: () => call<WorkspaceUsageDto>(`/workspaces/${workspaceId}/billing/usage`),
   });
 
-  // After Stripe redirects back to /dashboard/billing?checkout=success the
-  // webhook may not have fired yet. Refetch subscription and usage so the
-  // user sees the new plan as soon as the webhook lands.
+  // Organization-scoped credit balances. The endpoint ships with the billing
+  // service work; until then it 404s and the card renders an explicit
+  // "not available yet" state instead of inventing numbers.
+  const summary = useQuery({
+    queryKey: ['billing', 'summary', workspaceId],
+    queryFn: () => call<BillingSummaryDto>(`/workspaces/${workspaceId}/billing/summary`),
+    retry: false,
+  });
+
+  // After Stripe redirects back to /dashboard/billing?checkout=success (or
+  // ?topup=success) the webhook may not have fired yet. Refetch so the user
+  // sees the new plan and balance as soon as the webhook lands.
   useEffect(() => {
     if (checkoutBanner === 'success') {
       void subscription.refetch();
       void usage.refetch();
+      void summary.refetch();
     }
     // refetch is stable; eslint can't tell because it's destructured.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +115,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
   const checkout = useMutation({
     mutationFn: async (targetPlan?: CheckoutPlan) => {
       if (billingStatus.data?.liveCheckoutEnabled === false) {
-        throw new Error(billingStatus.data.message);
+        throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
       }
       const plan = targetPlan ?? upgradeTarget;
       if (!plan) throw new Error('No upgrade target available.');
@@ -112,10 +135,35 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     },
   });
 
+  const topUp = useMutation({
+    mutationFn: async () => {
+      if (billingStatus.data?.liveCheckoutEnabled === false) {
+        throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
+      }
+      // The pack price id is resolved server-side on purpose: a client-supplied
+      // price would let a caller buy minutes at a price of their choosing.
+      const data = await call<{ url: string }>(
+        `/workspaces/${workspaceId}/billing/topup-checkout`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            successPath: '/dashboard/billing?topup=success',
+            cancelPath: '/dashboard/billing?topup=cancel',
+          }),
+        },
+      );
+      if (!isTrustedCheckoutUrl(data.url)) {
+        throw new Error('Untrusted redirect URL received from server');
+      }
+      posthog.capture('topup_checkout_started', { minutes: MINUTE_PACK.minutes });
+      window.location.href = data.url;
+    },
+  });
+
   const portal = useMutation({
     mutationFn: async () => {
       if (billingStatus.data?.liveCheckoutEnabled === false) {
-        throw new Error(billingStatus.data.message);
+        throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
       }
       const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/portal`, {
         method: 'POST',
@@ -137,15 +185,20 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
   const billingStatusLoading = billingStatus.isLoading;
   const liveBillingEnabled = billingStatus.data?.liveCheckoutEnabled === true;
   const billingActionsDisabled = billingStatusLoading || !liveBillingEnabled;
-  const billingMessage = billingStatus.data?.message;
+  const buckets = summary.data ? toBalanceBuckets(summary.data) : null;
+  // Packs top up an existing paid subscription; they are not a way to buy
+  // telephony minutes without a plan.
+  const topUpAllowed =
+    summary.data?.topUpAvailable ?? (isPaidPlan(plan) && status === 'active');
+  const browserTestSecondsLeft = summary.data?.lifetimeBrowserTestSecondsRemaining ?? null;
 
   return (
     <div className="flex flex-col gap-8">
-      {!liveBillingEnabled ? (
+      {!billingStatusLoading && !liveBillingEnabled ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 shadow-sm dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
-          <p className="font-medium">Demo billing mode</p>
+          <p className="font-medium">{CHECKOUT_UNAVAILABLE_TITLE}</p>
           <p className="mt-0.5 text-xs text-amber-800/90 dark:text-amber-100/80">
-            {billingMessage ?? 'Live Stripe checkout and customer portal actions are disabled. Free trial limits remain active.'}
+            {CHECKOUT_UNAVAILABLE_MESSAGE}
           </p>
         </div>
       ) : null}
@@ -154,10 +207,10 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
         <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm text-emerald-900 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100">
           <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-300" />
           <div className="flex-1">
-            <p className="font-medium">Payment received</p>
+            <p className="font-medium">Payment received by Stripe</p>
             <p className="mt-0.5 text-xs text-emerald-800/90 dark:text-emerald-100/80">
-              Stripe confirmed your payment. Your new plan limits will apply as soon as the webhook lands
-              — usually within seconds.
+              Credits and plan changes appear after Stripe&apos;s webhook is verified. This page keeps
+              refreshing until the confirmed balance arrives.
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => setDismissedBanner(true)}>
@@ -210,7 +263,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
                 {billingStatusLoading
                   ? 'Checking billing...'
                   : !liveBillingEnabled
-                  ? 'Checkout disabled'
+                  ? 'Checkout unavailable'
                   : checkout.isPending
                   ? 'Redirecting…'
                   : `Upgrade to ${upgradeEntry.name}`}
@@ -226,7 +279,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
                 {billingStatusLoading
                   ? 'Checking billing...'
                   : !liveBillingEnabled
-                  ? 'Portal disabled'
+                  ? 'Portal unavailable'
                   : portal.isPending
                   ? 'Redirecting…'
                   : 'Manage subscription'}
@@ -249,16 +302,83 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
         </CardContent>
       </Card>
 
-      {/* Free trial callout for free plan */}
+      {/* Balances */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Wallet className="h-4 w-4 text-primary" />
+            Minute balance
+          </CardTitle>
+          <CardDescription className="mt-1">
+            Balances are shared across every workspace in your organization.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {summary.isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : buckets ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {buckets.map((bucket) => (
+                <div key={bucket.label} className="rounded-lg border border-border p-4">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {bucket.label}
+                  </p>
+                  <p className="mt-1 font-mono text-2xl font-semibold text-foreground">
+                    {formatBalance(bucket.seconds)}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">{bucket.hint}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Balance details are not available yet. Usage below still reflects this period.
+            </p>
+          )}
+
+          {browserTestSecondsLeft !== null ? (
+            <p className="text-xs text-muted-foreground">
+              Lifetime browser test remaining: {browserTestSecondsLeft} of{' '}
+              {getPlanEntitlements('free').lifetimeBrowserTestSeconds} seconds.
+            </p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              onClick={() => topUp.mutate()}
+              disabled={topUp.isPending || billingActionsDisabled || !topUpAllowed}
+            >
+              {billingStatusLoading
+                ? 'Checking billing...'
+                : !liveBillingEnabled
+                ? 'Checkout unavailable'
+                : topUp.isPending
+                ? 'Redirecting…'
+                : MINUTE_PACK_LABEL}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              {topUpAllowed
+                ? `Packs expire ${MINUTE_PACK.expiresAfterDays} days after purchase and are used after included minutes.`
+                : `A paid plan with an active subscription is required to buy ${MINUTE_PACK.minutes}-minute packs.`}
+            </p>
+          </div>
+          {topUp.isError ? (
+            <p className="text-xs text-destructive">{(topUp.error as Error)?.message}</p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {/* Upgrade callout for the browser-test-only plan */}
       {plan === 'free' && status === 'active' ? (
         <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/50">
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
               <Badge variant="outline" className="bg-amber-100 text-amber-700 border-amber-300">
-                Free trial
+                Browser test only
               </Badge>
               <p className="text-sm text-foreground">
-                Upgrade to {PLAN_CATALOG[1].name} to unlock outbound minutes, more agents, and integrations.
+                Free has no phone number and cannot place PSTN calls. Upgrade to{' '}
+                {PLAN_CATALOG[1].name} for included minutes, more agents, and integrations.
               </p>
             </div>
             <Button
@@ -269,7 +389,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
               {billingStatusLoading
                 ? 'Checking billing...'
                 : !liveBillingEnabled
-                ? 'Checkout disabled'
+                ? 'Checkout unavailable'
                 : checkout.isPending
                 ? 'Redirecting…'
                 : `Upgrade to ${PLAN_CATALOG[1].name}`}
@@ -288,28 +408,24 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             {(['calls', 'minutes', 'tools', 'agents'] as const).map((key) => {
               const used = metrics[key] ?? 0;
               const limit = limits[key] ?? 0;
-              const unlimited = limit === -1;
-              const pct = unlimited ? 0 : limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
+              const pct = limit > 0 ? Math.min((used / limit) * 100, 100) : 0;
               return (
                 <Card key={key}>
                   <CardContent className="pt-6">
                     <div className="mb-2 flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">{METRIC_LABELS[key]}</span>
                       <span className="font-medium text-foreground font-mono">
-                        {used}
-                        {unlimited ? '' : ` / ${limit}`}
+                        {used} / {limit}
                       </span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                       <div
                         className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${unlimited ? 0 : pct}%` }}
+                        style={{ width: `${pct}%` }}
                       />
                     </div>
-                    {!unlimited && limit > 0 ? (
+                    {limit > 0 ? (
                       <p className="mt-1.5 text-xs text-muted-foreground">{pct.toFixed(0)}% used</p>
-                    ) : unlimited ? (
-                      <p className="mt-1.5 text-xs text-muted-foreground">Unlimited</p>
                     ) : null}
                   </CardContent>
                 </Card>
@@ -319,6 +435,20 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
         ) : (
           <p className="text-sm text-destructive">Failed to load usage.</p>
         )}
+      </div>
+
+      {/* Billing rules that apply to every metered call */}
+      <div>
+        <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-muted-foreground">
+          How your minutes are charged
+        </h2>
+        <ul className="grid gap-2 sm:grid-cols-2">
+          {BILLING_DISCLOSURES.map((disclosure) => (
+            <li key={disclosure} className="rounded-lg border border-border p-3 text-xs text-muted-foreground">
+              {disclosure}
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
