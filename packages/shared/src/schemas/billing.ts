@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PLAN_LIMITS } from '../billing/catalog';
+import type { PlanEntitlements } from '../billing/catalog';
 
 export { PLAN_LIMITS } from '../billing/catalog';
 
@@ -72,12 +73,20 @@ export const CreatePortalSessionDtoSchema = z
   .strict();
 export type CreatePortalSessionDto = z.infer<typeof CreatePortalSessionDtoSchema>;
 
-/** Compatibility response shape for existing billing-status consumers. */
-export interface BillingStatusDto {
-  mode: 'demo' | 'live';
-  liveCheckoutEnabled: boolean;
-  message: string;
-}
+/**
+ * Runtime availability of Stripe Checkout and the Customer Portal. There is no
+ * "demo" billing mode: Checkout is either fully configured with server-owned
+ * prices or it is temporarily unavailable. Missing configuration never grants a
+ * recurring free allowance.
+ */
+export const BillingStatusDtoSchema = z
+  .object({
+    checkoutConfigured: z.boolean(),
+    liveCheckoutEnabled: z.boolean(),
+    message: z.string().min(1),
+  })
+  .strict();
+export type BillingStatusDto = z.infer<typeof BillingStatusDtoSchema>;
 
 export const SubscriptionDtoSchema = z.object({
   id: z.string().uuid(),
@@ -128,15 +137,57 @@ export type EntitlementReason = z.infer<typeof EntitlementReasonSchema>;
 
 const IdentifierSchema = z.string().trim().min(1);
 
+/**
+ * Every entitlement decision carries the numbers the caller needs to explain
+ * itself to a customer: what they are using now, what their plan allows, which
+ * catalog version produced the limit, and a correlation ID that ties the
+ * decision to its audit record.
+ */
 export const EntitlementDecisionSchema = z
   .object({
     organizationId: IdentifierSchema,
     plan: PlanTypeSchema,
     allowed: z.boolean(),
     reason: EntitlementReasonSchema,
+    current: z.number().int().nonnegative(),
+    limit: z.number().int().nonnegative(),
+    catalogVersion: IdentifierSchema,
+    correlationId: IdentifierSchema,
   })
   .strict();
 export type EntitlementDecision = z.infer<typeof EntitlementDecisionSchema>;
+
+/** Subscription status resolved for an organization, including "never subscribed". */
+export const EffectiveSubscriptionStatusSchema = z.union([
+  SubscriptionStatusSchema,
+  z.literal('none'),
+]);
+export type EffectiveSubscriptionStatus = z.infer<typeof EffectiveSubscriptionStatusSchema>;
+
+/**
+ * The single resolved commercial position of an organization. `paidAccess` is
+ * true only for `active` and an unexpired `trialing` subscription; every other
+ * Stripe state blocks paid usage.
+ */
+export interface EffectivePlan {
+  organizationId: string;
+  plan: PlanType;
+  status: EffectiveSubscriptionStatus;
+  catalogVersion: string;
+  entitlements: PlanEntitlements;
+  paidAccess: boolean;
+}
+
+export const PAID_CALL_MINIMUM_SECONDS = 60 as const;
+
+export type EntitlementRequest =
+  | { kind: 'paid_call'; minimumSeconds: typeof PAID_CALL_MINIMUM_SECONDS }
+  | { kind: 'browser_test' }
+  | { kind: 'agent_create'; current: number }
+  | { kind: 'workspace_create'; current: number }
+  | { kind: 'integration_connect'; current: number }
+  | { kind: 'white_label' }
+  | { kind: 'campaign_launch' };
 
 export const CreditBalanceDtoSchema = z
   .object({
@@ -147,6 +198,46 @@ export const CreditBalanceDtoSchema = z
   })
   .strict();
 export type CreditBalanceDto = z.infer<typeof CreditBalanceDtoSchema>;
+
+/**
+ * Organization-wide billing state for the dashboard. Seconds are reported
+ * separately by source so a customer can see what expires at the period end,
+ * what they purchased, and what active calls have reserved.
+ */
+export const BillingSummaryDtoSchema = z
+  .object({
+    organizationId: IdentifierSchema,
+    plan: PlanTypeSchema,
+    status: EffectiveSubscriptionStatusSchema,
+    paidAccess: z.boolean(),
+    catalogVersion: IdentifierSchema,
+    currentPeriodEnd: z.string().datetime().nullable(),
+    cancelAtPeriodEnd: z.boolean(),
+    includedSeconds: z.number().int().nonnegative(),
+    purchasedSeconds: z.number().int().nonnegative(),
+    reservedSeconds: z.number().int().nonnegative(),
+    expiringSeconds: z.number().int().nonnegative(),
+    availableSeconds: z.number().int().nonnegative(),
+    balanceStatus: IdentifierSchema,
+    entitlements: z.object({
+      includedMinutes: z.number().int().nonnegative(),
+      agents: z.number().int().nonnegative(),
+      workspaces: z.number().int().nonnegative(),
+      nangoConnections: z.number().int().nonnegative(),
+      concurrentCalls: z.number().int().nonnegative(),
+      outboundPstn: z.boolean(),
+      campaigns: z.boolean(),
+      whiteLabel: z.boolean(),
+    }),
+    usage: z.object({
+      agents: z.number().int().nonnegative(),
+      workspaces: z.number().int().nonnegative(),
+      integrations: z.number().int().nonnegative(),
+    }),
+    blockedReason: EntitlementReasonSchema,
+  })
+  .strict();
+export type BillingSummaryDto = z.infer<typeof BillingSummaryDtoSchema>;
 
 const RuntimeUsageEventBaseSchema = {
   eventId: IdentifierSchema,

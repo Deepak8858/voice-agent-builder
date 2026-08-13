@@ -1,13 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BillingStatusDtoSchema,
+  BillingSummaryDtoSchema,
   CreateCheckoutSessionDtoSchema,
   CreatePortalSessionDtoSchema,
   CreateTopUpCheckoutDtoSchema,
+  EffectiveSubscriptionStatusSchema,
   EntitlementDecisionSchema,
   PLAN_LIMITS,
   RuntimeUsageEventSchema,
   SubscriptionStatusSchema,
 } from './billing';
+
+const BILLING_SUMMARY = {
+  organizationId: 'org_123',
+  plan: 'starter' as const,
+  status: 'active' as const,
+  paidAccess: true,
+  catalogVersion: '2026-07-24',
+  currentPeriodEnd: '2026-08-24T12:00:00.000Z',
+  cancelAtPeriodEnd: false,
+  includedSeconds: 12_000,
+  purchasedSeconds: 6_000,
+  reservedSeconds: 60,
+  expiringSeconds: 12_000,
+  availableSeconds: 18_000,
+  balanceStatus: 'active',
+  entitlements: {
+    includedMinutes: 200,
+    agents: 3,
+    workspaces: 1,
+    nangoConnections: 2,
+    concurrentCalls: 2,
+    outboundPstn: true,
+    campaigns: true,
+    whiteLabel: false,
+  },
+  usage: { agents: 1, workspaces: 1, integrations: 0 },
+  blockedReason: 'allowed' as const,
+};
 
 describe('billing DTO schemas', () => {
   it('accepts a server-controlled checkout plan and safe relative return paths', () => {
@@ -66,7 +97,52 @@ describe('billing DTO schemas', () => {
       plan: 'starter',
       allowed: false,
       reason: 'credit_insufficient',
+      current: 0,
+      limit: 60,
+      catalogVersion: '2026-07-24',
+      correlationId: 'ent_123',
     }).success).toBe(true);
+  });
+
+  it('requires explainable numbers on every entitlement decision', () => {
+    expect(EntitlementDecisionSchema.safeParse({
+      organizationId: 'org_123',
+      plan: 'starter',
+      allowed: true,
+      reason: 'allowed',
+    }).success).toBe(false);
+  });
+
+  it('treats an organization without a subscription as a resolvable status', () => {
+    expect(EffectiveSubscriptionStatusSchema.safeParse('none').success).toBe(true);
+    expect(EffectiveSubscriptionStatusSchema.safeParse('active').success).toBe(true);
+    expect(EffectiveSubscriptionStatusSchema.safeParse('demo').success).toBe(false);
+  });
+
+  it('has no demo billing mode in the checkout availability contract', () => {
+    expect(BillingStatusDtoSchema.safeParse({
+      checkoutConfigured: false,
+      liveCheckoutEnabled: false,
+      message: 'Billing is temporarily unavailable.',
+    }).success).toBe(true);
+    expect(BillingStatusDtoSchema.safeParse({
+      mode: 'demo',
+      checkoutConfigured: false,
+      liveCheckoutEnabled: false,
+      message: 'Demo',
+    }).success).toBe(false);
+  });
+
+  it('reports included, purchased, reserved, and expiring seconds separately', () => {
+    const parsed = BillingSummaryDtoSchema.safeParse(BILLING_SUMMARY);
+
+    expect(parsed.success).toBe(true);
+    expect(BillingSummaryDtoSchema.safeParse({
+      ...BILLING_SUMMARY,
+      reservedSeconds: -60,
+    }).success).toBe(false);
+    const { purchasedSeconds: _purchasedSeconds, ...withoutPurchased } = BILLING_SUMMARY;
+    expect(BillingSummaryDtoSchema.safeParse(withoutPurchased).success).toBe(false);
   });
 
   it('accepts every tenant-scoped, idempotent runtime usage event branch', () => {

@@ -3,6 +3,7 @@ import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
 import { CallConcurrencyService } from './call-concurrency.service';
 import { CreditLedgerService } from './credit-ledger.service';
+import { EntitlementService } from './entitlement.service';
 import { ProviderCostService } from './provider-cost.service';
 import { ReconciliationService } from './reconciliation.service';
 
@@ -12,6 +13,7 @@ import { ReconciliationService } from './reconciliation.service';
     BillingService,
     CallConcurrencyService,
     CreditLedgerService,
+    EntitlementService,
     ProviderCostService,
     ReconciliationService,
   ],
@@ -19,6 +21,7 @@ import { ReconciliationService } from './reconciliation.service';
     BillingService,
     CallConcurrencyService,
     CreditLedgerService,
+    EntitlementService,
     ProviderCostService,
     ReconciliationService,
   ],
