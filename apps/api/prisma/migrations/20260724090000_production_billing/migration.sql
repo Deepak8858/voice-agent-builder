@@ -2,8 +2,51 @@
 -- The existing usage_records table remains unchanged during shadow metering.
 
 -- Restore audit schema drift before billing begins writing organization-scoped rows.
+-- Older installations used user_id/entity_type/entity_id/details and did not
+-- carry workspace or organization scope. Add the current columns first, then
+-- copy legacy data only when those legacy columns still exist.
 ALTER TABLE "audit_logs"
-  ADD COLUMN IF NOT EXISTS "organization_id" UUID;
+  ADD COLUMN IF NOT EXISTS "workspace_id" UUID,
+  ADD COLUMN IF NOT EXISTS "organization_id" UUID,
+  ADD COLUMN IF NOT EXISTS "actor_user_id" UUID,
+  ADD COLUMN IF NOT EXISTS "resource_type" TEXT,
+  ADD COLUMN IF NOT EXISTS "resource_id" TEXT,
+  ADD COLUMN IF NOT EXISTS "metadata" JSONB,
+  ADD COLUMN IF NOT EXISTS "ip_address" TEXT,
+  ADD COLUMN IF NOT EXISTS "user_agent" TEXT;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'user_id'
+  ) THEN
+    EXECUTE 'UPDATE "audit_logs" SET "actor_user_id" = "user_id" WHERE "actor_user_id" IS NULL';
+    EXECUTE 'ALTER TABLE "audit_logs" ALTER COLUMN "user_id" DROP NOT NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'entity_type'
+  ) THEN
+    EXECUTE 'UPDATE "audit_logs" SET "resource_type" = "entity_type" WHERE "resource_type" IS NULL';
+    EXECUTE 'ALTER TABLE "audit_logs" ALTER COLUMN "entity_type" DROP NOT NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'entity_id'
+  ) THEN
+    EXECUTE 'UPDATE "audit_logs" SET "resource_id" = "entity_id" WHERE "resource_id" IS NULL';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'details'
+  ) THEN
+    EXECUTE 'UPDATE "audit_logs" SET "metadata" = "details" WHERE "metadata" IS NULL';
+  END IF;
+END $$;
 
 UPDATE "audit_logs" AS a
 SET "organization_id" = w."organization_id"
@@ -11,8 +54,40 @@ FROM "workspaces" AS w
 WHERE a."workspace_id" = w."id"
   AND a."organization_id" IS NULL;
 
+UPDATE "audit_logs"
+SET "resource_type" = 'legacy'
+WHERE "resource_type" IS NULL;
+
+ALTER TABLE "audit_logs"
+  ALTER COLUMN "resource_type" SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'audit_logs_workspace_id_fkey'
+  ) THEN
+    ALTER TABLE "audit_logs"
+      ADD CONSTRAINT "audit_logs_workspace_id_fkey"
+      FOREIGN KEY ("workspace_id") REFERENCES "workspaces"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'audit_logs_actor_user_id_fkey'
+  ) THEN
+    ALTER TABLE "audit_logs"
+      ADD CONSTRAINT "audit_logs_actor_user_id_fkey"
+      FOREIGN KEY ("actor_user_id") REFERENCES "users"("id")
+      ON DELETE SET NULL ON UPDATE CASCADE;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS "audit_logs_workspace_id_created_at_idx"
+  ON "audit_logs"("workspace_id", "created_at");
 CREATE INDEX IF NOT EXISTS "audit_logs_organization_id_idx"
   ON "audit_logs"("organization_id");
+CREATE INDEX IF NOT EXISTS "audit_logs_actor_user_id_idx"
+  ON "audit_logs"("actor_user_id");
 
 -- Extend subscriptions with the catalog identity captured by Stripe webhooks.
 ALTER TABLE "subscriptions"

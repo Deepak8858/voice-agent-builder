@@ -391,14 +391,14 @@ model Call {
 }
 
 model CallEvent {
-  id             String   @id @default(uuid()) @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
   providerEventId String?  @unique @map("provider_event_id")
-  callId         String   @map("call_id") @db.Uuid
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String?  @map("organization_id") @db.Uuid
-  eventType      String   @map("event_type")
-  eventTime      DateTime @default(now()) @map("event_time")
-  payload        Json?
+  callId          String   @map("call_id") @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  organizationId  String?  @map("organization_id") @db.Uuid
+  eventType       String   @map("event_type")
+  eventTime       DateTime @default(now()) @map("event_time")
+  payload         Json?
 
   call      Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id])
