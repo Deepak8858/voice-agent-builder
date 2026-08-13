@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import { DM_Sans, DM_Serif_Display, IBM_Plex_Mono } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ClientChrome } from '@/components/layout/client-chrome';
@@ -28,7 +29,15 @@ export const metadata: Metadata = {
   description: 'Design, test, deploy, and white-label AI voice calling agents using natural language.',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The middleware issues a fresh CSP nonce per request. Nonce-based CSP only
+  // works when pages are rendered per request: statically prerendered HTML
+  // carries no nonce attributes, so the browser blocks Next.js's inline
+  // bootstrap scripts and the app never hydrates. Reading the request headers
+  // opts every route into dynamic rendering, which lets Next.js pick the
+  // nonce up from the Content-Security-Policy request header and stamp it
+  // onto its inline scripts.
+  await headers();
   return (
     <html
       lang="en"
