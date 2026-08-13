@@ -100,16 +100,20 @@ describe('env validation', () => {
 
   /**
    * WEB_BASE_URL defaults to localhost and is what Stripe redirects customers
-   * back to after checkout. A live deployment that forgets to set it takes real
-   * payments and then sends the customer to a dead address — a failure no boot
-   * or health check would surface.
+   * back to after checkout. A deployment with working Stripe credentials that
+   * forgets to set it takes real payments and then sends the customer to a dead
+   * address — a failure no boot or health check would surface.
    */
-  describe('live billing requires a reachable public URL', () => {
-    const liveBase = {
+  describe('configured Stripe Checkout requires a reachable public URL', () => {
+    const configuredBase = {
       NODE_ENV: 'development',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'development-jwt-secret-with-32-chars',
-      BILLING_MODE: 'live',
+      STRIPE_SECRET_KEY: 'rk_test_configured',
+      STRIPE_WEBHOOK_SECRET: 'whsec_configured',
+      STRIPE_STARTER_PRICE_ID: 'price_starter',
+      STRIPE_GROWTH_PRICE_ID: 'price_growth',
+      STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
     };
 
     it.each([
@@ -118,25 +122,40 @@ describe('env validation', () => {
       ['a loopback IP', 'https://127.0.0.1:3000'],
       ['plain HTTP on a real domain', 'http://app.voiceforge.example'],
       ['a non-absolute value', 'app.voiceforge.example'],
-    ])('rejects %s when BILLING_MODE=live', async (_label, webBaseUrl) => {
+    ])('rejects %s when Stripe Checkout is configured', async (_label, webBaseUrl) => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, liveBase);
+      Object.assign(process.env, configuredBase);
       if (webBaseUrl !== undefined) process.env.WEB_BASE_URL = webBaseUrl;
 
       await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
     });
 
-    it('accepts an absolute HTTPS URL when BILLING_MODE=live', async () => {
+    it('accepts an absolute HTTPS URL when Stripe Checkout is configured', async () => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, liveBase, { WEB_BASE_URL: 'https://deep-ak.dev' });
+      Object.assign(process.env, configuredBase, { WEB_BASE_URL: 'https://deep-ak.dev' });
 
       const mod = await import('./env');
       expect(mod.env.WEB_BASE_URL).toBe('https://deep-ak.dev');
     });
 
-    it('leaves the localhost default alone in demo mode', async () => {
+    /**
+     * A half-configured deployment must not be treated as live. It cannot take
+     * payments at all, so localhost redirects are harmless and must not block
+     * boot for the rest of the product.
+     */
+    it('leaves the localhost default alone when the minute-pack price is missing', async () => {
+      vi.resetModules();
+      restoreEnv();
+      const { STRIPE_MINUTE_PACK_PRICE_ID: _omitted, ...partial } = configuredBase;
+      Object.assign(process.env, partial);
+
+      const mod = await import('./env');
+      expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('defaults Stripe Tax off so launch never collects tax by accident', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, {
@@ -146,7 +165,7 @@ describe('env validation', () => {
       });
 
       const mod = await import('./env');
-      expect(mod.env.BILLING_MODE).toBe('demo');
+      expect(mod.env.STRIPE_TAX_ENABLED).toBe(false);
       expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
     });
   });

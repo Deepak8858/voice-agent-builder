@@ -126,12 +126,17 @@ const EnvSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
 
+  // Stripe is either fully configured with server-owned prices or Checkout is
+  // temporarily unavailable. There is no "demo" billing mode: partial
+  // configuration must never hand out a recurring free allowance.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_STARTER_PRICE_ID: z.string().optional(),
   STRIPE_GROWTH_PRICE_ID: z.string().optional(),
   STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
-  BILLING_MODE: z.enum(['demo', 'live']).default('demo'),
+  STRIPE_MINUTE_PACK_PRICE_ID: z.string().optional(),
+  // Tax collection stays off until the tax registrations are confirmed.
+  STRIPE_TAX_ENABLED: BooleanEnvSchema.default(false),
   BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
   BILLING_LEASE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(90),
 
@@ -214,10 +219,11 @@ const EnvSchema = z.object({
     });
   }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after
-  // checkout and from the billing portal. It defaults to localhost, so a live
-  // deployment that omits it takes payments and then bounces the customer to a
-  // dead address. That failure is invisible to a boot check, hence this guard.
-  if (value.BILLING_MODE === 'live') {
+  // checkout and from the billing portal. It defaults to localhost, so a
+  // deployment with working Stripe credentials that omits it takes payments and
+  // then bounces the customer to a dead address. That failure is invisible to a
+  // boot check, hence this guard.
+  if (isStripeCheckoutConfigured(value)) {
     let parsed: URL | null = null;
     try {
       parsed = new URL(value.WEB_BASE_URL);
@@ -229,12 +235,33 @@ const EnvSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['WEB_BASE_URL'],
         message:
-          'WEB_BASE_URL must be an absolute non-local HTTPS URL when BILLING_MODE=live, ' +
-          'because Stripe redirects customers back to it',
+          'WEB_BASE_URL must be an absolute non-local HTTPS URL when Stripe Checkout is ' +
+          'configured, because Stripe redirects customers back to it',
       });
     }
   }
 });
+
+/**
+ * Checkout is only usable when every server-owned identifier is present. A
+ * partially configured deployment fails closed rather than sending a customer
+ * to Stripe and then being unable to grant what they paid for.
+ */
+function isStripeCheckoutConfigured(value: {
+  STRIPE_SECRET_KEY?: string | undefined;
+  STRIPE_WEBHOOK_SECRET?: string | undefined;
+  STRIPE_STARTER_PRICE_ID?: string | undefined;
+  STRIPE_GROWTH_PRICE_ID?: string | undefined;
+  STRIPE_MINUTE_PACK_PRICE_ID?: string | undefined;
+}): boolean {
+  return Boolean(
+    value.STRIPE_SECRET_KEY &&
+      value.STRIPE_WEBHOOK_SECRET &&
+      value.STRIPE_STARTER_PRICE_ID &&
+      value.STRIPE_GROWTH_PRICE_ID &&
+      value.STRIPE_MINUTE_PACK_PRICE_ID,
+  );
+}
 
 function isLocalHostname(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
