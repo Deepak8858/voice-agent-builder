@@ -450,3 +450,60 @@ ALTER TABLE "call_concurrency_leases"
   ADD CONSTRAINT "call_concurrency_leases_call_id_fkey"
   FOREIGN KEY ("call_id") REFERENCES "calls"("id")
   ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- ---------------------------------------------------------------------------
+-- Data API exposure posture for the new billing tables.
+--
+-- Every table created above holds revenue-bearing or tenant-billing state and
+-- is owned exclusively by Prisma (the postgres role, which is BYPASSRLS).
+-- None of them may be reachable through the Supabase Data API, so they follow
+-- the deny-by-default posture asserted by SERVICE_ROLE_ONLY_TABLES in
+-- apps/api/src/db/public-table-exposure-policy.ts: RLS enabled, no policy for
+-- anon or authenticated, and CRUD granted only to service_role.
+--
+-- Idempotent and safe to re-run. The role guard keeps the migration working on
+-- a disposable PostgreSQL instance that has no Supabase Data API roles.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE "billing_credit_buckets" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "billing_ledger_entries" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "organization_credit_balances" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "call_usages" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "runtime_usage_events" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "trial_redemptions" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "agent_provider_deployments" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "provider_cost_events" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "call_concurrency_leases" ENABLE ROW LEVEL SECURITY;
+
+DO $$
+DECLARE
+  billing_table TEXT;
+  billing_tables TEXT[] := ARRAY[
+    'billing_credit_buckets',
+    'billing_ledger_entries',
+    'organization_credit_balances',
+    'call_usages',
+    'runtime_usage_events',
+    'trial_redemptions',
+    'agent_provider_deployments',
+    'provider_cost_events',
+    'call_concurrency_leases'
+  ];
+BEGIN
+  FOREACH billing_table IN ARRAY billing_tables LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+      EXECUTE format('REVOKE ALL ON public.%I FROM anon', billing_table);
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+      EXECUTE format('REVOKE ALL ON public.%I FROM authenticated', billing_table);
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+      EXECUTE format(
+        'GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO service_role',
+        billing_table
+      );
+    END IF;
+  END LOOP;
+END $$;

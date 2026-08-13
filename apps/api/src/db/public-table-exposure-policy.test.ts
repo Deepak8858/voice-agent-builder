@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BILLING_SERVICE_ROLE_ONLY_TABLES,
   CRUD_PRIVILEGES,
+  PUBLIC_TABLE_EXPOSURE_POLICIES,
+  REQUIRED_PUBLIC_TABLES,
   validatePublicTableExposure,
   type PublicTableExposurePolicy,
   type PublicTableExposureSnapshot,
@@ -175,5 +178,97 @@ describe('validatePublicTableExposure', () => {
 
   it('passes when every public table matches the intended exposure policy', () => {
     expect(validatePublicTableExposure(snapshot(), basePolicies)).toEqual([]);
+  });
+});
+
+describe('production billing table exposure', () => {
+  it('requires every billing table so db-verify cannot silently skip one', () => {
+    for (const tableName of BILLING_SERVICE_ROLE_ONLY_TABLES) {
+      expect(REQUIRED_PUBLIC_TABLES).toContain(tableName);
+    }
+  });
+
+  it('never exposes revenue-bearing billing tables to anon or authenticated', () => {
+    for (const tableName of BILLING_SERVICE_ROLE_ONLY_TABLES) {
+      const policy = PUBLIC_TABLE_EXPOSURE_POLICIES.find(
+        (candidate) => candidate.tableName === tableName,
+      );
+
+      expect(policy).toBeDefined();
+      expect(policy?.anon).toEqual([]);
+      expect(policy?.authenticated).toEqual([]);
+      expect(policy?.serviceRole).toEqual(CRUD_PRIVILEGES);
+    }
+  });
+
+  it('reports no findings for billing tables that follow the deny-by-default posture', () => {
+    const billingTables = [...BILLING_SERVICE_ROLE_ONLY_TABLES];
+    const findings = validatePublicTableExposure(
+      {
+        tables: billingTables.map((tableName) => ({ tableName, rowSecurity: true })),
+        grants: billingTables.flatMap((tableName) =>
+          CRUD_PRIVILEGES.map((privilege) => ({
+            tableName,
+            grantee: 'service_role' as const,
+            privilege,
+          })),
+        ),
+        policies: [],
+      },
+      PUBLIC_TABLE_EXPOSURE_POLICIES,
+    );
+
+    expect(findings).toEqual([]);
+  });
+
+  it('rejects a billing table that leaks a read grant to authenticated', () => {
+    const findings = validatePublicTableExposure(
+      {
+        tables: [{ tableName: 'billing_ledger_entries', rowSecurity: true }],
+        grants: [
+          ...CRUD_PRIVILEGES.map((privilege) => ({
+            tableName: 'billing_ledger_entries',
+            grantee: 'service_role' as const,
+            privilege,
+          })),
+          {
+            tableName: 'billing_ledger_entries',
+            grantee: 'authenticated' as const,
+            privilege: 'SELECT' as const,
+          },
+        ],
+        policies: [],
+      },
+      PUBLIC_TABLE_EXPOSURE_POLICIES,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'UNEXPECTED_GRANT',
+      tableName: 'billing_ledger_entries',
+      message:
+        'public.billing_ledger_entries has unexpected GRANT SELECT TO authenticated.',
+    });
+  });
+
+  it('rejects a billing table created without row level security', () => {
+    const findings = validatePublicTableExposure(
+      {
+        tables: [{ tableName: 'organization_credit_balances', rowSecurity: false }],
+        grants: CRUD_PRIVILEGES.map((privilege) => ({
+          tableName: 'organization_credit_balances',
+          grantee: 'service_role' as const,
+          privilege,
+        })),
+        policies: [],
+      },
+      PUBLIC_TABLE_EXPOSURE_POLICIES,
+    );
+
+    expect(findings).toContainEqual({
+      code: 'RLS_DISABLED',
+      tableName: 'organization_credit_balances',
+      message:
+        'public.organization_credit_balances must have row level security enabled.',
+    });
   });
 });
