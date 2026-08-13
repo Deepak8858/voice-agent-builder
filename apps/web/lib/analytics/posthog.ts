@@ -141,3 +141,46 @@ export function captureFunnelEvent(
     // ignore
   }
 }
+
+export interface ClientExceptionContext {
+  /** Next.js error digest, when the error originated on the server. */
+  digest?: string | undefined;
+  /** Which React boundary caught it: the route tree or the root layout. */
+  boundary: 'route' | 'global';
+}
+
+/**
+ * Reports an error caught by a React error boundary.
+ *
+ * Autocapture cannot see these. `capture_unhandled_errors` hooks
+ * `window.onerror`, but React catches a render failure before it reaches the
+ * window, so without an explicit call here every render crash is invisible in
+ * error tracking while the user stares at a fallback page.
+ *
+ * `captureException` is used rather than a plain `capture` so the event lands
+ * in PostHog's error tracking product with a parsed stack and issue grouping
+ * instead of as an untyped custom event.
+ *
+ * Unlike the funnel helpers this does not go through `buildPostHogEvent`: that
+ * contract allow-lists Phase 1 conversion events and would drop an exception.
+ */
+export function captureClientException(
+  error: unknown,
+  context: ClientExceptionContext,
+): void {
+  if (!isReady()) return;
+
+  try {
+    // `posthog.captureException` only parses a stack off a real Error; a thrown
+    // string or object would otherwise produce an issue with no stack and a
+    // useless title.
+    const exception = error instanceof Error ? error : new Error(String(error));
+
+    posthog.captureException(exception, {
+      error_boundary: context.boundary,
+      ...(context.digest ? { error_digest: context.digest } : {}),
+    });
+  } catch {
+    // ignore
+  }
+}

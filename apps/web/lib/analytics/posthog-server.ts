@@ -109,3 +109,88 @@ export async function captureServerEvent(
     clearTimeout(timer);
   }
 }
+
+/** Where in the Next.js server an exception surfaced. */
+export interface ServerExceptionContext {
+  /** Next.js error digest — the same value the browser boundary receives. */
+  digest?: string | undefined;
+  /** Route pattern (`/agents/[id]`), never the resolved path with real IDs. */
+  routePath?: string | undefined;
+  /** `render` or `route`, from the Next.js request-error context. */
+  routeType?: string | undefined;
+  /** `app-router` / `pages-router`, from the same context. */
+  routerKind?: string | undefined;
+}
+
+/**
+ * Reports an uncaught server-side exception to PostHog error tracking.
+ *
+ * This does not go through `buildPostHogCapture`: that helper enforces the
+ * closed Phase 1 *conversion event* contract and returns `null` for anything
+ * outside it, which would drop every exception. The privacy properties it
+ * guarantees are reproduced explicitly below instead — no person profile, no
+ * geo-IP, and no request body, headers or user identifiers are attached.
+ *
+ * `$exception_list` is the payload shape PostHog's error tracking product
+ * ingests. The stack is sent as a raw string rather than pre-parsed frames:
+ * frame parsing plus source-map symbolication is what `posthog-node` exists
+ * for, and pulling that dependency in only to serialise one event would
+ * reintroduce the buffering problem this module was written to avoid. The
+ * resulting issue groups on type and message and carries the raw stack, which
+ * is what is actually actionable for a server error.
+ *
+ * Always resolves successfully. An exception handler that can itself throw
+ * would turn a single failed request into an unhandled rejection.
+ */
+export async function captureServerException(
+  error: unknown,
+  context: ServerExceptionContext = {},
+): Promise<void> {
+  const config = serverConfig();
+  if (!config) return;
+
+  const err = error instanceof Error ? error : new Error(String(error));
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
+
+  try {
+    await fetch(`${config.host}/i/v0/e/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      keepalive: false,
+      cache: 'no-store',
+      body: JSON.stringify({
+        api_key: config.projectToken,
+        event: '$exception',
+        // Opaque, non-person distinct ID: the digest correlates this event with
+        // the browser-side report of the same failure, and the fallback keeps
+        // the event attributable to the server rather than to a visitor.
+        distinct_id: context.digest ?? 'web-server',
+        timestamp: new Date().toISOString(),
+        properties: {
+          $exception_list: [
+            {
+              type: err.name || 'Error',
+              value: err.message,
+              mechanism: { handled: false, synthesized: false },
+            },
+          ],
+          ...(err.stack ? { $exception_stack_trace_raw: err.stack } : {}),
+          ...(context.digest ? { error_digest: context.digest } : {}),
+          ...(context.routePath ? { route_path: context.routePath } : {}),
+          ...(context.routeType ? { route_type: context.routeType } : {}),
+          ...(context.routerKind ? { router_kind: context.routerKind } : {}),
+          error_boundary: 'server',
+          $process_person_profile: false,
+          $geoip_disable: true,
+        },
+      }),
+    });
+  } catch {
+    // Best-effort.
+  } finally {
+    clearTimeout(timer);
+  }
+}

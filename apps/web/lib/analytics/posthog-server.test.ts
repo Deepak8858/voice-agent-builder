@@ -158,3 +158,80 @@ describe('captureServerEvent', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('https://us.i.posthog.com/i/v0/e/');
   });
 });
+
+describe('captureServerException', () => {
+  it('makes no request when analytics is disabled', async () => {
+    const { captureServerException } = await load();
+
+    await captureServerException(new Error('boom'));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe('when enabled', () => {
+    beforeEach(enable);
+
+    it('sends an $exception event with the error type and message', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new TypeError('cannot read property'));
+      const body = sentBody();
+      const properties = body.properties as Record<string, unknown>;
+      const list = properties.$exception_list as Array<Record<string, unknown>>;
+
+      expect(body.event).toBe('$exception');
+      expect(list[0]!.type).toBe('TypeError');
+      expect(list[0]!.value).toBe('cannot read property');
+    });
+
+    it('coerces a thrown non-Error value', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException('string failure');
+      const list = (sentBody().properties as Record<string, unknown>)
+        .$exception_list as Array<Record<string, unknown>>;
+
+      expect(list[0]!.value).toBe('string failure');
+    });
+
+    it('never creates a person profile or infers location', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'));
+      const properties = sentBody().properties as Record<string, unknown>;
+
+      expect(properties.$process_person_profile).toBe(false);
+      expect(properties.$geoip_disable).toBe(true);
+    });
+
+    it('correlates with the browser report via the digest', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'), {
+        digest: 'abc123',
+        routePath: '/agents/[id]',
+      });
+      const body = sentBody();
+      const properties = body.properties as Record<string, unknown>;
+
+      expect(body.distinct_id).toBe('abc123');
+      expect(properties.error_digest).toBe('abc123');
+      expect(properties.route_path).toBe('/agents/[id]');
+    });
+
+    it('uses a non-person fallback ID when there is no digest', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'));
+
+      expect(sentBody().distinct_id).toBe('web-server');
+    });
+
+    it('resolves rather than throwing when the request fails', async () => {
+      const { captureServerException } = await load();
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+
+      await expect(captureServerException(new Error('boom'))).resolves.toBeUndefined();
+    });
+  });
+});
