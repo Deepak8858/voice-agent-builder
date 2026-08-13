@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
+import { PostHogIdentityBoundary } from '@/components/analytics/posthog-identity-boundary';
 import { CheckoutPlanSchema } from '@voiceforge/shared';
 
 function sanitizeNext(next: string | null): string | null {
@@ -79,6 +80,9 @@ function SignUpInner() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
+      {/* A signed-in user reaching sign-up must not have the new account
+          aliased onto their existing identity. */}
+      <PostHogIdentityBoundary />
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Link href="/" className="inline-flex items-center gap-2 font-semibold mb-8">

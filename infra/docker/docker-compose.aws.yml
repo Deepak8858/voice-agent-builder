@@ -21,7 +21,7 @@ x-app-environment: &app-environment
 services:
   web:
     <<: *runtime
-    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-web:${IMAGE_TAG:?IMAGE_TAG must be an immutable full git SHA}
+    image: ${ECR_REGISTRY:?ECR_REGISTRY must be set}/voiceforge-web:${WEB_IMAGE_TAG:?WEB_IMAGE_TAG must identify the immutable web build}
     container_name: vf-web
     environment:
       NODE_ENV: production

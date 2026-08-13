@@ -4,12 +4,13 @@ import { apiFetch, ApiCallError } from '@/lib/api';
 import { AppSidebar } from '@/components/layout/app-sidebar';
 import { SubscriptionStatusBanner } from '@/components/billing/subscription-status-banner';
 import { AuthGate } from '@/components/auth/auth-gate';
+import { PostHogIdentityBridge } from '@/components/analytics/posthog-identity-bridge';
 import type { SessionUser } from '@voiceforge/shared';
 export const dynamic = 'force-dynamic';
 
-async function requireDashboardUser() {
+async function requireDashboardUser(): Promise<SessionUser> {
   try {
-    await apiFetch<SessionUser>('/auth/me');
+    return await apiFetch<SessionUser>('/auth/me');
   } catch (err) {
     if (err instanceof ApiCallError && err.status === 401) {
       redirect('/sign-in');
@@ -23,9 +24,11 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  await requireDashboardUser();
+  const user = await requireDashboardUser();
   return (
     <div className="flex min-h-dvh flex-1 bg-[radial-gradient(circle_at_top_left,rgba(220,38,38,0.08),transparent_32rem),linear-gradient(180deg,var(--background),var(--background))]">
+      {/* Only the two opaque IDs cross into the browser analytics boundary. */}
+      <PostHogIdentityBridge userId={user.id} workspaceId={user.active_workspace_id} />
       <AppSidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="mx-auto flex w-full max-w-[92rem] flex-1 flex-col px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8">

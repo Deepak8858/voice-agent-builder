@@ -91,7 +91,8 @@ export default async function CallsPage() {
               actionHref="/dashboard/agents"
             />
           ) : (
-            <ul className="divide-y divide-border">
+            /* ph-no-capture: rows render contact names and dialled numbers. */
+            <ul className="ph-no-capture divide-y divide-border">
               {items.map((c) => (
                 <li key={c.id}>
                   <Link

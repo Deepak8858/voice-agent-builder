@@ -146,7 +146,8 @@ export function KnowledgePanel({
   };
 
   return (
-    <Card className="overflow-hidden">
+    /* ph-no-capture: knowledge titles, uploaded content and search queries. */
+    <Card className="ph-no-capture overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle className="flex items-center gap-2 text-base">

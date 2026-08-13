@@ -136,9 +136,9 @@ export function CallLiveMonitor({
         )}
       </div>
 
-      {/* Transcript bubbles */}
+      {/* Transcript bubbles. ph-no-capture: live customer speech. */}
       {turns.length > 0 ? (
-        <ul className="flex flex-col gap-3">
+        <ul className="ph-no-capture flex flex-col gap-3">
           {turns.map((t, idx) => (
             <li
               key={idx}

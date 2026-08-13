@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
+import { PostHogIdentityBoundary } from '@/components/analytics/posthog-identity-boundary';
 
 export default function SignInPage() {
   const router = useRouter();
@@ -51,6 +52,8 @@ export default function SignInPage() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4">
+      {/* An expired session lands here without a SIGNED_OUT event. */}
+      <PostHogIdentityBoundary />
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <Link href="/" className="inline-flex items-center gap-2 font-semibold mb-8">

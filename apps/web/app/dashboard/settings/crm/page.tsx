@@ -120,7 +120,10 @@ export default function CrmSettingsPage() {
           <TabsTrigger value="rules">Routing Rules</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="credentials" className="flex flex-col gap-4">
+        {/* ph-no-capture: API tokens and instance URLs are typed here. The
+            token input is type="password", but the base URL is not, and
+            provider error text can echo credential material back. */}
+        <TabsContent value="credentials" className="ph-no-capture flex flex-col gap-4">
           {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
           {errorMessage ? (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

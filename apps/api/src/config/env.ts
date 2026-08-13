@@ -142,6 +142,15 @@ const EnvSchema = z.object({
   VOICE_WEBHOOK_SECRET: z.string().optional(),
   WORKERS_ENABLED: BooleanEnvSchema.default(false),
 
+  // PostHog product analytics. Entirely optional: when the flag is off or the
+  // project token is absent the API never constructs a client. Host validation
+  // happens only when configuration is resolved so disabled analytics can never
+  // block boot because of a stale optional value.
+  POSTHOG_ENABLED: BooleanEnvSchema.default(false),
+  POSTHOG_PROJECT_TOKEN: z.string().optional(),
+  POSTHOG_HOST: z.string().default('https://us.i.posthog.com'),
+  APP_VERSION: z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/).default('dev'),
+
   // Comma-separated list of allowed origins for CORS (no wildcards in production)
   ALLOWED_ORIGINS: z
     .string()

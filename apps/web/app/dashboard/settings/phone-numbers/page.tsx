@@ -408,7 +408,11 @@ export default function PhoneNumbersPage() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    /*
+     * ph-no-capture: provider auth tokens, SIP credentials, webhook secrets and
+     * the phone-number inventory itself are all rendered on this page.
+     */
+    <div className="ph-no-capture flex flex-col gap-8">
       <UpgradeModal
         open={Boolean(planLimit)}
         onClose={() => setPlanLimit(null)}

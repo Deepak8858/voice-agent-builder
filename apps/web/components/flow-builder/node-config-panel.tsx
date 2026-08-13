@@ -40,7 +40,11 @@ export function NodeConfigPanel({
   }
 
   return (
-    <div className="flex h-full flex-col p-4">
+    /*
+     * ph-no-capture: node config holds spoken scripts, transfer phone numbers,
+     * message bodies and tool configuration.
+     */
+    <div className="ph-no-capture flex h-full flex-col p-4">
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold capitalize text-foreground">
           {node.type?.replace('_', ' ')}

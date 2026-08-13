@@ -14,5 +14,9 @@ export default defineConfig({
     environment: 'node',
     include: ['**/*.test.{ts,tsx}'],
     exclude: ['**/node_modules/**', '**/.next/**'],
+    // Several server/config suites intentionally replace process.env and reset
+    // the module graph. Running files concurrently lets those process-global
+    // mutations leak across workers and makes disabled analytics tests flaky.
+    fileParallelism: false,
   },
 });

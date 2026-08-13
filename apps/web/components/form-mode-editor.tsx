@@ -143,7 +143,11 @@ export function FormModeEditor({
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    /*
+     * ph-no-capture: both editor modes render the Agent Spec, which contains
+     * system prompts, business details and handoff phone numbers.
+     */
+    <div className="ph-no-capture flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"

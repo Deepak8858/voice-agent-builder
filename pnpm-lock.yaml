@@ -115,6 +115,9 @@ importers:
       pino:
         specifier: ^10.3.1
         version: 10.3.1
+      posthog-node:
+        specifier: ^5.48.1
+        version: 5.48.1(rxjs@7.8.2)
       prom-client:
         specifier: ^15.1.3
         version: 15.1.3
@@ -362,7 +365,7 @@ importers:
         specifier: 16.2.11
         version: 16.2.11(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@types/node@20.19.40)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       posthog-js:
-        specifier: ^1.407.2
+        specifier: ^1.414.0
         version: 1.414.0
       react:
         specifier: 19.2.4
@@ -5929,6 +5932,15 @@ packages:
 
   posthog-js@1.414.0:
     resolution: {integrity: sha512-dtZd4asdskr8lNyltAEX6zyn48uO1pO0EMvx6AXJU65PFhu6yn2LPbKtQcyLysjcN57FJPNT9QYL6St5SBJHqw==}
+
+  posthog-node@5.48.1:
+    resolution: {integrity: sha512-BxLX2SqGEQhPqCPTalpyo0RRv1NMbf7UaN7q9d/ED77ksD6XOmE7ko2vIKO8F0zPL1NtKxIi+DYXap9lvR0RaA==}
+    engines: {node: ^20.20.0 || >=22.22.0}
+    peerDependencies:
+      rxjs: ^7.0.0
+    peerDependenciesMeta:
+      rxjs:
+        optional: true
 
   preact@10.29.8:
     resolution: {integrity: sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==}
@@ -12868,6 +12880,12 @@ snapshots:
       web-vitals-soft-navs: web-vitals@6.0.0
     transitivePeerDependencies:
       - preact-render-to-string
+
+  posthog-node@5.48.1(rxjs@7.8.2):
+    dependencies:
+      '@posthog/core': 1.46.9
+    optionalDependencies:
+      rxjs: 7.8.2
 
   preact@10.29.8: {}
 

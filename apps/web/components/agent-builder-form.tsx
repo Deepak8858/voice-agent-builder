@@ -74,7 +74,8 @@ export function AgentBuilderForm() {
   const isGenerating = generated && generated.status_url;
 
   return (
-    <div className="flex flex-col gap-6">
+    /* ph-no-capture: free-text prompt and business identity fields. */
+    <div className="ph-no-capture flex flex-col gap-6">
       {/* Agent Persona */}
       <Card>
         <CardHeader>

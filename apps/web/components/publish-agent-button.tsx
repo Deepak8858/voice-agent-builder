@@ -7,7 +7,6 @@ import type { AgentDetail } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
 import { useApi } from '@/lib/use-api';
 import { Rocket } from 'lucide-react';
-import posthog from 'posthog-js';
 
 interface PublishAgentButtonProps {
   workspaceId: string;
@@ -24,7 +23,9 @@ export function PublishAgentButton({ workspaceId, agentId }: PublishAgentButtonP
         method: 'POST',
       }),
     onSuccess: () => {
-      posthog.capture('agent_published');
+      // Deliberately no client-side capture: the API mirrors the canonical
+      // `agent_published` contract event after the confirmed database write.
+      // Capturing here too would double-count the event in PostHog.
       toast.success('Agent published.');
       router.refresh();
     },
