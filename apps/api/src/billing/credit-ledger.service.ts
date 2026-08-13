@@ -270,6 +270,7 @@ export interface CreditSummary {
   reservedSeconds: number;
   availableSeconds: number;
   expiringSeconds: number;
+  lifetimeBrowserTestSecondsRemaining: number;
   status: string;
   reviewReason: string | null;
 }
@@ -1074,12 +1075,18 @@ export class CreditLedgerService {
 
     let includedSeconds = 0;
     let purchasedSeconds = 0;
+    let lifetimeBrowserTestSecondsRemaining = 0;
     let expiringSeconds = 0;
     for (const bucket of buckets) {
       if (bucket.sourceType === 'included') includedSeconds += bucket.remainingSeconds;
-      if (bucket.sourceType === 'purchased') purchasedSeconds += bucket.remainingSeconds;
-      if (bucket.expiresAt.getTime() <= horizon.getTime()) {
-        expiringSeconds += bucket.remainingSeconds;
+      if (bucket.sourceType === 'lifetime_browser_test') {
+        lifetimeBrowserTestSecondsRemaining += bucket.remainingSeconds;
+      }
+      if (bucket.sourceType === 'purchased') {
+        purchasedSeconds += bucket.remainingSeconds;
+        if (bucket.expiresAt.getTime() <= horizon.getTime()) {
+          expiringSeconds += bucket.remainingSeconds;
+        }
       }
     }
 
@@ -1090,6 +1097,7 @@ export class CreditLedgerService {
       reservedSeconds: balance?.reservedSeconds ?? 0,
       availableSeconds: balance?.availableSeconds ?? 0,
       expiringSeconds,
+      lifetimeBrowserTestSecondsRemaining,
       status: balance?.status ?? 'active',
       reviewReason: balance?.reviewReason ?? null,
     };

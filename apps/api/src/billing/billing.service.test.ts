@@ -361,7 +361,7 @@ describe('BillingService', () => {
         includedSeconds: 3_000,
         purchasedSeconds: 6_000,
         reservedSeconds: 120,
-        expiringSeconds: 3_000,
+        expiringSeconds: 0,
         availableSeconds: 9_000,
         balanceStatus: 'active',
         blockedReason: 'allowed',

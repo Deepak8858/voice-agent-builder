@@ -234,7 +234,7 @@ export class StripeWebhookService {
       case 'checkout.session.completed': {
         const customerId = data['customer'] as string;
         if (orgId && customerId) {
-          await this.handleCheckoutCompleted(orgId, customerId, data);
+          await this.handleCheckoutCompleted(orgId, customerId, data, this.eventCreatedAt(event));
         }
         break;
       }
@@ -288,10 +288,11 @@ export class StripeWebhookService {
     orgId: string,
     customerId: string,
     data: Record<string, unknown>,
+    eventCreatedAt: Date,
   ): Promise<void> {
     const metadata = (data['metadata'] as Record<string, string> | undefined) ?? {};
     if (metadata['purchaseType'] === 'minute_pack') {
-      await this.handleMinutePackPurchase(orgId, customerId, data);
+      await this.handleMinutePackPurchase(orgId, customerId, data, eventCreatedAt);
       return;
     }
 
@@ -331,6 +332,7 @@ export class StripeWebhookService {
     orgId: string,
     customerId: string,
     data: Record<string, unknown>,
+    purchasedAt: Date,
   ): Promise<void> {
     if (data['payment_status'] !== 'paid') {
       this.logger.warn(
@@ -355,7 +357,9 @@ export class StripeWebhookService {
     await this.creditLedger.grantPurchasedCredits({
       organizationId: orgId,
       checkoutSessionId,
-      purchasedAt: new Date(),
+      // Stripe's immutable event timestamp keeps retries byte-for-byte
+      // idempotent and prevents a delayed delivery from extending expiry.
+      purchasedAt,
     });
     await this.logBillingAudit(orgId, PACK_GRANT_ACTION, {
       checkoutSessionId,
@@ -366,7 +370,7 @@ export class StripeWebhookService {
   }
 
   private async handleSubscriptionUpdated(
-    _stripeSubId: string,
+    stripeSubId: string,
     customerId: string,
     data: Record<string, unknown>,
   ): Promise<void> {
@@ -377,8 +381,9 @@ export class StripeWebhookService {
     const cancelAtPeriodEnd = data['cancel_at_period_end'] as boolean;
     const trialEnd = toDateFromUnixSeconds(data['trial_end']);
 
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
+    const subscription = await this.resolveSubscription(customerId, stripeSubId);
+    await this.prisma.subscription.update({
+      where: { organizationId: subscription.organizationId },
       data: {
         stripeSubscriptionId: data['id'] as string,
         stripePriceId: priceId,
@@ -392,13 +397,13 @@ export class StripeWebhookService {
         webhookUpdatedAt: new Date(),
       },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+    await this.logBillingAudit(subscription.organizationId, 'billing.subscription_synced', {
       stripeSubscriptionId: data['id'],
       stripePriceId: priceId,
       plan,
       status,
     });
-    await this.invalidateSubscriptionCacheForCustomer(customerId);
+    await this.invalidateSubscriptionCache(subscription.organizationId);
   }
 
   private async handleSubscriptionDeleted(stripeSubId: string): Promise<void> {
@@ -429,35 +434,32 @@ export class StripeWebhookService {
     data: Record<string, unknown>,
   ): Promise<void> {
     const invoicePriceId = this.extractInvoicePriceId(data);
-    const plan = invoicePriceId ? this.inferPlanFromPriceId(invoicePriceId) : null;
+    const plan = this.inferPlanFromPriceId(invoicePriceId);
+    if (!invoicePriceId || plan === 'free') {
+      throw new Error(`Invoice ${String(data['id'])} uses an unrecognized Stripe price`);
+    }
     const periodEnd = this.extractInvoicePeriodEnd(data);
+    const stripeSubscriptionId = typeof data['subscription'] === 'string' ? data['subscription'] : null;
+    const sub = await this.resolveSubscription(customerId, stripeSubscriptionId);
 
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
+    await this.prisma.subscription.update({
+      where: { organizationId: sub.organizationId },
       data: {
         status: 'active',
-        ...(plan && plan !== 'free'
-          ? { plan, stripePriceId: invoicePriceId, catalogVersion: BILLING_CATALOG_VERSION }
-          : {}),
+        plan,
+        stripePriceId: invoicePriceId,
+        catalogVersion: BILLING_CATALOG_VERSION,
         ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}),
         webhookUpdatedAt: new Date(),
       },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+    await this.logBillingAudit(sub.organizationId, 'billing.subscription_synced', {
       stripeCustomerId: customerId,
       status: 'active',
       plan,
     });
-
-    const sub = await this.prisma.subscription.findFirst({
-      where: { stripeCustomerId: customerId },
-      select: { organizationId: true, plan: true },
-    });
-    if (!sub) return;
-
-    const grantPlan = (plan && plan !== 'free' ? plan : sub.plan) as PlanType;
     const invoiceId = typeof data['id'] === 'string' ? data['id'] : null;
-    const includedMinutes = getPlanEntitlements(grantPlan).includedMinutes;
+    const includedMinutes = getPlanEntitlements(plan).includedMinutes;
     if (invoiceId && periodEnd && includedMinutes > 0) {
       await this.creditLedger.grantSubscriptionCredits({
         organizationId: sub.organizationId,
@@ -467,7 +469,7 @@ export class StripeWebhookService {
       });
       await this.logBillingAudit(sub.organizationId, 'billing.included_credit_granted', {
         invoiceId,
-        plan: grantPlan,
+        plan,
         includedMinutes,
         periodEnd: periodEnd.toISOString(),
         catalogVersion: BILLING_CATALOG_VERSION,
@@ -499,8 +501,20 @@ export class StripeWebhookService {
       return;
     }
 
+    const customerId = typeof data['customer'] === 'string' ? data['customer'] : null;
+    if (!customerId) {
+      throw new Error(`${eventType} for ${paymentIntentId} has no Stripe customer`);
+    }
+    const subscription = await this.resolveSubscription(customerId, null);
+    const amount = typeof data['amount'] === 'number' ? data['amount'] : null;
+    const amountRefunded = typeof data['amount_refunded'] === 'number' ? data['amount_refunded'] : amount;
+    if (amount && amountRefunded !== amount) {
+      throw new Error(`Partial refund ${String(data['id'])} requires manual review`);
+    }
+
     const grant = await this.prisma.auditLog.findFirst({
       where: {
+        organizationId: subscription.organizationId,
         action: PACK_GRANT_ACTION,
         metadata: { path: ['paymentIntentId'], equals: paymentIntentId },
       },
@@ -511,13 +525,13 @@ export class StripeWebhookService {
     const checkoutSessionId =
       typeof metadata?.checkoutSessionId === 'string' ? metadata.checkoutSessionId : null;
     if (!grant?.organizationId || !checkoutSessionId) {
-      this.logger.warn(
+      throw new Error(
         `${eventType} for payment intent ${paymentIntentId} has no recorded minute-pack grant`,
       );
-      return;
     }
 
-    const refundId = typeof data['id'] === 'string' ? data['id'] : paymentIntentId;
+    const refundId = typeof data['id'] === 'string' ? data['id'] : null;
+    if (!refundId) throw new Error(`${eventType} for ${paymentIntentId} has no reversal id`);
     await this.creditLedger.reversePurchasedCredits({
       organizationId: grant.organizationId,
       checkoutSessionId,
@@ -549,18 +563,19 @@ export class StripeWebhookService {
   }
 
   private async handleInvoicePaymentFailed(customerId: string): Promise<void> {
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
+    const resolved = await this.resolveSubscription(customerId, null);
+    await this.prisma.subscription.update({
+      where: { organizationId: resolved.organizationId },
       data: { status: 'past_due' },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.payment_failed', {
+    await this.logBillingAudit(resolved.organizationId, 'billing.payment_failed', {
       stripeCustomerId: customerId,
       status: 'past_due',
     });
     // Queue dunning email notification (best-effort)
     try {
-      const sub = await this.prisma.subscription.findFirst({
-        where: { stripeCustomerId: customerId },
+      const sub = await this.prisma.subscription.findUnique({
+        where: { organizationId: resolved.organizationId },
         include: { organization: { select: { id: true, name: true } } },
       });
       if (sub?.organization) {
@@ -665,6 +680,26 @@ export class StripeWebhookService {
       return new Date(Math.max(...ends.map((date) => date.getTime())));
     }
     return toDateFromUnixSeconds(data['period_end']);
+  }
+
+  private async resolveSubscription(
+    stripeCustomerId: string,
+    stripeSubscriptionId: string | null,
+  ): Promise<{ organizationId: string }> {
+    const matches = await this.prisma.subscription.findMany({
+      where: {
+        stripeCustomerId,
+        ...(stripeSubscriptionId ? { stripeSubscriptionId } : {}),
+      },
+      select: { organizationId: true },
+      take: 2,
+    });
+    if (matches.length !== 1 || !matches[0]) {
+      throw new Error(
+        `Stripe customer ${stripeCustomerId} did not resolve to exactly one organization`,
+      );
+    }
+    return matches[0];
   }
 
   private async logBillingAuditForCustomer(

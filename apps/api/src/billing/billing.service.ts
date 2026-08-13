@@ -449,6 +449,8 @@ export class BillingService {
       purchasedSeconds: credit.purchasedSeconds,
       reservedSeconds: credit.reservedSeconds,
       expiringSeconds: credit.expiringSeconds,
+      lifetimeBrowserTestSecondsRemaining: credit.lifetimeBrowserTestSecondsRemaining,
+      topUpAvailable: effective.paidAccess,
       availableSeconds: credit.availableSeconds,
       balanceStatus: credit.status,
       entitlements: {

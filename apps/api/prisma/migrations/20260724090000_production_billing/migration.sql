@@ -1,6 +1,19 @@
 -- Production billing persistence: durable credits, metering, trials, provider costs, and leases.
 -- The existing usage_records table remains unchanged during shadow metering.
 
+-- Restore audit schema drift before billing begins writing organization-scoped rows.
+ALTER TABLE "audit_logs"
+  ADD COLUMN IF NOT EXISTS "organization_id" UUID;
+
+UPDATE "audit_logs" AS a
+SET "organization_id" = w."organization_id"
+FROM "workspaces" AS w
+WHERE a."workspace_id" = w."id"
+  AND a."organization_id" IS NULL;
+
+CREATE INDEX IF NOT EXISTS "audit_logs_organization_id_idx"
+  ON "audit_logs"("organization_id");
+
 -- Extend subscriptions with the catalog identity captured by Stripe webhooks.
 ALTER TABLE "subscriptions"
   ADD COLUMN IF NOT EXISTS "stripe_product_id" TEXT,
@@ -16,23 +29,39 @@ ALTER TABLE "subscriptions"
   ALTER COLUMN "catalog_version" SET DEFAULT 'legacy',
   ALTER COLUMN "catalog_version" SET NOT NULL;
 
-ALTER TABLE "subscriptions"
-  ADD CONSTRAINT "subscriptions_concurrent_call_limit_override_check"
-  CHECK (
-    "concurrent_call_limit_override" IS NULL
-    OR "concurrent_call_limit_override" BETWEEN 1 AND 50
-  );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'subscriptions_concurrent_call_limit_override_check'
+  ) THEN
+    ALTER TABLE "subscriptions"
+      ADD CONSTRAINT "subscriptions_concurrent_call_limit_override_check"
+      CHECK (
+        "concurrent_call_limit_override" IS NULL
+        OR "concurrent_call_limit_override" BETWEEN 1 AND 50
+      );
+  END IF;
+END $$;
 
 -- A processing lease lets an unprocessed Stripe event be reclaimed after a worker crash.
 ALTER TABLE "stripe_events"
   ADD COLUMN IF NOT EXISTS "processing_started_at" TIMESTAMP(3),
   ADD COLUMN IF NOT EXISTS "attempt_count" INTEGER NOT NULL DEFAULT 0;
 
-ALTER TABLE "stripe_events"
-  ADD CONSTRAINT "stripe_events_attempt_count_nonnegative_check"
-  CHECK ("attempt_count" >= 0);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'stripe_events_attempt_count_nonnegative_check'
+  ) THEN
+    ALTER TABLE "stripe_events"
+      ADD CONSTRAINT "stripe_events_attempt_count_nonnegative_check"
+      CHECK ("attempt_count" >= 0);
+  END IF;
+END $$;
 
-CREATE INDEX "stripe_events_processed_at_processing_started_at_idx"
+CREATE INDEX IF NOT EXISTS "stripe_events_processed_at_processing_started_at_idx"
   ON "stripe_events"("processed_at", "processing_started_at");
 
 -- Make organization tenancy explicit on calls without losing legacy rows.

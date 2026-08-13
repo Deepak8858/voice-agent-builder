@@ -123,6 +123,9 @@ function makeService(
       missingRatio: 0,
     })),
   };
+  const creditLedger = {
+    releaseReservation: vi.fn(async () => undefined),
+  };
 
   return {
     prisma,
@@ -130,6 +133,7 @@ function makeService(
     audit,
     metrics,
     providerCosts,
+    creditLedger,
     balanceUpdate,
     balanceUpdateMany,
     bucketUpdateMany,
@@ -140,6 +144,7 @@ function makeService(
       audit as never,
       metrics as never,
       providerCosts as never,
+      creditLedger as never,
     ),
   };
 }
@@ -150,7 +155,8 @@ describe('ReconciliationService.reconcileBalances', () => {
   it('repairs a drifted projection and audits the correction', async () => {
     const { service, balanceUpdate, audit } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 100, reservedSeconds: 60 }],
-      // Buckets say 600 seconds remain; 60 are reserved, so 540 should be available.
+      // Reservations already reduced bucket remaining seconds; the projection
+      // must match the bucket sum without subtracting reserved seconds again.
       activeBuckets: [{ remainingSeconds: 600 }],
     });
 
@@ -159,7 +165,7 @@ describe('ReconciliationService.reconcileBalances', () => {
     expect(report.projectionCorrections).toBe(1);
     expect(balanceUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ availableSeconds: 540 }),
+        data: expect.objectContaining({ availableSeconds: 600 }),
       }),
     );
     expect(audit.log).toHaveBeenCalledWith(
@@ -168,8 +174,8 @@ describe('ReconciliationService.reconcileBalances', () => {
         action: 'billing.projection_corrected',
         metadata: expect.objectContaining({
           previousAvailableSeconds: 100,
-          correctedAvailableSeconds: 540,
-          driftSeconds: 440,
+          correctedAvailableSeconds: 600,
+          driftSeconds: 500,
         }),
       }),
     );
@@ -177,7 +183,7 @@ describe('ReconciliationService.reconcileBalances', () => {
 
   it('leaves a consistent projection untouched', async () => {
     const { service, balanceUpdate, audit } = makeService({
-      balances: [{ organizationId: ORG, availableSeconds: 540, reservedSeconds: 60 }],
+      balances: [{ organizationId: ORG, availableSeconds: 600, reservedSeconds: 60 }],
       activeBuckets: [{ remainingSeconds: 600 }],
     });
 
@@ -294,7 +300,7 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('finalizes an unconnected call and releases its reservation', async () => {
-    const { service, callUsageUpdateMany, balanceUpdate, audit } = makeService({
+    const { service, callUsageUpdateMany, creditLedger, audit } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 60 }],
       staleCalls: [
         {
@@ -319,14 +325,11 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
         }),
       }),
     );
-    expect(balanceUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          reservedSeconds: { decrement: 60 },
-          availableSeconds: { increment: 60 },
-        }),
-      }),
-    );
+    expect(creditLedger.releaseReservation).toHaveBeenCalledWith({
+      organizationId: ORG,
+      callId: 'call-1',
+      idempotencyKey: 'reconciliation:stale:call-1:release',
+    });
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'billing.stale_call_finalized' }),
     );
@@ -364,8 +367,8 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     );
   });
 
-  it('never releases more than the organization actually has reserved', async () => {
-    const { service, balanceUpdate } = makeService({
+  it('delegates release invariants to the transactional credit ledger', async () => {
+    const { service, creditLedger } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 30 }],
       staleCalls: [
         {
@@ -381,11 +384,8 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
 
     await service.finalizeStaleCalls();
 
-    // Releasing 60 against 30 reserved would create credit out of nothing.
-    expect(balanceUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ reservedSeconds: { decrement: 30 } }),
-      }),
+    expect(creditLedger.releaseReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: ORG, callId: 'call-1' }),
     );
   });
 });

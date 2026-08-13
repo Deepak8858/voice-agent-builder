@@ -1,29 +1,6 @@
-import type { PlanType, SubscriptionStatus } from '@voiceforge/shared';
+import type { BillingSummaryDto } from '@voiceforge/shared';
 
-/**
- * Shape returned by `GET /workspaces/:workspaceId/billing/summary`.
- *
- * The endpoint is organization-scoped even though it is reached through a
- * workspace path: balances belong to the organization, so opening the panel
- * from any workspace shows the same totals.
- *
- * Declared locally rather than in `@voiceforge/shared` because the API-side
- * implementation of this endpoint lands separately; the panel degrades to a
- * "not available yet" state until it does.
- */
-export interface BillingSummaryDto {
-  organizationId: string;
-  catalogVersion: string;
-  plan: PlanType;
-  status: SubscriptionStatus;
-  includedSeconds: number;
-  purchasedSeconds: number;
-  reservedSeconds: number;
-  expiringSeconds: number;
-  lifetimeBrowserTestSecondsRemaining: number;
-  /** True when the subscription is in a state that permits buying packs. */
-  topUpAvailable: boolean;
-}
+export type { BillingSummaryDto } from '@voiceforge/shared';
 
 export interface BalanceBucket {
   label: string;

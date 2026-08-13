@@ -6,6 +6,7 @@ import { AuditService } from '../audit/audit.service';
 import { MetricsService } from '../common/metrics.service';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreditLedgerService } from './credit-ledger.service';
 import { ProviderCostService } from './provider-cost.service';
 
 /**
@@ -59,6 +60,7 @@ export class ReconciliationService {
     private readonly audit: AuditService,
     private readonly metrics: MetricsService,
     private readonly providerCosts: ProviderCostService,
+    private readonly creditLedger: CreditLedgerService,
   ) {}
 
   private get batchSize(): number {
@@ -118,9 +120,10 @@ export class ReconciliationService {
       });
       if (!balance) return null;
 
-      // Reserved seconds are owned by in-flight calls, so they are subtracted
-      // from the bucket-derived total rather than folded into it.
-      const expectedAvailable = Math.max(bucketSeconds - balance.reservedSeconds, 0);
+      // Reservations already decrement bucket.remainingSeconds when they are
+      // created. Subtracting reservedSeconds again would destroy one minute of
+      // customer credit for every in-flight call.
+      const expectedAvailable = bucketSeconds;
       const driftSeconds = expectedAvailable - balance.availableSeconds;
       if (driftSeconds === 0) return null;
 
@@ -266,7 +269,11 @@ export class ReconciliationService {
       if (changed.count === 0) continue;
 
       report.staleCallsFinalized += 1;
-      await this.releaseReservation(usage.organizationId, usage.reservedSeconds);
+      await this.creditLedger.releaseReservation({
+        organizationId: usage.organizationId,
+        callId: usage.callId,
+        idempotencyKey: `reconciliation:stale:${usage.callId}:release`,
+      });
       await this.audit.log({
         organizationId: usage.organizationId,
         action: 'billing.stale_call_finalized',
@@ -397,28 +404,6 @@ export class ReconciliationService {
       merged.manualReviewsCreated += report.manualReviewsCreated;
       return merged;
     }, emptyReconciliationReport());
-  }
-
-  /** Release seconds a stale call was holding, never below zero. */
-  private async releaseReservation(organizationId: string, seconds: number): Promise<void> {
-    if (seconds <= 0) return;
-    const balance = await this.prisma.organizationCreditBalance.findUnique({
-      where: { organizationId },
-      select: { reservedSeconds: true },
-    });
-    if (!balance) return;
-
-    const releasable = Math.min(seconds, balance.reservedSeconds);
-    if (releasable <= 0) return;
-
-    await this.prisma.organizationCreditBalance.update({
-      where: { organizationId },
-      data: {
-        reservedSeconds: { decrement: releasable },
-        availableSeconds: { increment: releasable },
-        version: { increment: 1 },
-      },
-    });
   }
 
   /** Mark a balance for human review without altering any customer figure. */

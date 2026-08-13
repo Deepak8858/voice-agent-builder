@@ -14,12 +14,14 @@ import type {
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
   CreateTopUpCheckoutDto,
+  SessionUser,
 } from '@voiceforge/shared';
 import {
   CreateCheckoutSessionDtoSchema,
   CreatePortalSessionDtoSchema,
   CreateTopUpCheckoutDtoSchema,
 } from '@voiceforge/shared';
+import { ForbiddenError } from '../common/errors';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,6 +34,13 @@ export class BillingController {
     private readonly billing: BillingService,
     private readonly prisma: PrismaService,
   ) {}
+
+  private assertBillingAdmin(req: Request): void {
+    const role = (req as Request & { user?: SessionUser }).user?.active_workspace_role;
+    if (role !== 'owner' && role !== 'admin') {
+      throw new ForbiddenError('Only workspace owners and admins can manage billing.');
+    }
+  }
 
   private async getOrgId(workspaceId: string): Promise<string> {
     const ws = await this.prisma.workspace.findUnique({
@@ -79,8 +88,10 @@ export class BillingController {
   @Post('checkout')
   async createCheckout(
     @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
     @Body(new ZodValidationPipe(CreateCheckoutSessionDtoSchema)) dto: CreateCheckoutSessionDto,
   ): Promise<{ url: string }> {
+    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     try {
       return await this.billing.createCheckoutSession(orgId, dto);
@@ -97,8 +108,10 @@ export class BillingController {
   @Post('topup-checkout')
   async createTopUpCheckout(
     @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
     @Body(new ZodValidationPipe(CreateTopUpCheckoutDtoSchema)) dto: CreateTopUpCheckoutDto,
   ): Promise<{ url: string }> {
+    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createTopUpCheckoutSession(orgId, dto);
   }
@@ -106,14 +119,20 @@ export class BillingController {
   @Post('portal')
   async createPortal(
     @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
     @Body(new ZodValidationPipe(CreatePortalSessionDtoSchema)) dto: CreatePortalSessionDto,
   ): Promise<{ url: string }> {
+    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createPortalSession(orgId, dto);
   }
 
   @Get('invoices')
-  async getInvoices(@Param('workspaceId') workspaceId: string): Promise<{ items: unknown[] }> {
+  async getInvoices(
+    @Param('workspaceId') workspaceId: string,
+    @Req() req: Request,
+  ): Promise<{ items: unknown[] }> {
+    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     const sub = await this.billing.getSubscription(orgId);
     if (!sub?.stripeCustomerId) return { items: [] };

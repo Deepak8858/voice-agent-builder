@@ -217,6 +217,8 @@ export const BillingSummaryDtoSchema = z
     purchasedSeconds: z.number().int().nonnegative(),
     reservedSeconds: z.number().int().nonnegative(),
     expiringSeconds: z.number().int().nonnegative(),
+    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
+    topUpAvailable: z.boolean(),
     availableSeconds: z.number().int().nonnegative(),
     balanceStatus: IdentifierSchema,
     entitlements: z.object({

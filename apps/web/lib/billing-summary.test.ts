@@ -11,12 +11,33 @@ const summary: BillingSummaryDto = {
   catalogVersion: '2026-07-24',
   plan: 'starter',
   status: 'active',
+  paidAccess: true,
+  currentPeriodEnd: '2026-08-24T00:00:00.000Z',
+  cancelAtPeriodEnd: false,
   includedSeconds: 7_200,
   purchasedSeconds: 6_000,
   reservedSeconds: 120,
   expiringSeconds: 1_800,
   lifetimeBrowserTestSecondsRemaining: 0,
   topUpAvailable: true,
+  availableSeconds: 13_200,
+  balanceStatus: 'active',
+  entitlements: {
+    includedMinutes: 120,
+    agents: 5,
+    workspaces: 3,
+    nangoConnections: 5,
+    concurrentCalls: 2,
+    outboundPstn: true,
+    campaigns: false,
+    whiteLabel: false,
+  },
+  usage: {
+    agents: 1,
+    workspaces: 1,
+    integrations: 0,
+  },
+  blockedReason: 'allowed',
 };
 
 describe('billing summary helpers', () => {

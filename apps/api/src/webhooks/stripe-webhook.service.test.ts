@@ -66,10 +66,31 @@ function makePrisma(overrides?: {
       upsert: vi.fn(async () => ({ id: 'stripe-event-row' })),
     },
     subscription: {
+      update: vi.fn(async () => ({ id: 'sub-local' })),
       updateMany: vi.fn(async () => ({ count: 1 })),
       // `null` is meaningful here (no such subscription), so it must not fall
       // through to the default row the way `??` would.
       findFirst: vi.fn(async () =>
+        overrides && 'subscription' in overrides
+          ? overrides.subscription
+          : {
+              organizationId: 'org-1',
+              plan: 'starter',
+              organization: { id: 'org-1', name: 'VoiceForge Test' },
+            },
+      ),
+      findMany: vi.fn(async () => {
+        const subscription =
+          overrides && 'subscription' in overrides
+            ? overrides.subscription
+            : {
+                organizationId: 'org-1',
+                plan: 'starter',
+                organization: { id: 'org-1', name: 'VoiceForge Test' },
+              };
+        return subscription ? [subscription] : [];
+      }),
+      findUnique: vi.fn(async () =>
         overrides && 'subscription' in overrides
           ? overrides.subscription
           : {
@@ -172,9 +193,9 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+    expect(prisma.subscription.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { stripeCustomerId: 'cus_123' },
+        where: { organizationId: 'org-1' },
         data: expect.objectContaining({
           stripeSubscriptionId: 'sub_123',
           plan: 'starter',
@@ -250,7 +271,7 @@ describe('StripeWebhookService production webhook handling', () => {
         }),
       }),
     );
-    expect(prisma.subscription.updateMany).toHaveBeenCalled();
+    expect(prisma.subscription.update).toHaveBeenCalled();
   });
 
   it('marks invoice.payment_failed subscriptions past_due and queues dunning', async () => {
@@ -265,8 +286,8 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith({
-      where: { stripeCustomerId: 'cus_123' },
+    expect(prisma.subscription.update).toHaveBeenCalledWith({
+      where: { organizationId: 'org-1' },
       data: { status: 'past_due' },
     });
     expect(queue.enqueue).toHaveBeenCalledWith('notifications', 'dunning_email', expect.objectContaining({
@@ -329,10 +350,23 @@ describe('StripeWebhookService production webhook handling', () => {
     );
   });
 
-  it('marks invoice.paid subscriptions active', async () => {
+  it('marks recognized invoice.paid subscriptions active', async () => {
     const event = {
       ...makeSubscriptionEvent('invoice.paid'),
-      data: { object: { customer: 'cus_123' } },
+      data: {
+        object: {
+          id: 'in_123',
+          customer: 'cus_123',
+          lines: {
+            data: [
+              {
+                price: { id: 'price_starter' },
+                period: { start: 1_800_000_000, end: 1_802_592_000 },
+              },
+            ],
+          },
+        },
+      },
     };
     const prisma = makePrisma();
     const svc = makeService(prisma, event);
@@ -340,10 +374,10 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+    expect(prisma.subscription.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { stripeCustomerId: 'cus_123' },
-        data: expect.objectContaining({ status: 'active' }),
+        where: { organizationId: 'org-1' },
+        data: expect.objectContaining({ status: 'active', plan: 'starter' }),
       }),
     );
   });
@@ -406,20 +440,17 @@ describe('StripeWebhookService production webhook handling', () => {
      * The plan must come from our own price map. A price we never configured is
      * not evidence of a paid plan, so it must not raise entitlements.
      */
-    it('does not raise the plan from a price outside the server-owned map', async () => {
+    it('fails closed for a price outside the server-owned map', async () => {
       const prisma = makePrisma({ subscription: { organizationId: 'org-1', plan: 'free' } });
       const creditLedger = makeCreditLedger();
       const svc = makeService(prisma, makeInvoicePaidEvent('price_forged_enterprise'), {
         creditLedger,
       });
 
-      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
-      expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.not.objectContaining({ plan: expect.anything() }),
-        }),
-      );
+      expect(result).toMatchObject({ handled: false, statusCode: 500 });
+      expect(prisma.subscription.update).not.toHaveBeenCalled();
       expect(creditLedger.grantSubscriptionCredits).not.toHaveBeenCalled();
     });
 
@@ -484,7 +515,15 @@ describe('StripeWebhookService production webhook handling', () => {
       const creditLedger = makeCreditLedger();
       const event = {
         ...makeSubscriptionEvent('charge.refunded'),
-        data: { object: { id: 're_1', payment_intent: 'pi_pack_1' } },
+        data: {
+          object: {
+            id: 're_1',
+            customer: 'cus_123',
+            payment_intent: 'pi_pack_1',
+            amount: 10_000,
+            amount_refunded: 10_000,
+          },
+        },
       };
       const svc = makeService(prisma, event, { creditLedger });
 
@@ -535,7 +574,7 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+    expect(prisma.subscription.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: new Date(1_700_000_000 * 1000),
@@ -567,7 +606,7 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+    expect(prisma.subscription.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: new Date(1_790_000_000 * 1000),
@@ -587,7 +626,7 @@ describe('StripeWebhookService production webhook handling', () => {
 
     // Must not 500: a 500 makes Stripe retry and eventually disable the endpoint.
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+    expect(prisma.subscription.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: null,
