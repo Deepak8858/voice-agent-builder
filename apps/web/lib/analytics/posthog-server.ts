@@ -60,6 +60,48 @@ function serverConfig(): ServerPostHogConfig | null {
 }
 
 /**
+ * The single transport for everything this module sends.
+ *
+ * Both public functions post the same envelope to the same endpoint under the
+ * same timeout, so the endpoint, the abort handling and the swallow-and-clear
+ * pattern live here once. Callers build only their own event name, distinct ID
+ * and properties.
+ *
+ * Always resolves successfully.
+ */
+async function postCapture(
+  config: ServerPostHogConfig,
+  payload: {
+    event: string;
+    distinct_id: string;
+    properties: Record<string, unknown>;
+  },
+): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
+
+  try {
+    await fetch(`${config.host}/i/v0/e/`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      // Never let a capture keep a serverless invocation alive.
+      keepalive: false,
+      cache: 'no-store',
+      body: JSON.stringify({
+        api_key: config.projectToken,
+        timestamp: new Date().toISOString(),
+        ...payload,
+      }),
+    });
+  } catch {
+    // Timed out, aborted or network failure: analytics is best-effort.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Sends one contract event. Resolves once the request settles or the timeout
  * elapses, and always resolves successfully.
  *
@@ -78,36 +120,17 @@ export async function captureServerEvent(
   const capture = buildPostHogCapture({ event, properties, context });
   if (!capture) return;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
-
-  try {
-    await fetch(`${config.host}/i/v0/e/`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      signal: controller.signal,
-      // Never let a capture keep a serverless invocation alive.
-      keepalive: false,
-      cache: 'no-store',
-      body: JSON.stringify({
-        api_key: config.projectToken,
-        event: capture.event,
-        distinct_id: capture.distinctId,
-        timestamp: new Date().toISOString(),
-        properties: {
-          ...capture.properties,
-          $groups: capture.groups,
-          ...(capture.processPersonProfile ? {} : { $process_person_profile: false }),
-          // The server's egress IP is not the user's location.
-          $geoip_disable: true,
-        },
-      }),
-    });
-  } catch {
-    // Timed out, aborted or network failure: analytics is best-effort.
-  } finally {
-    clearTimeout(timer);
-  }
+  await postCapture(config, {
+    event: capture.event,
+    distinct_id: capture.distinctId,
+    properties: {
+      ...capture.properties,
+      $groups: capture.groups,
+      ...(capture.processPersonProfile ? {} : { $process_person_profile: false }),
+      // The server's egress IP is not the user's location.
+      $geoip_disable: true,
+    },
+  });
 }
 
 /** Where in the Next.js server an exception surfaced. */
@@ -122,6 +145,64 @@ export interface ServerExceptionContext {
   routerKind?: string | undefined;
 }
 
+/** A single frame in PostHog's manual-capture `raw` stacktrace format. */
+interface RawStackFrame {
+  /** Must be the literal `custom` for manually constructed frames. */
+  platform: 'custom';
+  lang: 'javascript';
+  function: string;
+  filename?: string;
+  lineno?: number;
+  colno?: number;
+  in_app?: boolean;
+}
+
+/** `at fn (/path/file.js:1:2)` or the bare `at /path/file.js:1:2` form. */
+const STACK_FRAME_SHAPE = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?\s*$/;
+
+/**
+ * Parses `err.stack` into the frame list PostHog's ingestion expects.
+ *
+ * Manual `$exception` capture requires `stacktrace: { type: 'raw', frames }`;
+ * an unrecognised property carrying the stack as a string is dropped by the
+ * strict event schema, which would leave every server issue with no stack at
+ * all. Parsing here rather than pulling in `posthog-node` keeps this module
+ * dependency-free — see the note at the top of the file on why that SDK is not
+ * used in this tier.
+ *
+ * Frames are reversed because V8 prints innermost-first while PostHog's raw
+ * format expects the crashing frame last. Unparseable lines are skipped rather
+ * than guessed at: a partial stack still groups and symbolicates, while a
+ * malformed frame risks the whole event being rejected.
+ */
+function parseStackFrames(stack: string | undefined): RawStackFrame[] {
+  if (!stack) return [];
+
+  const frames: RawStackFrame[] = [];
+
+  for (const line of stack.split('\n')) {
+    const match = STACK_FRAME_SHAPE.exec(line);
+    if (!match) continue;
+
+    const [, fn, filename, lineno, colno] = match;
+    if (!filename) continue;
+
+    frames.push({
+      platform: 'custom',
+      lang: 'javascript',
+      function: fn ?? '<anonymous>',
+      filename,
+      lineno: Number(lineno),
+      colno: Number(colno),
+      // Node internals and dependencies are not this application's code, and
+      // marking them keeps them out of the issue's suspect frame.
+      in_app: !filename.startsWith('node:') && !filename.includes('node_modules'),
+    });
+  }
+
+  return frames.reverse();
+}
+
 /**
  * Reports an uncaught server-side exception to PostHog error tracking.
  *
@@ -130,14 +211,6 @@ export interface ServerExceptionContext {
  * outside it, which would drop every exception. The privacy properties it
  * guarantees are reproduced explicitly below instead — no person profile, no
  * geo-IP, and no request body, headers or user identifiers are attached.
- *
- * `$exception_list` is the payload shape PostHog's error tracking product
- * ingests. The stack is sent as a raw string rather than pre-parsed frames:
- * frame parsing plus source-map symbolication is what `posthog-node` exists
- * for, and pulling that dependency in only to serialise one event would
- * reintroduce the buffering problem this module was written to avoid. The
- * resulting issue groups on type and message and carries the raw stack, which
- * is what is actually actionable for a server error.
  *
  * Always resolves successfully. An exception handler that can itself throw
  * would turn a single failed request into an unhandled rejection.
@@ -150,47 +223,30 @@ export async function captureServerException(
   if (!config) return;
 
   const err = error instanceof Error ? error : new Error(String(error));
+  const frames = parseStackFrames(err.stack);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CAPTURE_TIMEOUT_MS);
-
-  try {
-    await fetch(`${config.host}/i/v0/e/`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      signal: controller.signal,
-      keepalive: false,
-      cache: 'no-store',
-      body: JSON.stringify({
-        api_key: config.projectToken,
-        event: '$exception',
-        // Opaque, non-person distinct ID: the digest correlates this event with
-        // the browser-side report of the same failure, and the fallback keeps
-        // the event attributable to the server rather than to a visitor.
-        distinct_id: context.digest ?? 'web-server',
-        timestamp: new Date().toISOString(),
-        properties: {
-          $exception_list: [
-            {
-              type: err.name || 'Error',
-              value: err.message,
-              mechanism: { handled: false, synthesized: false },
-            },
-          ],
-          ...(err.stack ? { $exception_stack_trace_raw: err.stack } : {}),
-          ...(context.digest ? { error_digest: context.digest } : {}),
-          ...(context.routePath ? { route_path: context.routePath } : {}),
-          ...(context.routeType ? { route_type: context.routeType } : {}),
-          ...(context.routerKind ? { router_kind: context.routerKind } : {}),
-          error_boundary: 'server',
-          $process_person_profile: false,
-          $geoip_disable: true,
+  await postCapture(config, {
+    event: '$exception',
+    // Opaque, non-person distinct ID: the digest correlates this event with
+    // the browser-side report of the same failure, and the fallback keeps
+    // the event attributable to the server rather than to a visitor.
+    distinct_id: context.digest ?? 'web-server',
+    properties: {
+      $exception_list: [
+        {
+          type: err.name || 'Error',
+          value: err.message,
+          mechanism: { handled: false, synthetic: false },
+          ...(frames.length > 0 ? { stacktrace: { type: 'raw', frames } } : {}),
         },
-      }),
-    });
-  } catch {
-    // Best-effort.
-  } finally {
-    clearTimeout(timer);
-  }
+      ],
+      ...(context.digest ? { error_digest: context.digest } : {}),
+      ...(context.routePath ? { route_path: context.routePath } : {}),
+      ...(context.routeType ? { route_type: context.routeType } : {}),
+      ...(context.routerKind ? { router_kind: context.routerKind } : {}),
+      error_boundary: 'server',
+      $process_person_profile: false,
+      $geoip_disable: true,
+    },
+  });
 }

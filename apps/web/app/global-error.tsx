@@ -3,6 +3,9 @@
 import { useEffect } from 'react';
 import { captureClientException } from '@/lib/analytics/posthog';
 
+/** Inlined by the bundler at build time. See the note in `error.tsx`. */
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
 /**
  * Root-layout error boundary — the last line of defence.
  *
@@ -74,7 +77,11 @@ export default function GlobalError({
           The application hit an unexpected error and could not continue.
         </p>
 
-        {error.message ? (
+        {/*
+          Gated exactly as in `error.tsx`: a client-side render error keeps its
+          original message in production, so only the digest is disclosed there.
+        */}
+        {!IS_PRODUCTION && error.message ? (
           <p
             style={{
               margin: '1rem 0 0',

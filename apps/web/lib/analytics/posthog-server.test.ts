@@ -227,6 +227,73 @@ describe('captureServerException', () => {
       expect(sentBody().distinct_id).toBe('web-server');
     });
 
+    it('sends the stack as raw frames, not as a loose string property', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'));
+      const properties = sentBody().properties as Record<string, unknown>;
+      const list = properties.$exception_list as Array<Record<string, unknown>>;
+      const stacktrace = list[0]!.stacktrace as {
+        type: string;
+        frames: Array<Record<string, unknown>>;
+      };
+
+      // `$exception_stack_trace_raw` is not part of the manual-capture schema;
+      // PostHog's ingestion drops unrecognised properties, which would leave
+      // every server issue with no stack at all.
+      expect(properties.$exception_stack_trace_raw).toBeUndefined();
+      expect(stacktrace.type).toBe('raw');
+      expect(stacktrace.frames.length).toBeGreaterThan(0);
+
+      const frame = stacktrace.frames.at(-1)!;
+      expect(frame.platform).toBe('custom');
+      expect(frame.lang).toBe('javascript');
+      expect(typeof frame.function).toBe('string');
+      expect(typeof frame.lineno).toBe('number');
+    });
+
+    it('omits the stacktrace when no frame could be parsed', async () => {
+      const { captureServerException } = await load();
+      const err = new Error('boom');
+      err.stack = 'Error: boom';
+
+      await captureServerException(err);
+      const list = (sentBody().properties as Record<string, unknown>)
+        .$exception_list as Array<Record<string, unknown>>;
+
+      // Better to send no stacktrace than a malformed one the schema rejects.
+      expect(list[0]).not.toHaveProperty('stacktrace');
+      expect(list[0]!.value).toBe('boom');
+    });
+
+    it('forwards the route type and router kind', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'), {
+        routeType: 'render',
+        routerKind: 'app-router',
+      });
+      const properties = sentBody().properties as Record<string, unknown>;
+
+      expect(properties.route_type).toBe('render');
+      expect(properties.router_kind).toBe('app-router');
+    });
+
+    it('sends no request URL, headers or cookies', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new Error('boom'), { routePath: '/agents/[id]' });
+      const properties = { ...(sentBody().properties as Record<string, unknown>) };
+      // The stack legitimately contains local file paths; the guarantee under
+      // test is about request data, so it is excluded from the scan.
+      delete properties.$exception_list;
+      const serialized = JSON.stringify(properties);
+
+      expect(serialized).not.toMatch(/cookie|authorization|user-agent/i);
+      // The route pattern is sent; the resolved path with real IDs is not.
+      expect(serialized).not.toContain('/agents/abc-123');
+    });
+
     it('resolves rather than throwing when the request fails', async () => {
       const { captureServerException } = await load();
       fetchMock.mockRejectedValueOnce(new Error('network down'));

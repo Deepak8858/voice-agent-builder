@@ -5,6 +5,12 @@ import Link from 'next/link';
 import { captureClientException } from '@/lib/analytics/posthog';
 
 /**
+ * Inlined by the bundler at build time, so this is a compile-time constant in
+ * the browser rather than a runtime environment read.
+ */
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
  * Route-level error boundary.
  *
  * This file is what makes React render failures visible to error tracking.
@@ -44,12 +50,13 @@ export default function Error({
       </p>
 
       {/*
-        Next.js replaces the message of a server-side error with a generic
-        string in production builds and exposes only `digest`, so this renders
-        whatever the runtime considered safe to send to the browser rather than
-        widening what is disclosed.
+        Only shown outside production. Next.js redacts the message of a
+        *server-side* error in a production build, but an error thrown while
+        rendering a client component keeps its original message, which can
+        carry backend response text, internal hostnames or record IDs. The
+        digest below is the safe user-facing reference and is always shown.
       */}
-      {error.message ? (
+      {!IS_PRODUCTION && error.message ? (
         <p className="mt-4 max-w-md break-words rounded-md border border-border bg-muted/40 px-3 py-2 text-left font-[family-name:var(--font-mono)] text-xs leading-5 text-muted-foreground">
           {error.message}
         </p>
