@@ -1,0 +1,206 @@
+# =============================================================================
+# VoiceForge AI — Quality Gate (Depot CI)
+# =============================================================================
+# Depot CI copy of .github/workflows/quality-gate.yml. Depot CI runs GitHub
+# Actions YAML on Depot's own compute, so this file is deliberately kept as a
+# near-copy of the GitHub original; the differences are only the ones Depot CI
+# requires or makes worthwhile:
+#
+#   1. runs-on uses Depot sandbox labels. Sizes are chosen per job rather than
+#      taking the 2-CPU default everywhere, because the verify job is the
+#      critical path and a monorepo install/typecheck/test/build is CPU-bound.
+#   2. The image job builds through Depot container builds instead of local
+#      buildx. GitHub's type=gha cache backend needs the Actions cache API,
+#      which does not exist in a Depot CI sandbox, and Depot builders already
+#      carry a persistent NVMe layer cache. DEPOT_TOKEN is injected into every
+#      Depot CI job automatically, so no build credentials are configured here.
+#
+# The deploy workflow is deliberately NOT migrated. It is workflow_dispatch-only
+# and writes to production, so running it on both CI systems would deploy twice;
+# it also relies on `environment: production` (unsupported by Depot CI) and on
+# AWS IAM trust scoped to GitHub's OIDC issuer.
+# =============================================================================
+name: Quality Gate
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  # 20.20 is the floor, not a preference: posthog-node declares
+  # "^20.20.0 || >=22.22.0" and a bare "20" would let a runner image resolve to
+  # an earlier 20.x that cannot install it. Keep in sync with the root
+  # package.json engines field and infra/docker/Dockerfile.*.
+  NODE_VERSION: "20.20"
+  PNPM_VERSION: "10.33.2"
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    # 8 CPUs / 32 GB. This job is the long pole: it installs the whole
+    # workspace, then typechecks, lints, tests, and builds every package.
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to diff a PR range rather than only the tip.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+
+      # --frozen-lockfile also asserts that pnpm-lock.yaml agrees with every
+      # package.json, including the pnpm.overrides block. A drifted lockfile
+      # fails here instead of silently installing unpinned transitives.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # gitleaks-action only understands a fixed set of GitHub event names and
+      # hard-fails on anything else. `depot ci run`, which executes this
+      # workflow against a local working tree, reports the event as `api`, so
+      # without this guard every local run dies here before reaching the checks
+      # a developer actually invoked it for. The gate itself is unaffected: the
+      # automatic triggers for this workflow are push and pull_request only, and
+      # both still run the scan.
+      - name: Scan repository for secrets
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level=high
+
+      - name: Generate Prisma client
+        run: pnpm --filter @voiceforge/api run db:generate
+
+      - name: Build shared package
+        run: pnpm --filter @voiceforge/shared run build
+
+      - name: Typecheck
+        run: pnpm -r --if-present run typecheck
+
+      - name: Lint
+        run: pnpm -r --if-present run lint
+
+      # Recursive, so apps/web is included. The root "test" script only covers
+      # shared + api + livekit-agent and would silently skip the web suite.
+      - name: Test
+        run: pnpm -r --if-present run test
+
+      - name: Build API
+        run: pnpm --filter @voiceforge/api run build
+
+      # The web build prerenders pages that construct a Supabase client, so it
+      # needs the public env values. These are public by definition (they ship
+      # in the browser bundle); no service-role or secret key is used here.
+      - name: Build web
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+        run: pnpm --filter @voiceforge/web run build
+
+  # The audit gate above checks the dependency graph resolved by pnpm in the
+  # repository. It says nothing about what the container images actually ship.
+  # Those diverged once already: the Dockerfiles deleted pnpm-lock.yaml and ran
+  # `npm install`, and because npm ignores `pnpm.overrides`, every patched
+  # transitive silently reverted to a vulnerable version in production while
+  # this workflow stayed green. This job builds the real images and asserts the
+  # shipped graph matches the audited one.
+  image-dependency-integrity:
+    name: Images ship the audited dependency graph
+    # 4 CPUs is enough: the image build itself runs on a Depot builder, so the
+    # sandbox only drives the build and then runs the verifier container.
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Depot CLI
+        uses: depot/setup-action@v1
+
+      # load: true pulls the built image back into the sandbox's local Docker so
+      # the verification step below can run it. Nothing is pushed to a registry.
+      - name: Build API image
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ vars.DEPOT_API_PROJECT_ID }}
+          context: .
+          file: infra/docker/Dockerfile.api
+          tags: voiceforge-api:ci
+          load: true
+
+      - name: Build web image
+        uses: depot/build-push-action@v1
+        with:
+          project: ${{ vars.DEPOT_WEB_PROJECT_ID }}
+          context: .
+          file: infra/docker/Dockerfile.web
+          tags: voiceforge-web:ci
+          load: true
+          # Dockerfile.web hard-fails when NEXT_PUBLIC_BILLING_MODE is absent or
+          # is anything other than demo|live, so it must be passed here even
+          # though this job only checks the shipped dependency graph. The default
+          # keeps the gate independent of repository configuration; the value
+          # baked into a CI-only image is never deployed.
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
+            NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+            NEXT_PUBLIC_BILLING_MODE=${{ vars.NEXT_PUBLIC_BILLING_MODE || 'demo' }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+
+      - name: Assert images ship the patched dependency versions
+        run: |
+          set -euo pipefail
+          for image in voiceforge-api:ci voiceforge-web:ci; do
+            echo "::group::$image"
+            docker run --rm \
+              -v "$PWD/scripts:/verify:ro" \
+              --entrypoint node \
+              "$image" /verify/verify-image-deps.mjs
+            echo "::endgroup::"
+          done
+
+  # Fails the PR if credential-bearing scratch directories are ever tracked
+  # again. These were committed once before and required a history rewrite.
+  no-tracked-secrets:
+    name: No tracked credential paths
+    # Two git lookups; the smallest sandbox is the right size.
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Assert credential scratch paths are untracked
+        run: |
+          set -euo pipefail
+          blocked=0
+          for path in ".codex-browser-shots" "supabase/.temp" ".claude/worktrees"; do
+            if git ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+              echo "::error::$path is tracked in git; it may contain credentials."
+              blocked=1
+            fi
+          done
+          exit "$blocked"
