@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Tests for the server-side capture path used by route handlers.
@@ -27,6 +27,11 @@ function enable() {
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
+let posthogServer: typeof import('./posthog-server');
+
+beforeAll(async () => {
+  posthogServer = await import('./posthog-server');
+}, 10_000);
 
 beforeEach(() => {
   process.env = { ...ORIGINAL_ENV };
@@ -44,8 +49,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+afterAll(() => {
+  process.env = { ...ORIGINAL_ENV };
+});
+
 async function load() {
-  return import('./posthog-server');
+  return posthogServer;
 }
 
 function sentBody() {
