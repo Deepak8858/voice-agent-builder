@@ -2,7 +2,11 @@ import { Controller, Post, Body, HttpCode, Logger } from '@nestjs/common';
 import { TwilioVoiceAdapter } from './twilio.adapter';
 import { VoicePipelineService } from './voice-pipeline.service';
 import { CallSessionManager } from './call-session-manager';
+import { CallAdmissionService } from '../billing/call-admission.service';
 import { PrismaService } from '../prisma/prisma.service';
+
+const BILLING_REFUSAL_TWIML =
+  '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, this number cannot take calls right now. Please try again later.</Say><Hangup/></Response>';
 
 @Controller('voice/webhook')
 export class TwilioWebhookController {
@@ -13,6 +17,7 @@ export class TwilioWebhookController {
     private readonly pipeline: VoicePipelineService,
     private readonly sessionManager: CallSessionManager,
     private readonly prisma: PrismaService,
+    private readonly admission: CallAdmissionService,
   ) {}
 
   @Post('inbound')
@@ -39,19 +44,34 @@ export class TwilioWebhookController {
       );
     }
 
-    const call = await this.prisma.call.create({
-      data: {
-        workspaceId: number.workspaceId!,
-        organizationId: number.workspace.organizationId,
-        agentId: number.agentId!,
-        direction: 'inbound',
-        status: 'queued',
-        provider: 'twilio',
-        providerCallId: callSid,
-        fromNumber: from ?? undefined,
-        toNumber: to ?? undefined,
-      },
-    });
+    // Twilio retries this webhook, so the call is looked up before it is
+    // created: a retry must reuse the admitted call rather than open a second
+    // one that would consume another concurrency slot and another minute.
+    const call =
+      (await this.prisma.call.findFirst({ where: { providerCallId: callSid } })) ??
+      (await this.prisma.call.create({
+        data: {
+          workspaceId: number.workspaceId!,
+          organizationId: number.workspace.organizationId,
+          agentId: number.agentId!,
+          direction: 'inbound',
+          status: 'queued',
+          provider: 'twilio',
+          providerCallId: callSid,
+          fromNumber: from ?? undefined,
+          toNumber: to ?? undefined,
+        },
+      }));
+
+    // The media stream below is billable the moment Twilio opens it, so nothing
+    // is streamed until billing has admitted the call.
+    if (!(await this.admitInbound(call.id, number.workspaceId!, number.workspace.organizationId, callSid))) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
+      });
+      return new Response(BILLING_REFUSAL_TWIML, { headers: { 'Content-Type': 'text/xml' } });
+    }
 
     const session = this.sessionManager.create({
       callSid,
@@ -73,6 +93,35 @@ export class TwilioWebhookController {
 </Response>`,
       { headers: { 'Content-Type': 'text/xml' } },
     );
+  }
+
+  /**
+   * Admits an inbound call once. The usage record written by a successful
+   * admission is the marker that this call is already paid for, so a retried
+   * webhook is let through without acquiring a second lease or reserving a
+   * second minute.
+   */
+  private async admitInbound(
+    callId: string,
+    workspaceId: string,
+    organizationId: string,
+    providerCallId: string,
+  ): Promise<boolean> {
+    const existingUsage = await this.prisma.callUsage.findUnique({
+      where: { callId },
+      select: { id: true },
+    });
+    if (existingUsage) return true;
+
+    const admission = await this.admission.admitCall({
+      organizationId,
+      workspaceId,
+      callId,
+      provider: 'twilio',
+      direction: 'inbound',
+      providerCallId,
+    });
+    return admission.admitted;
   }
 
   @Post('status')

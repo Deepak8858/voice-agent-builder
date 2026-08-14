@@ -24,6 +24,17 @@ export type CallLeaseDecision =
   | { allowed: true; leaseToken: string; expiresAt: string }
   | { allowed: false; reason: 'organization_concurrency_reached' | 'platform_concurrency_reached' | 'billing_temporarily_unavailable' };
 export type LeaseRecoveryReport = { checked: number; recovered: number; failed: number };
+export type LeaseRenewalReport = { checked: number; renewed: number; dropped: number };
+
+/**
+ * A lease is renewed once it is within this fraction of its TTL of expiring.
+ * Renewing earlier wastes Redis round trips; renewing later risks the sweep
+ * missing a lease between two runs.
+ */
+const RENEWAL_HORIZON_RATIO = 2;
+
+/** Call statuses that mean the call is still up and still owes a lease. */
+const IN_FLIGHT_CALL_STATUSES = ['queued', 'ringing', 'in_progress'] as const;
 
 const ACQUIRE_SCRIPT = `
 local globalKey = KEYS[1]
@@ -183,6 +194,55 @@ export class CallConcurrencyService implements OnModuleInit {
       where: { callId: input.callId, organizationId: input.organizationId, leaseToken: input.leaseToken, state: 'active' },
       data: { state: 'released', expiresAt: new Date() },
     });
+  }
+
+  /**
+   * Extends the leases of calls that are still running.
+   *
+   * `BILLING_LEASE_TTL_SECONDS` is capped at five minutes, so without this a
+   * call longer than the TTL loses its concurrency slot: reconciliation
+   * releases the expired lease, and the organization is then able to start more
+   * concurrent calls than its plan allows while the original call is still up.
+   *
+   * Only leases attached to a call that is still in flight are renewed. A lease
+   * whose call has completed or failed is deliberately left to expire, so a bug
+   * in this sweep can only ever release capacity, never hold it forever. The
+   * renewal itself is `renew()`, which already fails closed when Redis and
+   * PostgreSQL disagree, and running the sweep twice simply pushes the same
+   * expiry out twice.
+   */
+  async renewActiveLeases(limit: number): Promise<LeaseRenewalReport> {
+    const now = Date.now();
+    const horizon = new Date(now + (env.BILLING_LEASE_TTL_SECONDS * 1_000) / RENEWAL_HORIZON_RATIO);
+
+    const due = await this.prisma.callConcurrencyLease.findMany({
+      where: {
+        state: 'active',
+        expiresAt: { gt: new Date(now), lte: horizon },
+        call: { status: { in: [...IN_FLIGHT_CALL_STATUSES] } },
+      },
+      orderBy: { expiresAt: 'asc' },
+      take: limit,
+      select: { callId: true, organizationId: true, leaseToken: true },
+    });
+
+    const report: LeaseRenewalReport = { checked: due.length, renewed: 0, dropped: 0 };
+    for (const lease of due) {
+      const renewed = await this.renew({
+        callId: lease.callId,
+        organizationId: lease.organizationId,
+        leaseToken: lease.leaseToken,
+      });
+      if (renewed) {
+        report.renewed += 1;
+        continue;
+      }
+      report.dropped += 1;
+      this.logger.warn(
+        `Concurrency lease for call ${lease.callId} could not be renewed and will expire.`,
+      );
+    }
+    return report;
   }
 
   async recoverFromPostgres(): Promise<LeaseRecoveryReport> {

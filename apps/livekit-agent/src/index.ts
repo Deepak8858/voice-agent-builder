@@ -22,8 +22,48 @@ import {
   createKnowledgeTool,
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
+import { CallMeter, createRuntimeUsageClient } from './runtime-usage.js';
 
 const prisma = new PrismaClient();
+
+/**
+ * Builds the metering lifecycle for a dispatched job.
+ *
+ * Metering requires a call, an organization, and internal API credentials. A
+ * dispatch missing any of them cannot be attributed to a payer, so no usage is
+ * reported for it — the API never sees an event it cannot scope, and nothing is
+ * billed to a guessed tenant. Inbound dispatch rules fall in this category
+ * today; see the inbound admission gap in the billing runbook.
+ */
+function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter | null {
+  const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+  if (!metadata.callId || !metadata.organizationId) {
+    console.warn(
+      `[metering] dispatch for agent ${metadata.agentId} has no callId/organizationId; usage will not be reported.`,
+    );
+    return null;
+  }
+  if (!apiBaseUrl || !internalApiKey) {
+    console.error(
+      '[metering] INTERNAL_API_BASE_URL/INTERNAL_API_KEY are not configured; call usage will not be reported.',
+    );
+    return null;
+  }
+
+  return new CallMeter({
+    callId: metadata.callId,
+    organizationId: metadata.organizationId,
+    emit: createRuntimeUsageClient({ apiBaseUrl, internalApiKey }),
+    // Hanging up is the only enforcement the runtime has: a refused minute must
+    // end the call rather than merely stop being recorded.
+    terminate: async (reason) => {
+      console.warn(`[metering] terminating call ${metadata.callId} after billing decision: ${reason}`);
+      await ctx.room.disconnect().catch(() => undefined);
+      ctx.shutdown(`billing:${reason}`);
+    },
+  });
+}
 
 class VoiceForgeAgent extends voice.Agent {
   constructor(instructions: string, tools: llm.ToolContextEntry[]) {
@@ -66,42 +106,72 @@ async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typ
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     const metadata = parseDispatchMetadata(ctx.job.metadata);
-    const spec = await loadAgentSpec(metadata);
-    const fallbackVoice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
-    const tools: llm.ToolContextEntry[] = [];
-    if (retrievalChunkLimit(spec) > 0) {
-      const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
-      const internalApiKey = process.env.INTERNAL_API_KEY;
-      const search = apiBaseUrl && internalApiKey
-        ? createKnowledgeSearchClient({ apiBaseUrl, internalApiKey })
-        : async () => {
-            throw new Error('Knowledge retrieval is not configured.');
-          };
-      const knowledgeTool = createKnowledgeTool({
-        spec,
-        agentId: metadata.agentId,
-        search,
-      });
-      if (knowledgeTool) tools.push(knowledgeTool);
+    const meter = createCallMeter(ctx, metadata);
+    try {
+      await runCall(ctx, metadata, meter);
+    } catch (err) {
+      // The call never became billable. Reporting the failure is what returns
+      // the reserved minute and frees the concurrency slot immediately.
+      await meter?.failed('runtime_error');
+      throw err;
     }
-
-    const session = new voice.AgentSession({
-      llm: new openai.realtime.RealtimeModel({
-        voice: resolveRealtimeVoice(spec, fallbackVoice),
-      }),
-    });
-
-    await session.start({
-      agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
-      room: ctx.room,
-    });
-
-    await ctx.connect();
-    await session.generateReply({
-      instructions: firstReplyInstruction(spec),
-    });
   },
 });
+
+async function runCall(
+  ctx: JobContext,
+  metadata: DispatchMetadata,
+  meter: CallMeter | null,
+): Promise<void> {
+  const spec = await loadAgentSpec(metadata);
+  const fallbackVoice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
+  const tools: llm.ToolContextEntry[] = [];
+  if (retrievalChunkLimit(spec) > 0) {
+    const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
+    const internalApiKey = process.env.INTERNAL_API_KEY;
+    const search = apiBaseUrl && internalApiKey
+      ? createKnowledgeSearchClient({ apiBaseUrl, internalApiKey })
+      : async () => {
+          throw new Error('Knowledge retrieval is not configured.');
+        };
+    const knowledgeTool = createKnowledgeTool({
+      spec,
+      agentId: metadata.agentId,
+      search,
+    });
+    if (knowledgeTool) tools.push(knowledgeTool);
+  }
+
+  const session = new voice.AgentSession({
+    llm: new openai.realtime.RealtimeModel({
+      voice: resolveRealtimeVoice(spec, fallbackVoice),
+    }),
+  });
+
+  await session.start({
+    agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
+    room: ctx.room,
+  });
+
+  await ctx.connect();
+
+  if (meter) {
+    // Registered before the first reply so a crash mid-conversation still
+    // settles the call instead of leaking its reservation and lease.
+    ctx.addShutdownCallback(async () => {
+      await meter.ended();
+    });
+    // The room name is what LiveKit dispatch reports as the provider call id
+    // when no SIP participant id is available, so metering and the call record
+    // agree on the same identifier.
+    await meter.connected(ctx.room.name || (metadata.callId as string));
+    meter.start();
+  }
+
+  await session.generateReply({
+    instructions: firstReplyInstruction(spec),
+  });
+}
 
 const agentName = process.env.LIVEKIT_AGENT_NAME ?? 'voiceforge-agent';
 

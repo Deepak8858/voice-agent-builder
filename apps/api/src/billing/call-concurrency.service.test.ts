@@ -8,7 +8,7 @@ function makeService() {
     callConcurrencyLease: {
       upsert: vi.fn(async () => ({})),
       updateMany: vi.fn(async () => ({ count: 1 })),
-      findMany: vi.fn(async () => []),
+      findMany: vi.fn(async (_args?: unknown) => [] as unknown[]),
       findUnique: vi.fn(async () => null as unknown),
       create: vi.fn(async () => ({})),
     },
@@ -151,6 +151,89 @@ describe('CallConcurrencyService', () => {
     expect(prisma.callConcurrencyLease.updateMany).toHaveBeenCalledWith({
       where: { callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1', state: 'active' },
       data: { state: 'released', expiresAt: expect.any(Date) },
+    });
+  });
+
+  /**
+   * Without renewal, any call longer than the lease TTL loses its concurrency
+   * slot mid-conversation and the organization can exceed the concurrency its
+   * plan sells.
+   */
+  describe('renewActiveLeases', () => {
+    it('only considers unexpired leases of calls that are still in flight', async () => {
+      const { service, prisma } = makeService();
+      prisma.callConcurrencyLease.findMany.mockResolvedValue([]);
+
+      await service.renewActiveLeases(50);
+
+      const query = prisma.callConcurrencyLease.findMany.mock.calls[0]![0] as {
+        where: {
+          state: string;
+          expiresAt: { gt: Date; lte: Date };
+          call: { status: { in: string[] } };
+        };
+        take: number;
+      };
+      expect(query.where.state).toBe('active');
+      expect(query.where.call.status.in).toEqual(['queued', 'ringing', 'in_progress']);
+      expect(query.where.expiresAt.lte.getTime()).toBeGreaterThan(query.where.expiresAt.gt.getTime());
+      expect(query.take).toBe(50);
+    });
+
+    it('extends the expiry of every in-flight lease it finds', async () => {
+      const { service, redis, prisma } = makeService();
+      prisma.callConcurrencyLease.findMany.mockResolvedValue([
+        { callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1' },
+        { callId: 'call-2', organizationId: 'org-1', leaseToken: 'token-2' },
+      ] as never);
+      redis.eval.mockResolvedValue(1);
+      prisma.callConcurrencyLease.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.renewActiveLeases(50)).resolves.toEqual({
+        checked: 2,
+        renewed: 2,
+        dropped: 0,
+      });
+    });
+
+    it('is idempotent: a second sweep over the same leases renews them again without side effects', async () => {
+      const { service, redis, prisma } = makeService();
+      prisma.callConcurrencyLease.findMany.mockResolvedValue([
+        { callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1' },
+      ] as never);
+      redis.eval.mockResolvedValue(1);
+      prisma.callConcurrencyLease.updateMany.mockResolvedValue({ count: 1 });
+
+      const first = await service.renewActiveLeases(50);
+      const second = await service.renewActiveLeases(50);
+
+      expect(second).toEqual(first);
+    });
+
+    it('reports a lease it cannot renew instead of pretending the slot is held', async () => {
+      const { service, redis, prisma } = makeService();
+      prisma.callConcurrencyLease.findMany.mockResolvedValue([
+        { callId: 'call-1', organizationId: 'org-1', leaseToken: 'stale-token' },
+      ] as never);
+      // Redis renews, but the durable row does not match the token.
+      redis.eval.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+      prisma.callConcurrencyLease.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.renewActiveLeases(50)).resolves.toEqual({
+        checked: 1,
+        renewed: 0,
+        dropped: 1,
+      });
+    });
+
+    it('fails closed when Redis is unavailable', async () => {
+      const { service, redis, prisma } = makeService();
+      prisma.callConcurrencyLease.findMany.mockResolvedValue([
+        { callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1' },
+      ] as never);
+      redis.eval.mockRejectedValue(new Error('redis unavailable'));
+
+      await expect(service.renewActiveLeases(50)).resolves.toMatchObject({ renewed: 0, dropped: 1 });
     });
   });
 });

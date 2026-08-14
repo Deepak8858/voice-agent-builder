@@ -17,6 +17,7 @@ function makeService(overrides?: {
   reservation?: unknown;
   reservationThrows?: boolean;
   usageThrows?: boolean;
+  auditThrows?: boolean;
 }) {
   const prisma = {
     callUsage: {
@@ -73,6 +74,9 @@ function makeService(overrides?: {
   }
 
   const audit = { log: vi.fn(async () => undefined) };
+  if (overrides?.auditThrows) {
+    audit.log.mockRejectedValue(new Error('audit sink unavailable'));
+  }
   const metrics = { callsAdmissionDeniedTotal: { inc: vi.fn() } };
 
   const service = new CallAdmissionService(
@@ -198,6 +202,55 @@ describe('CallAdmissionService.admitCall', () => {
       expect.objectContaining({ idempotencyKey: 'call:call-1:reservation_release' }),
     );
     expect(concurrency.release).toHaveBeenCalled();
+  });
+
+  it('hands back every acquired resource when the admission audit cannot be written', async () => {
+    const { service, prisma, concurrency, creditLedger, metrics } = makeService({
+      auditThrows: true,
+    });
+
+    // No exception reaches the caller: an unwritable audit record is a denial,
+    // not a crash, and the call must not have consumed anything.
+    await expect(service.admitCall(INPUT)).resolves.toMatchObject({
+      admitted: false,
+      reason: 'billing_temporarily_unavailable',
+    });
+
+    expect(creditLedger.releaseReservation).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'call:call-1:reservation_release' }),
+    );
+    expect(concurrency.release).toHaveBeenCalledWith({
+      callId: 'call-1',
+      organizationId: 'org-1',
+      leaseToken: 'lease-1',
+    });
+    expect(prisma.callUsage.updateMany).toHaveBeenCalledWith({
+      where: { callId: 'call-1', finalizationState: { not: 'finalized' } },
+      data: expect.objectContaining({
+        disposition: 'admission_audit_failed',
+        finalizationState: 'finalized',
+      }),
+    });
+    expect(metrics.callsAdmissionDeniedTotal.inc).toHaveBeenCalledWith({
+      reason: 'billing_temporarily_unavailable',
+    });
+  });
+
+  it('still returns a clean denial when the denial audit itself fails', async () => {
+    const { service, concurrency, creditLedger } = makeService({
+      auditThrows: true,
+      entitlementAllowed: false,
+      entitlementReason: 'credit_insufficient',
+    });
+
+    await expect(service.admitCall(INPUT)).resolves.toMatchObject({
+      admitted: false,
+      reason: 'credit_insufficient',
+    });
+
+    // Nothing was acquired on this path, so nothing needs releasing.
+    expect(concurrency.release).not.toHaveBeenCalled();
+    expect(creditLedger.releaseReservation).not.toHaveBeenCalled();
   });
 
   it('maps an operator fault to a retryable 503 and a customer fault to a 403', async () => {

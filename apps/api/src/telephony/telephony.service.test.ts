@@ -18,6 +18,96 @@ function makeAdmission() {
   };
 }
 
+const INBOUND_VOICE_PAYLOAD = { CallSid: 'CA123', From: '+14155559876', To: '+14155551234' };
+const INBOUND_VOICE_REQUEST = {
+  headers: { 'x-twilio-signature': 'good-signature' },
+  url: 'https://vocal.devdeepak.me/api/v1/telephony/twilio/voice/number-1',
+};
+
+/**
+ * A signature-valid inbound Twilio voice webhook for a fully configured
+ * LiveKit number, so each test only has to vary the billing decision and
+ * whether the delivery is a retry.
+ */
+function makeInboundVoiceService(overrides?: {
+  admitted?: boolean;
+  existingCall?: unknown;
+  existingUsage?: unknown;
+}) {
+  const prisma = {
+    telephonyPhoneNumber: {
+      findUnique: vi.fn(async () => ({
+        id: 'number-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        provider: 'twilio',
+        phoneNumberE164: '+14155551234',
+        assignedAgentId: 'agent-1',
+        assignedAgent: { id: 'agent-1' },
+        livekitConfig: { livekitSipHost: 'tenant.sip.livekit.cloud' },
+        providerConnection: { encryptedCredentials: { encrypted: true } },
+        providerMetadata: null,
+      })),
+    },
+    telephonyWebhookEvent: {
+      create: vi.fn(async () => ({ id: 'event-1' })),
+    },
+    call: {
+      findFirst: vi.fn(async () => overrides?.existingCall ?? null),
+      create: vi.fn(async () => ({ id: 'call-1' })),
+      update: vi.fn(async () => ({ id: 'call-1' })),
+    },
+    callUsage: {
+      findUnique: vi.fn(async () => overrides?.existingUsage ?? null),
+    },
+  };
+  const admitted = overrides?.admitted ?? true;
+  const admission = {
+    ...makeAdmission(),
+    admitCall: vi.fn(async () =>
+      admitted
+        ? {
+            admitted: true as const,
+            leaseToken: 'lease-1',
+            leaseExpiresAt: new Date('2026-06-07T10:01:00.000Z').toISOString(),
+            reservedSeconds: 60,
+          }
+        : {
+            admitted: false as const,
+            reason: 'credit_insufficient' as const,
+            message: 'No credit.',
+          },
+    ),
+  };
+  const twilioFallback = {
+    buildFallbackTwiml: vi.fn(() => '<Response><Say>Unavailable</Say><Hangup/></Response>'),
+    buildBillingRefusalTwiml: vi.fn(() => '<Response><Say>Cannot take calls</Say><Hangup/></Response>'),
+    buildLiveKitDialTwiml: vi.fn(
+      () => '<Response><Dial><Sip>sip:tenant.sip.livekit.cloud</Sip></Dial></Response>',
+    ),
+  };
+  const service = new TelephonyService(
+    prisma as never,
+    {} as never,
+    { adapterFor: vi.fn(() => ({ validateWebhookSignature: vi.fn(async () => true) })) } as never,
+    {
+      encryptJson: vi.fn(),
+      decryptJson: vi.fn(() => ({
+        provider: 'twilio',
+        accountSid: 'AC123',
+        authToken: 'auth-token',
+      })),
+    } as never,
+    { log: vi.fn(async () => undefined) } as never,
+    {} as never,
+    {} as never,
+    twilioFallback as never,
+    admission as never,
+  );
+
+  return { service, prisma, admission, twilioFallback };
+}
+
 function makePrisma() {
   return {
     workspace: {
@@ -448,6 +538,54 @@ describe('TelephonyService', () => {
       }),
     );
     expect(prisma.call.create).not.toHaveBeenCalled();
+  });
+
+  it('bridges an inbound Twilio call to LiveKit only after billing admits it', async () => {
+    const { service, prisma, admission, twilioFallback } = makeInboundVoiceService();
+
+    const twiml = await service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST);
+
+    expect(admission.admitCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        workspaceId: 'workspace-1',
+        callId: 'call-1',
+        direction: 'inbound',
+        providerCallId: 'CA123',
+      }),
+    );
+    expect(prisma.call.create).toHaveBeenCalled();
+    expect(twilioFallback.buildLiveKitDialTwiml).toHaveBeenCalled();
+    expect(twiml).toContain('<Dial>');
+  });
+
+  it('refuses an inbound Twilio call and never dials LiveKit when billing denies it', async () => {
+    const { service, prisma, twilioFallback } = makeInboundVoiceService({ admitted: false });
+
+    const twiml = await service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST);
+
+    expect(twilioFallback.buildLiveKitDialTwiml).not.toHaveBeenCalled();
+    expect(twiml).toContain('<Hangup/>');
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'failed', outcome: 'billing_denied' }),
+      }),
+    );
+  });
+
+  it('does not admit an inbound call twice when the provider retries the voice webhook', async () => {
+    const { service, admission, twilioFallback } = makeInboundVoiceService({
+      existingCall: { id: 'call-1' },
+      existingUsage: { id: 'usage-1' },
+    });
+
+    const twiml = await service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST);
+
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    // The retry still reaches the agent: the call was admitted on first delivery.
+    expect(twilioFallback.buildLiveKitDialTwiml).toHaveBeenCalled();
+    expect(twiml).toContain('<Dial>');
   });
 
   it('rejects Vobiz status webhooks without a valid per-number signature before updating calls', async () => {

@@ -868,6 +868,8 @@ model RuntimeUsageEvent {
   occurredAt       DateTime  @map("occurred_at")
   validatedPayload Json      @map("validated_payload")
   decision         Json?
+  claimedAt        DateTime? @map("claimed_at")
+  attemptCount     Int       @default(0) @map("attempt_count")
   processedAt      DateTime? @map("processed_at")
   createdAt        DateTime  @default(now()) @map("created_at")
 

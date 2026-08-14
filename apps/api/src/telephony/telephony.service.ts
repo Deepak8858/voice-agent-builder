@@ -366,6 +366,10 @@ export class TelephonyService {
       roomPrefix,
       agentName: env.LIVEKIT_AGENT_NAME,
       metadata: {
+        // The dispatch rule is created once per number, so it cannot carry a
+        // call id. It carries the organization instead, which is what lets the
+        // runtime resolve the admitted call for this room and meter it.
+        organizationId: number.organizationId,
         provider: number.provider,
         direction: 'inbound',
         model: env.OPENAI_REALTIME_MODEL,
@@ -637,7 +641,7 @@ export class TelephonyService {
     const callSid = String(payload.CallSid ?? '');
     if (callSid) {
       await this.recordWebhookEvent('twilio', `${callSid}:voice`, 'call.voice', number.id, payload, true);
-      await this.ensureInboundCall({
+      const call = await this.ensureInboundCall({
         workspaceId: number.workspaceId,
         organizationId: number.organizationId,
         agentId: number.assignedAgentId!,
@@ -647,8 +651,56 @@ export class TelephonyService {
         fromNumber: typeof payload.From === 'string' ? payload.From : null,
         toNumber: typeof payload.To === 'string' ? payload.To : null,
       });
+      // An answered inbound call costs the same as an outbound one, so it is
+      // gated before the caller is bridged into LiveKit rather than after.
+      const admitted = await this.admitInboundCall({
+        organizationId: number.organizationId,
+        workspaceId: number.workspaceId,
+        callId: call.id,
+        provider: 'livekit',
+        providerCallId: callSid,
+      });
+      if (!admitted) {
+        await this.prisma.call.update({
+          where: { id: call.id },
+          data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
+        });
+        return this.twilioFallback.buildBillingRefusalTwiml();
+      }
     }
     return this.twilioFallback.buildLiveKitDialTwiml(`sip:${number.livekitConfig.livekitSipHost}`);
+  }
+
+  /**
+   * Admits an inbound call exactly once.
+   *
+   * Providers retry voice webhooks, and a retry must not consume a second
+   * concurrency slot or reserve a second minute. The usage record written by a
+   * successful admission is the marker that the call is already paid for, so a
+   * repeat delivery is bridged straight through.
+   */
+  private async admitInboundCall(input: {
+    organizationId: string;
+    workspaceId: string;
+    callId: string;
+    provider: string;
+    providerCallId: string;
+  }): Promise<boolean> {
+    const existingUsage = await this.prisma.callUsage.findUnique({
+      where: { callId: input.callId },
+      select: { id: true },
+    });
+    if (existingUsage) return true;
+
+    const admission = await this.admission.admitCall({
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: input.callId,
+      provider: input.provider,
+      direction: 'inbound',
+      providerCallId: input.providerCallId,
+    });
+    return admission.admitted;
   }
 
   async handleStatusWebhook(

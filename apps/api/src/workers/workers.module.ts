@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BillingReconciliationWorker } from './billing-reconciliation.worker';
+import { CallLeaseRenewalWorker } from './call-lease-renewal.worker';
 import { EvaluationWorker } from './evaluation.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
@@ -42,6 +43,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     OutboundCallWorker,
     OrchestratorWorker,
     BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
   ],
   exports: [
     EvaluationWorker,
@@ -52,6 +54,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     OutboundCallWorker,
     OrchestratorWorker,
     BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
   ],
 })
 export class WorkersModule {}

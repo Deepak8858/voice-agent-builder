@@ -8,12 +8,94 @@ const BALANCE = {
   lifetimeBrowserTestSecondsRemaining: 0,
 };
 
+interface StoredEvent {
+  organizationId: string;
+  eventId: string;
+  decision: unknown;
+  claimedAt: Date | null;
+  processedAt: Date | null;
+  attemptCount: number;
+}
+
+class UniqueConstraintError extends Error {
+  readonly code = 'P2002';
+}
+
+/**
+ * An in-memory stand-in for the `runtime_usage_events` table that enforces the
+ * one property the service depends on: the `(organizationId, eventId)` unique
+ * index. Without it a concurrency test would prove nothing, because both
+ * deliveries would be allowed to claim the same event.
+ */
+function makeEventStore(seed?: { decision?: unknown }) {
+  const rows = new Map<string, StoredEvent>();
+  const key = (organizationId: string, eventId: string) => `${organizationId}:${eventId}`;
+
+  if (seed?.decision) {
+    rows.set(key('org-1', 'evt-1'), {
+      organizationId: 'org-1',
+      eventId: 'evt-1',
+      decision: seed.decision,
+      claimedAt: new Date(),
+      processedAt: new Date(),
+      attemptCount: 1,
+    });
+  }
+
+  return {
+    rows,
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      const rowKey = key(data.organizationId as string, data.eventId as string);
+      if (rows.has(rowKey)) throw new UniqueConstraintError('Unique constraint failed');
+      rows.set(rowKey, {
+        organizationId: data.organizationId as string,
+        eventId: data.eventId as string,
+        decision: null,
+        claimedAt: (data.claimedAt as Date) ?? null,
+        processedAt: null,
+        attemptCount: (data.attemptCount as number) ?? 0,
+      });
+      return {};
+    }),
+    findUnique: vi.fn(async ({ where }: { where: Record<string, never> }) => {
+      const compound = (where as unknown as {
+        organizationId_eventId: { organizationId: string; eventId: string };
+      }).organizationId_eventId;
+      return rows.get(key(compound.organizationId, compound.eventId)) ?? null;
+    }),
+    updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      const row = rows.get(key(where.organizationId as string, where.eventId as string));
+      if (!row) return { count: 0 };
+      if (where.processedAt === null && row.processedAt !== null) return { count: 0 };
+      // `OR: [claimedAt null, claimedAt <= leaseExpiry]` — an unexpired claim
+      // held by someone else is not reclaimable.
+      if (Array.isArray(where.OR) && row.claimedAt !== null) return { count: 0 };
+      if ('claimedAt' in data) row.claimedAt = data.claimedAt as Date | null;
+      return { count: 1 };
+    }),
+    update: vi.fn(async ({ where, data }: { where: Record<string, never>; data: Record<string, unknown> }) => {
+      const compound = (where as unknown as {
+        organizationId_eventId: { organizationId: string; eventId: string };
+      }).organizationId_eventId;
+      const row = rows.get(key(compound.organizationId, compound.eventId));
+      if (row) {
+        row.decision = data.decision;
+        row.processedAt = data.processedAt as Date;
+      }
+      return {};
+    }),
+  };
+}
+
 function makeService(overrides?: {
   call?: unknown;
   replayDecision?: unknown;
   commitThrows?: boolean;
   nextMinuteAllowed?: boolean;
 }) {
+  const runtimeUsageEvent = makeEventStore(
+    overrides?.replayDecision ? { decision: overrides.replayDecision } : undefined,
+  );
   const prisma = {
     call: {
       findFirst: vi.fn(async () =>
@@ -22,13 +104,7 @@ function makeService(overrides?: {
           : overrides.call,
       ),
     },
-    runtimeUsageEvent: {
-      findUnique: vi.fn(async () =>
-        overrides?.replayDecision ? { decision: overrides.replayDecision } : null,
-      ),
-      upsert: vi.fn(async () => ({})),
-      update: vi.fn(async () => ({})),
-    },
+    runtimeUsageEvent,
     callUsage: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
@@ -82,7 +158,7 @@ describe('RuntimeUsageService.handleEvent', () => {
       }),
     ).resolves.toMatchObject({ allowed: false, reason: 'billing_temporarily_unavailable' });
 
-    expect(prisma.runtimeUsageEvent.upsert).not.toHaveBeenCalled();
+    expect(prisma.runtimeUsageEvent.create).not.toHaveBeenCalled();
     expect(creditLedger.commitReservation).not.toHaveBeenCalled();
     expect(admission.compensate).not.toHaveBeenCalled();
   });
@@ -111,7 +187,7 @@ describe('RuntimeUsageService.handleEvent', () => {
     ).resolves.toEqual(stored);
 
     expect(creditLedger.commitReservation).not.toHaveBeenCalled();
-    expect(prisma.runtimeUsageEvent.upsert).not.toHaveBeenCalled();
+    expect(prisma.runtimeUsageEvent.update).not.toHaveBeenCalled();
   });
 
   it('commits the reserved first minute when the call connects', async () => {
@@ -239,5 +315,30 @@ describe('RuntimeUsageService.handleEvent', () => {
     ).resolves.toMatchObject({ allowed: true });
 
     expect(admission.compensate).toHaveBeenCalledWith('org-1', 'call-1', 'failed:no_answer');
+  });
+
+  it('bills a minute once when the same event is delivered twice concurrently', async () => {
+    const { service, prisma, creditLedger } = makeService();
+    const event = {
+      type: 'minute_boundary' as const,
+      eventId: 'evt-2',
+      callId: 'call-1',
+      organizationId: 'org-1',
+      occurredAt: '2026-06-07T10:01:00.000Z',
+      minute: 2,
+    };
+
+    // Both deliveries are in flight before either finishes, which is exactly
+    // the interleaving that used to let two callers each debit a minute.
+    const [first, second] = await Promise.all([
+      service.handleEvent(event),
+      service.handleEvent(event),
+    ]);
+
+    // One debit, one usage increment, and both callers see the same answer.
+    expect(creditLedger.reserveAndDebitNextMinute).toHaveBeenCalledTimes(1);
+    expect(prisma.callUsage.updateMany).toHaveBeenCalledTimes(1);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({ allowed: true });
   });
 });

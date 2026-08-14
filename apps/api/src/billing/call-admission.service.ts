@@ -137,21 +137,36 @@ export class CallAdmissionService {
       return this.deny(input, 'billing_temporarily_unavailable', { plan: effective.plan });
     }
 
-    await this.audit.log({
-      organizationId: input.organizationId,
-      workspaceId: input.workspaceId,
-      action: 'billing.call_admitted',
-      resourceType: 'call',
-      resourceId: input.callId,
-      metadata: {
-        plan: effective.plan,
-        provider: input.provider,
-        direction: input.direction,
-        reservedSeconds: reservation.seconds,
-        organizationConcurrencyLimit: organizationLimit,
-        catalogVersion: effective.catalogVersion,
-      },
-    });
+    // The admission audit record is required, not decorative: it is the only
+    // evidence that this organization was permitted to spend credit on this
+    // call. If it cannot be written we must not let the call proceed, so the
+    // admission fails closed and every resource acquired above is handed back.
+    try {
+      await this.audit.log({
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId,
+        action: 'billing.call_admitted',
+        resourceType: 'call',
+        resourceId: input.callId,
+        metadata: {
+          plan: effective.plan,
+          provider: input.provider,
+          direction: input.direction,
+          reservedSeconds: reservation.seconds,
+          organizationConcurrencyLimit: organizationLimit,
+          catalogVersion: effective.catalogVersion,
+        },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Admission audit failed for call ${input.callId}: ${(err as Error).message}`,
+      );
+      await this.compensate(input.organizationId, input.callId, 'admission_audit_failed');
+      // Deliberately not routed through deny(): the audit sink has just proven
+      // it is unavailable, and a second write would replace a clean denial with
+      // an exception the caller cannot act on.
+      return this.denyWithoutAudit('billing_temporarily_unavailable');
+    }
 
     return {
       admitted: true,
@@ -268,14 +283,28 @@ export class CallAdmissionService {
     context: Record<string, unknown>,
   ): Promise<DeniedCall> {
     this.metrics.callsAdmissionDeniedTotal.inc({ reason });
-    await this.audit.log({
-      organizationId: input.organizationId,
-      workspaceId: input.workspaceId,
-      action: 'billing.call_admission_denied',
-      resourceType: 'call',
-      resourceId: input.callId,
-      metadata: { reason, provider: input.provider, direction: input.direction, ...context },
-    });
+    // A denial holds no resources by the time it is built, so an unwritable
+    // audit record must not turn a clean refusal into a 500 for the caller.
+    // The refusal is still recorded in the denial metric and the error log.
+    try {
+      await this.audit.log({
+        organizationId: input.organizationId,
+        workspaceId: input.workspaceId,
+        action: 'billing.call_admission_denied',
+        resourceType: 'call',
+        resourceId: input.callId,
+        metadata: { reason, provider: input.provider, direction: input.direction, ...context },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Denial audit failed for call ${input.callId} (${reason}): ${(err as Error).message}`,
+      );
+    }
+    return { admitted: false, reason, message: this.denialMessage(reason) };
+  }
+
+  private denyWithoutAudit(reason: EntitlementReason): DeniedCall {
+    this.metrics.callsAdmissionDeniedTotal.inc({ reason });
     return { admitted: false, reason, message: this.denialMessage(reason) };
   }
 

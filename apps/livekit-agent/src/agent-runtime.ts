@@ -4,6 +4,9 @@ import { AgentSpecSchema, type AgentSpec } from '@voiceforge/shared';
 export const DispatchMetadataSchema = z
   .object({
     workspaceId: z.string().min(1).optional(),
+    // Metering is scoped by organization, so a dispatch without it can never be
+    // billed. Optional because inbound dispatch rules do not carry one today.
+    organizationId: z.string().min(1).optional(),
     agentId: z.string().min(1),
     callId: z.string().min(1).optional(),
     phoneNumberId: z.string().min(1).optional(),
