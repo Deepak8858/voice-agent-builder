@@ -151,6 +151,40 @@ describe('CallMeter', () => {
     await meter.connected('pc-1');
 
     expect(terminate).toHaveBeenCalledWith('credit_insufficient');
+    expect(meter.isSettled).toBe(true);
+  });
+
+  it('retries a transient connection decision before allowing the call', async () => {
+    const emit = vi
+      .fn()
+      .mockResolvedValueOnce(decision({
+        allowed: false,
+        reason: 'billing_temporarily_unavailable',
+        billableMinutes: 0,
+      }))
+      .mockResolvedValueOnce(decision());
+    const { meter, terminate } = makeMeter({ emit, maxConsecutiveFailures: 2 });
+
+    await meter.connected('pc-1');
+
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(terminate).not.toHaveBeenCalled();
+    expect(meter.isSettled).toBe(false);
+  });
+
+  it('fails closed when the connection remains retryable', async () => {
+    const emit = vi.fn(async () => decision({
+      allowed: false,
+      reason: 'billing_temporarily_unavailable',
+      billableMinutes: 0,
+    }));
+    const { meter, terminate } = makeMeter({ emit, maxConsecutiveFailures: 2 });
+
+    await meter.connected('pc-1');
+
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(terminate).toHaveBeenCalledWith('metering_unavailable');
+    expect(meter.isSettled).toBe(true);
   });
 
   it('numbers minute boundaries sequentially from the second minute', async () => {
@@ -163,6 +197,21 @@ describe('CallMeter', () => {
       'call-1:minute:2',
       'call-1:minute:3',
     ]);
+  });
+
+  it('bounds retryable minute decisions before failing closed', async () => {
+    const emit = vi.fn(async () => decision({
+      allowed: false,
+      reason: 'billing_temporarily_unavailable',
+      billableMinutes: 0,
+    }));
+    const { meter, terminate } = makeMeter({ emit, maxConsecutiveFailures: 2 });
+
+    await meter.reportMinuteBoundary();
+    expect(terminate).not.toHaveBeenCalled();
+
+    await meter.reportMinuteBoundary();
+    expect(terminate).toHaveBeenCalledWith('metering_unavailable');
   });
 
   /** The enforcement this whole path exists for. */
@@ -201,6 +250,24 @@ describe('CallMeter', () => {
     await meter.reportMinuteBoundary();
 
     expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it('does not restart or emit an end after billing termination', async () => {
+    vi.useFakeTimers();
+    try {
+      const emit = vi.fn(async () => decision({ allowed: false, reason: 'credit_insufficient' }));
+      const { meter } = makeMeter({ emit });
+
+      await meter.connected('pc-1');
+      meter.start();
+      await vi.advanceTimersByTimeAsync(120_000);
+      await meter.ended(30);
+
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit.mock.calls[0]![0]).toMatchObject({ type: 'call_connected' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports the end exactly once so a shutdown callback cannot double-settle', async () => {

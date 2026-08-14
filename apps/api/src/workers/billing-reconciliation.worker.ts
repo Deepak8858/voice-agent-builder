@@ -62,8 +62,10 @@ export class BillingReconciliationWorker
     super(BILLING_RECONCILIATION_QUEUE, queues, 1);
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.registerSchedules();
+  onModuleInit(): void {
+    // Registration retries in the background; a Redis outage must not hold the
+    // Nest application bootstrap open for the full backoff window.
+    void this.registerSchedules();
   }
 
   /** Idempotent by scheduler key, so replicas converge on one schedule each. */

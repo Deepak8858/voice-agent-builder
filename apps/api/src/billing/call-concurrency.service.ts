@@ -205,11 +205,23 @@ export class CallConcurrencyService implements OnModuleInit {
 
   async release(rawInput: ReleaseCallLeaseInput): Promise<void> {
     const input = TokenInputSchema.parse(rawInput);
-    await this.releaseRedis(input.callId, input.organizationId, input.leaseToken);
-    await this.prisma.callConcurrencyLease.updateMany({
-      where: { callId: input.callId, organizationId: input.organizationId, leaseToken: input.leaseToken, state: 'active' },
-      data: { state: 'released', expiresAt: new Date() },
-    });
+    try {
+      await this.releaseRedis(input.callId, input.organizationId, input.leaseToken);
+    } catch (err) {
+      this.logger.error(
+        `Redis lease release failed for call ${input.callId}: ${(err as Error).message}`,
+      );
+    }
+    try {
+      await this.prisma.callConcurrencyLease.updateMany({
+        where: { callId: input.callId, organizationId: input.organizationId, leaseToken: input.leaseToken, state: 'active' },
+        data: { state: 'released', expiresAt: new Date() },
+      });
+    } catch (err) {
+      this.logger.error(
+        `Durable lease release failed for call ${input.callId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

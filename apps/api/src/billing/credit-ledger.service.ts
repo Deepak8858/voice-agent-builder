@@ -1108,11 +1108,14 @@ export class CreditLedgerService {
     operation: (tx: TransactionClient, balance: OrganizationCreditBalance) => Promise<T>,
   ): Promise<T> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.organizationCreditBalance.upsert({
-        where: { organizationId },
-        create: { organizationId },
-        update: {},
-      });
+      // Prisma's empty-update upsert may compile to a read followed by an insert,
+      // which races when two first-time grants arrive together. PostgreSQL owns
+      // the conflict handling so both transactions can proceed to the same lock.
+      await tx.$executeRaw`
+        INSERT INTO organization_credit_balances (id, organization_id, updated_at)
+        VALUES (gen_random_uuid(), ${organizationId}::uuid, NOW())
+        ON CONFLICT (organization_id) DO NOTHING
+      `;
       await tx.$queryRaw`
         SELECT id
         FROM organization_credit_balances

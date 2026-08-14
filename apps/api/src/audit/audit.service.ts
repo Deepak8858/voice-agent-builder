@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -21,6 +21,8 @@ export interface AuditPayload {
 
 @Injectable()
 export class AuditService {
+  private readonly logger = new Logger(AuditService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async log(payload: AuditPayload): Promise<void> {
@@ -57,7 +59,10 @@ export class AuditService {
         select: { organizationId: true },
       });
       return workspace?.organizationId ?? null;
-    } catch {
+    } catch (error) {
+      this.logger.error(
+        `Failed to resolve organization for audit workspace ${payload.workspaceId}: ${(error as Error).message}`,
+      );
       return null;
     }
   }

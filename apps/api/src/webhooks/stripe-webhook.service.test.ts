@@ -103,6 +103,9 @@ function makePrisma(overrides?: {
     auditLog: {
       create: vi.fn(async () => ({ id: 'audit-1' })),
       findFirst: vi.fn(async () => overrides?.packGrantAudit ?? null),
+      findMany: vi.fn(async () =>
+        overrides?.packGrantAudit ? [overrides.packGrantAudit] : [],
+      ),
     },
     _tx: tx,
   };
@@ -272,6 +275,21 @@ describe('StripeWebhookService production webhook handling', () => {
       }),
     );
     expect(prisma.subscription.update).toHaveBeenCalled();
+  });
+
+  it('clears a failed event lease so the next delivery can reclaim immediately', async () => {
+    const prisma = makePrisma();
+    prisma.subscription.update.mockRejectedValueOnce(new Error('database unavailable'));
+    const svc = makeService(prisma, makeSubscriptionEvent());
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    expect(result).toMatchObject({ handled: false, statusCode: 500 });
+    expect(prisma.stripeEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ processingStartedAt: null }),
+      }),
+    );
   });
 
   it('marks invoice.payment_failed subscriptions past_due and queues dunning', async () => {
@@ -534,6 +552,72 @@ describe('StripeWebhookService production webhook handling', () => {
         checkoutSessionId: 'cs_pack_1',
         refundId: 're_1',
       });
+    });
+
+    it('reverses a lost dispute using the recorded grant without a customer field', async () => {
+      const prisma = makePrisma({
+        packGrantAudit: {
+          organizationId: 'org-1',
+          metadata: { checkoutSessionId: 'cs_pack_1', paymentIntentId: 'pi_pack_1' },
+        },
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.dispute.closed'),
+          data: { object: { id: 'dp_1', payment_intent: 'pi_pack_1', status: 'lost' } },
+        },
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        checkoutSessionId: 'cs_pack_1',
+        refundId: 'dp_1',
+      });
+      expect(prisma.subscription.findMany).not.toHaveBeenCalled();
+    });
+
+    it('records a partial refund for review and acknowledges the event', async () => {
+      const prisma = makePrisma({
+        packGrantAudit: {
+          organizationId: 'org-1',
+          metadata: { checkoutSessionId: 'cs_pack_1', paymentIntentId: 'pi_pack_1' },
+        },
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.refunded'),
+          data: {
+            object: {
+              id: 're_partial',
+              payment_intent: 'pi_pack_1',
+              amount: 10_000,
+              amount_refunded: 5_000,
+            },
+          },
+        },
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            organizationId: 'org-1',
+            action: 'billing.pack_partial_refund_review',
+          }),
+        }),
+      );
     });
 
     it('reverses pack credit only when a dispute is lost', async () => {

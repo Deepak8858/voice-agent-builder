@@ -385,6 +385,19 @@ describe('EntitlementService', () => {
       );
     });
 
+    it('preserves the quota denial when its audit write fails', async () => {
+      const prisma = makePrisma({ subscription: { plan: 'starter', status: 'active' } });
+      prisma.auditLog.create.mockRejectedValueOnce(new Error('audit unavailable'));
+      const svc = makeService(prisma);
+
+      await expect(
+        svc.assertAllowed('org-1', { kind: 'workspace_create', current: 1 }),
+      ).rejects.toMatchObject({
+        errorCode: 'PLAN_LIMIT_EXCEEDED',
+        details: expect.objectContaining({ reason: 'workspace_limit_reached' }),
+      });
+    });
+
     it('does not audit an allowed decision', async () => {
       const prisma = makePrisma({ subscription: { plan: 'growth', status: 'active' } });
       const svc = makeService(prisma);

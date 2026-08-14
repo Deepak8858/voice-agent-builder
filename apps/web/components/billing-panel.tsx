@@ -4,17 +4,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
+  BillingStatusDtoSchema,
+  BillingSummaryDtoSchema,
   MINUTE_PACK,
   PLAN_CATALOG,
   getPlanById,
   getPlanEntitlements,
   getUpgradeTarget,
   isPaidPlan,
-  type BillingStatusDto,
+  SubscriptionDtoSchema,
+  WorkspaceUsageDtoSchema,
   type CheckoutPlan,
   type PlanType,
-  type SubscriptionDto,
-  type WorkspaceUsageDto,
 } from '@voiceforge/shared';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -25,14 +26,11 @@ import {
   CHECKOUT_UNAVAILABLE_TITLE,
   MINUTE_PACK_LABEL,
 } from '@/lib/billing-copy';
-import {
-  formatBalance,
-  toBalanceBuckets,
-  type BillingSummaryDto,
-} from '@/lib/billing-summary';
+import { formatBalance, toBalanceBuckets } from '@/lib/billing-summary';
 import { useApi } from '@/lib/use-api';
 import { CreditCard, ExternalLink, CheckCircle2, Wallet, XCircle } from 'lucide-react';
 import posthog from 'posthog-js';
+import { z } from 'zod';
 
 interface BillingPanelProps {
   workspaceId: string;
@@ -51,6 +49,8 @@ const METRIC_LABELS: Record<string, string> = {
   tools: 'Integration connections',
   agents: 'Agents',
 };
+
+const RedirectResponseSchema = z.object({ url: z.string().url() }).strict();
 
 function isTrustedCheckoutUrl(url: string): boolean {
   try {
@@ -72,17 +72,23 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const subscription = useQuery({
     queryKey: ['billing', 'subscription', workspaceId],
-    queryFn: () => call<SubscriptionDto | null>(`/workspaces/${workspaceId}/billing/subscription`),
+    queryFn: async () => SubscriptionDtoSchema.nullable().parse(
+      await call<unknown>(`/workspaces/${workspaceId}/billing/subscription`),
+    ),
   });
 
   const billingStatus = useQuery({
     queryKey: ['billing', 'status', workspaceId],
-    queryFn: () => call<BillingStatusDto>(`/workspaces/${workspaceId}/billing/status`),
+    queryFn: async () => BillingStatusDtoSchema.parse(
+      await call<unknown>(`/workspaces/${workspaceId}/billing/status`),
+    ),
   });
 
   const usage = useQuery({
     queryKey: ['billing', 'usage', workspaceId],
-    queryFn: () => call<WorkspaceUsageDto>(`/workspaces/${workspaceId}/billing/usage`),
+    queryFn: async () => WorkspaceUsageDtoSchema.parse(
+      await call<unknown>(`/workspaces/${workspaceId}/billing/usage`),
+    ),
   });
 
   // Organization-scoped credit balances. The endpoint ships with the billing
@@ -90,7 +96,9 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
   // "not available yet" state instead of inventing numbers.
   const summary = useQuery({
     queryKey: ['billing', 'summary', workspaceId],
-    queryFn: () => call<BillingSummaryDto>(`/workspaces/${workspaceId}/billing/summary`),
+    queryFn: async () => BillingSummaryDtoSchema.parse(
+      await call<unknown>(`/workspaces/${workspaceId}/billing/summary`),
+    ),
     retry: false,
   });
 
@@ -119,14 +127,17 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
       }
       const plan = targetPlan ?? upgradeTarget;
       if (!plan) throw new Error('No upgrade target available.');
-      const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/checkout`, {
-        method: 'POST',
-        body: JSON.stringify({
-          plan,
-          successPath: '/checkout/success',
-          cancelPath: '/checkout/cancel',
-        }),
-      });
+      const data = RedirectResponseSchema.parse(await call<unknown>(
+        `/workspaces/${workspaceId}/billing/checkout`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            plan,
+            successPath: '/checkout/success',
+            cancelPath: '/checkout/cancel',
+          }),
+        },
+      ));
       if (!isTrustedCheckoutUrl(data.url)) {
         throw new Error('Untrusted redirect URL received from server');
       }
@@ -142,7 +153,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
       }
       // The pack price id is resolved server-side on purpose: a client-supplied
       // price would let a caller buy minutes at a price of their choosing.
-      const data = await call<{ url: string }>(
+      const data = RedirectResponseSchema.parse(await call<unknown>(
         `/workspaces/${workspaceId}/billing/topup-checkout`,
         {
           method: 'POST',
@@ -151,7 +162,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             cancelPath: '/dashboard/billing?topup=cancel',
           }),
         },
-      );
+      ));
       if (!isTrustedCheckoutUrl(data.url)) {
         throw new Error('Untrusted redirect URL received from server');
       }
@@ -165,10 +176,13 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
       if (billingStatus.data?.liveCheckoutEnabled === false) {
         throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
       }
-      const data = await call<{ url: string }>(`/workspaces/${workspaceId}/billing/portal`, {
-        method: 'POST',
-        body: JSON.stringify({ returnPath: '/dashboard/billing' }),
-      });
+      const data = RedirectResponseSchema.parse(await call<unknown>(
+        `/workspaces/${workspaceId}/billing/portal`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ returnPath: '/dashboard/billing' }),
+        },
+      ));
       if (!isTrustedCheckoutUrl(data.url)) {
         throw new Error('Untrusted redirect URL received from server');
       }

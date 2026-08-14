@@ -138,24 +138,39 @@ export class CallMeter {
    */
   async connected(providerCallId: string): Promise<void> {
     this.connectedAt = this.now();
-    try {
-      const decision = await this.config.emit({
-        type: 'call_connected',
-        eventId: `${this.config.callId}:connected`,
-        callId: this.config.callId,
-        organizationId: this.config.organizationId,
-        occurredAt: this.connectedAt.toISOString(),
-        providerCallId,
-      });
-      if (!decision.allowed) {
-        await this.terminate(decision.reason);
+    const event = {
+      type: 'call_connected' as const,
+      eventId: `${this.config.callId}:connected`,
+      callId: this.config.callId,
+      organizationId: this.config.organizationId,
+      occurredAt: this.connectedAt.toISOString(),
+      providerCallId,
+    };
+
+    for (let attempt = 1; attempt <= this.maxConsecutiveFailures; attempt += 1) {
+      try {
+        const decision = await this.config.emit(event);
+        if (decision.allowed) return;
+        if (decision.reason !== 'billing_temporarily_unavailable') {
+          await this.terminate(decision.reason);
+          return;
+        }
+        this.logger.warn(
+          `[metering] call ${this.config.callId} connection decision retryable ` +
+            `(${attempt}/${this.maxConsecutiveFailures})`,
+        );
+      } catch (err) {
+        this.logger.error(
+          `[metering] call ${this.config.callId} could not report connection: ${(err as Error).message}`,
+        );
       }
-    } catch (err) {
-      this.logger.error(
-        `[metering] call ${this.config.callId} could not report connection: ${(err as Error).message}`,
-      );
-      await this.terminate('metering_unavailable');
     }
+
+    await this.terminate('metering_unavailable');
+  }
+
+  get isSettled(): boolean {
+    return this.settled;
   }
 
   /** Begins charging for every subsequent minute. */
@@ -188,19 +203,16 @@ export class CallMeter {
         occurredAt: this.now().toISOString(),
         minute,
       });
+      if (!decision.allowed && decision.reason === 'billing_temporarily_unavailable') {
+        await this.recordTransientFailure(minute, decision.reason);
+        return;
+      }
       this.consecutiveFailures = 0;
       if (!decision.allowed) {
         await this.terminate(decision.reason);
       }
     } catch (err) {
-      this.consecutiveFailures += 1;
-      this.logger.warn(
-        `[metering] call ${this.config.callId} minute ${minute} unreported ` +
-          `(${this.consecutiveFailures}/${this.maxConsecutiveFailures}): ${(err as Error).message}`,
-      );
-      if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-        await this.terminate('metering_unavailable');
-      }
+      await this.recordTransientFailure(minute, (err as Error).message);
     }
   }
 
@@ -258,7 +270,20 @@ export class CallMeter {
     }
   }
 
+  private async recordTransientFailure(minute: number, detail: string): Promise<void> {
+    this.consecutiveFailures += 1;
+    this.logger.warn(
+      `[metering] call ${this.config.callId} minute ${minute} unreported ` +
+        `(${this.consecutiveFailures}/${this.maxConsecutiveFailures}): ${detail}`,
+    );
+    if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+      await this.terminate('metering_unavailable');
+    }
+  }
+
   private async terminate(reason: string): Promise<void> {
+    if (this.settled) return;
+    this.settled = true;
     this.stop();
     try {
       await this.config.terminate(reason);

@@ -239,7 +239,11 @@ export class RuntimeUsageService {
         idempotencyKey: `call:${event.callId}:reservation_commit`,
       });
       await this.prisma.callUsage.updateMany({
-        where: { callId: event.callId, organizationId: event.organizationId },
+        where: {
+          callId: event.callId,
+          organizationId: event.organizationId,
+          finalizationState: 'pending',
+        },
         data: {
           connectedAt: new Date(event.occurredAt),
           providerCallId: event.providerCallId,

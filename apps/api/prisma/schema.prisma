@@ -382,6 +382,7 @@ model Call {
   providerCostEvents   ProviderCostEvent[]
   concurrencyLease     CallConcurrencyLease?
 
+  @@unique([provider, providerCallId], map: "calls_provider_call_uidx")
   @@index([workspaceId, createdAt])
   @@index([organizationId])
   @@index([agentId, createdAt])
@@ -799,7 +800,7 @@ model BillingLedgerEntry {
   metadata            Json?
   createdAt           DateTime @default(now()) @map("created_at")
 
-  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   bucket       BillingCreditBucket? @relation(fields: [bucketId], references: [id], onDelete: SetNull)
   workspace    Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   call         Call?                @relation(fields: [callId], references: [id], onDelete: SetNull)
@@ -953,7 +954,7 @@ model ProviderCostEvent {
   metadata        Json?
   createdAt       DateTime  @default(now()) @map("created_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   workspace    Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
   call         Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
 

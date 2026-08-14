@@ -209,6 +209,7 @@ describe('RuntimeUsageService.handleEvent', () => {
     );
     expect(prisma.callUsage.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: expect.objectContaining({ finalizationState: 'pending' }),
         data: expect.objectContaining({ finalizationState: 'connected' }),
       }),
     );

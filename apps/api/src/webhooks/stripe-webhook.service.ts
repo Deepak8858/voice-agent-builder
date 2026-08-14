@@ -222,7 +222,7 @@ export class StripeWebhookService {
         pendingWebhooks: event.pending_webhooks,
         errorMessage,
       },
-      update: { errorMessage },
+      update: { errorMessage, processingStartedAt: null },
     });
   }
 
@@ -501,30 +501,34 @@ export class StripeWebhookService {
       return;
     }
 
-    const customerId = typeof data['customer'] === 'string' ? data['customer'] : null;
-    if (!customerId) {
-      throw new Error(`${eventType} for ${paymentIntentId} has no Stripe customer`);
-    }
-    const subscription = await this.resolveSubscription(customerId, null);
-    const amount = typeof data['amount'] === 'number' ? data['amount'] : null;
-    const amountRefunded = typeof data['amount_refunded'] === 'number' ? data['amount_refunded'] : amount;
-    if (amount && amountRefunded !== amount) {
-      throw new Error(`Partial refund ${String(data['id'])} requires manual review`);
-    }
-
-    const grant = await this.prisma.auditLog.findFirst({
+    // Dispute payloads do not contain a customer. The server-authored grant is
+    // the durable mapping from Stripe's payment intent to our organization.
+    const grants = await this.prisma.auditLog.findMany({
       where: {
-        organizationId: subscription.organizationId,
         action: PACK_GRANT_ACTION,
         metadata: { path: ['paymentIntentId'], equals: paymentIntentId },
       },
+      distinct: ['organizationId'],
       orderBy: { createdAt: 'desc' },
+      take: 2,
       select: { organizationId: true, metadata: true },
     });
-    const metadata = (grant?.metadata ?? null) as { checkoutSessionId?: unknown } | null;
+    if (grants.length !== 1 || !grants[0]) {
+      throw new Error(
+        `${eventType} for payment intent ${paymentIntentId} did not resolve to exactly one organization`,
+      );
+    }
+    const grant = grants[0];
+    const organizationId = grant.organizationId;
+    if (!organizationId) {
+      throw new Error(
+        `${eventType} for payment intent ${paymentIntentId} has no organization owner`,
+      );
+    }
+    const metadata = (grant.metadata ?? null) as { checkoutSessionId?: unknown } | null;
     const checkoutSessionId =
       typeof metadata?.checkoutSessionId === 'string' ? metadata.checkoutSessionId : null;
-    if (!grant?.organizationId || !checkoutSessionId) {
+    if (!checkoutSessionId) {
       throw new Error(
         `${eventType} for payment intent ${paymentIntentId} has no recorded minute-pack grant`,
       );
@@ -532,12 +536,28 @@ export class StripeWebhookService {
 
     const refundId = typeof data['id'] === 'string' ? data['id'] : null;
     if (!refundId) throw new Error(`${eventType} for ${paymentIntentId} has no reversal id`);
+
+    const amount = typeof data['amount'] === 'number' ? data['amount'] : null;
+    const amountRefunded = typeof data['amount_refunded'] === 'number' ? data['amount_refunded'] : amount;
+    if (amount && amountRefunded !== amount) {
+      await this.logBillingAudit(organizationId, 'billing.pack_partial_refund_review', {
+        eventType,
+        checkoutSessionId,
+        refundId,
+        paymentIntentId,
+        amount,
+        amountRefunded,
+      });
+      this.logger.warn(`Partial refund ${refundId} recorded for manual review`);
+      return;
+    }
+
     await this.creditLedger.reversePurchasedCredits({
-      organizationId: grant.organizationId,
+      organizationId,
       checkoutSessionId,
       refundId,
     });
-    await this.logBillingAudit(grant.organizationId, 'billing.pack_credit_reversed', {
+    await this.logBillingAudit(organizationId, 'billing.pack_credit_reversed', {
       eventType,
       checkoutSessionId,
       refundId,

@@ -53,8 +53,13 @@ function makeInboundVoiceService(overrides?: {
       create: vi.fn(async () => ({ id: 'event-1' })),
     },
     call: {
-      findFirst: vi.fn(async () => overrides?.existingCall ?? null),
-      create: vi.fn(async () => ({ id: 'call-1' })),
+      upsert: vi.fn(async () => overrides?.existingCall ?? ({
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      })),
       update: vi.fn(async () => ({ id: 'call-1' })),
     },
     callUsage: {
@@ -554,7 +559,12 @@ describe('TelephonyService', () => {
         providerCallId: 'CA123',
       }),
     );
-    expect(prisma.call.create).toHaveBeenCalled();
+    expect(prisma.call.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        provider_providerCallId: { provider: 'twilio', providerCallId: 'CA123' },
+      },
+      update: {},
+    }));
     expect(twilioFallback.buildLiveKitDialTwiml).toHaveBeenCalled();
     expect(twiml).toContain('<Dial>');
   });
@@ -574,10 +584,33 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('retries admission after a compensated inbound attempt was finalized', async () => {
+    const { service, admission } = makeInboundVoiceService({
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      },
+      existingUsage: { finalizationState: 'finalized' },
+    });
+
+    await service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST);
+
+    expect(admission.admitCall).toHaveBeenCalledOnce();
+  });
+
   it('does not admit an inbound call twice when the provider retries the voice webhook', async () => {
     const { service, admission, twilioFallback } = makeInboundVoiceService({
-      existingCall: { id: 'call-1' },
-      existingUsage: { id: 'usage-1' },
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      },
+      existingUsage: { finalizationState: 'pending' },
     });
 
     const twiml = await service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST);

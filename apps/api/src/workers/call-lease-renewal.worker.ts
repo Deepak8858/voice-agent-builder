@@ -60,8 +60,10 @@ export class CallLeaseRenewalWorker
     super(CALL_LEASE_RENEWAL_QUEUE, queues, 1);
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.registerSchedule();
+  onModuleInit(): void {
+    // Registration retries in the background; a Redis outage must not hold the
+    // Nest application bootstrap open for the full backoff window.
+    void this.registerSchedule();
   }
 
   async registerSchedule(): Promise<void> {

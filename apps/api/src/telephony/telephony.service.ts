@@ -688,9 +688,9 @@ export class TelephonyService {
   }): Promise<boolean> {
     const existingUsage = await this.prisma.callUsage.findUnique({
       where: { callId: input.callId },
-      select: { id: true },
+      select: { finalizationState: true },
     });
-    if (existingUsage) return true;
+    if (existingUsage && existingUsage.finalizationState !== 'finalized') return true;
 
     const admission = await this.admission.admitCall({
       organizationId: input.organizationId,
@@ -729,7 +729,13 @@ export class TelephonyService {
     }
     const normalized = this.normalizeStatus(provider, payload);
     await this.recordWebhookEvent(provider, normalized.eventId ?? normalized.providerCallId, 'call.status', phoneNumberId, payload, true);
-    const call = await this.prisma.call.findFirst({ where: { providerCallId: normalized.providerCallId } });
+    const call = await this.prisma.call.findFirst({
+      where: {
+        provider,
+        providerCallId: normalized.providerCallId,
+        phoneNumberId,
+      },
+    });
     if (call) {
       await this.prisma.call.update({
         where: { id: call.id },
@@ -897,10 +903,14 @@ export class TelephonyService {
     fromNumber: string | null;
     toNumber: string | null;
   }) {
-    const existing = await this.prisma.call.findFirst({ where: { providerCallId: params.providerCallId } });
-    if (existing) return existing;
-    return this.prisma.call.create({
-      data: {
+    const call = await this.prisma.call.upsert({
+      where: {
+        provider_providerCallId: {
+          provider: params.provider,
+          providerCallId: params.providerCallId,
+        },
+      },
+      create: {
         workspaceId: params.workspaceId,
         organizationId: params.organizationId,
         agentId: params.agentId,
@@ -913,7 +923,17 @@ export class TelephonyService {
         toNumber: params.toNumber,
         startedAt: new Date(),
       },
+      update: {},
     });
+    if (
+      call.workspaceId !== params.workspaceId ||
+      call.organizationId !== params.organizationId ||
+      call.agentId !== params.agentId ||
+      call.phoneNumberId !== params.phoneNumberId
+    ) {
+      throw new AppError('CALL_IDENTITY_COLLISION', 'Provider call identity belongs to another tenant.', 409);
+    }
+    return call;
   }
 
   private normalizeStatus(provider: 'twilio' | 'vobiz', payload: Record<string, unknown>): NormalizedCallStatus {

@@ -23,32 +23,28 @@ import {
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
 import { CallMeter, createRuntimeUsageClient } from './runtime-usage.js';
+import { resolveCallAttribution } from './call-attribution.js';
 
 const prisma = new PrismaClient();
 
 /**
  * Builds the metering lifecycle for a dispatched job.
  *
- * Metering requires a call, an organization, and internal API credentials. A
- * dispatch missing any of them cannot be attributed to a payer, so no usage is
- * reported for it — the API never sees an event it cannot scope, and nothing is
- * billed to a guessed tenant. Inbound dispatch rules fall in this category
- * today; see the inbound admission gap in the billing runbook.
+ * Metering requires a call, an organization, and internal API credentials.
+ * Inbound dispatches resolve their call from the SIP participant before this is
+ * invoked; a missing identity therefore fails the job instead of running an
+ * admitted call without runtime enforcement.
  */
 function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter | null {
   const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
   if (!metadata.callId || !metadata.organizationId) {
-    console.warn(
-      `[metering] dispatch for agent ${metadata.agentId} has no callId/organizationId; usage will not be reported.`,
-    );
-    return null;
+    throw new Error('[metering] callId and organizationId are required before a call can start.');
   }
   if (!apiBaseUrl || !internalApiKey) {
-    console.error(
-      '[metering] INTERNAL_API_BASE_URL/INTERNAL_API_KEY are not configured; call usage will not be reported.',
+    throw new Error(
+      '[metering] INTERNAL_API_BASE_URL/INTERNAL_API_KEY are required for attributed calls.',
     );
-    return null;
   }
 
   return new CallMeter({
@@ -105,7 +101,10 @@ async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typ
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
-    const metadata = parseDispatchMetadata(ctx.job.metadata);
+    const dispatchMetadata = parseDispatchMetadata(ctx.job.metadata);
+    await ctx.connect();
+    const participant = dispatchMetadata.callId ? null : await ctx.waitForParticipant();
+    const metadata = await resolveCallAttribution(dispatchMetadata, participant, prisma.call);
     const meter = createCallMeter(ctx, metadata);
     try {
       await runCall(ctx, metadata, meter);
@@ -153,18 +152,16 @@ async function runCall(
     room: ctx.room,
   });
 
-  await ctx.connect();
-
   if (meter) {
     // Registered before the first reply so a crash mid-conversation still
     // settles the call instead of leaking its reservation and lease.
     ctx.addShutdownCallback(async () => {
       await meter.ended();
     });
-    // The room name is what LiveKit dispatch reports as the provider call id
-    // when no SIP participant id is available, so metering and the call record
-    // agree on the same identifier.
-    await meter.connected(ctx.room.name || (metadata.callId as string));
+    // Inbound attribution preserves Twilio's CallSid. Outbound calls already
+    // carry their provider identity in dispatch metadata when available.
+    await meter.connected(metadata.providerCallId ?? ctx.room.name ?? (metadata.callId as string));
+    if (meter.isSettled) return;
     meter.start();
   }
 

@@ -367,6 +367,65 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     );
   });
 
+  it('keeps a failed release retryable and continues the batch', async () => {
+    const { service, creditLedger, callUsageUpdateMany, audit } = makeService({
+      staleCalls: [
+        {
+          id: 'usage-1',
+          organizationId: ORG,
+          callId: 'call-1',
+          reservedSeconds: 60,
+          debitedSeconds: 0,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+        {
+          id: 'usage-2',
+          organizationId: ORG,
+          callId: 'call-2',
+          reservedSeconds: 60,
+          debitedSeconds: 0,
+          createdAt: new Date('2026-01-01T00:01:00.000Z'),
+        },
+      ],
+    });
+    creditLedger.releaseReservation
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    const report = await service.finalizeStaleCalls();
+
+    expect(report.staleCallsFinalized).toBe(1);
+    expect(creditLedger.releaseReservation).toHaveBeenCalledTimes(2);
+    expect(callUsageUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { finalizationState: 'releasing' } }),
+    );
+    expect(audit.log).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a previously claimed stale release', async () => {
+    const { service, prisma, creditLedger } = makeService({
+      staleCalls: [
+        {
+          id: 'usage-1',
+          organizationId: ORG,
+          callId: 'call-1',
+          reservedSeconds: 60,
+          debitedSeconds: 0,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    await service.finalizeStaleCalls();
+
+    expect(prisma.callUsage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
+      }),
+    );
+    expect(creditLedger.releaseReservation).toHaveBeenCalledOnce();
+  });
+
   it('delegates release invariants to the transactional credit ledger', async () => {
     const { service, creditLedger } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 30 }],

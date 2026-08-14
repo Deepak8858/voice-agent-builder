@@ -226,7 +226,7 @@ export class ReconciliationService {
 
     const stale = await this.prisma.callUsage.findMany({
       where: {
-        finalizationState: 'pending',
+        finalizationState: { in: ['pending', 'releasing'] },
         connectedAt: null,
         createdAt: { lt: cutoff },
       },
@@ -243,48 +243,69 @@ export class ReconciliationService {
     });
 
     for (const usage of stale) {
-      // A call with debited seconds did connect and something else went wrong.
-      // Guessing at its duration would corrupt the customer's balance, so it is
-      // routed to review instead.
-      if (usage.debitedSeconds > 0) {
-        const flagged = await this.flagForReview(
-          usage.organizationId,
-          usage.callId,
-          'stale_call_with_debits',
+      try {
+        // A call with debited seconds did connect and something else went wrong.
+        // Guessing at its duration would corrupt the customer's balance, so it is
+        // routed to review instead.
+        if (usage.debitedSeconds > 0) {
+          const flagged = await this.flagForReview(
+            usage.organizationId,
+            usage.callId,
+            'stale_call_with_debits',
+          );
+          if (flagged) report.manualReviewsCreated += 1;
+          continue;
+        }
+
+        // Claim the usage before touching the ledger. A failed release remains
+        // retryable as `releasing`, while the ledger serializes a late
+        // call_connected commit against this idempotent release.
+        const claimed = await this.prisma.callUsage.updateMany({
+          where: {
+            id: usage.id,
+            finalizationState: { in: ['pending', 'releasing'] },
+            connectedAt: null,
+            debitedSeconds: 0,
+          },
+          data: { finalizationState: 'releasing' },
+        });
+        if (claimed.count === 0) continue;
+
+        await this.creditLedger.releaseReservation({
+          organizationId: usage.organizationId,
+          callId: usage.callId,
+          idempotencyKey: `reconciliation:stale:${usage.callId}:release`,
+        });
+
+        const finalized = await this.prisma.callUsage.updateMany({
+          where: { id: usage.id, finalizationState: 'releasing', connectedAt: null },
+          data: {
+            finalizationState: 'finalized',
+            disposition: 'not_connected',
+            endedAt: new Date(),
+            reservedSeconds: 0,
+            billableSeconds: 0,
+          },
+        });
+        if (finalized.count === 0) continue;
+
+        report.staleCallsFinalized += 1;
+        await this.audit.log({
+          organizationId: usage.organizationId,
+          action: 'billing.stale_call_finalized',
+          resourceType: 'call_usage',
+          resourceId: usage.callId,
+          metadata: {
+            releasedSeconds: usage.reservedSeconds,
+            dispatchedAt: usage.createdAt.toISOString(),
+            timeoutMinutes: env.BILLING_STALE_CALL_TIMEOUT_MINUTES,
+          },
+        });
+      } catch (err) {
+        this.logger.error(
+          `Stale call finalization failed for ${usage.callId}: ${(err as Error).message}`,
         );
-        if (flagged) report.manualReviewsCreated += 1;
-        continue;
       }
-
-      const changed = await this.prisma.callUsage.updateMany({
-        where: { id: usage.id, finalizationState: 'pending' },
-        data: {
-          finalizationState: 'finalized',
-          disposition: 'not_connected',
-          endedAt: new Date(),
-          reservedSeconds: 0,
-          billableSeconds: 0,
-        },
-      });
-      if (changed.count === 0) continue;
-
-      report.staleCallsFinalized += 1;
-      await this.creditLedger.releaseReservation({
-        organizationId: usage.organizationId,
-        callId: usage.callId,
-        idempotencyKey: `reconciliation:stale:${usage.callId}:release`,
-      });
-      await this.audit.log({
-        organizationId: usage.organizationId,
-        action: 'billing.stale_call_finalized',
-        resourceType: 'call_usage',
-        resourceId: usage.callId,
-        metadata: {
-          releasedSeconds: usage.reservedSeconds,
-          dispatchedAt: usage.createdAt.toISOString(),
-          timeoutMinutes: env.BILLING_STALE_CALL_TIMEOUT_MINUTES,
-        },
-      });
     }
 
     this.countCorrections('stale_call', report.staleCallsFinalized);

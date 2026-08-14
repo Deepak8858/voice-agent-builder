@@ -36,8 +36,13 @@ function makePrisma(overrides?: { existingCall?: unknown; existingUsage?: unknow
       })),
     },
     call: {
-      findFirst: vi.fn(async () => overrides?.existingCall ?? null),
-      create: vi.fn(async () => ({ id: 'call-1' })),
+      upsert: vi.fn(async () => overrides?.existingCall ?? ({
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'organization-1',
+        agentId: 'agent-1',
+      })),
+      findUnique: vi.fn(async () => overrides?.existingCall ?? null),
       update: vi.fn(async () => ({ id: 'call-1' })),
     },
     callUsage: {
@@ -88,13 +93,17 @@ describe('TwilioWebhookController.handleInbound', () => {
 
     await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
 
-    expect(prisma.call.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
+    expect(prisma.call.upsert).toHaveBeenCalledWith({
+      where: {
+        provider_providerCallId: { provider: 'twilio', providerCallId: 'CA123' },
+      },
+      create: expect.objectContaining({
         organizationId: 'organization-1',
         workspaceId: 'workspace-1',
         agentId: 'agent-1',
         providerCallId: 'CA123',
       }),
+      update: {},
     });
     expect(prisma.twilioPhoneNumber.findUnique).toHaveBeenCalledWith({
       where: { phoneNumber: '+15551234567' },
@@ -154,7 +163,7 @@ describe('TwilioWebhookController.handleInbound', () => {
     );
 
     expect(prisma.twilioPhoneNumber.findUnique).not.toHaveBeenCalled();
-    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(prisma.call.upsert).not.toHaveBeenCalled();
     expect(admission.admitCall).not.toHaveBeenCalled();
     expect(sessionManager.create).not.toHaveBeenCalled();
   });
@@ -177,7 +186,7 @@ describe('TwilioWebhookController.handleInbound', () => {
     ).rejects.toThrow('Invalid Twilio webhook signature.');
 
     expect(prisma.twilioPhoneNumber.findUnique).not.toHaveBeenCalled();
-    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(prisma.call.upsert).not.toHaveBeenCalled();
     expect(admission.admitCall).not.toHaveBeenCalled();
     expect(sessionManager.create).not.toHaveBeenCalled();
   });
@@ -237,10 +246,40 @@ describe('TwilioWebhookController.handleInbound', () => {
     );
   });
 
+  it('retries admission when an earlier attempt was compensated and finalized', async () => {
+    const prisma = makePrisma({
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'organization-1',
+        agentId: 'agent-1',
+      },
+      existingUsage: { finalizationState: 'finalized' },
+    });
+    const admission = makeAdmission(true);
+    const controller = new TwilioWebhookController(
+      {} as never,
+      {} as never,
+      { create: vi.fn(() => ({ id: 'session-1' })) } as never,
+      prisma as never,
+      admission as never,
+      makeVerifier() as never,
+    );
+
+    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+
+    expect(admission.admitCall).toHaveBeenCalledOnce();
+  });
+
   it('does not admit twice when Twilio retries the same inbound webhook', async () => {
     const prisma = makePrisma({
-      existingCall: { id: 'call-1' },
-      existingUsage: { id: 'usage-1' },
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'organization-1',
+        agentId: 'agent-1',
+      },
+      existingUsage: { finalizationState: 'pending' },
     });
     const admission = makeAdmission(true);
     const sessionManager = { create: vi.fn(() => ({ id: 'session-1' })) };
@@ -255,7 +294,7 @@ describe('TwilioWebhookController.handleInbound', () => {
 
     const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
 
-    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(prisma.call.upsert).toHaveBeenCalledOnce();
     expect(admission.admitCall).not.toHaveBeenCalled();
     // The retry is still bridged: the call was already paid for.
     await expect(response.text()).resolves.toContain('<Stream');

@@ -474,9 +474,53 @@ class MemoryPrisma {
       billingLedgerEntry,
       workspace,
       call,
+      $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) =>
+        this.insertBalanceIfMissing(context, strings, values),
       $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) =>
         this.acquireOrganizationRowLock(context, strings, values),
     } as unknown as MemoryPrisma;
+  }
+
+  private async insertBalanceIfMissing(
+    context: TransactionContext,
+    strings: TemplateStringsArray,
+    values: unknown[],
+  ): Promise<number> {
+    const query = strings
+      .map((part, index) => (index < values.length ? `${part}$${index + 1}` : part))
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const expectedQuery =
+      'INSERT INTO organization_credit_balances (id, organization_id, updated_at) VALUES (gen_random_uuid(), $1::uuid, NOW()) ON CONFLICT (organization_id) DO NOTHING';
+    const organizationId = values[0];
+    if (query !== expectedQuery || values.length !== 1 || typeof organizationId !== 'string') {
+      throw new Error(`unexpected balance initialization query: ${query}`);
+    }
+    if (context.lockedOrganizationId !== null) {
+      throw new Error('balance initialization must occur before row lock');
+    }
+    context.upsertedOrganizationId = organizationId;
+    if (this.balances.has(organizationId)) {
+      this.recordTransactionEvent(context, 'balance.insert_if_missing', organizationId, query);
+      return 0;
+    }
+    if (!context.pendingBalance) {
+      const now = new Date();
+      context.pendingBalance = {
+        id: this.nextId('balance'),
+        organizationId,
+        availableSeconds: 0,
+        reservedSeconds: 0,
+        status: 'active',
+        reviewReason: null,
+        version: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+    this.recordTransactionEvent(context, 'balance.insert_if_missing', organizationId, query);
+    return 1;
   }
 
   private async acquireOrganizationRowLock(
@@ -1004,7 +1048,7 @@ describe('CreditLedgerService', () => {
       const actions = raceTrace
         .filter((event) => event.transactionId === transactionId)
         .map((event) => event.action);
-      expect(actions.indexOf('balance.upsert')).toBeLessThan(
+      expect(actions.indexOf('balance.insert_if_missing')).toBeLessThan(
         actions.indexOf('organization.row_lock'),
       );
       expect(actions.indexOf('organization.row_lock')).toBeLessThan(
@@ -1082,7 +1126,7 @@ describe('CreditLedgerService', () => {
         }
       ).transactionEvents ?? [];
     expect(trace.map((event) => event.action)).toEqual([
-      'balance.upsert',
+      'balance.insert_if_missing',
       'organization.row_lock',
       'balance.findUnique',
       'workspace.findFirst',

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   ApiErrorCode,
@@ -51,6 +51,8 @@ const SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
  */
 @Injectable()
 export class EntitlementService {
+  private readonly logger = new Logger(EntitlementService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async getEffectivePlan(organizationId: string): Promise<EffectivePlan> {
@@ -141,7 +143,15 @@ export class EntitlementService {
     const decision = await this.check(organizationId, request);
     if (decision.allowed) return decision;
 
-    await this.auditDenial(decision, request);
+    try {
+      await this.auditDenial(decision, request);
+    } catch (error) {
+      // Admission remains fail-closed with the intended quota response. Audit
+      // storage failure is observable but must not turn a clean 403 into a 500.
+      this.logger.error(
+        `Failed to audit entitlement denial ${decision.correlationId} for organization ${organizationId}: ${(error as Error).message}`,
+      );
+    }
     throw new PlanQuotaExceededError(this.denialMessage(decision), {
       reason: decision.reason,
       plan: decision.plan,

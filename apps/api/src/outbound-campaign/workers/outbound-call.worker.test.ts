@@ -170,6 +170,23 @@ describe('OutboundCallWorker', () => {
     });
   });
 
+  it('pauses before recording failure statistics so a stats error cannot leave dispatch running', async () => {
+    calls.startOutboundCall.mockRejectedValue(
+      new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),
+    );
+    campaigns.incrementStat.mockRejectedValueOnce(new Error('stats unavailable'));
+
+    await expect(makeWorker().processor(job)).rejects.toThrow('stats unavailable');
+
+    expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+      where: { id: 'camp-1', status: 'running' },
+      data: { status: 'paused' },
+    });
+    expect(prisma.outboundCampaign.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+      campaigns.incrementStat.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it('counts a non-billing dispatch error as a failed dial and keeps the campaign running', async () => {
     calls.startOutboundCall.mockRejectedValue(new Error('provider timeout'));
 

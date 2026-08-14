@@ -87,8 +87,12 @@ export class MetricsService implements OnModuleInit {
     registers: [MetricsService.REGISTRY],
   });
 
-  /** `estimate` is "true" for reserve-rate estimates and "false" for settled figures. */
-  readonly providerCostUsdTotal = new Counter({
+  /**
+   * Persisted provider spend observed by this process. This is a gauge because
+   * an estimate can be replaced by a smaller actual and must move between the
+   * estimate labels without replay inflation.
+   */
+  readonly providerCostUsdTotal = new Gauge({
     name: 'voiceforge_provider_cost_usd_total',
     help: 'Provider cost in USD, by provider, service category, and estimate flag',
     labelNames: ['provider', 'category', 'estimate'],

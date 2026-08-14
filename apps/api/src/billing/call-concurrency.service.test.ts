@@ -154,6 +154,27 @@ describe('CallConcurrencyService', () => {
     });
   });
 
+  it('closes the durable lease even when Redis release fails', async () => {
+    const { service, redis, prisma } = makeService();
+    redis.eval.mockRejectedValue(new Error('redis unavailable'));
+
+    await expect(
+      service.release({ callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1' }),
+    ).resolves.toBeUndefined();
+
+    expect(prisma.callConcurrencyLease.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it('does not throw when durable lease cleanup fails', async () => {
+    const { service, redis, prisma } = makeService();
+    redis.eval.mockResolvedValue(2);
+    prisma.callConcurrencyLease.updateMany.mockRejectedValue(new Error('database unavailable'));
+
+    await expect(
+      service.release({ callId: 'call-1', organizationId: 'org-1', leaseToken: 'token-1' }),
+    ).resolves.toBeUndefined();
+  });
+
   /**
    * Without renewal, any call longer than the lease TTL loses its concurrency
    * slot mid-conversation and the organization can exceed the concurrency its

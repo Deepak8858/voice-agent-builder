@@ -81,8 +81,12 @@ describe('AuditService', () => {
     });
   });
 
-  it('still writes the audit record when the workspace lookup fails', async () => {
+  it('still writes the audit record and reports the lookup failure', async () => {
     prisma.workspace.findUnique.mockRejectedValue(new Error('database unavailable'));
+    const loggerError = vi.spyOn(
+      (service as unknown as { logger: { error: (message: string) => void } }).logger,
+      'error',
+    );
 
     await expect(
       service.log({
@@ -92,6 +96,9 @@ describe('AuditService', () => {
       }),
     ).resolves.toBeUndefined();
 
+    expect(loggerError).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to resolve organization for audit workspace ws-1'),
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         organizationId: null,

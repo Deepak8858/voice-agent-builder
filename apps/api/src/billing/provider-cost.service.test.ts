@@ -15,22 +15,58 @@ interface UpsertArgs {
 }
 
 function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
-  const upsert = vi.fn(async (_args: UpsertArgs) => ({}));
+  const rows = new Map<
+    string,
+    { amount: unknown; isEstimate: boolean; serviceCategory: string }
+  >();
+  const rowKey = (provider: string, idempotencyKey: string) => `${provider}\0${idempotencyKey}`;
+  const upsert = vi.fn(async (args: UpsertArgs & { select?: Record<string, boolean> }) => {
+    const key = args.where.provider_idempotencyKey;
+    const mapKey = rowKey(key.provider, key.idempotencyKey);
+    const existing = rows.get(mapKey);
+    const source = existing ? { ...existing, ...args.update } : args.create;
+    const persisted = {
+      amount: source.amount,
+      isEstimate: Boolean(source.isEstimate),
+      serviceCategory: String(source.serviceCategory),
+    };
+    rows.set(mapKey, persisted);
+    return persisted;
+  });
+  const findUnique = vi.fn(async (args: UpsertArgs['where'] extends never ? never : {
+    where: UpsertArgs['where'];
+  }) => {
+    const key = args.where.provider_idempotencyKey;
+    return rows.get(rowKey(key.provider, key.idempotencyKey)) ?? null;
+  });
   const countQueue = [...(opts.counts ?? [])];
+  const metricChildren = new Map<string, { inc: ReturnType<typeof vi.fn>; dec: ReturnType<typeof vi.fn> }>();
+  const labels = vi.fn((provider: string, category: string, estimate: string) => {
+    const key = `${provider}:${category}:${estimate}`;
+    let child = metricChildren.get(key);
+    if (!child) {
+      child = { inc: vi.fn(), dec: vi.fn() };
+      metricChildren.set(key, child);
+    }
+    return child;
+  });
   const prisma = {
-    providerCostEvent: { upsert },
+    providerCostEvent: { upsert, findUnique },
     callUsage: {
       findMany: vi.fn(async () => opts.callUsages ?? []),
       count: vi.fn(async () => countQueue.shift() ?? 0),
     },
+    $executeRaw: vi.fn(async () => 1),
+    $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
   };
   const metrics = {
-    providerCostUsdTotal: { labels: vi.fn(() => ({ inc: vi.fn() })) },
+    providerCostUsdTotal: { labels },
   };
   return {
     prisma,
     upsert,
     metrics,
+    metricChildren,
     service: new ProviderCostService(prisma as never, metrics as never),
   };
 }
@@ -97,6 +133,24 @@ describe('ProviderCostService.estimateConnectedCall', () => {
     );
   });
 
+  it('does not increment provider-cost metrics for an idempotent estimate replay', async () => {
+    const { service, metricChildren } = makeService();
+    const input = {
+      organizationId: ORG,
+      callId: CALL,
+      provider: 'livekit',
+      connectedSeconds: 60,
+      occurredAt: new Date(),
+    };
+
+    await service.estimateConnectedCall(input);
+    await service.estimateConnectedCall(input);
+
+    const estimateMetric = metricChildren.get('livekit:agent_runtime:true');
+    expect(estimateMetric?.inc).toHaveBeenCalledTimes(1);
+    expect(estimateMetric?.dec).not.toHaveBeenCalled();
+  });
+
   it('never overwrites a settled figure when re-estimating', async () => {
     const { service, upsert } = makeService();
 
@@ -137,6 +191,36 @@ describe('ProviderCostService.recordActualCost', () => {
     expect(args.update).toMatchObject({ isEstimate: false, estimateVersion: 0 });
     expect(Number(args.update.amount)).toBeCloseTo(0.3125, 6);
     expect(args.update.reconciledAt).toBeInstanceOf(Date);
+  });
+
+  it('moves an estimate to the settled metric without double-counting spend', async () => {
+    const { service, metricChildren } = makeService();
+    await service.estimateConnectedCall({
+      organizationId: ORG,
+      callId: CALL,
+      provider: 'livekit',
+      connectedSeconds: 60,
+      occurredAt: new Date(),
+    });
+    const idempotencyKey =
+      `estimate:call:${CALL}:${PROVIDER_COST_CATEGORIES.agentRuntime}:v${PROVIDER_COST_ESTIMATE_VERSION}`;
+
+    await service.recordActualCost({
+      organizationId: ORG,
+      callId: CALL,
+      provider: 'livekit',
+      serviceCategory: PROVIDER_COST_CATEGORIES.agentRuntime,
+      idempotencyKey,
+      measuredUnit: 'minute',
+      quantity: 1,
+      amountUsd: 0.08,
+      occurredAt: new Date(),
+    });
+
+    const estimateMetric = metricChildren.get('livekit:agent_runtime:true');
+    const actualMetric = metricChildren.get('livekit:agent_runtime:false');
+    expect(estimateMetric?.dec).toHaveBeenCalledWith(service.reservePerMinuteUsd);
+    expect(actualMetric?.inc).toHaveBeenCalledWith(0.08);
   });
 
   it('records each service category separately', async () => {

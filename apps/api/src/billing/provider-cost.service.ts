@@ -124,51 +124,87 @@ export class ProviderCostService {
   private async record(input: ProviderCostInput, isEstimate: boolean): Promise<void> {
     const quantity = new Prisma.Decimal(this.round6(input.quantity));
     const amount = new Prisma.Decimal(this.round6(input.amountUsd));
+    const key = {
+      provider: input.provider,
+      idempotencyKey: input.idempotencyKey,
+    };
 
-    await this.prisma.providerCostEvent.upsert({
-      where: {
-        provider_idempotencyKey: {
+    const { previous, persisted } = await this.prisma.$transaction(async (tx) => {
+      // Serialize the read/upsert pair across replicas. Without this lock, two
+      // replays can both observe no prior row and both publish the full amount.
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(
+          hashtextextended(${`${input.provider}\0${input.idempotencyKey}`}, 0)
+        )
+      `;
+      const previous = await tx.providerCostEvent.findUnique({
+        where: { provider_idempotencyKey: key },
+        select: { amount: true, isEstimate: true, serviceCategory: true },
+      });
+      const persisted = await tx.providerCostEvent.upsert({
+        where: { provider_idempotencyKey: key },
+        create: {
+          organizationId: input.organizationId,
+          workspaceId: input.workspaceId ?? null,
+          callId: input.callId ?? null,
           provider: input.provider,
+          serviceCategory: input.serviceCategory,
+          providerUsageId: input.providerUsageId ?? null,
           idempotencyKey: input.idempotencyKey,
+          measuredUnit: input.measuredUnit,
+          quantity,
+          amount,
+          isEstimate,
+          estimateVersion: isEstimate ? PROVIDER_COST_ESTIMATE_VERSION : 0,
+          occurredAt: input.occurredAt,
+          reconciledAt: isEstimate ? null : new Date(),
+          metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
         },
-      },
-      create: {
-        organizationId: input.organizationId,
-        workspaceId: input.workspaceId ?? null,
-        callId: input.callId ?? null,
-        provider: input.provider,
-        serviceCategory: input.serviceCategory,
-        providerUsageId: input.providerUsageId ?? null,
-        idempotencyKey: input.idempotencyKey,
-        measuredUnit: input.measuredUnit,
-        quantity,
-        amount,
-        isEstimate,
-        estimateVersion: isEstimate ? PROVIDER_COST_ESTIMATE_VERSION : 0,
-        occurredAt: input.occurredAt,
-        reconciledAt: isEstimate ? null : new Date(),
-        metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
-      },
-      update: {
-        // An actual figure supersedes an estimate. An estimate must never
-        // overwrite an actual, so the estimate path leaves settled rows alone.
-        ...(isEstimate
-          ? {}
-          : {
-              quantity,
-              amount,
-              isEstimate: false,
-              estimateVersion: 0,
-              reconciledAt: new Date(),
-              providerUsageId: input.providerUsageId ?? null,
-              metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
-            }),
-      },
+        update: {
+          // An actual figure supersedes an estimate. An estimate must never
+          // overwrite an actual, so the estimate path leaves settled rows alone.
+          ...(isEstimate
+            ? {}
+            : {
+                quantity,
+                amount,
+                isEstimate: false,
+                estimateVersion: 0,
+                reconciledAt: new Date(),
+                providerUsageId: input.providerUsageId ?? null,
+                metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
+              }),
+        },
+        select: { amount: true, isEstimate: true, serviceCategory: true },
+      });
+      return { previous, persisted };
     });
 
+    const persistedAmount = Number(persisted.amount);
+    const persistedLabels = this.metrics.providerCostUsdTotal.labels(
+      input.provider,
+      persisted.serviceCategory,
+      String(persisted.isEstimate),
+    );
+    if (!previous) {
+      persistedLabels.inc(persistedAmount);
+      return;
+    }
+
+    const previousAmount = Number(previous.amount);
+    if (
+      previous.isEstimate === persisted.isEstimate &&
+      previous.serviceCategory === persisted.serviceCategory
+    ) {
+      const delta = this.round6(persistedAmount - previousAmount);
+      if (delta !== 0) persistedLabels.inc(delta);
+      return;
+    }
+
     this.metrics.providerCostUsdTotal
-      .labels(input.provider, String(input.serviceCategory), isEstimate ? 'true' : 'false')
-      .inc(this.round6(input.amountUsd));
+      .labels(input.provider, previous.serviceCategory, String(previous.isEstimate))
+      .dec(previousAmount);
+    persistedLabels.inc(persistedAmount);
   }
 
   /**

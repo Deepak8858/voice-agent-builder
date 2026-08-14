@@ -59,24 +59,34 @@ export class TwilioWebhookController {
       );
     }
 
-    // Twilio retries this webhook, so the call is looked up before it is
-    // created: a retry must reuse the admitted call rather than open a second
-    // one that would consume another concurrency slot and another minute.
-    const call =
-      (await this.prisma.call.findFirst({ where: { providerCallId: callSid } })) ??
-      (await this.prisma.call.create({
-        data: {
-          workspaceId: number.workspaceId!,
-          organizationId: number.workspace.organizationId,
-          agentId: number.agentId!,
-          direction: 'inbound',
-          status: 'queued',
-          provider: 'twilio',
-          providerCallId: callSid,
-          fromNumber: from ?? undefined,
-          toNumber: to ?? undefined,
-        },
-      }));
+    // The provider-scoped unique key makes concurrent Twilio retries collapse
+    // into one call. Returning the persisted row also lets us fail closed if a
+    // provider identifier is ever replayed against another tenant or number.
+    const call = await this.prisma.call.upsert({
+      where: {
+        provider_providerCallId: { provider: 'twilio', providerCallId: callSid },
+      },
+      create: {
+        workspaceId: number.workspaceId!,
+        organizationId: number.workspace.organizationId,
+        agentId: number.agentId!,
+        direction: 'inbound',
+        status: 'queued',
+        provider: 'twilio',
+        providerCallId: callSid,
+        fromNumber: from ?? undefined,
+        toNumber: to ?? undefined,
+      },
+      update: {},
+    });
+    if (
+      call.workspaceId !== number.workspaceId ||
+      call.organizationId !== number.workspace.organizationId ||
+      call.agentId !== number.agentId
+    ) {
+      this.logger.error(`Twilio call identity collision for ${callSid}`);
+      return new Response(BILLING_REFUSAL_TWIML, { headers: { 'Content-Type': 'text/xml' } });
+    }
 
     // The media stream below is billable the moment Twilio opens it, so nothing
     // is streamed until billing has admitted the call.
@@ -124,9 +134,9 @@ export class TwilioWebhookController {
   ): Promise<boolean> {
     const existingUsage = await this.prisma.callUsage.findUnique({
       where: { callId },
-      select: { id: true },
+      select: { finalizationState: true },
     });
-    if (existingUsage) return true;
+    if (existingUsage && existingUsage.finalizationState !== 'finalized') return true;
 
     const admission = await this.admission.admitCall({
       organizationId,
@@ -159,7 +169,9 @@ export class TwilioWebhookController {
     const status = body.CallStatus as string;
 
     if (callSid) {
-      const call = await this.prisma.call.findFirst({ where: { providerCallId: callSid } });
+      const call = await this.prisma.call.findUnique({
+        where: { provider_providerCallId: { provider: 'twilio', providerCallId: callSid } },
+      });
       if (call) {
         const statusMap: Record<string, string> = {
           queued: 'queued',

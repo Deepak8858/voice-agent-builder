@@ -190,6 +190,22 @@ END $$;
 CREATE INDEX IF NOT EXISTS "calls_organization_id_idx"
   ON "calls"("organization_id");
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "calls"
+    WHERE "provider_call_id" IS NOT NULL
+    GROUP BY "provider", "provider_call_id"
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'production billing migration cannot continue: duplicate calls(provider, provider_call_id) rows exist';
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "calls_provider_call_uidx"
+  ON "calls"("provider", "provider_call_id");
+
 CREATE TABLE "billing_credit_buckets" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
   "organization_id" UUID NOT NULL,
@@ -375,9 +391,9 @@ CREATE TABLE "call_concurrency_leases" (
   CONSTRAINT "call_concurrency_leases_pkey" PRIMARY KEY ("id")
 );
 
-CREATE UNIQUE INDEX "billing_credit_buckets_organization_id_source_type_source_id_key"
+CREATE UNIQUE INDEX "credit_bucket_source_uidx"
   ON "billing_credit_buckets"("organization_id", "source_type", "source_id");
-CREATE INDEX "billing_credit_buckets_organization_id_status_expires_at_priority_idx"
+CREATE INDEX "credit_bucket_spend_idx"
   ON "billing_credit_buckets"("organization_id", "status", "expires_at", "priority");
 
 CREATE UNIQUE INDEX "billing_ledger_entries_organization_id_idempotency_key_key"
@@ -462,7 +478,7 @@ ALTER TABLE "billing_credit_buckets"
 ALTER TABLE "billing_ledger_entries"
   ADD CONSTRAINT "billing_ledger_entries_organization_id_fkey"
   FOREIGN KEY ("organization_id") REFERENCES "organizations"("id")
-  ON DELETE CASCADE ON UPDATE CASCADE;
+  ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "billing_ledger_entries"
   ADD CONSTRAINT "billing_ledger_entries_bucket_id_fkey"
   FOREIGN KEY ("bucket_id") REFERENCES "billing_credit_buckets"("id")
@@ -536,7 +552,7 @@ ALTER TABLE "agent_provider_deployments"
 ALTER TABLE "provider_cost_events"
   ADD CONSTRAINT "provider_cost_events_organization_id_fkey"
   FOREIGN KEY ("organization_id") REFERENCES "organizations"("id")
-  ON DELETE CASCADE ON UPDATE CASCADE;
+  ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "provider_cost_events"
   ADD CONSTRAINT "provider_cost_events_workspace_id_fkey"
   FOREIGN KEY ("workspace_id") REFERENCES "workspaces"("id")
