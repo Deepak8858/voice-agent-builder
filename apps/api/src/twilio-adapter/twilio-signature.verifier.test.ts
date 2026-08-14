@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import twilio from 'twilio';
 import { TwilioSignatureVerifier } from './twilio-signature.verifier';
+import { TwilioProviderAdapter } from '../telephony/providers/twilio.provider';
 import { env } from '../config/env';
 
 const AUTH_TOKEN = 'test-auth-token-value';
@@ -16,6 +17,15 @@ const PAYLOAD = {
 /** Signs exactly as Twilio does, so the verifier is tested against real output. */
 function sign(url: string, body: Record<string, unknown>): string {
   return twilio.getExpectedTwilioSignature(AUTH_TOKEN, url, body as Record<string, string>);
+}
+
+/**
+ * The real adapter, not a stub: the whole point of this suite is that the
+ * verifier agrees with Twilio's own signing, and a stubbed comparison would
+ * assert nothing about that.
+ */
+function makeVerifier(): TwilioSignatureVerifier {
+  return new TwilioSignatureVerifier(new TwilioProviderAdapter());
 }
 
 describe('TwilioSignatureVerifier', () => {
@@ -35,7 +45,7 @@ describe('TwilioSignatureVerifier', () => {
   });
 
   it('accepts a delivery signed for the public request URL', async () => {
-    const verifier = new TwilioSignatureVerifier();
+    const verifier = makeVerifier();
     const signature = sign(`${WEBHOOK_ORIGIN}${PATH}`, PAYLOAD);
 
     await expect(
@@ -47,7 +57,7 @@ describe('TwilioSignatureVerifier', () => {
   });
 
   it('rejects a delivery with no signature header', async () => {
-    const verifier = new TwilioSignatureVerifier();
+    const verifier = makeVerifier();
 
     await expect(
       verifier.assertValidSignature({ headers: {}, originalUrl: PATH, body: PAYLOAD }, 'voice.inbound'),
@@ -55,7 +65,7 @@ describe('TwilioSignatureVerifier', () => {
   });
 
   it('rejects a signature computed over a different body', async () => {
-    const verifier = new TwilioSignatureVerifier();
+    const verifier = makeVerifier();
     const signature = sign(`${WEBHOOK_ORIGIN}${PATH}`, { ...PAYLOAD, To: '+19998887777' });
 
     await expect(
@@ -67,7 +77,7 @@ describe('TwilioSignatureVerifier', () => {
   });
 
   it('rejects a signature computed over a different host, so a forged Host header cannot help an attacker', async () => {
-    const verifier = new TwilioSignatureVerifier();
+    const verifier = makeVerifier();
     const signature = sign(`https://attacker.example.net${PATH}`, PAYLOAD);
 
     await expect(
@@ -80,7 +90,7 @@ describe('TwilioSignatureVerifier', () => {
 
   it('rejects every delivery when no signing token is configured', async () => {
     (env as { TWILIO_AUTH_TOKEN?: string }).TWILIO_AUTH_TOKEN = undefined;
-    const verifier = new TwilioSignatureVerifier();
+    const verifier = makeVerifier();
     const signature = sign(`${WEBHOOK_ORIGIN}${PATH}`, PAYLOAD);
 
     await expect(

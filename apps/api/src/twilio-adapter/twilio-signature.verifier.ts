@@ -28,7 +28,8 @@ export interface TwilioSignedRequest {
 @Injectable()
 export class TwilioSignatureVerifier {
   private readonly logger = new Logger(TwilioSignatureVerifier.name);
-  private readonly adapter = new TwilioProviderAdapter();
+
+  constructor(private readonly adapter: TwilioProviderAdapter) {}
 
   async assertValidSignature(request: TwilioSignedRequest, eventType: string): Promise<void> {
     const authToken = env.TWILIO_AUTH_TOKEN;

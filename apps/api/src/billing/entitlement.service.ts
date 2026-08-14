@@ -188,9 +188,12 @@ export class EntitlementService {
       });
     }
     if (limit <= 0) {
+      // The plan never granted a browser test, so "already used" would be a
+      // lie and would point the customer at the wrong remedy. The fix is a
+      // plan or payment change.
       return this.decision(effective, correlationId, {
         allowed: false,
-        reason: 'trial_already_used',
+        reason: this.unavailableReason(effective),
         current: 0,
         limit,
       });

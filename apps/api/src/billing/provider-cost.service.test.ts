@@ -258,7 +258,27 @@ describe('ProviderCostService.recordActualCost', () => {
   });
 
   it('does not write to the customer ledger', async () => {
-    const { service, prisma } = makeService();
+    const { prisma, metrics } = makeService();
+    // Asserting on the mock's own shape would pass no matter what the service
+    // did. Recording every model the service actually reaches proves the
+    // invariant instead.
+    const touchedModels: string[] = [];
+    const recording: Record<string, unknown> = new Proxy(
+      prisma as unknown as Record<string, unknown>,
+      {
+        get(target, property: string | symbol) {
+          if (typeof property === 'string') touchedModels.push(property);
+          // The service does its writes on the transaction client, so that
+          // client has to be recorded as well or the assertion below would be
+          // blind to exactly the writes it is meant to catch.
+          if (property === '$transaction') {
+            return (operation: (tx: unknown) => Promise<unknown>) => operation(recording);
+          }
+          return Reflect.get(target, property);
+        },
+      },
+    );
+    const service = new ProviderCostService(recording as never, metrics as never);
 
     await service.recordActualCost({
       organizationId: ORG,
@@ -273,8 +293,10 @@ describe('ProviderCostService.recordActualCost', () => {
 
     // Provider spend and customer credit are separate books; a cost correction
     // must never move a customer balance.
-    expect(prisma).not.toHaveProperty('billingLedgerEntry');
-    expect(prisma).not.toHaveProperty('organizationCreditBalance');
+    expect(touchedModels).toContain('providerCostEvent');
+    expect(touchedModels).not.toContain('billingLedgerEntry');
+    expect(touchedModels).not.toContain('organizationCreditBalance');
+    expect(touchedModels).not.toContain('billingCreditBucket');
   });
 });
 

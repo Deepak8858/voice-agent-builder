@@ -78,6 +78,14 @@ const INBOUND_PAYLOAD = {
 
 const SIGNED_HEADERS = { 'x-twilio-signature': 'valid-signature' };
 
+/**
+ * The URL Twilio actually called, including the global route prefix. The
+ * controller has no fallback path, so every call site must supply it.
+ */
+function twilioRequest(originalUrl = '/api/v1/voice/webhook/inbound') {
+  return { originalUrl } as never;
+}
+
 describe('TwilioWebhookController.handleInbound', () => {
   it('propagates the phone number workspace organization to an inbound call', async () => {
     const prisma = makePrisma();
@@ -91,7 +99,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeVerifier() as never,
     );
 
-    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, twilioRequest());
 
     expect(prisma.call.upsert).toHaveBeenCalledWith({
       where: {
@@ -158,7 +166,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeRejectingVerifier('Missing Twilio webhook signature.') as never,
     );
 
-    await expect(controller.handleInbound(INBOUND_PAYLOAD, {})).rejects.toThrow(
+    await expect(controller.handleInbound(INBOUND_PAYLOAD, {}, twilioRequest())).rejects.toThrow(
       'Missing Twilio webhook signature.',
     );
 
@@ -182,7 +190,7 @@ describe('TwilioWebhookController.handleInbound', () => {
     );
 
     await expect(
-      controller.handleInbound(INBOUND_PAYLOAD, { 'x-twilio-signature': 'forged' }),
+      controller.handleInbound(INBOUND_PAYLOAD, { 'x-twilio-signature': 'forged' }, twilioRequest()),
     ).rejects.toThrow('Invalid Twilio webhook signature.');
 
     expect(prisma.twilioPhoneNumber.findUnique).not.toHaveBeenCalled();
@@ -204,7 +212,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, twilioRequest());
 
     expect(admission.admitCall).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -232,7 +240,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, twilioRequest());
     const body = await response.text();
 
     expect(sessionManager.create).not.toHaveBeenCalled();
@@ -266,7 +274,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeVerifier() as never,
     );
 
-    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, twilioRequest());
 
     expect(admission.admitCall).toHaveBeenCalledOnce();
   });
@@ -292,7 +300,7 @@ describe('TwilioWebhookController.handleInbound', () => {
       makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, twilioRequest());
 
     expect(prisma.call.upsert).toHaveBeenCalledOnce();
     expect(admission.admitCall).not.toHaveBeenCalled();

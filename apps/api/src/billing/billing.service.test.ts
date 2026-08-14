@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
 import { BILLING_CATALOG_VERSION } from '@voiceforge/shared';
-import { BillingService, ForbiddenPlanError } from './billing.service';
+import { BillingService, BillingUnavailableError, ForbiddenPlanError } from './billing.service';
 import { CreditLedgerService } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
 import { env } from '../config/env';
@@ -293,6 +293,32 @@ describe('BillingService', () => {
           data: expect.objectContaining({ action: 'billing.topup_checkout_started' }),
         }),
       );
+    });
+
+    /**
+     * A deployment missing the server-owned pack Price cannot grant what a
+     * customer would pay for, so it must refuse before Stripe is contacted
+     * rather than take the payment and fail afterwards.
+     */
+    it('refuses a pack when the minute-pack price is not configured', async () => {
+      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
+      const prisma = makePrisma({
+        subscription: {
+          stripeCustomerId: 'cus_123',
+          plan: 'growth',
+          status: 'active',
+          trialEnd: null,
+          concurrentCallLimitOverride: null,
+        },
+      });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+        BillingUnavailableError,
+      );
+      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     /**

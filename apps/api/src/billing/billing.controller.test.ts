@@ -25,11 +25,19 @@ function makeController() {
   };
 }
 
-function request(role: SessionUser['active_workspace_role']): Request {
+function request(
+  role: SessionUser['active_workspace_role'],
+  activeWorkspaceId = 'ws-1',
+): Request {
   return {
-    user: { active_workspace_role: role },
+    user: { active_workspace_role: role, active_workspace_id: activeWorkspaceId },
     query: {},
   } as unknown as Request;
+}
+
+/** A request the guard never populated, e.g. because it was bypassed. */
+function requestWithoutSessionUser(): Request {
+  return { query: {} } as unknown as Request;
 }
 
 const checkoutDto = {
@@ -71,6 +79,50 @@ describe('BillingController authorization', () => {
 
     await expect(controller.createCheckout('ws-1', request(role), checkoutDto)).resolves.toEqual({
       url: 'https://checkout.test',
+    });
+    expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto);
+  });
+
+  /**
+   * If a guard does not populate the session, the role is `undefined`. That
+   * must deny rather than fall through to a paid action.
+   */
+  it.each([
+    ['checkout', (controller: BillingController) =>
+      controller.createCheckout('ws-1', requestWithoutSessionUser(), checkoutDto)],
+    ['top-up checkout', (controller: BillingController) =>
+      controller.createTopUpCheckout('ws-1', requestWithoutSessionUser(), topUpDto)],
+    ['portal', (controller: BillingController) =>
+      controller.createPortal('ws-1', requestWithoutSessionUser(), portalDto)],
+    ['invoices', (controller: BillingController) =>
+      controller.getInvoices('ws-1', requestWithoutSessionUser())],
+  ])('denies %s to a request with no session user', async (_name, invoke) => {
+    const { controller, billing, prisma } = makeController();
+
+    await expect(invoke(controller)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(prisma.workspace.findUnique).not.toHaveBeenCalled();
+    expect(billing.createCheckoutSession).not.toHaveBeenCalled();
+    expect(billing.createTopUpCheckoutSession).not.toHaveBeenCalled();
+    expect(billing.createPortalSession).not.toHaveBeenCalled();
+    expect(billing.getInvoices).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The role on the session belongs to the caller's active workspace. These
+   * endpoints therefore depend on `WorkspaceGuard` having already established
+   * that the path workspace *is* that active workspace; the role alone is not
+   * a cross-tenant grant. This documents that contract: an owner of one
+   * workspace reaches organization billing only for the workspace the guard
+   * admitted, which is why the guard runs before the role check.
+   */
+  it('resolves the organization from the path workspace, not the session workspace', async () => {
+    const { controller, billing, prisma } = makeController();
+
+    await controller.createCheckout('ws-1', request('owner', 'ws-other'), checkoutDto);
+
+    expect(prisma.workspace.findUnique).toHaveBeenCalledWith({
+      where: { id: 'ws-1' },
+      select: { organizationId: true },
     });
     expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto);
   });

@@ -48,7 +48,11 @@ export interface BillingReconciliationJob {
  * and running several batches at once against the same rows would produce lock
  * contention with no throughput gain.
  *
- * Like every other worker here, this only starts when `WORKERS_ENABLED` is true.
+ * Like every other worker here, this only starts when `WORKERS_ENABLED` is true:
+ * `app.module.ts` only imports `WorkersModule` under that flag, so a replica
+ * with workers disabled never constructs this class and therefore never
+ * registers a schedule. Registration and consumption are gated by the same
+ * condition, so jobs cannot accumulate with nothing to run them.
  */
 @Injectable()
 export class BillingReconciliationWorker

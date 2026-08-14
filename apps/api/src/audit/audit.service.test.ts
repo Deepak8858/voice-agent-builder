@@ -81,6 +81,31 @@ describe('AuditService', () => {
     });
   });
 
+  /**
+   * Audit writes sit on request paths, so the workspace lookup is memoized. A
+   * workspace never changes organization, so the second write must not cost a
+   * second round trip.
+   */
+  it('resolves the organization once for repeated writes from the same workspace', async () => {
+    prisma.workspace.findUnique.mockResolvedValue({ organizationId: 'org-derived' });
+
+    await service.log({
+      workspaceId: 'ws-1',
+      action: 'crm_credential.create',
+      resourceType: 'workspace_crm_credential',
+    });
+    await service.log({
+      workspaceId: 'ws-1',
+      action: 'crm_credential.delete',
+      resourceType: 'workspace_crm_credential',
+    });
+
+    expect(prisma.workspace.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({ organizationId: 'org-derived', workspaceId: 'ws-1' }),
+    });
+  });
+
   it('still writes the audit record and reports the lookup failure', async () => {
     prisma.workspace.findUnique.mockRejectedValue(new Error('database unavailable'));
     const loggerError = vi.spyOn(
@@ -103,6 +128,32 @@ describe('AuditService', () => {
       data: expect.objectContaining({
         organizationId: null,
         workspaceId: 'ws-1',
+      }),
+    });
+  });
+
+  /**
+   * A deleted or unknown workspace is a different branch from a failed lookup:
+   * it resolves cleanly to no organization. The audit record must still be
+   * written, because losing the trail is worse than an unattributed entry.
+   */
+  it('records a null organization when the workspace no longer exists', async () => {
+    prisma.workspace.findUnique.mockResolvedValue(null);
+
+    await service.log({
+      workspaceId: 'ws-missing',
+      action: 'white_label.update',
+      resourceType: 'white_label_settings',
+    });
+
+    expect(prisma.workspace.findUnique).toHaveBeenCalledWith({
+      where: { id: 'ws-missing' },
+      select: { organizationId: true },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        organizationId: null,
+        workspaceId: 'ws-missing',
       }),
     });
   });

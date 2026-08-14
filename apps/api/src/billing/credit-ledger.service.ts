@@ -11,15 +11,23 @@ import type {
   EntitlementReason,
   RuntimeUsageDecision,
 } from '@voiceforge/shared';
-import { CreditBalanceStatusSchema } from '@voiceforge/shared';
+import { CreditBalanceStatusSchema, MINUTE_PACK } from '@voiceforge/shared';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 
 const CREDIT_SECONDS_PER_MINUTE = 60;
 /** Window used to warn a customer that credit is about to expire. */
 const CREDIT_EXPIRY_HORIZON_DAYS = 30;
-const PURCHASED_PACK_SECONDS = 6_000;
-const PURCHASED_PACK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1_000;
+/**
+ * The size and lifetime of a pack are commercial terms, so they are derived
+ * from the shared catalog rather than restated here. Only *new* purchases use
+ * these values: an already-persisted bucket carries the terms it was sold
+ * under, and every replay check compares against that bucket instead, so a
+ * repriced pack cannot turn a historical purchase into an idempotency
+ * conflict.
+ */
+const PURCHASED_PACK_SECONDS = MINUTE_PACK.minutes * CREDIT_SECONDS_PER_MINUTE;
+const PURCHASED_PACK_LIFETIME_MS = MINUTE_PACK.expiresAfterDays * 24 * 60 * 60 * 1_000;
 
 const IdentifierSchema = z.string().trim().min(1);
 const IdempotencyKeySchema = z.string().trim().min(1).max(255);
@@ -174,7 +182,7 @@ const PurchasedGrantOperationSchema = z
     bucketId: IdentifierSchema,
     sourceType: z.literal('purchased'),
     sourceId: IdentifierSchema,
-    seconds: z.literal(PURCHASED_PACK_SECONDS),
+    seconds: z.number().int().positive(),
     purchasedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
     priority: z.literal(20),
@@ -218,7 +226,7 @@ const PurchasedReversalOperationSchema = z
     bucketId: IdentifierSchema,
     sourceType: z.literal('purchased'),
     sourceId: IdentifierSchema,
-    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
+    originalSeconds: z.number().int().positive(),
   })
   .strict();
 
@@ -227,8 +235,8 @@ const AutomaticPurchasedReversalReplayMetadataSchema = z
     operation: PurchasedReversalOperationSchema,
     checkoutSessionId: IdentifierSchema,
     refundId: IdentifierSchema,
-    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
-    unusedSecondsRemoved: z.literal(PURCHASED_PACK_SECONDS),
+    originalSeconds: z.number().int().positive(),
+    unusedSecondsRemoved: z.number().int().positive(),
     consumedOrReservedSeconds: z.literal(0),
     reviewReason: z.null(),
   })
@@ -239,7 +247,7 @@ const ManualReviewPurchasedReversalReplayMetadataSchema = z
     operation: PurchasedReversalOperationSchema,
     checkoutSessionId: IdentifierSchema,
     refundId: IdentifierSchema,
-    originalSeconds: z.literal(PURCHASED_PACK_SECONDS),
+    originalSeconds: z.number().int().positive(),
     unusedSecondsPreserved: z.number().int().nonnegative(),
     consumedOrReservedSeconds: z.number().int().positive(),
     reviewReason: IdentifierSchema,
@@ -447,26 +455,31 @@ export class CreditLedgerService {
     return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
       const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
       if (existing) {
-        const expiresAt = new Date(input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS);
         const bucket = await this.findReplaySourceBucket(
           tx,
           input.organizationId,
           'purchased',
           input.checkoutSessionId,
         );
+        // A replay is checked against the terms this purchase was actually
+        // sold under, held on the bucket, rather than against the current
+        // catalog. Otherwise repricing the pack would make every historical
+        // Stripe retry look like an idempotency conflict.
+        const soldSeconds = bucket.originalSeconds;
+        const soldExpiresAt = bucket.expiresAt;
         this.assertLedgerReplayIdentity(existing, {
           entryTypes: ['purchase_grant'],
           organizationId: input.organizationId,
           workspaceId: null,
           callId: null,
           bucketId: bucket.id,
-          seconds: PURCHASED_PACK_SECONDS,
+          seconds: soldSeconds,
           reasonCode: 'purchased_topup',
           metadataSchema: PurchasedGrantReplayMetadataSchema,
           operationMatches: (metadata) =>
             metadata.checkoutSessionId === input.checkoutSessionId &&
             metadata.purchasedAt === input.purchasedAt.toISOString() &&
-            metadata.expiresAt === expiresAt.toISOString() &&
+            metadata.expiresAt === soldExpiresAt.toISOString() &&
             metadata.priority === 20 &&
             metadata.operation.kind === 'purchased_grant' &&
             metadata.operation.organizationId === input.organizationId &&
@@ -474,17 +487,15 @@ export class CreditLedgerService {
             metadata.operation.bucketId === bucket.id &&
             metadata.operation.sourceType === 'purchased' &&
             metadata.operation.sourceId === input.checkoutSessionId &&
-            metadata.operation.seconds === PURCHASED_PACK_SECONDS &&
+            metadata.operation.seconds === soldSeconds &&
             metadata.operation.purchasedAt === input.purchasedAt.toISOString() &&
-            metadata.operation.expiresAt === expiresAt.toISOString() &&
+            metadata.operation.expiresAt === soldExpiresAt.toISOString() &&
             metadata.operation.priority === 20 &&
             metadata.operation.status === 'active' &&
             bucket.organizationId === input.organizationId &&
             bucket.sourceType === 'purchased' &&
             bucket.sourceId === input.checkoutSessionId &&
-            bucket.originalSeconds === PURCHASED_PACK_SECONDS &&
             bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
-            bucket.expiresAt.getTime() === expiresAt.getTime() &&
             bucket.priority === 20 &&
             bucket.status === 'active',
         });
@@ -1768,11 +1779,16 @@ export class CreditLedgerService {
     bucket: BillingCreditBucket,
     input: CreditReversalInput,
   ): void {
+    // `originalSeconds` is deliberately not compared to the current catalog:
+    // a pack sold under earlier terms must still be refundable after the pack
+    // size changes. It is instead treated as the authority every replay check
+    // below is measured against.
     if (
       bucket.organizationId !== input.organizationId ||
       bucket.sourceType !== 'purchased' ||
       bucket.sourceId !== input.checkoutSessionId ||
-      bucket.originalSeconds !== PURCHASED_PACK_SECONDS
+      !Number.isInteger(bucket.originalSeconds) ||
+      bucket.originalSeconds <= 0
     ) {
       throw new CreditLedgerInvariantError(
         'Purchased reversal bucket does not match immutable purchase identity',
@@ -1793,7 +1809,7 @@ export class CreditLedgerService {
         workspaceId: null,
         callId: null,
         bucketId: bucket.id,
-        seconds: -PURCHASED_PACK_SECONDS,
+        seconds: -bucket.originalSeconds,
         reasonCode: 'refund_unused_credit',
         metadataSchema: AutomaticPurchasedReversalReplayMetadataSchema,
         operationMatches: (metadata) =>
@@ -1875,7 +1891,7 @@ export class CreditLedgerService {
       bucketId: bucket.id,
       sourceType: 'purchased',
       sourceId: input.checkoutSessionId,
-      originalSeconds: PURCHASED_PACK_SECONDS,
+      originalSeconds: bucket.originalSeconds,
     };
   }
 

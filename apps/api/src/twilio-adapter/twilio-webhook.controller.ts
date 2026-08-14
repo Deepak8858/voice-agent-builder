@@ -33,13 +33,13 @@ export class TwilioWebhookController {
   async handleInbound(
     @Body() body: Record<string, unknown>,
     @Headers() headers: Record<string, string | string[] | undefined> = {},
-    @Req() req?: Request,
+    @Req() req: Request,
   ) {
     // Nothing below this line may run for an unauthenticated caller: the
     // handler creates a call, spends billing credit, and opens a media stream,
     // all of which an unsigned request could otherwise trigger at will.
     await this.signatures.assertValidSignature(
-      { headers, originalUrl: requestUrl(req, '/voice/webhook/inbound'), body },
+      { headers, originalUrl: requestUrl(req), body },
       'voice.inbound',
     );
 
@@ -172,12 +172,12 @@ export class TwilioWebhookController {
   async handleStatus(
     @Body() body: Record<string, unknown>,
     @Headers() headers: Record<string, string | string[] | undefined> = {},
-    @Req() req?: Request,
+    @Req() req: Request,
   ) {
     // Status callbacks mutate call state, so they are authenticated on the
     // same terms as the inbound webhook.
     await this.signatures.assertValidSignature(
-      { headers, originalUrl: requestUrl(req, '/voice/webhook/status'), body },
+      { headers, originalUrl: requestUrl(req), body },
       'voice.status',
     );
 
@@ -218,7 +218,17 @@ export class TwilioWebhookController {
  * The path Twilio signed. Only the path and query are taken from the request;
  * the origin is supplied by the verifier from configuration so a forged `Host`
  * header cannot influence the string that is hashed.
+ *
+ * There is deliberately no hard-coded fallback path. A literal such as
+ * `/voice/webhook/status` omits the global route prefix, so if the request were
+ * ever missing the signature would be computed over a path Twilio never signed
+ * and every delivery would be refused as forged — a wiring fault reported as an
+ * attack. Failing here names the actual problem.
  */
-function requestUrl(req: Request | undefined, fallbackPath: string): string {
-  return req?.originalUrl ?? req?.url ?? fallbackPath;
+function requestUrl(req: Request): string {
+  const url = req?.originalUrl ?? req?.url;
+  if (!url) {
+    throw new Error('Twilio webhook request has no URL; signature cannot be verified');
+  }
+  return url;
 }

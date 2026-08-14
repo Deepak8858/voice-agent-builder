@@ -167,6 +167,45 @@ describe('EntitlementService', () => {
 
       expect(plan.entitlements.concurrentCalls).toBe(2);
     });
+
+    /**
+     * A zero or negative override would silently mean "this Enterprise
+     * customer can never place a call". The contractual floor is one, so a
+     * mistyped override degrades to the minimum rather than to an outage.
+     */
+    it.each([0, -5])('raises an override of %s to the contractual minimum of 1', async (override) => {
+      const svc = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'enterprise',
+            status: 'active',
+            concurrentCallLimitOverride: override,
+          },
+        }),
+      );
+
+      const plan = await svc.getEffectivePlan('org-1');
+
+      expect(plan.entitlements.concurrentCalls).toBe(1);
+    });
+
+    /**
+     * A stored status outside the shared contract is corruption. Reporting it
+     * as `none` would tell a paying organization to subscribe, so it is
+     * surfaced as `unknown` and paid usage stops until a human corrects it.
+     */
+    it('surfaces a status outside the shared contract as unknown rather than none', async () => {
+      const svc = makeService(
+        makePrisma({ subscription: { plan: 'growth', status: 'not_a_stripe_status' } }),
+      );
+
+      const plan = await svc.getEffectivePlan('org-1');
+
+      expect(plan).toMatchObject({ plan: 'free', status: 'unknown', paidAccess: false });
+      await expect(
+        svc.check('org-1', { kind: 'paid_call', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'billing_temporarily_unavailable' });
+    });
   });
 
   describe('check', () => {
