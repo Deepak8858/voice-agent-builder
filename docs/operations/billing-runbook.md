@@ -77,17 +77,20 @@ verify with one live checkout per registered jurisdiction.
 All variables below are validated at boot by `apps/api/src/config/env.ts`;
 a malformed value fails startup rather than silently defaulting.
 
-### 2.1 Stripe and mode
+### 2.1 Stripe checkout
 
-- `STRIPE_SECRET_KEY` — absent means Stripe operations are no-ops and checkout
+- `STRIPE_SECRET_KEY` — absent means Stripe operations are unavailable and checkout
   reports temporarily unavailable.
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`, `STRIPE_ENTERPRISE_PRICE_ID`
-- `BILLING_MODE` — `demo` | `live`, default `demo`.
-- `WEB_BASE_URL` — when `BILLING_MODE=live`, this must be an absolute non-local
-  HTTPS URL. Boot fails otherwise. Stripe redirects paying customers back to this
-  origin, so a default `localhost` value would take payment and then bounce the
-  customer to a dead address — a failure no health check can detect.
+- `STRIPE_MINUTE_PACK_PRICE_ID`
+- There is no demo billing mode. Checkout is enabled only when the secret key,
+  webhook secret, both self-service subscription prices, and the minute-pack price
+  are all configured; partial configuration fails closed.
+- `WEB_BASE_URL` — when Stripe checkout is fully configured, this must be an
+  absolute non-local HTTPS URL. Boot fails otherwise. Stripe redirects paying
+  customers back to this origin, so a default `localhost` value would take payment
+  and then bounce the customer to a dead address — a failure no health check can detect.
 
 ### 2.2 Reconciliation and cost
 
@@ -131,10 +134,10 @@ a malformed value fails startup rather than silently defaulting.
   peak usage on `voiceforge_calls_active_global` and raise the global ceiling
   deliberately, with capacity to back it.
 
-Runtime HMAC secret (`VOICE_WEBHOOK_SECRET`) rotation: deploy the new secret to
-both API and voice runtime in the same release. The runtime signs usage events
-with it, and a mismatch causes usage events to be rejected — calls keep running
-while metering stops, which is the worst possible failure mode. Verify after
+Runtime internal key (`INTERNAL_API_KEY`) rotation: deploy the new value to both
+API and voice runtime in the same release. The runtime authenticates usage events
+with `x-internal-key`; a mismatch causes metering requests to fail and the runtime
+to terminate calls after the configured consecutive-failure limit. Verify after
 rotation that `voiceforge_billing_reserved_seconds` still moves during a live call.
 
 ---
@@ -149,8 +152,9 @@ drifted projection either sells credit twice or refuses credit the customer owns
 bounded, idempotent repairs, scheduled as separate BullMQ jobs on the
 `billing-reconciliation` queue so a failure in one cannot block the others:
 
-- `billing.reconcile.balances` — recompute available seconds from active buckets
-  minus reserved seconds; correct drift with an audited compensating write.
+- `billing.reconcile.balances` — recompute available seconds from active bucket
+  remainder; reserved seconds are tracked separately and are not subtracted twice.
+  Correct drift with an audited compensating write.
 - `billing.reconcile.buckets` — retire buckets past expiry, zeroing remaining
   seconds and flipping status in one update so the decrement is observed once.
 - `billing.reconcile.stale_calls` — finalize calls that never reported connection
@@ -306,9 +310,11 @@ The goal of a billing rollback is to stop *new* commitments without corrupting
 calls that are already running or balances that are already correct.
 
 **To stop new purchases:**
-Set `BILLING_MODE=demo` and redeploy. Checkout and portal actions return a
-temporary-unavailable state. Existing subscriptions, balances, and running calls
-are unaffected. This does not grant free minutes or a trial to anyone.
+Remove one required Stripe checkout configuration value (preferably the server-side
+`STRIPE_SECRET_KEY`) and redeploy. Checkout and portal actions return a
+temporary-unavailable state because partial configuration fails closed. Existing
+subscriptions, balances, and running calls are unaffected. This does not grant free
+minutes or a trial to anyone.
 
 **To stop new calls without killing active ones:**
 Reduce capacity at the admission boundary. Active calls hold their leases and
