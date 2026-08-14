@@ -24,6 +24,8 @@ const BILLING_SUMMARY = {
   purchasedSeconds: 6_000,
   reservedSeconds: 60,
   expiringSeconds: 12_000,
+  lifetimeBrowserTestSecondsRemaining: 0,
+  topUpAvailable: true,
   availableSeconds: 18_000,
   balanceStatus: 'active',
   entitlements: {
