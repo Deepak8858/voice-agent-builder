@@ -182,6 +182,15 @@ const EnvSchema = z.object({
   POSTHOG_ENABLED: BooleanEnvSchema.default(false),
   POSTHOG_PROJECT_TOKEN: z.string().optional(),
   POSTHOG_HOST: z.string().default('https://us.i.posthog.com'),
+  // Mirror 4xx responses to error tracking as well as 5xx.
+  //
+  // Off by default because most 4xx traffic is not a bug: an expired session
+  // produces a 401 on every in-flight request, and probing for absent routes
+  // produces a steady stream of 404s. Sending those makes real server faults
+  // harder to find, not easier. Kept as an env flag so an operator can turn it
+  // on temporarily while chasing a client-side integration bug and turn it back
+  // off without a code change. 5xx is always captured regardless.
+  POSTHOG_CAPTURE_CLIENT_ERRORS: BooleanEnvSchema.default(false),
   APP_VERSION: z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9._-]+$/).default('dev'),
 
   // Comma-separated list of allowed origins for CORS (no wildcards in production)
