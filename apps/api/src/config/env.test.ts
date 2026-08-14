@@ -109,7 +109,7 @@ describe('env validation', () => {
       NODE_ENV: 'development',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'development-jwt-secret-with-32-chars',
-      STRIPE_SECRET_KEY: 'rk_test_configured',
+      STRIPE_SECRET_KEY: 'configured-test-value',
       STRIPE_WEBHOOK_SECRET: 'whsec_configured',
       STRIPE_STARTER_PRICE_ID: 'price_starter',
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
