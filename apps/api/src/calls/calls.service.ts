@@ -264,7 +264,7 @@ export class CallsService {
       provider: voice.name,
       direction: 'outbound',
     });
-    if (!admission.admitted) {
+    if (admission.admitted === false) {
       await this.prisma.call.update({
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },

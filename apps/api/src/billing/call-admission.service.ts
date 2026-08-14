@@ -102,7 +102,7 @@ export class CallAdmissionService {
       organizationId: input.organizationId,
       organizationLimit,
     });
-    if (!lease.allowed) {
+    if (lease.allowed === false) {
       return this.deny(input, lease.reason, { plan: effective.plan, limit: organizationLimit });
     }
 
