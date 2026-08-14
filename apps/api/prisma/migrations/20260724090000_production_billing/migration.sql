@@ -203,8 +203,11 @@ BEGIN
   END IF;
 END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS "calls_provider_call_uidx"
-  ON "calls"("provider", "provider_call_id");
+-- The matching unique index is created in the follow-up migration
+-- 20260814000000_calls_provider_call_uidx_concurrent, which runs
+-- CREATE UNIQUE INDEX CONCURRENTLY outside a transaction. The preflight above
+-- stays here so a deployment with duplicate rows fails before the index build
+-- is attempted.
 
 CREATE TABLE "billing_credit_buckets" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),

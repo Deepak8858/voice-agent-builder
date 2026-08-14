@@ -601,6 +601,27 @@ describe('TelephonyService', () => {
     expect(admission.admitCall).toHaveBeenCalledOnce();
   });
 
+  it('refuses an inbound call whose provider identity belongs to another tenant', async () => {
+    const { service, admission, twilioFallback } = makeInboundVoiceService({
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        // A different organization already owns this provider call id. Admitting
+        // it here would reserve credit against the wrong payer.
+        organizationId: 'org-2',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      },
+    });
+
+    await expect(
+      service.handleTwilioVoice('number-1', INBOUND_VOICE_PAYLOAD, INBOUND_VOICE_REQUEST),
+    ).rejects.toMatchObject({ errorCode: 'CALL_IDENTITY_COLLISION' });
+
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(twilioFallback.buildLiveKitDialTwiml).not.toHaveBeenCalled();
+  });
+
   it('does not admit an inbound call twice when the provider retries the voice webhook', async () => {
     const { service, admission, twilioFallback } = makeInboundVoiceService({
       existingCall: {

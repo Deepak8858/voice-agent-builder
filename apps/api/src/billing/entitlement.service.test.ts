@@ -396,6 +396,11 @@ describe('EntitlementService', () => {
         errorCode: 'PLAN_LIMIT_EXCEEDED',
         details: expect.objectContaining({ reason: 'workspace_limit_reached' }),
       });
+
+      // The denial must still have been *attempted* as an audit write, so a
+      // passing assertion here cannot be explained by the audit call being
+      // skipped rather than by its failure being swallowed.
+      expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
     });
 
     it('does not audit an allowed decision', async () => {

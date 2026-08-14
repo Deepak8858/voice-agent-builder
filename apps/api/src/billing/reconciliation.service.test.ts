@@ -24,6 +24,7 @@ interface CallUsageRow {
   reservedSeconds: number;
   debitedSeconds: number;
   createdAt: Date;
+  finalizationState?: 'pending' | 'releasing';
 }
 
 interface LeaseRow {
@@ -403,7 +404,7 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
   });
 
   it('retries a previously claimed stale release', async () => {
-    const { service, prisma, creditLedger } = makeService({
+    const { service, prisma, creditLedger, callUsageUpdateMany } = makeService({
       staleCalls: [
         {
           id: 'usage-1',
@@ -412,18 +413,41 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
           reservedSeconds: 60,
           debitedSeconds: 0,
           createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          // A previous pass claimed this row and then died before the ledger
+          // released the reservation, so it is already `releasing`.
+          finalizationState: 'releasing',
         },
       ],
     });
 
-    await service.finalizeStaleCalls();
+    const report = await service.finalizeStaleCalls();
 
     expect(prisma.callUsage.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
       }),
     );
+    // The claim has to match a row that is already `releasing`, otherwise a
+    // half-finished release is stranded and its reservation never returns.
+    expect(callUsageUpdateMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'usage-1',
+          finalizationState: { in: ['pending', 'releasing'] },
+        }),
+        data: { finalizationState: 'releasing' },
+      }),
+    );
     expect(creditLedger.releaseReservation).toHaveBeenCalledOnce();
+    expect(callUsageUpdateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'usage-1', finalizationState: 'releasing' }),
+        data: expect.objectContaining({ finalizationState: 'finalized' }),
+      }),
+    );
+    expect(report.staleCallsFinalized).toBe(1);
   });
 
   it('delegates release invariants to the transactional credit ledger', async () => {

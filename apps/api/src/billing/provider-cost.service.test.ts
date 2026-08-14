@@ -33,9 +33,7 @@ function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
     rows.set(mapKey, persisted);
     return persisted;
   });
-  const findUnique = vi.fn(async (args: UpsertArgs['where'] extends never ? never : {
-    where: UpsertArgs['where'];
-  }) => {
+  const findUnique = vi.fn(async (args: { where: UpsertArgs['where'] }) => {
     const key = args.where.provider_idempotencyKey;
     return rows.get(rowKey(key.provider, key.idempotencyKey)) ?? null;
   });

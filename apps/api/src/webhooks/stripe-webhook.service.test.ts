@@ -41,6 +41,12 @@ function makePrisma(overrides?: {
   reclaimedCount?: number;
   subscription?: unknown;
   packGrantAudit?: unknown;
+  /**
+   * Full control over the grant lookup result, for cases that need something
+   * other than "exactly one grant" — a payment intent that resolves to two
+   * organizations cannot be expressed with `packGrantAudit`.
+   */
+  packGrantAudits?: unknown[];
 }) {
   const uniqueError = Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
   const tx = {
@@ -103,9 +109,10 @@ function makePrisma(overrides?: {
     auditLog: {
       create: vi.fn(async () => ({ id: 'audit-1' })),
       findFirst: vi.fn(async () => overrides?.packGrantAudit ?? null),
-      findMany: vi.fn(async () =>
-        overrides?.packGrantAudit ? [overrides.packGrantAudit] : [],
-      ),
+      findMany: vi.fn(async () => {
+        if (overrides?.packGrantAudits) return overrides.packGrantAudits;
+        return overrides?.packGrantAudit ? [overrides.packGrantAudit] : [];
+      }),
     },
     _tx: tx,
   };
@@ -552,6 +559,55 @@ describe('StripeWebhookService production webhook handling', () => {
         checkoutSessionId: 'cs_pack_1',
         refundId: 're_1',
       });
+    });
+
+    /**
+     * A payment intent must map to exactly one payer. If two organizations hold
+     * a grant for it, reversing against either one takes credit from a customer
+     * who may not have been refunded, so the event has to fail and be retried
+     * after a human resolves the ambiguity.
+     */
+    it('refuses a reversal whose payment intent resolves to two organizations', async () => {
+      const prisma = makePrisma({
+        packGrantAudits: [
+          {
+            organizationId: 'org-1',
+            metadata: { checkoutSessionId: 'cs_pack_1', paymentIntentId: 'pi_pack_1' },
+          },
+          {
+            organizationId: 'org-2',
+            metadata: { checkoutSessionId: 'cs_pack_2', paymentIntentId: 'pi_pack_1' },
+          },
+        ],
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.refunded'),
+          data: {
+            object: {
+              id: 're_ambiguous',
+              payment_intent: 'pi_pack_1',
+              amount: 10_000,
+              amount_refunded: 10_000,
+            },
+          },
+        },
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      // A 500 keeps Stripe retrying, which is the correct outcome: the event is
+      // unresolved rather than handled.
+      expect(result).toMatchObject({ handled: false, statusCode: 500 });
+      expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
+      // The ambiguity is only detectable because the query asks for one more
+      // distinct owner than it expects to find.
+      expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ distinct: ['organizationId'], take: 2 }),
+      );
     });
 
     it('reverses a lost dispute using the recorded grant without a customer field', async () => {

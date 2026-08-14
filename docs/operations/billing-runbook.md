@@ -353,6 +353,43 @@ Expected: both exit `0`, and the migration reports no null `calls.organization_i
 rows. A null organization id on a call means that call cannot be attributed to a
 payer, so the migration refusing to complete is the correct outcome.
 
+### 10.1 The concurrent uniqueness index
+
+`20260814000000_calls_provider_call_uidx_concurrent` builds
+`calls_provider_call_uidx` with `CREATE UNIQUE INDEX CONCURRENTLY`, so inbound
+and outbound calls keep writing to `calls` while it runs. It contains a single
+statement on purpose: Prisma sends a multi-statement migration as one simple
+query, which Postgres runs inside an implicit transaction, and a concurrent
+build is rejected there with `25001`. Do not add statements to that file.
+
+The duplicate preflight stays in `20260724090000_production_billing`, which runs
+first. If duplicate `(provider, provider_call_id)` rows exist, that earlier
+migration aborts and the index build is never attempted.
+
+An interrupted concurrent build (deploy timeout, cancelled session, failed
+primary) leaves an **invalid** index behind. `IF NOT EXISTS` then treats it as
+already present and the retry silently does nothing, so the uniqueness guarantee
+the billing code relies on is absent. After any failed or interrupted
+`migrate deploy`, check for one:
+
+```sql
+SELECT c.relname
+FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE NOT i.indisvalid
+  AND c.relname = 'calls_provider_call_uidx';
+```
+
+If a row comes back, drop it outside a transaction and re-run `migrate deploy`:
+
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS "calls_provider_call_uidx";
+```
+
+Until the index is valid, concurrent webhook deliveries can create a second
+`calls` row for the same provider call, which double-counts a call's usage.
+Treat an invalid index as a release blocker, not a cleanup task.
+
 Then confirm, in order:
 
 1. `GET /api/v1/health` returns healthy and Redis is connected.
