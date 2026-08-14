@@ -10,6 +10,11 @@ import { PrismaService } from '../prisma/prisma.service';
 const BILLING_REFUSAL_TWIML =
   '<?xml version="1.0" encoding="UTF-8"?><Response><Say>Sorry, this number cannot take calls right now. Please try again later.</Say><Hangup/></Response>';
 
+/** Prisma reports a unique-index rejection as `P2002`. */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002';
+}
+
 @Controller('voice/webhook')
 export class TwilioWebhookController {
   private readonly logger = new Logger(TwilioWebhookController.name);
@@ -62,23 +67,36 @@ export class TwilioWebhookController {
     // The provider-scoped unique key makes concurrent Twilio retries collapse
     // into one call. Returning the persisted row also lets us fail closed if a
     // provider identifier is ever replayed against another tenant or number.
-    const call = await this.prisma.call.upsert({
-      where: {
-        provider_providerCallId: { provider: 'twilio', providerCallId: callSid },
-      },
-      create: {
-        workspaceId: number.workspaceId!,
-        organizationId: number.workspace.organizationId,
-        agentId: number.agentId!,
-        direction: 'inbound',
-        status: 'queued',
-        provider: 'twilio',
-        providerCallId: callSid,
-        fromNumber: from ?? undefined,
-        toNumber: to ?? undefined,
-      },
-      update: {},
-    });
+    const identity = { provider: 'twilio', providerCallId: callSid };
+    let call;
+    try {
+      call = await this.prisma.call.upsert({
+        where: { provider_providerCallId: identity },
+        create: {
+          workspaceId: number.workspaceId!,
+          organizationId: number.workspace.organizationId,
+          agentId: number.agentId!,
+          direction: 'inbound',
+          status: 'queued',
+          provider: 'twilio',
+          providerCallId: callSid,
+          fromNumber: from ?? undefined,
+          toNumber: to ?? undefined,
+        },
+        update: {},
+      });
+    } catch (err) {
+      // An empty `update` is not lowered to a native `INSERT ... ON CONFLICT`,
+      // so a simultaneous retry surfaces as `P2002` rather than being absorbed.
+      // The winner's row is authoritative, so it is read back instead of
+      // creating a second call for the same provider identifier.
+      if (!isUniqueConstraintViolation(err)) throw err;
+      call = await this.prisma.call.findUnique({ where: { provider_providerCallId: identity } });
+      if (!call) {
+        this.logger.error(`Twilio call ${callSid} could not be resolved after a unique conflict`);
+        return new Response(BILLING_REFUSAL_TWIML, { headers: { 'Content-Type': 'text/xml' } });
+      }
+    }
     if (
       call.workspaceId !== number.workspaceId ||
       call.organizationId !== number.workspace.organizationId ||

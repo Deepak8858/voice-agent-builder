@@ -29,6 +29,14 @@ export type SubscriptionStatus = z.infer<typeof SubscriptionStatusSchema>;
 export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 
+/**
+ * Lifecycle of an organization's credit balance. `blocked` and `review` both
+ * stop paid usage; they are distinguished so support can tell an automated
+ * hold from a human-driven investigation.
+ */
+export const CreditBalanceStatusSchema = z.enum(['active', 'blocked', 'review']);
+export type CreditBalanceStatus = z.infer<typeof CreditBalanceStatusSchema>;
+
 export type PlanLimits = typeof PLAN_LIMITS;
 
 export const RelativeBillingPathSchema = z
@@ -157,10 +165,16 @@ export const EntitlementDecisionSchema = z
   .strict();
 export type EntitlementDecision = z.infer<typeof EntitlementDecisionSchema>;
 
-/** Subscription status resolved for an organization, including "never subscribed". */
+/**
+ * Subscription status resolved for an organization. `none` means the
+ * organization never subscribed; `unknown` means the stored status is outside
+ * the Stripe contract, which is corruption rather than absence and must not be
+ * reported to the customer as "subscribe to continue".
+ */
 export const EffectiveSubscriptionStatusSchema = z.union([
   SubscriptionStatusSchema,
   z.literal('none'),
+  z.literal('unknown'),
 ]);
 export type EffectiveSubscriptionStatus = z.infer<typeof EffectiveSubscriptionStatusSchema>;
 
@@ -220,7 +234,7 @@ export const BillingSummaryDtoSchema = z
     lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
     topUpAvailable: z.boolean(),
     availableSeconds: z.number().int().nonnegative(),
-    balanceStatus: IdentifierSchema,
+    balanceStatus: CreditBalanceStatusSchema,
     entitlements: z.object({
       includedMinutes: z.number().int().nonnegative(),
       agents: z.number().int().nonnegative(),

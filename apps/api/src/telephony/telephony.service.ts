@@ -31,6 +31,11 @@ type WebhookRequestContext = {
 
 const BILLING_UPGRADE_PATH = '/dashboard/billing';
 
+/** Prisma reports a unique-index rejection as `P2002`. */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002';
+}
+
 const BYO_TELEPHONY_PLAN_LIMIT_DETAILS = {
   limitType: 'byo_telephony',
   currentPlan: 'free',
@@ -564,7 +569,7 @@ export class TelephonyService {
       throw this.admission.toError(admission);
     }
 
-    let result;
+    let result: Awaited<ReturnType<LiveKitService['createOutboundCall']>>;
     try {
       result = await this.livekit.createOutboundCall({
         phoneNumberId: number.id,
@@ -893,6 +898,18 @@ export class TelephonyService {
     })).catch(() => undefined);
   }
 
+  /**
+   * Resolves the call row for an inbound provider call, creating it once.
+   *
+   * Providers retry voice webhooks, so two deliveries can race. The compound
+   * `(provider, providerCallId)` key makes the winner unambiguous, and the
+   * loser is reconciled by re-reading rather than by creating a second row.
+   *
+   * `update: {}` is deliberate — a retry must not reset call state — but Prisma
+   * does not lower an empty update to a native `INSERT ... ON CONFLICT`, so a
+   * concurrent insert surfaces as `P2002` instead of being absorbed. That is
+   * caught here and resolved by reading the row the winner created.
+   */
   private async ensureInboundCall(params: {
     workspaceId: string;
     organizationId: string;
@@ -903,28 +920,47 @@ export class TelephonyService {
     fromNumber: string | null;
     toNumber: string | null;
   }) {
-    const call = await this.prisma.call.upsert({
-      where: {
-        provider_providerCallId: {
+    const identity = {
+      provider: params.provider,
+      providerCallId: params.providerCallId,
+    };
+
+    let call;
+    try {
+      call = await this.prisma.call.upsert({
+        where: { provider_providerCallId: identity },
+        create: {
+          workspaceId: params.workspaceId,
+          organizationId: params.organizationId,
+          agentId: params.agentId,
+          phoneNumberId: params.phoneNumberId,
+          direction: 'inbound',
+          status: 'queued',
           provider: params.provider,
           providerCallId: params.providerCallId,
+          fromNumber: params.fromNumber,
+          toNumber: params.toNumber,
+          startedAt: new Date(),
         },
-      },
-      create: {
-        workspaceId: params.workspaceId,
-        organizationId: params.organizationId,
-        agentId: params.agentId,
-        phoneNumberId: params.phoneNumberId,
-        direction: 'inbound',
-        status: 'queued',
-        provider: params.provider,
-        providerCallId: params.providerCallId,
-        fromNumber: params.fromNumber,
-        toNumber: params.toNumber,
-        startedAt: new Date(),
-      },
-      update: {},
-    });
+        update: {},
+      });
+    } catch (err) {
+      if (!isUniqueConstraintViolation(err)) throw err;
+      call = await this.prisma.call.findUnique({
+        where: { provider_providerCallId: identity },
+      });
+      // The unique index just rejected the insert, so the row exists. If it is
+      // gone by the time we read, state is not what the constraint reported and
+      // we refuse rather than create a duplicate.
+      if (!call) {
+        throw new AppError(
+          'CALL_IDENTITY_COLLISION',
+          'Provider call identity could not be resolved.',
+          409,
+        );
+      }
+    }
+
     if (
       call.workspaceId !== params.workspaceId ||
       call.organizationId !== params.organizationId ||

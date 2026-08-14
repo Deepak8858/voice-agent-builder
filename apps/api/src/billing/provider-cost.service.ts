@@ -181,7 +181,7 @@ export class ProviderCostService {
     });
 
     const persistedAmount = Number(persisted.amount);
-    const persistedLabels = this.metrics.providerCostUsdTotal.labels(
+    const persistedLabels = this.metrics.providerCostUsd.labels(
       input.provider,
       persisted.serviceCategory,
       String(persisted.isEstimate),
@@ -201,7 +201,7 @@ export class ProviderCostService {
       return;
     }
 
-    this.metrics.providerCostUsdTotal
+    this.metrics.providerCostUsd
       .labels(input.provider, previous.serviceCategory, String(previous.isEstimate))
       .dec(previousAmount);
     persistedLabels.inc(persistedAmount);

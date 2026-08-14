@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
 import { BILLING_CATALOG_VERSION } from '@voiceforge/shared';
 import { BillingService, ForbiddenPlanError } from './billing.service';
+import { CreditLedgerService } from './credit-ledger.service';
+import { EntitlementService } from './entitlement.service';
 import { env } from '../config/env';
 
 function makePrisma(overrides?: {
@@ -61,10 +63,16 @@ function makePrisma(overrides?: {
   };
 }
 
-function makeService(prisma: ReturnType<typeof makePrisma>) {
-  // We need a fresh module each time to avoid module-level Stripe caching
-  // So we clear the require cache first
-  return new BillingService(prisma as never);
+function makeService(prisma: ReturnType<typeof makePrisma>, cache?: unknown) {
+  // The real collaborators are constructed against the same Prisma mock rather
+  // than stubbed, so these tests exercise the single production decision path
+  // (BillingModule provides the same wiring) instead of a test-only branch.
+  return new BillingService(
+    prisma as never,
+    new EntitlementService(prisma as never),
+    new CreditLedgerService(prisma as never),
+    cache as never,
+  );
 }
 
 describe('BillingService', () => {
@@ -529,7 +537,7 @@ describe('BillingService', () => {
         }),
         set: vi.fn(async () => undefined),
       };
-      const svc = new BillingService(prisma as never, cache as never);
+      const svc = makeService(prisma, cache);
 
       await expect(svc.getSubscription('org-1')).resolves.toMatchObject({
         id: 'sub-1',

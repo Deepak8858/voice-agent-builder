@@ -11,7 +11,12 @@ import type {
   PlanEntitlements,
   PlanType,
 } from '@voiceforge/shared';
-import { BILLING_CATALOG_VERSION, getPlanEntitlements } from '@voiceforge/shared';
+import {
+  BILLING_CATALOG_VERSION,
+  PlanTypeSchema,
+  SubscriptionStatusSchema,
+  getPlanEntitlements,
+} from '@voiceforge/shared';
 import { AppError } from '../common/errors';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -23,23 +28,16 @@ import { PrismaService } from '../prisma/prisma.service';
  */
 const PAID_ACCESS_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
 
-const PLAN_TYPES: ReadonlySet<string> = new Set<PlanType>([
-  'free',
-  'starter',
-  'growth',
-  'enterprise',
-]);
+/**
+ * Derived from the shared contract rather than restated here, so a new plan or
+ * Stripe status cannot be added to the schema without this service accepting
+ * it.
+ */
+const PLAN_TYPES: ReadonlySet<string> = new Set<string>(PlanTypeSchema.options);
 
-const SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
-  'active',
-  'trialing',
-  'past_due',
-  'canceled',
-  'incomplete',
-  'incomplete_expired',
-  'unpaid',
-  'paused',
-]);
+const SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set<string>(
+  SubscriptionStatusSchema.options,
+);
 
 /**
  * The single source of truth for "may this organization do that?".
@@ -66,7 +64,7 @@ export class EntitlementService {
       },
     });
 
-    const status = this.resolveStatus(subscription?.status);
+    const status = this.resolveStatus(organizationId, subscription?.status);
     const storedPlan = this.resolvePlan(subscription?.plan);
     const trialExpired =
       status === 'trialing' &&
@@ -89,11 +87,18 @@ export class EntitlementService {
     };
   }
 
+  /**
+   * `effective` may be supplied by a caller that has already resolved the plan
+   * for this operation. Reusing it removes a second subscription read and, more
+   * importantly, guarantees both evaluations see the same commercial state
+   * rather than two reads that can straddle a subscription update.
+   */
   async check(
     organizationId: string,
     request: EntitlementRequest,
+    effectivePlan?: EffectivePlan,
   ): Promise<EntitlementDecision> {
-    const effective = await this.getEffectivePlan(organizationId);
+    const effective = effectivePlan ?? (await this.getEffectivePlan(organizationId));
     const correlationId = `ent_${randomUUID()}`;
 
     switch (request.kind) {
@@ -278,6 +283,7 @@ export class EntitlementService {
    * remedy differs: one is an upgrade, the other is a payment fix.
    */
   private unavailableReason(effective: EffectivePlan): EntitlementReason {
+    if (effective.status === 'unknown') return 'billing_temporarily_unavailable';
     return effective.status === 'active' || effective.status === 'none'
       ? 'subscription_required'
       : 'subscription_inactive';
@@ -329,11 +335,22 @@ export class EntitlementService {
     return plan && PLAN_TYPES.has(plan) ? (plan as PlanType) : 'free';
   }
 
-  private resolveStatus(status: string | undefined): EffectiveSubscriptionStatus {
+  /**
+   * A stored status outside the shared contract is corruption, not a missing
+   * subscription. Reporting it as `'none'` would tell a paying organization to
+   * subscribe, so it is surfaced as `unknown` instead and every capability
+   * check routes it to `billing_temporarily_unavailable`.
+   */
+  private resolveStatus(
+    organizationId: string,
+    status: string | undefined,
+  ): EffectiveSubscriptionStatus {
     if (!status) return 'none';
-    return SUBSCRIPTION_STATUSES.has(status)
-      ? (status as EffectiveSubscriptionStatus)
-      : 'none';
+    if (SUBSCRIPTION_STATUSES.has(status)) return status as EffectiveSubscriptionStatus;
+    this.logger.error(
+      `Organization ${organizationId} has unrecognized subscription status "${status}"; refusing paid usage until it is corrected.`,
+    );
+    return 'unknown';
   }
 
   private denialMessage(decision: EntitlementDecision): string {

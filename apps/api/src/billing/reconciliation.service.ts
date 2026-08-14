@@ -49,7 +49,26 @@ export function emptyReconciliationReport(): BillingReconciliationReport {
 /** Namespace for the advisory locks this service takes, so it cannot collide. */
 const ADVISORY_LOCK_NAMESPACE = 947_231;
 
+/**
+ * Raised when a per-organization advisory lock is held elsewhere.
+ *
+ * Distinct from a generic failure so callers can treat contention as an
+ * expected outcome under multiple replicas rather than as an error.
+ */
+export class OrganizationLockUnavailableError extends Error {
+  constructor(readonly organizationId: string) {
+    super(`Organization ${organizationId} is already being reconciled`);
+    this.name = 'OrganizationLockUnavailableError';
+  }
+}
+
 const MINUTE_MS = 60_000;
+
+/**
+ * Organizations per provider-cost aggregate query in the margin pass. Bounds
+ * the size of the `IN` list so the query plan stays stable as tenants grow.
+ */
+const MARGIN_AGGREGATE_CHUNK_SIZE = 500;
 
 @Injectable()
 export class ReconciliationService {
@@ -89,6 +108,15 @@ export class ReconciliationService {
         const corrected = await this.reconcileOneBalance(balance.organizationId);
         if (corrected) report.projectionCorrections += 1;
       } catch (err) {
+        // Another replica holding the lock is the normal multi-replica outcome,
+        // not a fault. Logging it at error level would bury real failures under
+        // one line per contended organization on every pass.
+        if (err instanceof OrganizationLockUnavailableError) {
+          this.logger.debug(
+            `Skipped organization ${balance.organizationId}: another replica holds the reconciliation lock.`,
+          );
+          continue;
+        }
         this.logger.error(
           `Balance reconciliation failed for organization ${balance.organizationId}: ${(err as Error).message}`,
         );
@@ -379,9 +407,14 @@ export class ReconciliationService {
    * Margin uses recorded provider cost against the plan's list price. A plan
    * with no active subscriptions is skipped rather than reported as zero, since
    * zero would be indistinguishable from a real collapse in margin.
+   *
+   * Enterprise is excluded: its catalog `monthlyPriceUsd` is a "from" floor for
+   * the pricing page, not a contract value, so multiplying it by the
+   * subscription count would report an invented revenue figure. Enterprise
+   * margin needs the actual contracted amounts, which are not modelled yet.
    */
   async publishMarginMetrics(): Promise<void> {
-    const plans: PlanType[] = ['free', 'starter', 'growth', 'enterprise'];
+    const plans: PlanType[] = ['free', 'starter', 'growth'];
     const since = new Date(Date.now() - 30 * 24 * 60 * MINUTE_MS);
 
     for (const plan of plans) {
@@ -391,16 +424,23 @@ export class ReconciliationService {
       });
       if (subscriptions.length === 0) continue;
 
-      const organizationIds = subscriptions.map((s) => s.organizationId);
-      const costs = await this.prisma.providerCostEvent.aggregate({
-        where: { organizationId: { in: organizationIds }, occurredAt: { gte: since } },
-        _sum: { amount: true },
-      });
-
       const revenue = subscriptions.length * this.monthlyPriceUsd(plan);
       if (revenue <= 0) continue;
 
-      const cost = Number(costs._sum.amount ?? 0);
+      // Aggregated in fixed-size chunks. A single `IN` list over every
+      // organization on a plan grows with the tenant count and turns into a
+      // very large parameter list and a slow scan on each pass.
+      const organizationIds = subscriptions.map((s) => s.organizationId);
+      let cost = 0;
+      for (let index = 0; index < organizationIds.length; index += MARGIN_AGGREGATE_CHUNK_SIZE) {
+        const chunk = organizationIds.slice(index, index + MARGIN_AGGREGATE_CHUNK_SIZE);
+        const costs = await this.prisma.providerCostEvent.aggregate({
+          where: { organizationId: { in: chunk }, occurredAt: { gte: since } },
+          _sum: { amount: true },
+        });
+        cost += Number(costs._sum.amount ?? 0);
+      }
+
       this.metrics.planContributionMarginRatio.labels(plan).set((revenue - cost) / revenue);
     }
   }
@@ -483,24 +523,20 @@ export class ReconciliationService {
     organizationId: string,
     operation: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
-    const key = this.lockKey(organizationId);
     return this.prisma.$transaction(async (tx) => {
+      // `hashtextextended` gives a 64-bit key derived from the full UUID, so two
+      // organizations do not share a lock and block each other's repairs. The
+      // namespace is folded into the seed to keep this service's locks disjoint
+      // from any other advisory lock in the database.
       const [acquired] = await tx.$queryRaw<Array<{ locked: boolean }>>`
-        SELECT pg_try_advisory_xact_lock(${ADVISORY_LOCK_NAMESPACE}::int, ${key}::int) AS locked
+        SELECT pg_try_advisory_xact_lock(
+          hashtextextended(${`billing:reconciliation:${organizationId}`}, ${ADVISORY_LOCK_NAMESPACE})
+        ) AS locked
       `;
       if (!acquired?.locked) {
-        throw new Error(`Organization ${organizationId} is already being reconciled`);
+        throw new OrganizationLockUnavailableError(organizationId);
       }
       return operation(tx);
     });
-  }
-
-  /** Stable 32-bit signed key derived from the organization UUID. */
-  private lockKey(organizationId: string): number {
-    let hash = 0;
-    for (let i = 0; i < organizationId.length; i += 1) {
-      hash = (Math.imul(hash, 31) + organizationId.charCodeAt(i)) | 0;
-    }
-    return hash;
   }
 }

@@ -69,6 +69,15 @@ export class TwilioSignatureVerifier {
    */
   private publicUrl(originalUrl: string): string {
     const base = env.TWILIO_TWIML_WEBHOOK_URL ?? env.APP_BASE_URL ?? env.WEB_BASE_URL;
+    // With no configured origin, `new URL(path, undefined)` throws and Twilio
+    // sees a 500 that says nothing about the cause. Refuse explicitly instead,
+    // on the same terms as a missing signing token.
+    if (!base) {
+      this.logger.error(
+        'Rejected Twilio webhook: no public origin is configured, so the signed URL cannot be rebuilt.',
+      );
+      throw new UnauthorizedError('Twilio webhook origin is not configured.');
+    }
     return new URL(originalUrl, base).toString();
   }
 }

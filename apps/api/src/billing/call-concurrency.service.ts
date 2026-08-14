@@ -52,6 +52,12 @@ const RENEWAL_HORIZON_RATIO = 2;
 /** Call statuses that mean the call is still up and still owes a lease. */
 const IN_FLIGHT_CALL_STATUSES = ['queued', 'ringing', 'in_progress'] as const;
 
+/**
+ * Upper bound on leases replayed into Redis in one recovery pass. Bounds both
+ * the memory held during boot and the size of the Redis pipeline.
+ */
+const LEASE_RECOVERY_BATCH_SIZE = 5_000;
+
 const ACQUIRE_SCRIPT = `
 local globalKey = KEYS[1]
 local orgKey = KEYS[2]
@@ -165,12 +171,18 @@ export class CallConcurrencyService implements OnModuleInit {
           },
           update: { leaseToken: resolvedToken, state: 'active', expiresAt },
         });
-      } catch {
+      } catch (err) {
+        this.logger.error(
+          `Durable lease write failed for call ${input.callId}: ${(err as Error).message}`,
+        );
         await this.releaseRedis(input.callId, input.organizationId, resolvedToken).catch(() => undefined);
         return { allowed: false, reason: 'billing_temporarily_unavailable' };
       }
       return { allowed: true, leaseToken: resolvedToken, expiresAt: expiresAt.toISOString() };
-    } catch {
+    } catch (err) {
+      this.logger.error(
+        `Concurrency lease acquisition failed for call ${input.callId}: ${(err as Error).message}`,
+      );
       return { allowed: false, reason: 'billing_temporarily_unavailable' };
     }
   }
@@ -198,7 +210,10 @@ export class CallConcurrencyService implements OnModuleInit {
         return false;
       }
       return true;
-    } catch {
+    } catch (err) {
+      this.logger.error(
+        `Concurrency lease renewal failed for call ${input.callId}: ${(err as Error).message}`,
+      );
       return false;
     }
   }
@@ -273,24 +288,43 @@ export class CallConcurrencyService implements OnModuleInit {
     return report;
   }
 
-  async recoverFromPostgres(): Promise<LeaseRecoveryReport> {
+  /**
+   * Replays durable leases into Redis. Bounded and pipelined because this runs
+   * on the boot path: an unbounded scan would load every live lease into memory
+   * and a per-lease round trip would delay module initialization in proportion
+   * to the lease count. Anything beyond the bound is repaired by the
+   * reconciliation worker on its next pass.
+   */
+  async recoverFromPostgres(limit = LEASE_RECOVERY_BATCH_SIZE): Promise<LeaseRecoveryReport> {
     const leases = await this.prisma.callConcurrencyLease.findMany({
       where: { state: 'active', expiresAt: { gt: new Date() } },
       orderBy: { expiresAt: 'asc' },
+      take: limit,
     });
     const report: LeaseRecoveryReport = { checked: leases.length, recovered: 0, failed: 0 };
-    for (const lease of leases) {
-      try {
-        const connection = this.queue.getConnection();
+    if (leases.length === 0) return report;
+
+    try {
+      const transaction = this.queue.getConnection().multi();
+      for (const lease of leases) {
         const member = `${lease.callId}|${lease.leaseToken}`;
-        const transaction = connection.multi();
         transaction.zadd(this.globalKey(), lease.expiresAt.getTime(), member);
         transaction.zadd(this.organizationKey(lease.organizationId), lease.expiresAt.getTime(), member);
-        await transaction.exec();
-        report.recovered += 1;
-      } catch {
-        report.failed += 1;
       }
+      const results = (await transaction.exec()) ?? [];
+      // Two writes per lease; a lease counts as recovered only when both of its
+      // commands succeeded, so a partial pipeline is reported as a failure and
+      // retried by the worker rather than silently assumed present.
+      for (let index = 0; index < leases.length; index += 1) {
+        const globalResult = results[index * 2];
+        const orgResult = results[index * 2 + 1];
+        const failed = !globalResult || globalResult[0] || !orgResult || orgResult[0];
+        if (failed) report.failed += 1;
+        else report.recovered += 1;
+      }
+    } catch (err) {
+      this.logger.error(`Concurrency lease recovery pipeline failed: ${(err as Error).message}`);
+      report.failed = leases.length;
     }
     return report;
   }

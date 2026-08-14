@@ -31,10 +31,21 @@ export function buildCheckoutUnavailable(): CheckoutUnavailable {
   };
 }
 
+/**
+ * Every field is checked, not just the discriminant: consumers render `title`
+ * and use `salesHref` as the only escape hatch out of this state, so a partial
+ * payload would render blank copy or an unusable link. `salesHref` is
+ * restricted to `mailto:` so a malformed or hostile value cannot become an
+ * arbitrary outbound link in the purchase path.
+ */
 export function isCheckoutUnavailable(value: unknown): value is CheckoutUnavailable {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return record['checkoutAvailable'] === false && typeof record['message'] === 'string';
+  if (record['checkoutAvailable'] !== false) return false;
+  if (typeof record['message'] !== 'string' || record['message'].length === 0) return false;
+  if (typeof record['title'] !== 'string' || record['title'].length === 0) return false;
+  const salesHref = record['salesHref'];
+  return typeof salesHref === 'string' && salesHref.startsWith('mailto:');
 }
 
 /** API error codes that mean "the purchase path is down", not "you are not allowed". */

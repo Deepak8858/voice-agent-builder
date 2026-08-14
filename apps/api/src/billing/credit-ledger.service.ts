@@ -5,7 +5,13 @@ import {
   type BillingLedgerEntry,
   type OrganizationCreditBalance,
 } from '@prisma/client';
-import type { CreditBalanceDto, EntitlementReason, RuntimeUsageDecision } from '@voiceforge/shared';
+import type {
+  CreditBalanceDto,
+  CreditBalanceStatus,
+  EntitlementReason,
+  RuntimeUsageDecision,
+} from '@voiceforge/shared';
+import { CreditBalanceStatusSchema } from '@voiceforge/shared';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -105,7 +111,7 @@ const CreditBalanceReplaySchema = z
     availableSeconds: z.number().int().nonnegative(),
     reservedSeconds: z.number().int().nonnegative(),
     totalOwnedSeconds: z.number().int().nonnegative(),
-    status: IdentifierSchema,
+    status: CreditBalanceStatusSchema,
     reviewReason: z.string().nullable(),
   })
   .strict();
@@ -254,7 +260,7 @@ export interface CreditBalance extends CreditBalanceDto {
   availableSeconds: number;
   reservedSeconds: number;
   totalOwnedSeconds: number;
-  status: string;
+  status: CreditBalanceStatus;
   reviewReason: string | null;
 }
 
@@ -271,8 +277,19 @@ export interface CreditSummary {
   availableSeconds: number;
   expiringSeconds: number;
   lifetimeBrowserTestSecondsRemaining: number;
-  status: string;
+  status: CreditBalanceStatus;
   reviewReason: string | null;
+}
+
+/**
+ * A stored balance status outside the shared contract is corruption, not a
+ * healthy account. Mapping it to `review` fails closed: paid usage stops and
+ * the account is surfaced to a human, instead of the corrupt value flowing to
+ * the dashboard as if it were valid.
+ */
+function toCreditBalanceStatus(status: string): CreditBalanceStatus {
+  const parsed = CreditBalanceStatusSchema.safeParse(status);
+  return parsed.success ? parsed.data : 'review';
 }
 
 export interface MinuteReservation {
@@ -1098,7 +1115,7 @@ export class CreditLedgerService {
       availableSeconds: balance?.availableSeconds ?? 0,
       expiringSeconds,
       lifetimeBrowserTestSecondsRemaining,
-      status: balance?.status ?? 'active',
+      status: balance ? toCreditBalanceStatus(balance.status) : 'active',
       reviewReason: balance?.reviewReason ?? null,
     };
   }
@@ -1502,7 +1519,7 @@ export class CreditLedgerService {
       availableSeconds: balance.availableSeconds,
       reservedSeconds: balance.reservedSeconds,
       totalOwnedSeconds: this.totalOwned(balance),
-      status: balance.status,
+      status: toCreditBalanceStatus(balance.status),
       reviewReason: balance.reviewReason,
     };
   }

@@ -86,12 +86,19 @@ export interface CallMeterConfig {
   minuteIntervalMs?: number;
   /** Unreported minute boundaries tolerated before the call is terminated. */
   maxConsecutiveFailures?: number;
+  /**
+   * Base wait between connection retry attempts. Tests set this to 0 to keep
+   * the retry loop instantaneous.
+   */
+  connectRetryBaseMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
   logger?: Pick<Console, 'warn' | 'error'>;
 }
 
 const MINUTE_MS = 60_000;
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 2;
+const DEFAULT_CONNECT_RETRY_BASE_MS = 250;
 
 /**
  * Per-call metering lifecycle.
@@ -112,6 +119,8 @@ const DEFAULT_MAX_CONSECUTIVE_FAILURES = 2;
 export class CallMeter {
   private readonly minuteIntervalMs: number;
   private readonly maxConsecutiveFailures: number;
+  private readonly connectRetryBaseMs: number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
   private readonly logger: Pick<Console, 'warn' | 'error'>;
 
@@ -127,6 +136,12 @@ export class CallMeter {
       config.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES,
       1,
     );
+    this.connectRetryBaseMs = Math.max(
+      config.connectRetryBaseMs ?? DEFAULT_CONNECT_RETRY_BASE_MS,
+      0,
+    );
+    this.sleep =
+      config.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.now = config.now ?? (() => new Date());
     this.logger = config.logger ?? console;
   }
@@ -148,6 +163,15 @@ export class CallMeter {
     };
 
     for (let attempt = 1; attempt <= this.maxConsecutiveFailures; attempt += 1) {
+      // Every attempt after the first waits first. Both retry paths need time
+      // to elapse: a contended event claim is only released by the delivery
+      // holding it, and a retryable decision arrives on a `200`, so the
+      // transport's own backoff never applies. Without this the whole attempt
+      // budget can burn in microseconds and hang up a call that billing would
+      // have admitted a moment later.
+      if (attempt > 1 && this.connectRetryBaseMs > 0) {
+        await this.sleep(this.retryDelayMs(attempt));
+      }
       try {
         const decision = await this.config.emit(event);
         if (decision.allowed) return;
@@ -167,6 +191,15 @@ export class CallMeter {
     }
 
     await this.terminate('metering_unavailable');
+  }
+
+  /**
+   * Linear backoff with jitter. Jitter matters because several concurrent calls
+   * can hit the same contended claim and would otherwise retry in lockstep.
+   */
+  private retryDelayMs(attempt: number): number {
+    const base = this.connectRetryBaseMs * (attempt - 1);
+    return base + Math.floor(Math.random() * this.connectRetryBaseMs);
   }
 
   get isSettled(): boolean {

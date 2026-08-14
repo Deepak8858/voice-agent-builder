@@ -238,17 +238,27 @@ export class RuntimeUsageService {
         callId: event.callId,
         idempotencyKey: `call:${event.callId}:reservation_commit`,
       });
+      // `connectedAt` is the first-minute marker, not `finalizationState`.
+      //
+      // A `minute_boundary` can be delivered before `call_connected`; it debits
+      // usage but leaves the state `pending`, so keying off the state here would
+      // match again and overwrite accumulated seconds with a flat 60. Matching
+      // on `connectedAt: null` makes the first-minute write happen exactly once
+      // regardless of delivery order, and incrementing preserves any minutes a
+      // boundary already debited. `finalized` is excluded so a late connect
+      // cannot reopen a settled call.
       await this.prisma.callUsage.updateMany({
         where: {
           callId: event.callId,
           organizationId: event.organizationId,
-          finalizationState: 'pending',
+          connectedAt: null,
+          finalizationState: { not: 'finalized' },
         },
         data: {
           connectedAt: new Date(event.occurredAt),
           providerCallId: event.providerCallId,
-          billableSeconds: SECONDS_PER_MINUTE,
-          debitedSeconds: SECONDS_PER_MINUTE,
+          billableSeconds: { increment: SECONDS_PER_MINUTE },
+          debitedSeconds: { increment: SECONDS_PER_MINUTE },
           finalizationState: 'connected',
         },
       });

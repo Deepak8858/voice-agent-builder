@@ -272,7 +272,7 @@ export class CallsService {
       throw this.admission.toError(admission);
     }
 
-    let result;
+    let result: Awaited<ReturnType<VoiceRuntimeProvider['startOutboundCall']>>;
     try {
       result = await voice.startOutboundCall({
         workspaceId,

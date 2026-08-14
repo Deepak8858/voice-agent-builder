@@ -55,8 +55,11 @@ secret in `STRIPE_WEBHOOK_SECRET`. Subscribe to at least:
 
 Entitlement changes are applied **only** from a signature-verified webhook. A
 `session_id` on a return URL is not proof of payment and must never activate a
-plan or credit a bucket. The checkout return pages poll until the webhook-confirmed
-state arrives, which is why an activation can lag the redirect by a few seconds.
+plan or credit a bucket. Because of this, an activation can lag the redirect by a
+few seconds: the return page refetches billing state once on load, so a customer
+who lands before the webhook is processed sees their previous plan or balance
+until they refresh. Support should treat a short lag after checkout as expected
+and confirm against `stripe_events` rather than the customer's screen.
 
 Rotating the signing secret: add the new endpoint secret in Stripe, deploy the new
 `STRIPE_WEBHOOK_SECRET`, confirm events are processing, then delete the old

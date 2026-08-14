@@ -207,10 +207,21 @@ describe('RuntimeUsageService.handleEvent', () => {
     expect(creditLedger.commitReservation).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: 'call:call-1:reservation_commit' }),
     );
+    // The guard is `connectedAt: null` + `not: 'finalized'` rather than
+    // `'pending'`, and the usage columns are incremented rather than assigned:
+    // a delayed call_connected processed after a minute_boundary must not reset
+    // accumulated usage back to 60 seconds.
     expect(prisma.callUsage.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ finalizationState: 'pending' }),
-        data: expect.objectContaining({ finalizationState: 'connected' }),
+        where: expect.objectContaining({
+          connectedAt: null,
+          finalizationState: { not: 'finalized' },
+        }),
+        data: expect.objectContaining({
+          finalizationState: 'connected',
+          billableSeconds: { increment: 60 },
+          debitedSeconds: { increment: 60 },
+        }),
       }),
     );
     expect(prisma.runtimeUsageEvent.update).toHaveBeenCalled();

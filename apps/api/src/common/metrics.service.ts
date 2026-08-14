@@ -16,7 +16,7 @@ import { Counter, Histogram, Gauge, Registry, collectDefaultMetrics } from 'prom
  *   - voiceforge_billing_reserved_seconds         — credit held by in-flight calls
  *   - voiceforge_calls_active_global              — concurrent calls platform-wide
  *   - voiceforge_calls_admission_denied_total{reason}
- *   - voiceforge_provider_cost_usd_total{provider, category, estimate}
+ *   - voiceforge_provider_cost_usd{provider, category, estimate} (process-local gauge)
  *   - voiceforge_plan_contribution_margin_ratio{plan}
  *   - voiceforge_billing_reconciliation_corrections_total{type}
  *
@@ -88,13 +88,18 @@ export class MetricsService implements OnModuleInit {
   });
 
   /**
-   * Persisted provider spend observed by this process. This is a gauge because
-   * an estimate can be replaced by a smaller actual and must move between the
-   * estimate labels without replay inflation.
+   * Provider spend observed by *this process* since it started.
+   *
+   * Deliberately a Gauge with no `_total` suffix. An estimate can be replaced
+   * by a smaller actual, and a replacement moves spend between the `estimate`
+   * labels, so the series is not monotonic and must not be read as a counter.
+   * It also resets on restart, so it answers "what has this replica recorded",
+   * not "what has the platform spent". Cumulative spend comes from
+   * `provider_cost_events` in PostgreSQL, which is the authoritative record.
    */
-  readonly providerCostUsdTotal = new Gauge({
-    name: 'voiceforge_provider_cost_usd_total',
-    help: 'Provider cost in USD, by provider, service category, and estimate flag',
+  readonly providerCostUsd = new Gauge({
+    name: 'voiceforge_provider_cost_usd',
+    help: 'Provider cost in USD recorded by this process since start (process-local, not cumulative), by provider, service category, and estimate flag',
     labelNames: ['provider', 'category', 'estimate'],
     registers: [MetricsService.REGISTRY],
   });

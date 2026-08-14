@@ -5,6 +5,7 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
@@ -94,20 +95,12 @@ export class BillingService {
   private readonly logger = new Logger(BillingService.name);
   private readonly stripe: StripeClient | null;
 
-  private readonly entitlements: EntitlementService;
-  private readonly creditLedger: CreditLedgerService;
-
   constructor(
     private readonly prisma: PrismaService,
-    private readonly cache?: CacheService,
-    entitlements?: EntitlementService,
-    creditLedger?: CreditLedgerService,
+    private readonly entitlements: EntitlementService,
+    private readonly creditLedger: CreditLedgerService,
+    @Optional() private readonly cache?: CacheService,
   ) {
-    // Entitlement decisions are owned by EntitlementService. The optional
-    // constructor argument keeps existing callers and tests that build this
-    // service with only Prisma working while still using one decision path.
-    this.entitlements = entitlements ?? new EntitlementService(prisma);
-    this.creditLedger = creditLedger ?? new CreditLedgerService(prisma);
     // Pin to the version the installed SDK was built for rather than a
     // duplicated literal, and retry transient network failures so a dropped
     // connection does not surface as a failed payment attempt.
@@ -426,15 +419,19 @@ export class BillingService {
    * boundary.
    */
   async getBillingSummary(organizationId: string): Promise<BillingSummaryDto> {
-    const [effective, subscription, credit, usage, callDecision] = await Promise.all([
-      this.entitlements.getEffectivePlan(organizationId),
+    // The plan is resolved once and handed to the entitlement check, so the
+    // summary reports one consistent commercial state instead of two reads that
+    // can straddle a subscription change.
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const [subscription, credit, usage, callDecision] = await Promise.all([
       this.getSubscription(organizationId),
       this.creditLedger.getCreditSummary(organizationId),
       this.getOrganizationUsageCounts(organizationId),
-      this.entitlements.check(organizationId, {
-        kind: 'paid_call',
-        minimumSeconds: PAID_CALL_MINIMUM_SECONDS,
-      }),
+      this.entitlements.check(
+        organizationId,
+        { kind: 'paid_call', minimumSeconds: PAID_CALL_MINIMUM_SECONDS },
+        effective,
+      ),
     ]);
 
     return {
@@ -575,8 +572,10 @@ export class BillingService {
     switch (gate) {
       case 'outbound':
         return entitlements.outboundPstn && paidAccess;
+      // Compliance blocking is a mandatory safety control on every plan, so it
+      // is read from its own entitlement rather than inherited from campaigns.
       case 'compliance_blocks':
-        return entitlements.campaigns;
+        return entitlements.complianceBlocks;
       case 'white_label':
         return entitlements.whiteLabel;
       case 'multiple_workspaces':

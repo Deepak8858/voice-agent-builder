@@ -165,7 +165,7 @@ describe('OutboundCallWorker', () => {
 
     expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
     expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
-      where: { id: 'camp-1', status: 'running' },
+      where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
       data: { status: 'paused' },
     });
   });
@@ -179,7 +179,7 @@ describe('OutboundCallWorker', () => {
     await expect(makeWorker().processor(job)).rejects.toThrow('stats unavailable');
 
     expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
-      where: { id: 'camp-1', status: 'running' },
+      where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
       data: { status: 'paused' },
     });
     expect(prisma.outboundCampaign.updateMany.mock.invocationCallOrder[0]).toBeLessThan(

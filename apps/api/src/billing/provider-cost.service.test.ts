@@ -60,7 +60,7 @@ function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
     $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation(prisma)),
   };
   const metrics = {
-    providerCostUsdTotal: { labels },
+    providerCostUsd: { labels },
   };
   return {
     prisma,

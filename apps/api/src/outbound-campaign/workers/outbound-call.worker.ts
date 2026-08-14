@@ -1,5 +1,8 @@
 import { BaseWorker } from '../../workers/base.worker';
 import { Injectable } from '@nestjs/common';
+import type { EntitlementReason } from '@voiceforge/shared';
+import { EntitlementReasonSchema } from '@voiceforge/shared';
+import { AuditService } from '../../audit/audit.service';
 import { AppError } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
 import { OutboundCampaignService } from '../outbound-campaign.service';
@@ -22,8 +25,12 @@ interface OutboundCallJob {
  * Admission denials that mean "not now" rather than "not ever". Retrying the
  * same contact once capacity or credit returns is correct; burning it as a
  * failed dial is not, because the contact was never actually called.
+ *
+ * Typed against the shared reason union rather than loose strings, so renaming
+ * a reason in the billing contract fails the build here instead of silently
+ * routing a denial into the generic branch.
  */
-const RETRYABLE_ADMISSION_REASONS: ReadonlySet<string> = new Set([
+export const RETRYABLE_ADMISSION_REASONS: ReadonlySet<EntitlementReason> = new Set<EntitlementReason>([
   'organization_concurrency_reached',
   'platform_concurrency_reached',
   'billing_temporarily_unavailable',
@@ -34,7 +41,7 @@ const RETRYABLE_ADMISSION_REASONS: ReadonlySet<string> = new Set([
  * the rest of the list would produce a wall of identical failures, so the
  * campaign is paused instead.
  */
-const BLOCKING_ADMISSION_REASONS: ReadonlySet<string> = new Set([
+export const BLOCKING_ADMISSION_REASONS: ReadonlySet<EntitlementReason> = new Set<EntitlementReason>([
   'credit_insufficient',
   'subscription_required',
   'subscription_inactive',
@@ -48,6 +55,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     private readonly campaigns: OutboundCampaignService,
     private readonly prisma: PrismaService,
     private readonly telephony: TelephonyService,
+    private readonly audit: AuditService,
   ) {
     super(OUTBOUND_CAMPAIGN_QUEUE, queueService, 5);
   }
@@ -84,7 +92,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       await this.campaigns.incrementStat(campaignId, 'in_progress');
       this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
     } catch (err) {
-      await this.handleDispatchFailure(campaignId, to, err);
+      await this.handleDispatchFailure(campaignId, workspaceId, to, err);
     }
   }
 
@@ -95,6 +103,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
    */
   private async handleDispatchFailure(
     campaignId: string,
+    workspaceId: string,
     to: string,
     err: unknown,
   ): Promise<void> {
@@ -112,7 +121,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       this.logger.error(`Pausing campaign ${campaignId}: ${reason}`);
       // Stop new dispatches before the non-critical statistics write. A failed
       // counter update must never leave a drained campaign running.
-      await this.pauseCampaign(campaignId, reason);
+      await this.pauseCampaign(campaignId, workspaceId, reason);
       await this.campaigns.incrementStat(campaignId, 'failed');
       return;
     }
@@ -121,21 +130,57 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     await this.campaigns.incrementStat(campaignId, 'failed');
   }
 
-  private admissionReason(err: unknown): string | null {
+  /** Parsed against the shared contract so an unknown reason is not trusted. */
+  private admissionReason(err: unknown): EntitlementReason | null {
     if (!(err instanceof AppError)) return null;
     const reason = (err.details as { reason?: unknown } | undefined)?.reason;
-    return typeof reason === 'string' ? reason : null;
+    const parsed = EntitlementReasonSchema.safeParse(reason);
+    return parsed.success ? parsed.data : null;
   }
 
-  private async pauseCampaign(campaignId: string, reason: string): Promise<void> {
+  /**
+   * Pausing is customer-visible state driven by a billing decision, so it is
+   * scoped to the owning workspace, audited, and allowed to fail the job.
+   *
+   * The update is deliberately not swallowed: if it rejects, BullMQ must not
+   * acknowledge the job, because acknowledging would leave a campaign marked
+   * `running` that nothing will stop.
+   */
+  private async pauseCampaign(
+    campaignId: string,
+    workspaceId: string,
+    reason: EntitlementReason,
+  ): Promise<void> {
+    let paused: { count: number };
     try {
-      await this.prisma.outboundCampaign.updateMany({
-        where: { id: campaignId, status: 'running' },
+      paused = await this.prisma.outboundCampaign.updateMany({
+        where: { id: campaignId, workspaceId, status: 'running' },
         data: { status: 'paused' },
       });
     } catch (err) {
       this.logger.error(
         `Failed to pause campaign ${campaignId} after ${reason}: ${(err as Error).message}`,
+      );
+      throw err;
+    }
+
+    // Another delivery already paused it; that delivery owns the audit record.
+    if (paused.count === 0) return;
+
+    try {
+      await this.audit.log({
+        workspaceId,
+        action: 'billing.campaign_paused',
+        resourceType: 'outbound_campaign',
+        resourceId: campaignId,
+        metadata: { reason, pausedBy: 'outbound_call_worker' },
+      });
+    } catch (err) {
+      // The campaign is already stopped, which is the safety-critical part. A
+      // missing audit row must not resurrect the dispatch loop by failing the
+      // job, so it is reported and the pause stands.
+      this.logger.error(
+        `Campaign ${campaignId} paused for ${reason} but the audit record failed: ${(err as Error).message}`,
       );
     }
   }

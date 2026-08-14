@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import type { ApiErrorCode, EntitlementReason } from '@voiceforge/shared';
+import type { EntitlementReason } from '@voiceforge/shared';
 import { PAID_CALL_MINIMUM_SECONDS } from '@voiceforge/shared';
 import { AuditService } from '../audit/audit.service';
 import { AppError } from '../common/errors';
@@ -86,10 +86,14 @@ export class CallAdmissionService {
   async admitCall(input: AdmitCallInput): Promise<CallAdmission> {
     const effective = await this.entitlements.getEffectivePlan(input.organizationId);
 
-    const entitlement = await this.entitlements.check(input.organizationId, {
-      kind: 'paid_call',
-      minimumSeconds: PAID_CALL_MINIMUM_SECONDS,
-    });
+    // The plan resolved above is passed through, so the entitlement decision
+    // and the concurrency limit below are read from one snapshot of the
+    // subscription instead of two reads that can disagree.
+    const entitlement = await this.entitlements.check(
+      input.organizationId,
+      { kind: 'paid_call', minimumSeconds: PAID_CALL_MINIMUM_SECONDS },
+      effective,
+    );
     if (!entitlement.allowed) {
       return this.deny(input, entitlement.reason, {
         plan: entitlement.plan,
@@ -253,14 +257,14 @@ export class CallAdmissionService {
   toError(denial: DeniedCall): AppError {
     if (OPERATOR_FAULT_REASONS.has(denial.reason)) {
       return new AppError(
-        'BILLING_UNAVAILABLE' as ApiErrorCode,
+        'BILLING_UNAVAILABLE',
         denial.message,
         HttpStatus.SERVICE_UNAVAILABLE,
         { reason: denial.reason },
       );
     }
     return new AppError(
-      'PLAN_LIMIT_EXCEEDED' as ApiErrorCode,
+      'PLAN_LIMIT_EXCEEDED',
       denial.message,
       HttpStatus.FORBIDDEN,
       { reason: denial.reason },

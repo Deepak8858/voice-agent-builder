@@ -20,6 +20,13 @@ export interface PlanEntitlements {
   contacts: number;
   outboundPstn: boolean;
   campaigns: boolean;
+  /**
+   * Compliance blocking (DNC, quiet hours, consent) is a mandatory safety
+   * control, not a commercial feature. It is declared per plan so that it can
+   * never be weakened as a side effect of repricing campaigns, and it is `true`
+   * on every plan including Free.
+   */
+  complianceBlocks: boolean;
   whiteLabel: boolean;
 }
 
@@ -35,6 +42,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     contacts: 50,
     outboundPstn: false,
     campaigns: false,
+    complianceBlocks: true,
     whiteLabel: false,
   },
   starter: {
@@ -48,6 +56,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     contacts: 500,
     outboundPstn: true,
     campaigns: true,
+    complianceBlocks: true,
     whiteLabel: false,
   },
   growth: {
@@ -61,6 +70,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     contacts: 5_000,
     outboundPstn: true,
     campaigns: true,
+    complianceBlocks: true,
     whiteLabel: true,
   },
   enterprise: {
@@ -74,6 +84,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     contacts: 25_000,
     outboundPstn: true,
     campaigns: true,
+    complianceBlocks: true,
     whiteLabel: true,
   },
 };
@@ -105,7 +116,7 @@ function compatibilityLimits(entitlements: PlanEntitlements): CompatibilityPlanL
     tools: entitlements.nangoConnections,
     workspaces: entitlements.workspaces,
     contacts: entitlements.contacts,
-    complianceBlocks: entitlements.campaigns,
+    complianceBlocks: entitlements.complianceBlocks,
   };
 }
 
