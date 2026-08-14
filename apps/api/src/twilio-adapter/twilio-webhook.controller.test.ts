@@ -1,5 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TwilioWebhookController } from './twilio-webhook.controller';
+import { UnauthorizedError } from '../common/errors';
+
+/**
+ * A verifier that accepts every delivery, for the tests that are about what
+ * happens after authentication succeeds.
+ */
+function makeVerifier() {
+  return { assertValidSignature: vi.fn(async () => undefined) };
+}
+
+/** A verifier that rejects, standing in for an unsigned or forged delivery. */
+function makeRejectingVerifier(message: string) {
+  return {
+    assertValidSignature: vi.fn(async () => {
+      throw new UnauthorizedError(message);
+    }),
+  };
+}
 
 function makePrisma(overrides?: { existingCall?: unknown; existingUsage?: unknown }) {
   return {
@@ -53,6 +71,8 @@ const INBOUND_PAYLOAD = {
   To: '+15551234567',
 };
 
+const SIGNED_HEADERS = { 'x-twilio-signature': 'valid-signature' };
+
 describe('TwilioWebhookController.handleInbound', () => {
   it('propagates the phone number workspace organization to an inbound call', async () => {
     const prisma = makePrisma();
@@ -63,9 +83,10 @@ describe('TwilioWebhookController.handleInbound', () => {
       sessionManager as never,
       prisma as never,
       makeAdmission(true) as never,
+      makeVerifier() as never,
     );
 
-    await controller.handleInbound(INBOUND_PAYLOAD);
+    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
 
     expect(prisma.call.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -84,6 +105,83 @@ describe('TwilioWebhookController.handleInbound', () => {
     });
   });
 
+  it('verifies the Twilio signature before touching the database', async () => {
+    const prisma = makePrisma();
+    const admission = makeAdmission(true);
+    const sessionManager = { create: vi.fn(() => ({ id: 'session-1' })) };
+    const verifier = makeVerifier();
+    const controller = new TwilioWebhookController(
+      {} as never,
+      {} as never,
+      sessionManager as never,
+      prisma as never,
+      admission as never,
+      verifier as never,
+    );
+
+    await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS, {
+      originalUrl: '/api/v1/voice/webhook/inbound',
+    } as never);
+
+    expect(verifier.assertValidSignature).toHaveBeenCalledWith(
+      {
+        headers: SIGNED_HEADERS,
+        originalUrl: '/api/v1/voice/webhook/inbound',
+        body: INBOUND_PAYLOAD,
+      },
+      'voice.inbound',
+    );
+    expect(verifier.assertValidSignature.mock.invocationCallOrder[0]!).toBeLessThan(
+      prisma.twilioPhoneNumber.findUnique.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('rejects an unsigned inbound webhook without spending billing resources', async () => {
+    const prisma = makePrisma();
+    const admission = makeAdmission(true);
+    const sessionManager = { create: vi.fn(() => ({ id: 'session-1' })) };
+    const controller = new TwilioWebhookController(
+      {} as never,
+      {} as never,
+      sessionManager as never,
+      prisma as never,
+      admission as never,
+      makeRejectingVerifier('Missing Twilio webhook signature.') as never,
+    );
+
+    await expect(controller.handleInbound(INBOUND_PAYLOAD, {})).rejects.toThrow(
+      'Missing Twilio webhook signature.',
+    );
+
+    expect(prisma.twilioPhoneNumber.findUnique).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(sessionManager.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a forged inbound signature without spending billing resources', async () => {
+    const prisma = makePrisma();
+    const admission = makeAdmission(true);
+    const sessionManager = { create: vi.fn(() => ({ id: 'session-1' })) };
+    const controller = new TwilioWebhookController(
+      {} as never,
+      {} as never,
+      sessionManager as never,
+      prisma as never,
+      admission as never,
+      makeRejectingVerifier('Invalid Twilio webhook signature.') as never,
+    );
+
+    await expect(
+      controller.handleInbound(INBOUND_PAYLOAD, { 'x-twilio-signature': 'forged' }),
+    ).rejects.toThrow('Invalid Twilio webhook signature.');
+
+    expect(prisma.twilioPhoneNumber.findUnique).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(sessionManager.create).not.toHaveBeenCalled();
+  });
+
   it('streams media only after billing admits the inbound call', async () => {
     const prisma = makePrisma();
     const admission = makeAdmission(true);
@@ -94,9 +192,10 @@ describe('TwilioWebhookController.handleInbound', () => {
       sessionManager as never,
       prisma as never,
       admission as never,
+      makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
 
     expect(admission.admitCall).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -121,9 +220,10 @@ describe('TwilioWebhookController.handleInbound', () => {
       sessionManager as never,
       prisma as never,
       admission as never,
+      makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
     const body = await response.text();
 
     expect(sessionManager.create).not.toHaveBeenCalled();
@@ -150,9 +250,10 @@ describe('TwilioWebhookController.handleInbound', () => {
       sessionManager as never,
       prisma as never,
       admission as never,
+      makeVerifier() as never,
     );
 
-    const response = await controller.handleInbound(INBOUND_PAYLOAD);
+    const response = await controller.handleInbound(INBOUND_PAYLOAD, SIGNED_HEADERS);
 
     expect(prisma.call.create).not.toHaveBeenCalled();
     expect(admission.admitCall).not.toHaveBeenCalled();

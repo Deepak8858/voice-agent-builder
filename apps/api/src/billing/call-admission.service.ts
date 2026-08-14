@@ -5,7 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { AppError } from '../common/errors';
 import { MetricsService } from '../common/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { CallConcurrencyService } from './call-concurrency.service';
+import { CallConcurrencyService, isLeaseRefused } from './call-concurrency.service';
 import { CreditLedgerService, type MinuteReservation } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
 
@@ -32,6 +32,19 @@ export interface DeniedCall {
 }
 
 export type CallAdmission = AdmittedCall | DeniedCall;
+
+/**
+ * Narrows an admission result to a denial.
+ *
+ * Written as an explicit guard rather than an `if (!admission.admitted)` check
+ * because the production build compiles with `strict` disabled
+ * (`tsconfig.build.json`), where truthiness narrowing over boolean-literal
+ * discriminants does not apply. Callers that must react to a denial use this
+ * so the same source compiles under both configurations.
+ */
+export function isCallDenied(admission: CallAdmission): admission is DeniedCall {
+  return admission.admitted === false;
+}
 
 /**
  * Customer-facing failures that are the customer's to fix (no credit, plan does
@@ -102,7 +115,7 @@ export class CallAdmissionService {
       organizationId: input.organizationId,
       organizationLimit,
     });
-    if (lease.allowed === false) {
+    if (isLeaseRefused(lease)) {
       return this.deny(input, lease.reason, { plan: effective.plan, limit: organizationLimit });
     }
 

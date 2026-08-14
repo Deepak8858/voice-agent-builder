@@ -3,6 +3,7 @@ import { TwilioVoiceAdapter } from './twilio.adapter';
 import { VoicePipelineService } from './voice-pipeline.service';
 import { CallSessionManager } from './call-session-manager';
 import { TwilioWebhookController } from './twilio-webhook.controller';
+import { TwilioSignatureVerifier } from './twilio-signature.verifier';
 import { BillingModule } from '../billing/billing.module';
 import { PrismaModule } from '../prisma/prisma.module';
 
@@ -16,6 +17,7 @@ import { PrismaModule } from '../prisma/prisma.module';
     CallSessionManager,
     VoicePipelineService,
     TwilioVoiceAdapter,
+    TwilioSignatureVerifier,
   ],
   exports: [TwilioVoiceAdapter, VoicePipelineService, CallSessionManager],
 })

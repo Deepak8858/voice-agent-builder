@@ -20,9 +20,25 @@ const TokenInputSchema = z.object({
 export type AcquireCallLeaseInput = z.infer<typeof AcquireSchema>;
 export type RenewCallLeaseInput = z.infer<typeof TokenInputSchema>;
 export type ReleaseCallLeaseInput = z.infer<typeof TokenInputSchema>;
-export type CallLeaseDecision =
-  | { allowed: true; leaseToken: string; expiresAt: string }
-  | { allowed: false; reason: 'organization_concurrency_reached' | 'platform_concurrency_reached' | 'billing_temporarily_unavailable' };
+export type GrantedCallLease = { allowed: true; leaseToken: string; expiresAt: string };
+export type RefusedCallLease = {
+  allowed: false;
+  reason: 'organization_concurrency_reached' | 'platform_concurrency_reached' | 'billing_temporarily_unavailable';
+};
+export type CallLeaseDecision = GrantedCallLease | RefusedCallLease;
+
+/**
+ * Narrows a lease decision to a refusal.
+ *
+ * Written as an explicit guard rather than an `if (!decision.allowed)` check
+ * because the production build compiles with `strict` disabled
+ * (`tsconfig.build.json`), and truthiness narrowing over boolean-literal
+ * discriminants only works under `strictNullChecks`. A guard narrows in both
+ * configurations, so the same source compiles for tests and for release.
+ */
+export function isLeaseRefused(decision: CallLeaseDecision): decision is RefusedCallLease {
+  return decision.allowed === false;
+}
 export type LeaseRecoveryReport = { checked: number; recovered: number; failed: number };
 export type LeaseRenewalReport = { checked: number; renewed: number; dropped: number };
 

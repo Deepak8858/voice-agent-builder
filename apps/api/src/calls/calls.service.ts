@@ -11,7 +11,7 @@ import type {
 } from '@voiceforge/shared';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
-import { CallAdmissionService } from '../billing/call-admission.service';
+import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import { EntitlementService } from '../billing/entitlement.service';
 import { CacheService } from '../cache/cache.service';
@@ -264,7 +264,7 @@ export class CallsService {
       provider: voice.name,
       direction: 'outbound',
     });
-    if (admission.admitted === false) {
+    if (isCallDenied(admission)) {
       await this.prisma.call.update({
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },

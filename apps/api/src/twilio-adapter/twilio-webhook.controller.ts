@@ -1,7 +1,9 @@
-import { Controller, Post, Body, HttpCode, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Headers, HttpCode, Logger, Req } from '@nestjs/common';
+import type { Request } from 'express';
 import { TwilioVoiceAdapter } from './twilio.adapter';
 import { VoicePipelineService } from './voice-pipeline.service';
 import { CallSessionManager } from './call-session-manager';
+import { TwilioSignatureVerifier } from './twilio-signature.verifier';
 import { CallAdmissionService } from '../billing/call-admission.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -18,11 +20,24 @@ export class TwilioWebhookController {
     private readonly sessionManager: CallSessionManager,
     private readonly prisma: PrismaService,
     private readonly admission: CallAdmissionService,
+    private readonly signatures: TwilioSignatureVerifier,
   ) {}
 
   @Post('inbound')
   @HttpCode(200)
-  async handleInbound(@Body() body: Record<string, unknown>) {
+  async handleInbound(
+    @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined> = {},
+    @Req() req?: Request,
+  ) {
+    // Nothing below this line may run for an unauthenticated caller: the
+    // handler creates a call, spends billing credit, and opens a media stream,
+    // all of which an unsigned request could otherwise trigger at will.
+    await this.signatures.assertValidSignature(
+      { headers, originalUrl: requestUrl(req, '/voice/webhook/inbound'), body },
+      'voice.inbound',
+    );
+
     const callSid = body.CallSid as string;
     const from = body.From as string;
     const to = body.To as string;
@@ -126,7 +141,18 @@ export class TwilioWebhookController {
 
   @Post('status')
   @HttpCode(200)
-  async handleStatus(@Body() body: Record<string, unknown>) {
+  async handleStatus(
+    @Body() body: Record<string, unknown>,
+    @Headers() headers: Record<string, string | string[] | undefined> = {},
+    @Req() req?: Request,
+  ) {
+    // Status callbacks mutate call state, so they are authenticated on the
+    // same terms as the inbound webhook.
+    await this.signatures.assertValidSignature(
+      { headers, originalUrl: requestUrl(req, '/voice/webhook/status'), body },
+      'voice.status',
+    );
+
     await this.twilioAdapter.handleWebhook(body);
 
     const callSid = body.CallSid as string;
@@ -156,4 +182,13 @@ export class TwilioWebhookController {
 
     return '';
   }
+}
+
+/**
+ * The path Twilio signed. Only the path and query are taken from the request;
+ * the origin is supplied by the verifier from configuration so a forged `Host`
+ * header cannot influence the string that is hashed.
+ */
+function requestUrl(req: Request | undefined, fallbackPath: string): string {
+  return req?.originalUrl ?? req?.url ?? fallbackPath;
 }

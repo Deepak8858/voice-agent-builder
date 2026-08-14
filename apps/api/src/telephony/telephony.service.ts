@@ -14,7 +14,7 @@ import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/e
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
-import { CallAdmissionService } from '../billing/call-admission.service';
+import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { EncryptionService } from '../security/encryption.service';
 import { LiveKitService } from '../livekit/livekit.service';
@@ -556,7 +556,7 @@ export class TelephonyService {
       provider: 'livekit',
       direction: 'outbound',
     });
-    if (admission.admitted === false) {
+    if (isCallDenied(admission)) {
       await this.prisma.call.update({
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
