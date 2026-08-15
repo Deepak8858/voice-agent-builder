@@ -42,11 +42,13 @@ function requestWithoutSessionUser(): Request {
 
 const checkoutDto = {
   plan: 'starter' as const,
+  idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
   successPath: '/dashboard/billing?checkout=success',
   cancelPath: '/dashboard/billing?checkout=cancel',
 };
 
 const topUpDto = {
+  idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
   successPath: '/dashboard/billing?topup=success',
   cancelPath: '/dashboard/billing?topup=cancel',
 };

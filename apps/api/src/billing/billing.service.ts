@@ -66,7 +66,10 @@ interface StripeClient {
   };
   checkout: {
     sessions: {
-      create(params: Record<string, unknown>): Promise<StripeSession>;
+      create(
+        params: Record<string, unknown>,
+        options?: { idempotencyKey?: string },
+      ): Promise<StripeSession>;
     };
   };
   billingPortal: {
@@ -201,7 +204,7 @@ export class BillingService {
       subscription_data: {
         metadata: { organizationId, plan: dto.plan, catalogVersion: BILLING_CATALOG_VERSION },
       },
-    });
+    }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
     await this.logBillingAudit(organizationId, 'billing.checkout_started', {
       plan: dto.plan,
@@ -268,7 +271,7 @@ export class BillingService {
           catalogVersion: BILLING_CATALOG_VERSION,
         },
       },
-    });
+    }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
     await this.logBillingAudit(organizationId, 'billing.topup_checkout_started', {
       priceId,

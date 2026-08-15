@@ -133,6 +133,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
           method: 'POST',
           body: JSON.stringify({
             plan,
+            idempotencyKey: crypto.randomUUID(),
             successPath: '/checkout/success',
             cancelPath: '/checkout/cancel',
           }),
@@ -158,6 +159,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
         {
           method: 'POST',
           body: JSON.stringify({
+            idempotencyKey: crypto.randomUUID(),
             successPath: '/dashboard/billing?topup=success',
             cancelPath: '/dashboard/billing?topup=cancel',
           }),

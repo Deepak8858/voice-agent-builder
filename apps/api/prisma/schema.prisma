@@ -779,8 +779,8 @@ model BillingCreditBucket {
   organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   ledgerEntries BillingLedgerEntry[]
 
-  @@unique([organizationId, sourceType, sourceId])
-  @@index([organizationId, status, expiresAt, priority])
+  @@unique([organizationId, sourceType, sourceId], map: "credit_bucket_source_uidx")
+  @@index([organizationId, status, expiresAt, priority], map: "credit_bucket_spend_idx")
   @@map("billing_credit_buckets")
 }
 

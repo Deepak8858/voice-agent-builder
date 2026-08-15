@@ -6,8 +6,8 @@ import {
 } from '@/lib/checkout-availability';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import {
-  CheckoutPlanSchema,
-  type CheckoutPlan,
+  CreateCheckoutSessionDtoSchema,
+  type CreateCheckoutSessionDto,
   type SessionUser,
 } from '@voiceforge/shared';
 
@@ -51,16 +51,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
   }
 
-  let body: { plan?: CheckoutPlan; successPath?: string; cancelPath?: string } = {};
+  let body: CreateCheckoutSessionDto;
   try {
-    body = (await req.json()) as typeof body;
+    const parsed = CreateCheckoutSessionDtoSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json({ error: 'Invalid checkout request.' }, { status: 400 });
+    }
+    body = parsed.data;
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
-  }
-
-  const parsed = CheckoutPlanSchema.safeParse(body.plan);
-  if (!parsed.success) {
-    return NextResponse.json({ error: 'Unknown plan.' }, { status: 400 });
   }
 
   let me: SessionUser;
@@ -87,11 +86,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       `/workspaces/${workspaceId}/billing/checkout`,
       {
         method: 'POST',
-        body: JSON.stringify({
-          plan: parsed.data,
-          successPath: body.successPath ?? '/checkout/success',
-          cancelPath: body.cancelPath ?? '/checkout/cancel',
-        }),
+        body: JSON.stringify(body),
       },
     );
     if (!session?.url || !isTrustedCheckoutUrl(session.url)) {

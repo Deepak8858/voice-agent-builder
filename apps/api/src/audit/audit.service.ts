@@ -81,8 +81,9 @@ export class AuditService {
       if (organizationId) this.rememberWorkspace(payload.workspaceId, organizationId);
       return organizationId;
     } catch (error) {
-      this.logger.error(
-        `Failed to resolve organization for audit workspace ${payload.workspaceId}: ${(error as Error).message}`,
+      this.logger.warn(
+        `Failed to resolve organization for audit workspace ${payload.workspaceId}; ` +
+          `audit row for "${payload.action}" will be organization-less: ${(error as Error).message}`,
       );
       return null;
     }

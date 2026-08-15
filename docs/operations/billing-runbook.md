@@ -342,7 +342,11 @@ is safe. Dropping the tables is not, and is never an appropriate rollback step.
 ## 10. Release Verification
 
 Run against a disposable database first, then against production during the
-release window.
+release window. `prisma migrate deploy` is the only supported deployment path
+for billing tables. Do not use `prisma db push`: Prisma cannot represent the
+billing CHECK constraints in `schema.prisma`, and `db push` can therefore create
+tables without the non-negativity guards. `db:verify` asserts those named
+constraints exist and fails the release if any are absent.
 
 ```powershell
 pnpm --filter @voiceforge/api exec prisma migrate deploy

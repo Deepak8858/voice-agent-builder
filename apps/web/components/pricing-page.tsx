@@ -60,11 +60,14 @@ function CheckIcon({ value }: { value: boolean | string }) {
   return <span className="text-xs text-muted-foreground">{value}</span>;
 }
 
-async function startStripeCheckout(plan: CheckoutPlan): Promise<string | CheckoutUnavailable> {
+async function startStripeCheckout(
+  plan: CheckoutPlan,
+  idempotencyKey: string,
+): Promise<string | CheckoutUnavailable> {
   const res = await fetch('/api/billing/checkout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ plan }),
+    body: JSON.stringify({ plan, idempotencyKey }),
     credentials: 'include',
   });
   const data = (await res.json().catch(() => null)) as
@@ -112,7 +115,7 @@ export function PricingPage({
     setError(null);
     setUnavailable(null);
     try {
-      const result = await startStripeCheckout(plan);
+      const result = await startStripeCheckout(plan, crypto.randomUUID());
       if (typeof result === 'string') {
         window.location.assign(result);
         return;

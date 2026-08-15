@@ -663,6 +663,12 @@ jobs:
           "${candidate_compose[@]}" run --rm --no-TTY --no-deps api \
             npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma \
             </dev/null
+          # Prisma cannot model the billing CHECK constraints. Verify the live
+          # schema immediately after migration so a missing invariant blocks the
+          # release before any replacement services start.
+          "${candidate_compose[@]}" run --rm --no-TTY --no-deps api \
+            pnpm db:verify \
+            </dev/null
 
           sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
           install_release_assets "$candidate_bundle"

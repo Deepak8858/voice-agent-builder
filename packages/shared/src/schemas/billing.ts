@@ -57,9 +57,12 @@ export const RelativeBillingPathSchema = z
 // DTOs
 // --------------------------------------------------------------------------
 
+const CheckoutAttemptIdSchema = z.string().uuid();
+
 export const CreateCheckoutSessionDtoSchema = z
   .object({
     plan: CheckoutPlanSchema,
+    idempotencyKey: CheckoutAttemptIdSchema,
     successPath: RelativeBillingPathSchema.default('/checkout/success'),
     cancelPath: RelativeBillingPathSchema.default('/checkout/cancel'),
   })
@@ -68,6 +71,7 @@ export type CreateCheckoutSessionDto = z.infer<typeof CreateCheckoutSessionDtoSc
 
 export const CreateTopUpCheckoutDtoSchema = z
   .object({
+    idempotencyKey: CheckoutAttemptIdSchema,
     successPath: RelativeBillingPathSchema.default('/dashboard/billing?topup=success'),
     cancelPath: RelativeBillingPathSchema.default('/dashboard/billing?topup=cancel'),
   })

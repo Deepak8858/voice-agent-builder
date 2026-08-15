@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,7 @@ function CheckoutStartInner() {
   );
   const [pending, setPending] = useState(parsedPlan.success);
   const [unavailable, setUnavailable] = useState<CheckoutUnavailable | null>(null);
+  const checkoutAttemptId = useRef(crypto.randomUUID());
 
   useEffect(() => {
     if (!parsedPlan.success) return;
@@ -47,7 +48,7 @@ function CheckoutStartInner() {
         const res = await fetch('/api/billing/checkout', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ plan }),
+          body: JSON.stringify({ plan, idempotencyKey: checkoutAttemptId.current }),
           credentials: 'include',
         });
         const data = (await res.json().catch(() => null)) as {

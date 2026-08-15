@@ -46,6 +46,7 @@ describe('billing DTO schemas', () => {
   it('accepts a server-controlled checkout plan and safe relative return paths', () => {
     const result = CreateCheckoutSessionDtoSchema.safeParse({
       plan: 'starter',
+      idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
       successPath: '/dashboard/billing?checkout=success',
       cancelPath: '/dashboard/billing?checkout=cancel',
     });
@@ -63,10 +64,12 @@ describe('billing DTO schemas', () => {
     expect(result.success).toBe(false);
   });
 
-  it('only accepts self-service checkout plans', () => {
-    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'starter' }).success).toBe(true);
-    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'growth' }).success).toBe(true);
-    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'enterprise' }).success).toBe(false);
+  it('only accepts self-service checkout plans with a UUID attempt key', () => {
+    const idempotencyKey = '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d';
+    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'starter', idempotencyKey }).success).toBe(true);
+    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'growth', idempotencyKey }).success).toBe(true);
+    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'enterprise', idempotencyKey }).success).toBe(false);
+    expect(CreateCheckoutSessionDtoSchema.safeParse({ plan: 'starter', idempotencyKey: 'retry-me' }).success).toBe(false);
   });
 
   it('accepts only relative Customer Portal return paths', () => {
@@ -84,12 +87,15 @@ describe('billing DTO schemas', () => {
     expect(PLAN_LIMITS.starter).not.toHaveProperty('outboundCalls');
   });
 
-  it('defaults strict top-up checkout paths to billing routes', () => {
-    expect(CreateTopUpCheckoutDtoSchema.parse({})).toEqual({
+  it('defaults strict top-up checkout paths while requiring an attempt key', () => {
+    const idempotencyKey = '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d';
+    expect(CreateTopUpCheckoutDtoSchema.parse({ idempotencyKey })).toEqual({
+      idempotencyKey,
       successPath: '/dashboard/billing?topup=success',
       cancelPath: '/dashboard/billing?topup=cancel',
     });
-    expect(CreateTopUpCheckoutDtoSchema.safeParse({ extra: true }).success).toBe(false);
+    expect(CreateTopUpCheckoutDtoSchema.safeParse({ idempotencyKey, extra: true }).success).toBe(false);
+    expect(CreateTopUpCheckoutDtoSchema.safeParse({}).success).toBe(false);
   });
 
   it('recognizes paused subscriptions and stable entitlement reasons', () => {

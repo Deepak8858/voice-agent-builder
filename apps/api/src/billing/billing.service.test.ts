@@ -143,6 +143,7 @@ describe('BillingService', () => {
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
       })).rejects.toMatchObject({
@@ -160,6 +161,7 @@ describe('BillingService', () => {
 
       await svc.createCheckoutSession('org-1', {
         plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
       });
@@ -187,6 +189,7 @@ describe('BillingService', () => {
             },
           },
         }),
+        { idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d' },
       );
       expect(mockStripe.checkout.sessions.create.mock.calls[0][0]).not.toHaveProperty('payment_method_types');
       expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -209,6 +212,7 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
       const dto = {
         plan: 'starter' as const,
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
       };
@@ -231,6 +235,7 @@ describe('BillingService', () => {
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: 'https://evil.example/success',
         cancelPath: '/dashboard/billing',
       })).rejects.toBeInstanceOf(BadRequestException);
@@ -248,6 +253,7 @@ describe('BillingService', () => {
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'enterprise' as never,
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing',
         cancelPath: '/dashboard/billing',
       })).rejects.toBeInstanceOf(BadRequestException);
@@ -257,6 +263,7 @@ describe('BillingService', () => {
 
   describe('createTopUpCheckoutSession', () => {
     const topUpDto = {
+      idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
       successPath: '/dashboard/billing?topup=success',
       cancelPath: '/dashboard/billing?topup=cancel',
     };
@@ -287,6 +294,7 @@ describe('BillingService', () => {
             catalogVersion: BILLING_CATALOG_VERSION,
           }),
         }),
+        { idempotencyKey: topUpDto.idempotencyKey },
       );
       expect(prisma.auditLog.create).toHaveBeenCalledWith(
         expect.objectContaining({
