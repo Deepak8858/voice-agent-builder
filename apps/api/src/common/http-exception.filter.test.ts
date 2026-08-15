@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const CORRELATION_ID = 'corr-1234';
@@ -170,6 +171,25 @@ describe('HttpExceptionFilter capture matrix', () => {
     filter.catch(new Error('boom'), makeHost().host);
 
     expect(posthog.exceptions).toHaveLength(1);
+  });
+
+  it('maps a Prisma P2023 to a 400 and does not capture it', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const posthog = makePosthog();
+    const filter = new HttpExceptionFilter(posthog as never);
+    const { host, status, body } = makeHost();
+
+    // A non-UUID id reaching a `uuid` column throws P2023 before any row
+    // lookup. It is a client mistake, so it must not count as a server fault.
+    const prismaError = new Prisma.PrismaClientKnownRequestError('Inconsistent column data', {
+      code: 'P2023',
+      clientVersion: '5.22.0',
+    });
+    filter.catch(prismaError, host);
+
+    expect(status()).toBe(400);
+    expect(body()).toMatchObject({ error: { code: 'VALIDATION_ERROR' } });
+    expect(posthog.exceptions).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,5 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { logger } from '../logging';
 import { env, isProduction } from '../config/env';
@@ -59,6 +60,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
           message: String((resp as { message: unknown }).message),
         };
       }
+    } else if (
+      exception instanceof Prisma.PrismaClientKnownRequestError &&
+      exception.code === 'P2023'
+    ) {
+      // "Inconsistent column data" — a malformed value for a typed column such
+      // as a `uuid`, thrown before any row lookup. A client fault, not a server
+      // fault, so return 400 and keep it out of error tracking's 5xx bucket.
+      // A net for lookups the controller-boundary UUID checks do not cover.
+      status = HttpStatus.BAD_REQUEST;
+      error = { code: 'VALIDATION_ERROR' as ApiErrorCode, message: 'Malformed request parameter.' };
     } else if (exception instanceof Error) {
       logger.error({ err: exception, correlationId, method: req.method, url: req.url }, exception.message);
       error.message = isProduction()
