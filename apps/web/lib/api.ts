@@ -62,8 +62,13 @@ async function rawApiFetch<T>(
   const body = (await res.json().catch(() => null)) as ApiEnvelope<T> | null;
   if (!res.ok || !body || body.success === false) {
     const code = body?.error?.code ?? 'INTERNAL_ERROR';
-    const msg = body?.error?.message ?? `API ${res.status}`;
-    throw new ApiCallError(code, msg, res.status, body?.error?.details);
+    const detail = body?.error?.message ?? 'request failed';
+    const method = (init.method ?? 'GET').toUpperCase();
+    // Fold the route and status into the message so distinct faults get
+    // distinct error-tracking fingerprints, instead of every API 500
+    // collapsing into the masked `Unexpected server error.` constant.
+    const message = `${method} ${path} -> ${res.status} ${code}: ${detail}`;
+    throw new ApiCallError(code, message, res.status, body?.error?.details);
   }
   return body.data as T;
 }
@@ -76,5 +81,7 @@ export class ApiCallError extends Error {
     public readonly details?: unknown,
   ) {
     super(message);
+    // Without this, error tracking labels every ApiCallError as a generic `Error`.
+    this.name = 'ApiCallError';
   }
 }

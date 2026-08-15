@@ -64,8 +64,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error.message = isProduction()
         ? 'Unexpected server error.'
         : exception.message;
+      // The production message is a constant, so keep the correlation id and
+      // error class on the response. They trace a masked 500 back to its log
+      // line and give error tracking a real fingerprint per fault.
+      error.details = {
+        errorClass: exception.name,
+        ...(correlationId ? { correlationId } : {}),
+      };
     } else {
       logger.error({ correlationId, method: req.method, url: req.url }, 'Unhandled non-Error exception');
+      error.details = correlationId ? { correlationId } : undefined;
     }
 
     // Warn on 5xx — these are bugs, not client errors

@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { validate as isUuid } from 'uuid';
 import type {
   AgentSpec,
   CallDetail,
@@ -299,6 +300,9 @@ export class CallsService {
    * Returns existing CallEvent rows for backfill when a client connects to SSE.
    */
   async getLiveEvents(callId: string, workspaceId: string): Promise<Array<Record<string, unknown>>> {
+    // `Call.id` is a `@db.Uuid` column, so a non-UUID id makes Prisma throw
+    // instead of returning no rows. Treat a malformed id as no backfill.
+    if (!isUuid(callId)) return [];
     const call = await this.prisma.call.findFirst({ where: { id: callId, workspaceId } });
     if (!call) return [];
     const events = await this.prisma.callEvent.findMany({
@@ -315,6 +319,9 @@ export class CallsService {
   }
 
   async get(workspaceId: string, callId: string): Promise<CallDetail> {
+    // `Call.id` is a `@db.Uuid` column, so a non-UUID id makes Prisma throw
+    // instead of returning no rows. A malformed id is a missing call, not a 500.
+    if (!isUuid(callId)) throw new CallNotFoundError(callId);
     const call = await this.prisma.call.findFirst({
       where: { id: callId, workspaceId },
       include: { agent: { select: { name: true } } },
