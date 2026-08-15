@@ -1,1 +1,1 @@
-export { Textarea } from '@voiceforge/ui'
+export { Textarea } from '@voiceforge/ui/textarea'

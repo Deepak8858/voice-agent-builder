@@ -1,1 +1,1 @@
-export { Avatar, AvatarImage, AvatarFallback } from '@voiceforge/ui'
+export { Avatar, AvatarImage, AvatarFallback } from '@voiceforge/ui/avatar'

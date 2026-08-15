@@ -1,1 +1,1 @@
-export { cn } from '@voiceforge/ui'
+export { cn } from '@voiceforge/ui/lib/cn'

@@ -1,1 +1,1 @@
-export { Separator } from '@voiceforge/ui'
+export { Separator } from '@voiceforge/ui/separator'

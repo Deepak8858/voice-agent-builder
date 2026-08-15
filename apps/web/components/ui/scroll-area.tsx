@@ -1,1 +1,1 @@
-export { ScrollArea, ScrollBar } from '@voiceforge/ui'
+export { ScrollArea, ScrollBar } from '@voiceforge/ui/scroll-area'

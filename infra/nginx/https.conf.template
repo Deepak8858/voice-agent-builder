@@ -16,7 +16,10 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=()" always;
+    # Kept in sync with the same header in apps/web/next.config.ts. nginx's
+    # add_header wins for what the client actually sees, so an omission here
+    # silently drops a restriction the application believes it is sending.
+    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()" always;
 
     location = /nginx-health {
         access_log off;
@@ -46,6 +49,11 @@ server {
         proxy_buffering off;
     }
 
+    # Caching for `public/` assets is deliberately set by the application
+    # (apps/web/next.config.ts) rather than here. A `location` block with its
+    # own `add_header` cancels inheritance of the server-level security headers
+    # above, so caching those paths at this layer would silently strip HSTS and
+    # the framing/-content-type protections from every static asset response.
     location / {
         proxy_pass http://web_upstream;
         proxy_http_version 1.1;
