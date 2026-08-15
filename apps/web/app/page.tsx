@@ -34,10 +34,12 @@ type IconItem = {
 };
 
 const heroStats = [
-  { value: '5 min', label: 'from plain prompt to mock call' },
+  { value: '5 min', label: 'from plain prompt to a tested call' },
   { value: 'Spec', label: 'Agent JSON before every publish' },
-  { value: '0', label: 'outbound calls before compliance checks' },
-  { value: 'Multi', label: 'provider adapter runtime path' },
+  // Stated as a rule rather than a count: "0 outbound calls" read as "no calls
+  // are made at all", which is the opposite of the product claim.
+  { value: '100%', label: 'of outbound calls pass compliance gates first' },
+  { value: '4', label: 'production voice provider adapters' },
 ];
 
 const workflowSteps = [
@@ -56,8 +58,8 @@ const workflowSteps = [
   {
     step: '03',
     icon: PhoneCall,
-    title: 'Run the mock call lab',
-    body: 'Test a realistic call, transcript, event stream, and outcome before connecting any live telephony provider.',
+    title: 'Test the call before it ships',
+    body: 'Run a full call in the browser with live transcript, event stream, and outcome before you point real telephony at it.',
   },
   {
     step: '04',
@@ -94,7 +96,7 @@ const proofPoints: IconItem[] = [
   {
     icon: SlidersHorizontal,
     title: 'Provider adapters',
-    body: 'Mock runtime comes first, with the same product surface ready for Vapi, Retell, Twilio, and future providers.',
+    body: 'Vapi, Retell, OpenAI Realtime, and Twilio run behind one runtime interface, so switching provider never rewrites the agent.',
   },
 ];
 
@@ -124,7 +126,8 @@ const transcriptLines = [
 
 const integrationRows = [
   ['Supabase', 'PostgreSQL', 'Zod schemas'],
-  ['Mock voice runtime', 'Vapi adapter', 'Retell-ready'],
+  ['Vapi', 'Retell', 'OpenAI Realtime'],
+  ['Twilio', 'LiveKit / BYO telephony', 'Own voice pipeline'],
   ['Audit logs', 'Compliance checks', 'White-label workspaces'],
 ];
 
@@ -244,7 +247,7 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-2 text-sm font-medium text-[#394840] sm:grid-cols-5">
               <span>Prompt</span>
               <span>Spec JSON</span>
-              <span>Mock call</span>
+              <span>Test call</span>
               <span>Analytics</span>
               <span>White label</span>
             </div>
@@ -256,7 +259,7 @@ export default function Home() {
         <div className="mx-auto w-full max-w-7xl">
           <SectionHeading
             eyebrow="From brief to live workflow"
-            title="A landing page that shows the product moving."
+            title="Four steps from brief to a monitored live agent."
             body="VoiceForge is not a prompt wrapper. It is a controlled build, test, publish, and monitor loop for teams that need voice agents to survive real customer calls."
           />
 
@@ -308,7 +311,7 @@ export default function Home() {
             <SectionHeading
               eyebrow="Product surface"
               title="Show the builder, then prove the guardrails."
-              body="The page now leads with the working system: prompt generation, versioned specs, mock calls, publish controls, transcripts, analytics, and client branding."
+              body="One system covers the whole lifecycle: prompt generation, versioned specs, test calls, publish controls, transcripts, analytics, and client branding."
               dark
             />
             <ul className="mt-8 space-y-4">
@@ -329,7 +332,7 @@ export default function Home() {
             <SectionHeading
               eyebrow="Real-world controls"
               title="Built for calls that have legal, brand, and revenue consequences."
-              body="Every promise on the page maps back to an engineering rule: validated specs, scoped data, permissioned tools, adapter boundaries, audit logs, and compliance checks before outbound execution."
+              body="Every promise here maps back to an engineering rule: validated specs, scoped data, permissioned tools, adapter boundaries, audit logs, and compliance checks before outbound execution."
             />
             <div className="grid gap-3 sm:grid-cols-2">
               {proofPoints.map((point) => (
@@ -362,7 +365,7 @@ export default function Home() {
             <SectionHeading
               eyebrow="Public demo"
               title="Let prospects hear the product before they read the docs."
-              body="The demo call section connects the marketing story to the same WAV asset used by published public agents, then frames the transcript and outcome signals buyers expect."
+              body="Play a real 30-second call from a published agent, then read the transcript and the outcome signals your buyers will ask about."
             />
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button

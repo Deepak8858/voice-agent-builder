@@ -1,1 +1,1 @@
-export { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@voiceforge/ui'
+export { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@voiceforge/ui/collapsible'

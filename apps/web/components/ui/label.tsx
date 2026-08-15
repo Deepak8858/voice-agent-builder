@@ -1,1 +1,1 @@
-export { Label } from '@voiceforge/ui'
+export { Label } from '@voiceforge/ui/label'

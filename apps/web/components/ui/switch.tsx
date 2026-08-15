@@ -1,1 +1,1 @@
-export { Switch } from '@voiceforge/ui'
+export { Switch } from '@voiceforge/ui/switch'

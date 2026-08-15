@@ -4,6 +4,7 @@ import { DM_Sans, DM_Serif_Display, IBM_Plex_Mono } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ClientChrome } from '@/components/layout/client-chrome';
 import { QueryProvider } from '@/components/providers/query-provider';
+import { siteUrl } from '@/lib/site-url';
 import './globals.css';
 
 const dmSans = DM_Sans({
@@ -24,9 +25,44 @@ const ibmPlexMono = IBM_Plex_Mono({
   weight: ['400', '500'],
 });
 
+const siteName = 'VoiceForge AI';
+const siteTitle = 'VoiceForge AI — Build Voice Agents That Answer';
+const siteDescription =
+  'Design, test, deploy, and white-label AI voice calling agents using natural language.';
+
 export const metadata: Metadata = {
-  title: 'VoiceForge AI — Build Voice Agents That Answer',
-  description: 'Design, test, deploy, and white-label AI voice calling agents using natural language.',
+  metadataBase: new URL(siteUrl),
+  title: siteTitle,
+  description: siteDescription,
+  applicationName: siteName,
+  alternates: {
+    canonical: '/',
+  },
+  openGraph: {
+    type: 'website',
+    siteName,
+    title: siteTitle,
+    description: siteDescription,
+    url: '/',
+    images: [
+      {
+        url: '/images/voiceforge-builder-preview.png',
+        width: 1043,
+        height: 552,
+        alt: 'VoiceForge builder showing the prompt-to-Agent-Spec workflow',
+      },
+    ],
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: siteTitle,
+    description: siteDescription,
+    images: ['/images/voiceforge-builder-preview.png'],
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

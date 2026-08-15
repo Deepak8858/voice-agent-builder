@@ -5,8 +5,11 @@
   "description": "Shared UI primitives for VoiceForge AI (placeholder — populated in Phase 2+).",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "//exports": "Per-component subpaths exist so consumers can import a single primitive without pulling the whole barrel. The root export re-exports every component including the TipTap-based rich text editor, so importing `Button` from '.' drags a rich text editor into the bundle. Public pages must use the subpaths.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./lib/cn": "./src/lib/cn.ts",
+    "./*": "./src/*/index.tsx"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit"
