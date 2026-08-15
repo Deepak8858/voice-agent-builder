@@ -557,6 +557,23 @@ jobs:
             sudo install -m 644 "$bundle/systemd/voiceforge-certbot-renew.timer" \
               /etc/systemd/system/voiceforge-certbot-renew.timer
           }
+          # The nginx config files are bind-mounted, but the container's
+          # entrypoint hook *copies* http.conf/https.conf.template into
+          # /etc/nginx/conf.d at startup. `docker compose up -d` leaves nginx
+          # untouched when its image and compose definition are unchanged, so a
+          # config-only edit would sit on disk and never reach the running
+          # server. Checksum the sources so a changed config forces a recreate.
+          # Skips absent files rather than letting `cat` fail: on the first
+          # deploy none of these exist yet, and `set -euo pipefail` would turn
+          # that into an aborted deploy inside the command substitution.
+          nginx_config_checksum() {
+            for config_file in \
+              "$deploy_root/nginx/nginx.conf" "$deploy_root/nginx/http.conf" \
+              "$deploy_root/nginx/http-redirect.conf" "$deploy_root/nginx/https.conf.template" \
+              "$deploy_root/nginx/docker-entrypoint.d/40-enable-tls-if-present.sh"; do
+              if [ -f "$config_file" ]; then cat "$config_file"; fi
+            done | sha256sum | cut -d ' ' -f 1
+          }
           assert_bind_sources() {
             for source_file in \
               "$deploy_root/nginx/nginx.conf" "$deploy_root/nginx/http.conf" \
@@ -622,6 +639,9 @@ jobs:
               rollback_profile=()
               if [ "$previous_livekit" = true ]; then rollback_profile=(--profile livekit); fi
               "${rollback_compose[@]}" "${rollback_profile[@]}" up -d --no-build --remove-orphans
+              # The restored bundle may carry different nginx config; recreate
+              # unconditionally so the rollback actually serves the old config.
+              "${rollback_compose[@]}" up -d --no-build --no-deps --force-recreate nginx
               if [ "$previous_livekit" = false ]; then
                 "${rollback_compose[@]}" --profile livekit rm -sf livekit-agent || true
               fi
@@ -665,13 +685,19 @@ jobs:
             </dev/null
 
           sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
+          nginx_config_before="$(nginx_config_checksum)"
           install_release_assets "$candidate_bundle"
           assert_bind_sources
+          nginx_config_after="$(nginx_config_checksum)"
           sudo systemctl daemon-reload
           sudo systemctl enable --now voiceforge-certbot-renew.timer
           replacement_started=true
           live_compose=(docker compose --env-file "$env_file" -f "$compose_file")
           "${live_compose[@]}" "${candidate_profile[@]}" up -d --no-build --remove-orphans "${services[@]}"
+          if [ "$nginx_config_before" != "$nginx_config_after" ]; then
+            echo "nginx configuration changed; recreating nginx so its entrypoint re-runs" >&2
+            "${live_compose[@]}" up -d --no-build --no-deps --force-recreate nginx
+          fi
           if [ "$livekit_enabled" = false ]; then
             "${live_compose[@]}" --profile livekit rm -sf livekit-agent
           fi
