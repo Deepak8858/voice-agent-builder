@@ -5,7 +5,6 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const CORRELATION_ID = 'corr-1234';
@@ -173,23 +172,22 @@ describe('HttpExceptionFilter capture matrix', () => {
     expect(posthog.exceptions).toHaveLength(1);
   });
 
-  it('maps a Prisma P2023 to a 400 and does not capture it', async () => {
+  it('captures a generic Prisma P2023 as a server fault', async () => {
     const HttpExceptionFilter = await loadFilter(false);
     const posthog = makePosthog();
     const filter = new HttpExceptionFilter(posthog as never);
     const { host, status, body } = makeHost();
 
-    // A non-UUID id reaching a `uuid` column throws P2023 before any row
-    // lookup. It is a client mistake, so it must not count as a server fault.
-    const prismaError = new Prisma.PrismaClientKnownRequestError('Inconsistent column data', {
-      code: 'P2023',
-      clientVersion: '5.22.0',
-    });
+    // P2023 means inconsistent column data and is not specific to malformed
+    // request input. Route-boundary pipes handle known UUID parameters; an
+    // unclassified P2023 must remain visible as a server fault.
+    const prismaError = Object.assign(new Error('Inconsistent column data'), { code: 'P2023' });
     filter.catch(prismaError, host);
 
-    expect(status()).toBe(400);
-    expect(body()).toMatchObject({ error: { code: 'VALIDATION_ERROR' } });
-    expect(posthog.exceptions).toHaveLength(0);
+    expect(status()).toBe(500);
+    expect(body()).toMatchObject({ error: { code: 'INTERNAL_ERROR' } });
+    expect(posthog.exceptions).toHaveLength(1);
+    expect(posthog.exceptions[0]!.error).toBe(prismaError);
   });
 });
 
