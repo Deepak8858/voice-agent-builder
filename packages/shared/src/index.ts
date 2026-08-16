@@ -2,6 +2,7 @@ export * from './utils/phone';
 export * from './utils/agent-spec-editor';
 export * from './schemas/agent-spec';
 export * from './schemas/agent';
+export * from './schemas/agent-gen';
 export * from './schemas/api';
 export * from './schemas/knowledge';
 export * from './schemas/call';

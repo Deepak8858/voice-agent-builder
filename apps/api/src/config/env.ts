@@ -28,7 +28,10 @@ const EnvSchema = z.object({
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
   VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
-  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
+  // Azure AI Foundry (gpt-5.4-mini) is the production default. The LLM module
+  // factory still fails fast at boot when the selected provider's key is
+  // missing, so this default does not change credential-less-boot behavior.
+  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('azure-aifoundry'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
   VAPI_API_KEY: z.string().optional(),
@@ -170,6 +173,15 @@ const EnvSchema = z.object({
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  // Chat-to-agent generation. LLM calls are expensive, so generation gets its
+  // own (stricter) per-user rate limit on top of the global request limiter.
+  AGENT_GEN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
+  AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(300),
+  AGENT_GEN_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(4),
+  // A session stuck in 'generating' longer than this is failed by the lazy
+  // sweep on the next read, so the UI can offer a retry.
+  AGENT_GEN_STALE_AFTER_SECONDS: z.coerce.number().int().min(60).default(180),
 
   METRICS_SCRAPE_TOKEN: z.string().optional(),
   VOICE_WEBHOOK_SECRET: z.string().optional(),

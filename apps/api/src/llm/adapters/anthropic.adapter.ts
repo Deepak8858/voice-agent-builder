@@ -5,11 +5,18 @@ import {
   findTemplateBySlug,
   type AgentSpec,
   type AgentTemplateSeed,
+  type ChatGenerateResult,
   type GenerateAgentDto,
   type GenerateAgentResult,
 } from '@voiceforge/shared';
 import { env } from '../../config/env';
-import type { LlmAgentGenerator } from '../llm.provider.interface';
+import {
+  CHAT_GEN_TIMEOUT_MS,
+  parseModelJson,
+  runChatGenerationWith,
+  type ChatMessage,
+} from '../chat-generation';
+import type { ChatGenerateInput, LlmAgentGenerator } from '../llm.provider.interface';
 
 /**
  * Anthropic Messages API adapter with prompt caching. Uses `ANTHROPIC_API_KEY`
@@ -54,83 +61,60 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
     };
   }
 
-  async *generateStream(input: GenerateAgentDto): AsyncGenerator<string> {
+  async chatGenerate(input: ChatGenerateInput): Promise<ChatGenerateResult> {
     if (!env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY not set');
+      throw new Error('ANTHROPIC_API_KEY not set. Set the key or switch LLM_PROVIDER.');
     }
+    return runChatGenerationWith(this.name, (messages) => this.callMessages(messages), input);
+  }
 
-    const baseTemplate = this.pickTemplate(input);
+  /**
+   * Anthropic Messages API transport for chat generation. The shared engine
+   * emits OpenAI-style messages; Anthropic requires system prompts in a
+   * dedicated `system` field and a strictly alternating user/assistant list,
+   * so system messages are hoisted and cached with prompt caching.
+   */
+  private async callMessages(messages: ChatMessage[]): Promise<unknown> {
     const { apiKey, baseUrl } = this.client;
-    const baseSpec: AgentSpec = baseTemplate.spec as AgentSpec;
+    const systemText = messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
+    const turns = messages
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({ role: m.role, content: m.content }));
 
-    const response = await fetch(`${baseUrl}/messages`, {
+    const res = await fetch(`${baseUrl}/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
         model: this.model,
-        max_tokens: 4096,
-        stream: true,
+        max_tokens: 8192,
         system: [
           {
             type: 'text',
-            text: this.buildSystemPrompt(),
+            text: systemText,
             cache_control: { type: 'ephemeral' },
           },
         ],
-        messages: [
-          {
-            role: 'user',
-            content: this.buildUserPrompt(input, baseSpec),
-          },
-        ],
+        messages: turns,
       }),
+      signal: AbortSignal.timeout(CHAT_GEN_TIMEOUT_MS),
     });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`Anthropic streaming error ${response.status}: ${text.slice(0, 300)}`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Anthropic API error ${res.status}: ${text.slice(0, 300)}`);
     }
 
-    if (!response.body) {
-      throw new Error('No response body for streaming');
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') break;
-
-          try {
-            const event = JSON.parse(data) as { type: string; delta?: { text: string } };
-            if (event.type === 'content_block_delta' && event.delta?.text) {
-              yield event.delta.text;
-            }
-          } catch {
-            // Skip malformed JSON
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
+    const json = (await res.json()) as { content: Array<{ type: string; text?: string }> };
+    const text = json.content.find((c) => c.type === 'text')?.text ?? '';
+    if (!text) throw new Error('Empty model response (no text content block).');
+    return parseModelJson(text);
   }
 
   async healthCheck(): Promise<'ok' | 'unavailable'> {
@@ -196,6 +180,7 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
           },
         ],
       }),
+      signal: AbortSignal.timeout(60_000),
     });
 
     if (!res.ok) {
