@@ -9,9 +9,24 @@ const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 // Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
 // network) so server-side calls never loop out through nginx; fall back to the
 // public URL. The resolved base must include the NestJS global prefix /api/v1.
-const API_BASE = process.env.INTERNAL_API_URL
-  ? `${process.env.INTERNAL_API_URL.replace(/\/$/, '')}/api/v1`
-  : (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1');
+const API_BASE = resolveApiBase(
+  process.env.INTERNAL_API_URL,
+  process.env.NEXT_PUBLIC_API_URL,
+);
+
+function resolveApiBase(
+  internalApiUrl: string | undefined,
+  publicApiUrl: string | undefined,
+): string {
+  if (internalApiUrl) {
+    const parsed = new URL(internalApiUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.pathname !== '/') {
+      throw new Error('INTERNAL_API_URL must be an HTTP(S) origin without a path');
+    }
+    return `${parsed.origin}/api/v1`;
+  }
+  return publicApiUrl ?? 'http://localhost:4000/api/v1';
+}
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 const cachedServerGet = cache(async (path: string, accessToken: string | null) =>
