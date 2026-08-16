@@ -1,1 +1,1 @@
-export { RichTextEditor } from '@voiceforge/ui'
+export { RichTextEditor } from '@voiceforge/ui/rich-text-editor'

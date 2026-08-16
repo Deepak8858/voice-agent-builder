@@ -1,19 +1,26 @@
 'use client';
 
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+
+/**
+ * Loaded only once a session is confirmed.
+ *
+ * The account dropdown is the sole consumer of the Radix dropdown/avatar
+ * primitives on public pages. Importing it statically shipped that code to
+ * every signed-out visitor on the landing page, which is the largest single
+ * chunk in that route's first load. `ssr: false` is correct here: the menu only
+ * renders after a client-side Supabase session check, so it never exists in the
+ * server-rendered HTML anyway.
+ */
+const UserMenu = dynamic(
+  () => import('@/components/auth/user-menu').then((m) => m.UserMenu),
+  { ssr: false, loading: () => <div className="h-9 w-20 animate-pulse rounded-md bg-white/10" /> },
+);
 
 export function HeaderAuth() {
   const router = useRouter();
@@ -80,37 +87,5 @@ export function HeaderAuth() {
     );
   }
 
-  const email = user.email ?? '';
-  const initial = email[0]?.toUpperCase() ?? 'U';
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="gap-2 text-[#e5eee7] hover:bg-white/10 hover:text-white"
-        >
-          <Avatar className="h-6 w-6">
-            <AvatarFallback className="text-xs">{initial}</AvatarFallback>
-          </Avatar>
-          <span className="max-w-[150px] truncate">{email}</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuLabel>My Account</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem asChild>
-          <Link href="/dashboard">Dashboard</Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <Link href="/dashboard/settings">Settings</Link>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={handleSignOut}>
-          Sign out
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+  return <UserMenu email={user.email ?? ''} onSignOut={handleSignOut} />;
 }
