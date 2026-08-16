@@ -168,7 +168,7 @@ export async function runChatGenerationWith(
 
   const first = await call(messages);
   const firstCheck = validateChatResult(first);
-  if (firstCheck.ok) return firstCheck.result;
+  if (firstCheck.ok === true) return firstCheck.result;
 
   logger.warn(`[${providerName}] invalid chat result, attempting self-repair: ${firstCheck.issues.slice(0, 300)}`);
 
@@ -187,7 +187,7 @@ export async function runChatGenerationWith(
 
   const second = await call(repairMessages);
   const secondCheck = validateChatResult(second);
-  if (secondCheck.ok) return secondCheck.result;
+  if (secondCheck.ok === true) return secondCheck.result;
 
   throw new Error(`${providerName} returned an invalid Agent Spec after self-repair: ${secondCheck.issues.slice(0, 500)}`);
 }
