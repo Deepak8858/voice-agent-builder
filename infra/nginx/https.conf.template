@@ -1,12 +1,42 @@
+# Canonical-host redirect: www is served from the same certificate (the
+# incfrog.ai lineage includes www.incfrog.ai as a SAN) but all traffic is
+# redirected to the apex so the application sees one origin.
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name deep-ak.dev;
+    server_name www.incfrog.ai;
 
-    ssl_certificate /etc/letsencrypt/live/deep-ak.dev/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/deep-ak.dev/privkey.pem;
-    ssl_trusted_certificate /etc/letsencrypt/live/deep-ak.dev/chain.pem;
+    ssl_certificate /etc/letsencrypt/live/incfrog.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/incfrog.ai/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/incfrog.ai/chain.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://incfrog.ai$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name incfrog.ai;
+
+    ssl_certificate /etc/letsencrypt/live/incfrog.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/incfrog.ai/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/incfrog.ai/chain.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
