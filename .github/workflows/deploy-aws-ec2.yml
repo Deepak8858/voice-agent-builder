@@ -694,9 +694,10 @@ jobs:
             </dev/null
           # Prisma cannot model the billing CHECK constraints. Verify the live
           # schema immediately after migration so a missing invariant blocks the
-          # release before any replacement services start.
+          # release before any replacement services start. The runtime image has
+          # no pnpm, so invoke the hoisted tsx binary directly.
           "${candidate_compose[@]}" run --rm --no-TTY --no-deps api \
-            pnpm db:verify \
+            node_modules/.bin/tsx apps/api/scripts/db-verify.ts \
             </dev/null
 
           sudo install -m 644 "$candidate_bundle/docker-compose.aws.yml" "$compose_file"
