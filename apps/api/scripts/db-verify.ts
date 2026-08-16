@@ -81,15 +81,15 @@ async function main() {
   console.log(`[db-verify] call_evaluations foreign keys: ${fks.length}`);
   for (const fk of fks) console.log(`  ${fk.column_name} -> ${fk.foreign_table}`);
 
-  // 5. Row counts (sanity).
-  const counts = await Promise.all(
-    EXPECTED_TABLES.filter((t) => have.has(t)).map(async (t) => {
-      const r = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
-        `SELECT COUNT(*)::bigint AS n FROM "${t}"`,
-      );
-      return { table: t, n: Number(r[0]?.n ?? 0) };
-    }),
-  );
+  // 5. Row counts (sanity). Run sequentially: the runtime pool allows only a
+  // few connections, and firing every COUNT concurrently exhausts it (P2024).
+  const counts: Array<{ table: string; n: number }> = [];
+  for (const t of EXPECTED_TABLES.filter((t) => have.has(t))) {
+    const r = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*)::bigint AS n FROM "${t}"`,
+    );
+    counts.push({ table: t, n: Number(r[0]?.n ?? 0) });
+  }
   console.log('[db-verify] row counts:');
   for (const c of counts) console.log(`  ${c.n.toString().padStart(6, ' ')}  ${c.table}`);
 
