@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-cert_dir=/etc/letsencrypt/live/deep-ak.dev
+cert_dir=/etc/letsencrypt/live/incfrog.ai
 https_config=/etc/nginx/conf.d/voiceforge-https.conf
 http_config=/etc/nginx/conf.d/voiceforge-http.conf
 

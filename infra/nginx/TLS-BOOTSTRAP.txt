@@ -1,11 +1,15 @@
-VoiceForge TLS bootstrap for deep-ak.dev
+VoiceForge TLS bootstrap for incfrog.ai
 
 1. Install nginx.conf, http.conf, http-redirect.conf, https.conf.template, and docker-entrypoint.d/ under /opt/voiceforge/nginx using the paths mounted by docker-compose.aws.yml.
 2. Create /opt/voiceforge/data/certbot/conf and /opt/voiceforge/data/certbot/www.
 3. Start the core compose stack. Without a certificate, nginx intentionally serves the app and /.well-known/acme-challenge/ over HTTP and does not load a port-443 server.
-4. After deep-ak.dev points to this host, issue the first certificate:
+4. After incfrog.ai points to this host, issue the first certificate:
 
-   docker run --rm -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt -v /opt/voiceforge/data/certbot/www:/var/www/certbot certbot/certbot:v3.2.0 certonly --webroot --webroot-path /var/www/certbot --domain deep-ak.dev --email YOUR_EMAIL --agree-tos --no-eff-email
+   docker run --rm -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt -v /opt/voiceforge/data/certbot/www:/var/www/certbot certbot/certbot:v3.2.0 certonly --webroot --webroot-path /var/www/certbot --cert-name incfrog.ai --domain incfrog.ai --domain www.incfrog.ai --email YOUR_EMAIL --agree-tos --no-eff-email
+
+   To add a domain to an existing certificate (e.g. adding www to a cert that
+   only covers the apex), run the same command with --expand appended. Both
+   DNS names must already resolve to this host for HTTP-01 to succeed.
 
 5. Recreate nginx. Its entrypoint detects the certificate, enables the TLS server, and changes non-ACME HTTP requests to HTTPS redirects:
 
