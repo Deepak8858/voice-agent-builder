@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 
 type AuthGateProps = {
@@ -11,6 +11,7 @@ type AuthGateProps = {
 
 export function AuthGate({ children, fallback }: AuthGateProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [checking, setChecking] = useState(true);
   const [authed, setAuthed] = useState(false);
 
@@ -32,7 +33,7 @@ export function AuthGate({ children, fallback }: AuthGateProps) {
   }
 
   if (!authed) {
-    router.replace('/sign-in');
+    router.replace(`/sign-in?next=${encodeURIComponent(pathname ?? '/dashboard')}`);
     return fallback ?? null;
   }
 

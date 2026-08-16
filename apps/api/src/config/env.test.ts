@@ -134,10 +134,10 @@ describe('env validation', () => {
     it('accepts an absolute HTTPS URL when Stripe Checkout is configured', async () => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, configuredBase, { WEB_BASE_URL: 'https://deep-ak.dev' });
+      Object.assign(process.env, configuredBase, { WEB_BASE_URL: 'https://incfrog.ai' });
 
       const mod = await import('./env');
-      expect(mod.env.WEB_BASE_URL).toBe('https://deep-ak.dev');
+      expect(mod.env.WEB_BASE_URL).toBe('https://incfrog.ai');
     });
 
     /**

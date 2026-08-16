@@ -102,9 +102,9 @@ export default function AiGenerateAgentPage() {
 
   const generateMutation = useMutation({
     mutationFn: async () => {
-      if (!workspaceId) throw new Error('No active workspace');
+      if (!workspaceId) throw new Error('No active workspace. Reload the page and try again.');
       return call<{ agent_id: string; status_url: string }>(
-        '/agents/generate',
+        `/workspaces/${workspaceId}/agents/generate`,
         {
           method: 'POST',
           body: JSON.stringify({
@@ -127,7 +127,14 @@ export default function AiGenerateAgentPage() {
 
   // Streaming generation with SSE
   const startStreamingGeneration = () => {
-    if (!workspaceId || draft.prompt.length < 10) return;
+    if (!workspaceId) {
+      toast.error('No active workspace. Reload the page and try again.');
+      return;
+    }
+    if (draft.prompt.length < 10) {
+      toast.error('Describe the agent in at least 10 characters first.');
+      return;
+    }
 
     setIsStreaming(true);
     setStreamingToken('');
@@ -264,13 +271,18 @@ export default function AiGenerateAgentPage() {
                   id="prompt"
                   rows={5}
                   value={draft.prompt}
-                  onChange={(e) => draft.setPrompt(e.target.value)}
+                  maxLength={4000}
+                  onChange={(e) => draft.setPrompt(e.target.value.slice(0, 4000))}
                   placeholder="Create a friendly AI receptionist for a dental clinic. Qualify new patients, answer common questions, book appointments, and transfer emergencies to a human."
                   className="mt-1.5 min-h-36"
                 />
                 <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
                   <span>Keep phone responses short, natural, and goal-focused.</span>
-                  <span className="shrink-0 font-mono">{draft.prompt.length}/4000</span>
+                  <span
+                    className={`shrink-0 font-mono ${draft.prompt.length >= 4000 ? 'text-destructive' : ''}`}
+                  >
+                    {draft.prompt.length}/4000
+                  </span>
                 </div>
               </div>
               <PromptQualityChecklist prompt={draft.prompt} />

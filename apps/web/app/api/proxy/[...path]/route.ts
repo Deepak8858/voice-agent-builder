@@ -4,11 +4,16 @@ import { buildApiContextHeaders } from '@/lib/api-context-headers';
 import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
-const INTERNAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+// Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
+// network) so proxied traffic never loops out through nginx; fall back to the
+// public URL. The resolved base must include the NestJS global prefix /api/v1.
+const API_BASE = process.env.INTERNAL_API_URL
+  ? `${process.env.INTERNAL_API_URL.replace(/\/$/, '')}/api/v1`
+  : (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1');
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 function apiTarget(req: NextRequest, pathString: string): string {
-  return `${INTERNAL_API_URL}${pathString}${req.nextUrl.search}`;
+  return `${API_BASE}${pathString}${req.nextUrl.search}`;
 }
 
 /**
