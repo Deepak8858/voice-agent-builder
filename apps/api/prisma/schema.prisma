@@ -263,7 +263,7 @@ model AgentGenSession {
   workspaceId    String   @map("workspace_id") @db.Uuid
   organizationId String   @map("organization_id") @db.Uuid
   userId         String   @map("user_id") @db.Uuid
-  status         String   @default("awaiting_user") // awaiting_user | generating | completed | failed
+  status         String   @default("awaiting_user") // awaiting_user | generating | finalizing | completed | failed
   messages       Json     @default("[]") // [{role: 'user'|'assistant', content, at}]
   currentSpec    Json?    @map("current_spec")
   specValid      Boolean  @default(false) @map("spec_valid")

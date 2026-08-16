@@ -8,6 +8,11 @@ const BooleanEnvSchema = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const OptionalUrlEnvSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().url().optional(),
+);
+
 /**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
@@ -113,7 +118,7 @@ const EnvSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
   LLM_MODEL: z.string().optional(),
-  LLM_BASE_URL: z.string().optional(),
+  LLM_BASE_URL: OptionalUrlEnvSchema,
   OPENAI_API_KEY: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),
@@ -237,6 +242,17 @@ const EnvSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['VOICE_PROVIDER'],
       message: 'VOICE_PROVIDER=mock is not allowed in production',
+    });
+  }
+  if (
+    value.NODE_ENV === 'production' &&
+    value.LLM_PROVIDER === 'azure-aifoundry' &&
+    !value.LLM_BASE_URL
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LLM_BASE_URL'],
+      message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
     });
   }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after

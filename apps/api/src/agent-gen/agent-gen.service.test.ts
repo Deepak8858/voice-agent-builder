@@ -16,6 +16,7 @@ import type { QueueService } from '../queue/queue.service';
 import type { AgentsService } from '../agents/agents.service';
 import type { LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { env } from '../config/env';
+import type { KnowledgeService } from '../knowledge/knowledge.service';
 
 const VALID_SPEC: AgentSpec = AgentSpecSchema.parse(MVP_TEMPLATES[0]!.spec);
 
@@ -61,6 +62,9 @@ function createMocks() {
     create: vi.fn().mockResolvedValue({ id: 'agent-1' }),
     publish: vi.fn().mockResolvedValue({}),
   };
+  const knowledge = {
+    resolveReferencedSourceIds: vi.fn(async (_workspaceId, _agentId, ids) => ids),
+  };
   const llm = { name: 'mock', generate: vi.fn(), chatGenerate: vi.fn() };
 
   const service = new AgentGenService(
@@ -68,9 +72,10 @@ function createMocks() {
     audit as unknown as AuditService,
     queue as unknown as QueueService,
     agents as unknown as AgentsService,
+    knowledge as unknown as KnowledgeService,
     llm as unknown as LlmAgentGenerator,
   );
-  return { prisma, audit, queue, queueHandle, agents, llm, service };
+  return { prisma, audit, queue, queueHandle, agents, knowledge, llm, service };
 }
 
 describe('AgentGenService.sendMessage', () => {
@@ -113,10 +118,6 @@ describe('AgentGenService.sendMessage', () => {
   it('appends the user message, flips to generating, and enqueues a job', async () => {
     const existing = [{ role: 'user', content: 'earlier', at: '2026-01-01T00:00:00.000Z' }];
     mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ messages: existing }));
-    mocks.prisma.agentGenSession.update.mockResolvedValue(
-      sessionRow({ status: 'generating', generatingAt: new Date() }),
-    );
-
     const result = await mocks.service.sendMessage(WS, USER, SESSION_ID, {
       content: 'add SMS follow-up',
       context: { template_slug: 'ai-receptionist' },
@@ -124,8 +125,13 @@ describe('AgentGenService.sendMessage', () => {
 
     expect(result.status).toBe('generating');
 
-    const update = mocks.prisma.agentGenSession.update.mock.calls[0]![0];
-    expect(update.where).toEqual({ id: SESSION_ID });
+    const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
+    expect(update.where).toEqual({
+      id: SESSION_ID,
+      workspaceId: WS,
+      userId: USER,
+      status: { in: ['awaiting_user', 'failed'] },
+    });
     expect(update.data.status).toBe('generating');
     expect(update.data.generatingAt).toBeInstanceOf(Date);
     expect(update.data.lastError).toBeNull();
@@ -144,14 +150,16 @@ describe('AgentGenService.sendMessage', () => {
 
   it('folds drawer context into the message content', async () => {
     mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow());
-    mocks.prisma.agentGenSession.update.mockResolvedValue(sessionRow({ status: 'generating' }));
-
     await mocks.service.sendMessage(WS, USER, SESSION_ID, {
       content: 'build it',
-      context: { business_name: 'Smile Dental', call_direction: 'inbound', crm_providers: ['hubspot'] },
+      context: {
+        business_name: 'Smile Dental',
+        call_direction: 'inbound',
+        crm_providers: ['hubspot'],
+      },
     });
 
-    const update = mocks.prisma.agentGenSession.update.mock.calls[0]![0];
+    const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
     const messages = update.data.messages as Array<{ content: string }>;
     const content = messages.at(-1)!.content;
     expect(content).toContain('[Context]');
@@ -160,14 +168,61 @@ describe('AgentGenService.sendMessage', () => {
     expect(content).toContain('CRM integrations: hubspot');
   });
 
-  it('allows retrying from a failed session', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ status: 'failed' }));
-    mocks.prisma.agentGenSession.update.mockResolvedValue(sessionRow({ status: 'generating' }));
+  it('retries a failed session without duplicating the persisted user message', async () => {
+    const messages = [{ role: 'user', content: 'try again', at: '2026-01-01T00:00:00.000Z' }];
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ status: 'failed', messages }),
+    );
 
     await expect(
-      mocks.service.sendMessage(WS, USER, SESSION_ID, { content: 'try again' }),
+      mocks.service.sendMessage(WS, USER, SESSION_ID, { content: 'try again', retry: true }),
     ).resolves.toMatchObject({ status: 'generating' });
+    expect(mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0].data.messages).toEqual(
+      messages,
+    );
     expect(mocks.queueHandle.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a lost status-transition race before enqueueing', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow());
+    mocks.prisma.agentGenSession.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      mocks.service.sendMessage(WS, USER, SESSION_ID, { content: 'hello' }),
+    ).rejects.toBeInstanceOf(GenSessionBusyError);
+    expect(mocks.queueHandle.add).not.toHaveBeenCalled();
+  });
+
+  it('marks the claimed session failed when enqueueing fails', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow());
+    mocks.queueHandle.add.mockRejectedValueOnce(new Error('redis unavailable'));
+
+    await expect(
+      mocks.service.sendMessage(WS, USER, SESSION_ID, { content: 'hello' }),
+    ).rejects.toThrow('redis unavailable');
+    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({ id: SESSION_ID, status: 'generating' }),
+      data: expect.objectContaining({ status: 'failed', generatingAt: null }),
+    });
+  });
+
+  it('only puts workspace-owned knowledge source ids in the model context', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow());
+    mocks.knowledge.resolveReferencedSourceIds.mockResolvedValueOnce(['owned-id']);
+
+    await mocks.service.sendMessage(WS, USER, SESSION_ID, {
+      content: 'build it',
+      context: { knowledge_source_ids: ['owned-id', 'foreign-id'] },
+    });
+
+    expect(mocks.knowledge.resolveReferencedSourceIds).toHaveBeenCalledWith(WS, null, [
+      'owned-id',
+      'foreign-id',
+    ]);
+    const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
+    const persisted = update.data.messages as Array<{ content: string }>;
+    expect(persisted.at(-1)!.content).toContain('["owned-id"]');
+    expect(persisted.at(-1)!.content).not.toContain('foreign-id');
   });
 });
 
@@ -180,12 +235,14 @@ describe('AgentGenService.processGeneration', () => {
   });
 
   it('is a no-op for sessions no longer generating (idempotent retry)', async () => {
-    mocks.prisma.agentGenSession.findUnique.mockResolvedValue(sessionRow({ status: 'awaiting_user' }));
+    mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
+      sessionRow({ status: 'awaiting_user' }),
+    );
 
     await mocks.service.processGeneration(payload, true);
 
     expect(mocks.llm.chatGenerate).not.toHaveBeenCalled();
-    expect(mocks.prisma.agentGenSession.update).not.toHaveBeenCalled();
+    expect(mocks.prisma.agentGenSession.updateMany).not.toHaveBeenCalled();
   });
 
   it('appends the assistant reply, stores the spec, and returns to awaiting_user on success', async () => {
@@ -193,9 +250,10 @@ describe('AgentGenService.processGeneration', () => {
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
       sessionRow({ status: 'generating', generatingAt: new Date(), messages: history }),
     );
-    mocks.llm.chatGenerate.mockResolvedValue({ assistant_message: 'Here is a draft.', spec: VALID_SPEC });
-    mocks.prisma.agentGenSession.update.mockResolvedValue(sessionRow());
-
+    mocks.llm.chatGenerate.mockResolvedValue({
+      assistant_message: 'Here is a draft.',
+      spec: VALID_SPEC,
+    });
     await mocks.service.processGeneration({ ...payload, template_slug: 'ai-receptionist' }, true);
 
     expect(mocks.llm.chatGenerate).toHaveBeenCalledWith({
@@ -204,7 +262,12 @@ describe('AgentGenService.processGeneration', () => {
       template_slug: 'ai-receptionist',
     });
 
-    const update = mocks.prisma.agentGenSession.update.mock.calls[0]![0];
+    const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
+    expect(update.where).toEqual({
+      id: SESSION_ID,
+      status: 'generating',
+      generatingAt: expect.any(Date),
+    });
     expect(update.data).toMatchObject({
       status: 'awaiting_user',
       generatingAt: null,
@@ -222,8 +285,6 @@ describe('AgentGenService.processGeneration', () => {
       sessionRow({ status: 'generating', currentSpec: VALID_SPEC, messages: [] }),
     );
     mocks.llm.chatGenerate.mockResolvedValue({ assistant_message: 'Tweaked.', spec: VALID_SPEC });
-    mocks.prisma.agentGenSession.update.mockResolvedValue(sessionRow());
-
     await mocks.service.processGeneration(payload, true);
 
     expect(mocks.llm.chatGenerate).toHaveBeenCalledWith(
@@ -250,7 +311,7 @@ describe('AgentGenService.processGeneration', () => {
     await expect(mocks.service.processGeneration(payload, true)).resolves.toBeUndefined();
 
     expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'generating' },
+      where: expect.objectContaining({ id: SESSION_ID, status: 'generating' }),
       data: expect.objectContaining({
         status: 'failed',
         generatingAt: null,
@@ -273,13 +334,13 @@ describe('AgentGenService stale sweep', () => {
       sessionRow({ status: 'generating', generatingAt: staleAt }),
     );
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
-      sessionRow({ status: 'failed', lastError: 'Generation timed out. Please try again.' }),
+      sessionRow({ status: 'failed', lastError: 'Operation timed out. Please try again.' }),
     );
 
     const session = await mocks.service.getSession(WS, USER, SESSION_ID);
 
     expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'generating' },
+      where: expect.objectContaining({ id: SESSION_ID, status: 'generating' }),
       data: expect.objectContaining({ status: 'failed' }),
     });
     expect(session.status).toBe('failed');
@@ -330,8 +391,22 @@ describe('AgentGenService.finalize', () => {
     ).rejects.toBeInstanceOf(GenSessionInvalidStateError);
   });
 
+  it('does not create an agent after losing the finalize claim race', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
+    mocks.prisma.agentGenSession.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      mocks.service.finalize(WS, USER, SESSION_ID, { publish: false }),
+    ).rejects.toBeInstanceOf(GenSessionBusyError);
+    expect(mocks.agents.create).not.toHaveBeenCalled();
+  });
+
   it('creates the agent from the session spec and marks the session completed', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );
@@ -357,7 +432,9 @@ describe('AgentGenService.finalize', () => {
   });
 
   it('publishes the agent when the publish flag is set', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );
@@ -368,7 +445,9 @@ describe('AgentGenService.finalize', () => {
   });
 
   it('validates spec_override and rejects an invalid one', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
 
     await expect(
       mocks.service.finalize(WS, USER, SESSION_ID, {
@@ -381,7 +460,9 @@ describe('AgentGenService.finalize', () => {
 
   it('uses a valid spec_override over the session spec and persists it', async () => {
     const override: AgentSpec = { ...VALID_SPEC, name: 'Edited Locally' };
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );

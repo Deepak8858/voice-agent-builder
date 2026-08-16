@@ -34,7 +34,8 @@ export class GenerationRateLimitGuard implements CanActivate {
     // Without user context the auth guard rejects anyway.
     if (!user) return true;
 
-    const key = `vf:v1:ratelimit:gen:${user.active_workspace_id ?? 'global'}:${user.id}`;
+    const workspaceId = req.params.workspaceId ?? user.active_workspace_id ?? 'global';
+    const key = `vf:v1:ratelimit:gen:${workspaceId}:${user.id}`;
     const count = await this.cache.incr(key, this.windowSec);
 
     if (count > this.max) {

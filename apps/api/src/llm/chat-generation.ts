@@ -19,6 +19,8 @@ export interface OpenAiCompatTarget {
   headers: Record<string, string>;
   model: string;
   providerName: string;
+  /** Null omits sampling temperature for models that only accept fixed defaults. */
+  temperature?: number | null;
 }
 
 export interface ChatMessage {
@@ -68,9 +70,7 @@ export function buildChatSystemPrompt(): string {
  */
 export function buildChatMessages(input: ChatGenerateInput): ChatMessage[] {
   const history = input.messages.slice(-CHAT_GEN_MAX_HISTORY);
-  const messages: ChatMessage[] = [
-    { role: 'system', content: buildChatSystemPrompt() },
-  ];
+  const messages: ChatMessage[] = [{ role: 'system', content: buildChatSystemPrompt() }];
 
   if (input.currentSpec) {
     messages.push({
@@ -107,12 +107,12 @@ async function callOpenAiCompat(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
+      Accept: 'application/json',
       ...target.headers,
     },
     body: JSON.stringify({
       model: target.model,
-      temperature: 0.3,
+      ...(target.temperature === null ? {} : { temperature: target.temperature ?? 0.3 }),
       response_format: { type: 'json_object' },
       messages,
     }),
@@ -135,7 +135,9 @@ async function callOpenAiCompat(
   return parseModelJson(content);
 }
 
-function validateChatResult(raw: unknown): { ok: true; result: ChatGenerateResult } | { ok: false; issues: string } {
+function validateChatResult(
+  raw: unknown,
+): { ok: true; result: ChatGenerateResult } | { ok: false; issues: string } {
   const obj = raw as { assistant_message?: unknown; spec?: unknown };
   const assistantMessage =
     typeof obj?.assistant_message === 'string' && obj.assistant_message.trim().length > 0
@@ -147,7 +149,9 @@ function validateChatResult(raw: unknown): { ok: true; result: ChatGenerateResul
   }
   const issues = [
     assistantMessage ? null : 'assistant_message must be a non-empty string',
-    specParse.success ? null : `spec failed Agent Spec v1.0 validation: ${specParse.error.message.slice(0, 1500)}`,
+    specParse.success
+      ? null
+      : `spec failed Agent Spec v1.0 validation: ${specParse.error.message.slice(0, 1500)}`,
   ]
     .filter(Boolean)
     .join('; ');
@@ -170,7 +174,9 @@ export async function runChatGenerationWith(
   const firstCheck = validateChatResult(first);
   if (firstCheck.ok === true) return firstCheck.result;
 
-  logger.warn(`[${providerName}] invalid chat result, attempting self-repair: ${firstCheck.issues.slice(0, 300)}`);
+  logger.warn(
+    `[${providerName}] invalid chat result, attempting self-repair: ${firstCheck.issues.slice(0, 300)}`,
+  );
 
   const repairMessages: ChatMessage[] = [
     ...messages,
@@ -189,7 +195,9 @@ export async function runChatGenerationWith(
   const secondCheck = validateChatResult(second);
   if (secondCheck.ok === true) return secondCheck.result;
 
-  throw new Error(`${providerName} returned an invalid Agent Spec after self-repair: ${secondCheck.issues.slice(0, 500)}`);
+  throw new Error(
+    `${providerName} returned an invalid Agent Spec after self-repair: ${secondCheck.issues.slice(0, 500)}`,
+  );
 }
 
 /**
@@ -200,5 +208,9 @@ export async function runChatGeneration(
   target: OpenAiCompatTarget,
   input: ChatGenerateInput,
 ): Promise<ChatGenerateResult> {
-  return runChatGenerationWith(target.providerName, (messages) => callOpenAiCompat(target, messages), input);
+  return runChatGenerationWith(
+    target.providerName,
+    (messages) => callOpenAiCompat(target, messages),
+    input,
+  );
 }

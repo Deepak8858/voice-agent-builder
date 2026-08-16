@@ -1,21 +1,16 @@
 'use client';
 
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type {
-  AgentGenSession,
-  AgentSummary,
-  KnowledgeSourceSummary,
-  SendGenMessageDto,
-  SessionUser,
+import {
+  AgentGenSessionSchema,
+  AgentSummarySchema,
+  type AgentGenSession,
+  type KnowledgeSourceSummary,
+  type SendGenMessageDto,
+  type SessionUser,
 } from '@voiceforge/shared';
 import {
   Bot,
@@ -29,19 +24,12 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { AgentCreationModeTabs } from '@/components/agent-creation-mode-tabs';
-import {
-  FormModeEditor,
-  type AgentSpecValidationState,
-} from '@/components/form-mode-editor';
+import { FormModeEditor, type AgentSpecValidationState } from '@/components/form-mode-editor';
 import { PageHeader } from '@/components/dashboard/page-header';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -68,6 +56,12 @@ interface ContextDraft {
   knowledgeSourceIds: string[];
 }
 
+interface EditedSpecState {
+  sourceKey: string;
+  spec: unknown;
+  isValid: boolean;
+}
+
 const DEFAULT_CONTEXT: ContextDraft = {
   templateSlug: '',
   businessName: '',
@@ -87,8 +81,7 @@ export default function AiGenerateAgentPage() {
   const [context, setContext] = useState<ContextDraft>(DEFAULT_CONTEXT);
   const [contextOpen, setContextOpen] = useState(true);
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
-  const [editedSpec, setEditedSpec] = useState<unknown>(null);
-  const [editedSpecValid, setEditedSpecValid] = useState(true);
+  const [editedSpecState, setEditedSpecState] = useState<EditedSpecState | null>(null);
   const threadEndRef = useRef<HTMLDivElement>(null);
 
   const meQuery = useQuery({
@@ -101,10 +94,10 @@ export default function AiGenerateAgentPage() {
     queryKey: ['agent-gen-session', 'active', workspaceId],
     enabled: Boolean(workspaceId),
     queryFn: async () => {
-      const result = await call<{ session: AgentGenSession | null }>(
+      const result = await call<{ session: unknown }>(
         `/workspaces/${workspaceId}/agent-gen-sessions/active`,
       );
-      return result.session;
+      return AgentGenSessionSchema.nullable().parse(result.session);
     },
   });
 
@@ -112,14 +105,18 @@ export default function AiGenerateAgentPage() {
   const sessionQuery = useQuery({
     queryKey: ['agent-gen-session', workspaceId, sessionId],
     enabled: Boolean(workspaceId && sessionId),
-    queryFn: () =>
-      call<AgentGenSession>(
-        `/workspaces/${workspaceId}/agent-gen-sessions/${sessionId}`,
+    queryFn: async () =>
+      AgentGenSessionSchema.parse(
+        await call<unknown>(`/workspaces/${workspaceId}/agent-gen-sessions/${sessionId}`),
       ),
     refetchInterval: (query) =>
-      query.state.data?.status === 'generating' ? 2000 : false,
+      query.state.data?.status === 'generating' || query.state.data?.status === 'finalizing'
+        ? 2000
+        : false,
   });
   const session = sessionQuery.data ?? activeSessionQuery.data ?? null;
+  const specSourceKey = session ? `${session.id}-${session.updated_at}` : null;
+  const activeEditedSpec = editedSpecState?.sourceKey === specSourceKey ? editedSpecState : null;
 
   const templatesQuery = useQuery({
     queryKey: ['templates', 'agent-generation'],
@@ -146,22 +143,17 @@ export default function AiGenerateAgentPage() {
 
   const setSessionData = (next: AgentGenSession) => {
     setCreatedSessionId(next.id);
-    queryClient.setQueryData(
-      ['agent-gen-session', next.workspace_id, next.id],
-      next,
-    );
-    queryClient.setQueryData(
-      ['agent-gen-session', 'active', next.workspace_id],
-      next,
-    );
+    queryClient.setQueryData(['agent-gen-session', next.workspace_id, next.id], next);
+    queryClient.setQueryData(['agent-gen-session', 'active', next.workspace_id], next);
   };
 
   const ensureSession = async () => {
     if (!workspaceId) throw new Error('No active workspace. Reload the page and try again.');
     if (session) return session;
-    const created = await call<AgentGenSession>(
-      `/workspaces/${workspaceId}/agent-gen-sessions`,
-      { method: 'POST' },
+    const created = AgentGenSessionSchema.parse(
+      await call<unknown>(`/workspaces/${workspaceId}/agent-gen-sessions`, {
+        method: 'POST',
+      }),
     );
     setSessionData(created);
     return created;
@@ -173,19 +165,21 @@ export default function AiGenerateAgentPage() {
       const isFirstMessage = activeSession.messages.length === 0;
       const body: SendGenMessageDto = {
         content,
+        ...(retry ? { retry: true } : {}),
         ...(isFirstMessage && !retry ? { context: buildContext(context) } : {}),
       };
-      return call<AgentGenSession>(
-        `/workspaces/${activeSession.workspace_id}/agent-gen-sessions/${activeSession.id}/messages`,
-        { method: 'POST', body: JSON.stringify(body) },
+      return AgentGenSessionSchema.parse(
+        await call<unknown>(
+          `/workspaces/${activeSession.workspace_id}/agent-gen-sessions/${activeSession.id}/messages`,
+          { method: 'POST', body: JSON.stringify(body) },
+        ),
       );
     },
     onSuccess: (next) => {
       setSessionData(next);
       setMessage('');
       setContextOpen(false);
-      setEditedSpec(null);
-      setEditedSpecValid(true);
+      setEditedSpecState(null);
     },
     onError: (error: Error & { code?: string; details?: unknown }) => {
       if (error.code === 'INVALID_STATUS') {
@@ -209,16 +203,20 @@ export default function AiGenerateAgentPage() {
   const finalizeMutation = useMutation({
     mutationFn: async (publish: boolean) => {
       if (!workspaceId || !session) throw new Error('No generation session to finalize.');
-      return call<{ session: AgentGenSession; agent: AgentSummary }>(
+      const result = await call<{ session: unknown; agent: unknown }>(
         `/workspaces/${workspaceId}/agent-gen-sessions/${session.id}/finalize`,
         {
           method: 'POST',
           body: JSON.stringify({
             publish,
-            ...(editedSpec !== null ? { spec_override: editedSpec } : {}),
+            ...(activeEditedSpec ? { spec_override: activeEditedSpec.spec } : {}),
           }),
         },
       );
+      return {
+        session: AgentGenSessionSchema.parse(result.session),
+        agent: AgentSummarySchema.parse(result.agent),
+      };
     },
     onSuccess: ({ agent }, publish) => {
       toast.success(publish ? 'Agent created and published.' : 'Agent created.');
@@ -230,39 +228,37 @@ export default function AiGenerateAgentPage() {
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId || !session) return;
-      await call<{ deleted: true }>(
-        `/workspaces/${workspaceId}/agent-gen-sessions/${session.id}`,
-        { method: 'DELETE' },
-      );
+      await call<{ deleted: true }>(`/workspaces/${workspaceId}/agent-gen-sessions/${session.id}`, {
+        method: 'DELETE',
+      });
     },
     onSuccess: () => {
       if (workspaceId && sessionId) {
         queryClient.removeQueries({
           queryKey: ['agent-gen-session', workspaceId, sessionId],
         });
-        queryClient.setQueryData(
-          ['agent-gen-session', 'active', workspaceId],
-          null,
-        );
+        queryClient.setQueryData(['agent-gen-session', 'active', workspaceId], null);
       }
       setCreatedSessionId(null);
       setMessage('');
       setContext(DEFAULT_CONTEXT);
       setContextOpen(true);
-      setEditedSpec(null);
-      setEditedSpecValid(true);
+      setEditedSpecState(null);
       toast.success('Started a fresh conversation.');
     },
     onError: (error: Error) => toast.error(error.message),
   });
 
   const isGenerating = session?.status === 'generating';
-  const isBootstrapping = meQuery.isPending || (Boolean(workspaceId) && activeSessionQuery.isPending);
+  const isBusy = isGenerating || session?.status === 'finalizing';
+  const isCompleted = session?.status === 'completed';
+  const isBootstrapping =
+    meQuery.isPending || (Boolean(workspaceId) && activeSessionQuery.isPending);
   const canFinalize = Boolean(
     session?.current_spec &&
-      session.spec_valid &&
-      session.status !== 'generating' &&
-      editedSpecValid,
+    session.spec_valid &&
+    (session.status === 'awaiting_user' || session.status === 'failed') &&
+    (activeEditedSpec?.isValid ?? true),
   );
   const lastUserMessage = useMemo(
     () => [...(session?.messages ?? [])].reverse().find((item) => item.role === 'user'),
@@ -271,11 +267,12 @@ export default function AiGenerateAgentPage() {
 
   const submitMessage = () => {
     const content = message.trim();
-    if (!content || sendMutation.isPending || isGenerating) return;
+    if (!content || sendMutation.isPending || isBusy || isCompleted) return;
     sendMutation.mutate({ content });
   };
 
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submitMessage();
@@ -295,7 +292,7 @@ export default function AiGenerateAgentPage() {
               variant="outline"
               size="sm"
               className="gap-2"
-              disabled={deleteMutation.isPending || isGenerating}
+              disabled={deleteMutation.isPending || isBusy}
               onClick={() => deleteMutation.mutate()}
             >
               {deleteMutation.isPending ? (
@@ -410,7 +407,7 @@ export default function AiGenerateAgentPage() {
                   value={message}
                   maxLength={MAX_MESSAGE_LENGTH}
                   rows={3}
-                  disabled={isBootstrapping || isGenerating || sendMutation.isPending}
+                  disabled={isBootstrapping || isBusy || isCompleted || sendMutation.isPending}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder={
@@ -436,7 +433,8 @@ export default function AiGenerateAgentPage() {
                       disabled={
                         !message.trim() ||
                         isBootstrapping ||
-                        isGenerating ||
+                        isBusy ||
+                        isCompleted ||
                         sendMutation.isPending
                       }
                       onClick={submitMessage}
@@ -473,11 +471,14 @@ export default function AiGenerateAgentPage() {
           <CardContent className="ph-no-capture min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
             {session?.current_spec ? (
               <SpecPreview
-                key={`${session.id}-${session.updated_at}`}
+                key={specSourceKey}
                 spec={session.current_spec}
                 onEdited={(spec, validation) => {
-                  setEditedSpec(spec);
-                  setEditedSpecValid(validation.isValid);
+                  setEditedSpecState({
+                    sourceKey: `${session.id}-${session.updated_at}`,
+                    spec,
+                    isValid: validation.isValid,
+                  });
                 }}
               />
             ) : (
@@ -491,18 +492,20 @@ export default function AiGenerateAgentPage() {
                     )}
                   </div>
                   <h2 className="mt-4 text-sm font-medium">
-                    {isGenerating ? 'Generating your first spec' : 'Your Agent Spec will appear here'}
+                    {isGenerating
+                      ? 'Generating your first spec'
+                      : 'Your Agent Spec will appear here'}
                   </h2>
                   <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                    Continue the conversation to refine behavior, voice, compliance, handoff,
-                    and analytics settings.
+                    Continue the conversation to refine behavior, voice, compliance, handoff, and
+                    analytics settings.
                   </p>
                 </div>
               </div>
             )}
           </CardContent>
 
-          {session?.current_spec && session.spec_valid && session.status !== 'generating' ? (
+          {session?.current_spec && session.spec_valid && !isBusy && !isCompleted ? (
             <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-border/80 bg-card/95 p-4 backdrop-blur">
               <Button
                 type="button"
@@ -591,6 +594,15 @@ function SessionStatusBadge({ session }: { session: AgentGenSession | null }) {
       </Badge>
     );
   }
+  if (session.status === 'finalizing') {
+    return (
+      <Badge variant="secondary" className="gap-1.5">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Creating agent
+      </Badge>
+    );
+  }
+  if (session.status === 'completed') return <Badge variant="secondary">Completed</Badge>;
   if (session.status === 'failed') return <Badge variant="destructive">Needs retry</Badge>;
   return <Badge variant="outline">Ready for your input</Badge>;
 }
@@ -629,10 +641,15 @@ function ContextDrawer({
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <fieldset disabled={disabled} className="mt-2 space-y-4 rounded-xl border border-border bg-muted/20 p-4 disabled:opacity-60">
+        <fieldset
+          disabled={disabled}
+          className="mt-2 space-y-4 rounded-xl border border-border bg-muted/20 p-4 disabled:opacity-60"
+        >
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label htmlFor="generation-template" className="text-xs">Template</Label>
+              <Label htmlFor="generation-template" className="text-xs">
+                Template
+              </Label>
               <select
                 id="generation-template"
                 className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -642,12 +659,16 @@ function ContextDrawer({
               >
                 <option value="">Auto-match</option>
                 {templates.map((template) => (
-                  <option key={template.slug} value={template.slug}>{template.name}</option>
+                  <option key={template.slug} value={template.slug}>
+                    {template.name}
+                  </option>
                 ))}
               </select>
             </div>
             <div>
-              <Label htmlFor="generation-business" className="text-xs">Business name</Label>
+              <Label htmlFor="generation-business" className="text-xs">
+                Business name
+              </Label>
               <Input
                 id="generation-business"
                 className="mt-1 h-9"
@@ -658,7 +679,9 @@ function ContextDrawer({
               />
             </div>
             <div>
-              <Label htmlFor="generation-timezone" className="text-xs">Timezone</Label>
+              <Label htmlFor="generation-timezone" className="text-xs">
+                Timezone
+              </Label>
               <Input
                 id="generation-timezone"
                 className="mt-1 h-9"
@@ -669,12 +692,16 @@ function ContextDrawer({
               />
             </div>
             <div>
-              <Label htmlFor="generation-direction" className="text-xs">Call direction</Label>
+              <Label htmlFor="generation-direction" className="text-xs">
+                Call direction
+              </Label>
               <select
                 id="generation-direction"
                 className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
                 value={context.callDirection}
-                onChange={(event) => onChange({ ...context, callDirection: event.target.value as CallDirection })}
+                onChange={(event) =>
+                  onChange({ ...context, callDirection: event.target.value as CallDirection })
+                }
               >
                 <option value="inbound">Inbound</option>
                 <option value="outbound">Outbound</option>
@@ -716,7 +743,9 @@ function ContextDrawer({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label htmlFor="generation-stt" className="text-xs">Speech-to-text</Label>
+              <Label htmlFor="generation-stt" className="text-xs">
+                Speech-to-text
+              </Label>
               <select
                 id="generation-stt"
                 className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -729,7 +758,9 @@ function ContextDrawer({
               </select>
             </div>
             <div>
-              <Label htmlFor="generation-tts" className="text-xs">Text-to-speech voice</Label>
+              <Label htmlFor="generation-tts" className="text-xs">
+                Text-to-speech voice
+              </Label>
               <select
                 id="generation-tts"
                 className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
@@ -774,7 +805,9 @@ function ContextDrawer({
                 ))}
               </div>
             ) : (
-              <p className="mt-2 text-xs text-muted-foreground">No workspace knowledge sources yet.</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                No workspace knowledge sources yet.
+              </p>
             )}
           </div>
         </fieldset>
@@ -837,8 +870,12 @@ function SpecPreview({
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-border bg-muted/25 p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className="mt-1 truncate text-sm font-medium capitalize" title={value}>{value}</p>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 truncate text-sm font-medium capitalize" title={value}>
+        {value}
+      </p>
     </div>
   );
 }

@@ -32,8 +32,10 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
   private readonly apiVersion = env.LLM_API_VERSION;
 
   constructor(private readonly cache: LlmCacheService) {
-    const base = env.LLM_BASE_URL ?? 'https://deepak7238kgs-0666-resource.services.ai.azure.com/openai/v1';
-    this.endpoint = base.replace(/\/$/, '');
+    if (!env.LLM_BASE_URL) {
+      throw new Error('LLM_BASE_URL is required for the azure-aifoundry provider.');
+    }
+    this.endpoint = env.LLM_BASE_URL.replace(/\/$/, '');
     this.model = env.LLM_MODEL ?? 'gpt-5.4-mini';
   }
 
@@ -45,7 +47,7 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
   private authHeaders(): Record<string, string> {
     const key = env.LLM_API_KEY ?? '';
     return {
-      'Authorization': `Bearer ${key}`,
+      Authorization: `Bearer ${key}`,
       'api-key': key,
     };
   }
@@ -66,7 +68,9 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
     const spec = await this.callModel(input, baseTemplate);
     const parsed = AgentSpecSchema.safeParse(spec);
     if (!parsed.success) {
-      this.logger.warn(`[azure-aifoundry] Model returned invalid Agent Spec: ${parsed.error.message}`);
+      this.logger.warn(
+        `[azure-aifoundry] Model returned invalid Agent Spec: ${parsed.error.message}`,
+      );
       throw new Error(`Azure AI Foundry returned invalid Agent Spec: ${parsed.error.message}`);
     }
 
@@ -78,7 +82,9 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
     };
 
     await this.cache.set(cacheKey, result);
-    this.logger.log(`[azure-aifoundry] Generated + cached agent spec for prompt "${input.prompt.slice(0, 50)}..."`);
+    this.logger.log(
+      `[azure-aifoundry] Generated + cached agent spec for prompt "${input.prompt.slice(0, 50)}..."`,
+    );
     return result;
   }
 
@@ -91,6 +97,7 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
       headers: this.authHeaders(),
       model: this.model,
       providerName: this.name,
+      temperature: this.supportsTemperature() ? 0.3 : null,
     };
     return runChatGeneration(target, input);
   }
@@ -122,11 +129,11 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
       headers: {
         ...this.authHeaders(),
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
       body: JSON.stringify({
         model: this.model,
-        temperature: 0.3,
+        ...(this.supportsTemperature() ? { temperature: 0.3 } : {}),
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: this.buildSystemPrompt() },
@@ -151,6 +158,10 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
       throw new Error(`Non-JSON response from model: ${content.slice(0, 100)}`);
     }
     return parsed;
+  }
+
+  private supportsTemperature(): boolean {
+    return !/^(?:gpt-5|o\d)/i.test(this.model);
   }
 
   private pickTemplate(input: GenerateAgentDto): AgentTemplateSeed {

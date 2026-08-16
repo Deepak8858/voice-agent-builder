@@ -16,6 +16,7 @@ import { AgentsService } from '../agents/agents.service';
 import { AppError, AgentSpecInvalidError } from '../common/errors';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { env } from '../config/env';
+import { KnowledgeService } from '../knowledge/knowledge.service';
 
 export const AGENT_GEN_QUEUE = 'agent-gen';
 export const AGENT_GEN_JOB = 'generate';
@@ -62,7 +63,7 @@ export interface AgentGenJobPayload {
  *   awaiting_user --sendMessage--> generating --worker ok--> awaiting_user
  *                                  generating --worker err-> failed
  *   failed --sendMessage--> generating (retry keeps history + last spec)
- *   awaiting_user/failed --finalize (spec valid)--> completed
+ *   awaiting_user/failed --finalize--> finalizing --> completed
  *
  * All state lives in Postgres so a page refresh mid-generation resumes
  * cleanly: the client re-reads the session and keeps polling.
@@ -76,6 +77,7 @@ export class AgentGenService {
     private readonly audit: AuditService,
     private readonly queue: QueueService,
     private readonly agents: AgentsService,
+    private readonly knowledge: KnowledgeService,
     @Inject(LLM_PROVIDER_TOKEN) private readonly llm: LlmAgentGenerator,
   ) {}
 
@@ -102,7 +104,11 @@ export class AgentGenService {
     return this.serialize(await this.sweepIfStale(row));
   }
 
-  async getSession(workspaceId: string, userId: string, sessionId: string): Promise<AgentGenSession> {
+  async getSession(
+    workspaceId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<AgentGenSession> {
     const row = await this.findOwnedRow(workspaceId, userId, sessionId);
     return this.serialize(await this.sweepIfStale(row));
   }
@@ -124,36 +130,85 @@ export class AgentGenService {
   ): Promise<AgentGenSession> {
     const row = await this.sweepIfStale(await this.findOwnedRow(workspaceId, userId, sessionId));
 
-    if (row.status === 'generating') throw new GenSessionBusyError(sessionId);
+    if (row.status === 'generating' || row.status === 'finalizing') {
+      throw new GenSessionBusyError(sessionId);
+    }
     if (row.status === 'completed') {
       throw new GenSessionInvalidStateError('This session is already completed. Start a new one.');
     }
 
-    const content = this.composeMessageContent(dto);
-    const messages = [...this.parseMessages(row.messages)];
-    messages.push({ role: 'user', content, at: new Date().toISOString() });
+    if (dto.retry && row.status !== 'failed') {
+      throw new GenSessionInvalidStateError('Only failed generations can be retried.');
+    }
 
-    const updated = await this.prisma.agentGenSession.update({
-      where: { id: row.id },
+    const requestedSourceIds = dto.context?.knowledge_source_ids ?? [];
+    const resolvedSourceIds = requestedSourceIds.length
+      ? await this.knowledge.resolveReferencedSourceIds(workspaceId, null, requestedSourceIds)
+      : [];
+    const safeDto: SendGenMessageDto = requestedSourceIds.length
+      ? {
+          ...dto,
+          context: { ...dto.context, knowledge_source_ids: resolvedSourceIds },
+        }
+      : dto;
+    const content = this.composeMessageContent(safeDto);
+    const messages = [...this.parseMessages(row.messages)];
+    if (dto.retry) {
+      if (!messages.some((message) => message.role === 'user')) {
+        throw new GenSessionInvalidStateError('No failed user message is available to retry.');
+      }
+    } else {
+      messages.push({ role: 'user', content, at: new Date().toISOString() });
+    }
+
+    const generatingAt = new Date();
+    const transition = await this.prisma.agentGenSession.updateMany({
+      where: {
+        id: row.id,
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'failed'] },
+      },
       data: {
         status: 'generating',
-        generatingAt: new Date(),
+        generatingAt,
         lastError: null,
         messages: messages as unknown as object,
       },
     });
+    if (transition.count === 0) throw new GenSessionBusyError(sessionId);
+
+    const updated = {
+      ...row,
+      status: 'generating',
+      generatingAt,
+      lastError: null,
+      messages: messages as unknown as object,
+      updatedAt: generatingAt,
+    } as PrismaAgentGenSession;
 
     const payload: AgentGenJobPayload = {
       sessionId: row.id,
       workspaceId,
       template_slug: dto.context?.template_slug,
     };
-    await this.queue.queue(AGENT_GEN_QUEUE).add(AGENT_GEN_JOB, payload, {
-      attempts: AGENT_GEN_JOB_ATTEMPTS,
-      backoff: { type: 'exponential', delay: 2_000 },
-      removeOnComplete: 100,
-      removeOnFail: 100,
-    });
+    try {
+      await this.queue.queue(AGENT_GEN_QUEUE).add(AGENT_GEN_JOB, payload, {
+        attempts: AGENT_GEN_JOB_ATTEMPTS,
+        backoff: { type: 'exponential', delay: 2_000 },
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[agent-gen] enqueue failed for session ${row.id}: ${message}`);
+      await this.markFailed(
+        row.id,
+        'Could not queue the generation. Please try again.',
+        generatingAt,
+      );
+      throw err;
+    }
 
     return this.serialize(updated);
   }
@@ -177,10 +232,14 @@ export class AgentGenService {
 
       const messages = [
         ...history,
-        { role: 'assistant' as const, content: result.assistant_message, at: new Date().toISOString() },
+        {
+          role: 'assistant' as const,
+          content: result.assistant_message,
+          at: new Date().toISOString(),
+        },
       ];
-      await this.prisma.agentGenSession.update({
-        where: { id: row.id },
+      await this.prisma.agentGenSession.updateMany({
+        where: { id: row.id, status: 'generating', generatingAt: row.generatingAt },
         data: {
           status: 'awaiting_user',
           generatingAt: null,
@@ -194,14 +253,23 @@ export class AgentGenService {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[agent-gen] generation failed for session ${row.id}: ${message}`);
       if (!isFinalAttempt) throw err; // let BullMQ retry with backoff
-      await this.markFailed(row.id, message);
+      await this.markFailed(row.id, message, row.generatingAt);
     }
   }
 
   /** Marks a session failed; used by the worker's terminal failure path. */
-  async markFailed(sessionId: string, error: string): Promise<void> {
+  async markFailed(
+    sessionId: string,
+    error: string,
+    generatingAt?: Date | null,
+    status: 'generating' | 'finalizing' = 'generating',
+  ): Promise<void> {
     await this.prisma.agentGenSession.updateMany({
-      where: { id: sessionId, status: 'generating' },
+      where: {
+        id: sessionId,
+        status,
+        ...(generatingAt ? { generatingAt } : {}),
+      },
       data: {
         status: 'failed',
         generatingAt: null,
@@ -222,7 +290,9 @@ export class AgentGenService {
   ) {
     const row = await this.sweepIfStale(await this.findOwnedRow(workspaceId, userId, sessionId));
 
-    if (row.status === 'generating') throw new GenSessionBusyError(sessionId);
+    if (row.status === 'generating' || row.status === 'finalizing') {
+      throw new GenSessionBusyError(sessionId);
+    }
     if (row.status === 'completed') {
       throw new GenSessionInvalidStateError('This session was already finalized.', {
         agentId: row.agentId,
@@ -237,36 +307,63 @@ export class AgentGenService {
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
     const spec: AgentSpec = parsed.data;
 
-    const agent = await this.agents.create(workspaceId, userId, {
-      name: spec.name,
-      industry: spec.industry,
-      agent_type: spec.agent_type,
-      spec,
-    });
-
-    if (dto.publish) {
-      await this.agents.publish(workspaceId, agent.id, userId);
-    }
-
-    const updated = await this.prisma.agentGenSession.update({
-      where: { id: row.id },
-      data: {
-        status: 'completed',
-        agentId: agent.id,
-        ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
+    const finalizingAt = new Date();
+    const claim = await this.prisma.agentGenSession.updateMany({
+      where: {
+        id: row.id,
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'failed'] },
       },
+      data: { status: 'finalizing', generatingAt: finalizingAt, lastError: null },
     });
+    if (claim.count === 0) throw new GenSessionBusyError(sessionId);
 
-    await this.audit.log({
-      workspaceId,
-      actorUserId: userId,
-      action: 'agent.generate.finalize',
-      resourceType: 'agent',
-      resourceId: agent.id,
-      metadata: { session_id: row.id, published: Boolean(dto.publish) },
-    });
+    let agent: Awaited<ReturnType<AgentsService['create']>> | null = null;
+    try {
+      agent = await this.agents.create(workspaceId, userId, {
+        name: spec.name,
+        industry: spec.industry,
+        agent_type: spec.agent_type,
+        spec,
+      });
 
-    return { session: this.serialize(updated), agent };
+      if (dto.publish) {
+        await this.agents.publish(workspaceId, agent.id, userId);
+      }
+
+      const updated = await this.prisma.agentGenSession.update({
+        where: { id: row.id },
+        data: {
+          status: 'completed',
+          generatingAt: null,
+          agentId: agent.id,
+          ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
+        },
+      });
+
+      await this.audit.log({
+        workspaceId,
+        actorUserId: userId,
+        action: 'agent.generate.finalize',
+        resourceType: 'agent',
+        resourceId: agent.id,
+        metadata: { session_id: row.id, published: Boolean(dto.publish) },
+      });
+
+      return { session: this.serialize(updated), agent };
+    } catch (err) {
+      if (agent) {
+        await this.prisma.agentGenSession.updateMany({
+          where: { id: row.id, status: 'finalizing', generatingAt: finalizingAt },
+          data: { status: 'completed', generatingAt: null, agentId: agent.id },
+        });
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        await this.markFailed(row.id, message, finalizingAt, 'finalizing');
+      }
+      throw err;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -275,7 +372,11 @@ export class AgentGenService {
 
   private async findActiveRow(workspaceId: string, userId: string) {
     return this.prisma.agentGenSession.findFirst({
-      where: { workspaceId, userId, status: { in: ['awaiting_user', 'generating', 'failed'] } },
+      where: {
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'generating', 'finalizing', 'failed'] },
+      },
       orderBy: { updatedAt: 'desc' },
     });
   }
@@ -294,12 +395,20 @@ export class AgentGenService {
    * offer a retry instead of polling forever.
    */
   private async sweepIfStale(row: PrismaAgentGenSession): Promise<PrismaAgentGenSession> {
-    if (row.status !== 'generating' || !row.generatingAt) return row;
+    if (!['generating', 'finalizing'].includes(row.status) || !row.generatingAt) return row;
     const ageMs = Date.now() - row.generatingAt.getTime();
     if (ageMs < env.AGENT_GEN_STALE_AFTER_SECONDS * 1_000) return row;
 
-    this.logger.warn(`[agent-gen] session ${row.id} stale after ${Math.round(ageMs / 1000)}s; marking failed`);
-    await this.markFailed(row.id, 'Generation timed out. Please try again.');
+    this.logger.warn(
+      `[agent-gen] session ${row.id} stale after ${Math.round(ageMs / 1000)}s; marking failed`,
+    );
+    const status = row.status as 'generating' | 'finalizing';
+    await this.markFailed(
+      row.id,
+      'Operation timed out. Please try again.',
+      row.generatingAt,
+      status,
+    );
     return (await this.prisma.agentGenSession.findUnique({ where: { id: row.id } })) ?? row;
   }
 
