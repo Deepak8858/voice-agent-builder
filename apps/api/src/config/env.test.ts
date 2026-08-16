@@ -170,6 +170,112 @@ describe('env validation', () => {
     });
   });
 
+  describe('LLM provider selection', () => {
+    it('defaults LLM_PROVIDER to azure-aifoundry', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.LLM_PROVIDER).toBe('azure-aifoundry');
+    });
+
+    it('accepts an explicit LLM_PROVIDER value', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        LLM_PROVIDER: 'anthropic',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.LLM_PROVIDER).toBe('anthropic');
+    });
+
+    it('rejects an unsupported LLM_PROVIDER value', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        LLM_PROVIDER: 'not-a-real-provider',
+      });
+
+      await expect(import('./env')).rejects.toThrow(/LLM_PROVIDER/);
+    });
+  });
+
+  describe('chat-to-agent generation limits', () => {
+    it('applies default rate limit, concurrency, and staleness values', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.AGENT_GEN_RATE_LIMIT_MAX).toBe(10);
+      expect(mod.env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS).toBe(300);
+      expect(mod.env.AGENT_GEN_WORKER_CONCURRENCY).toBe(4);
+      expect(mod.env.AGENT_GEN_STALE_AFTER_SECONDS).toBe(180);
+    });
+
+    it('coerces configured numeric overrides', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        AGENT_GEN_RATE_LIMIT_MAX: '25',
+        AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS: '600',
+        AGENT_GEN_WORKER_CONCURRENCY: '8',
+        AGENT_GEN_STALE_AFTER_SECONDS: '120',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.AGENT_GEN_RATE_LIMIT_MAX).toBe(25);
+      expect(mod.env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS).toBe(600);
+      expect(mod.env.AGENT_GEN_WORKER_CONCURRENCY).toBe(8);
+      expect(mod.env.AGENT_GEN_STALE_AFTER_SECONDS).toBe(120);
+    });
+
+    it('rejects AGENT_GEN_WORKER_CONCURRENCY above the 50-worker ceiling', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        AGENT_GEN_WORKER_CONCURRENCY: '51',
+      });
+
+      await expect(import('./env')).rejects.toThrow(/AGENT_GEN_WORKER_CONCURRENCY/);
+    });
+
+    it('rejects AGENT_GEN_STALE_AFTER_SECONDS below the 60-second floor', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        AGENT_GEN_STALE_AFTER_SECONDS: '59',
+      });
+
+      await expect(import('./env')).rejects.toThrow(/AGENT_GEN_STALE_AFTER_SECONDS/);
+    });
+  });
+
   describe('weekly digest schedule', () => {
     it('defaults to Monday 09:00 UTC', async () => {
       vi.resetModules();
