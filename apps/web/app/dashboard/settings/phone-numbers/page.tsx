@@ -11,7 +11,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
-import { getBillingMode } from '@/lib/billing-mode';
 import { getPlanLimitRedirect, type PlanLimitRedirect } from '@/lib/plan-limit';
 import { useApi } from '@/lib/use-api';
 import {
@@ -137,7 +136,6 @@ export default function PhoneNumbersPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [planLimit, setPlanLimit] = useState<PlanLimitRedirect | null>(null);
-  const billingMode = useMemo(() => getBillingMode(), []);
 
   const handleApiError = useCallback((err: unknown, fallbackMessage: string) => {
     const redirect = getPlanLimitRedirect(err);
@@ -418,7 +416,6 @@ export default function PhoneNumbersPage() {
         onClose={() => setPlanLimit(null)}
         limitType={planLimit?.limitType}
         currentPlan={planLimit?.currentPlan}
-        billingMode={billingMode}
         onUpgrade={() => {
           const path = planLimit?.upgradePath ?? '/dashboard/billing';
           setPlanLimit(null);

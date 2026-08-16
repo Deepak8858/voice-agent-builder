@@ -51,8 +51,10 @@ export class DigestWorker extends BaseWorker<DigestJob> implements OnModuleInit 
     super(DIGEST_QUEUE, queues, 5);
   }
 
-  async onModuleInit(): Promise<void> {
-    await this.registerSchedule();
+  onModuleInit(): void {
+    // Registration retries in the background; a Redis outage must not hold the
+    // Nest application bootstrap open for the full backoff window.
+    void this.registerSchedule();
   }
 
   /**

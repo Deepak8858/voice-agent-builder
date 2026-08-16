@@ -4,8 +4,12 @@ import { AgentSpecSchema, type AgentSpec } from '@voiceforge/shared';
 export const DispatchMetadataSchema = z
   .object({
     workspaceId: z.string().min(1).optional(),
+    // Optional at parse time for legacy jobs; attributed calls fail closed
+    // before the conversation starts if tenant resolution cannot provide it.
+    organizationId: z.string().min(1).optional(),
     agentId: z.string().min(1),
     callId: z.string().min(1).optional(),
+    providerCallId: z.string().min(1).optional(),
     phoneNumberId: z.string().min(1).optional(),
     direction: z.enum(['inbound', 'outbound']).optional(),
     provider: z.string().min(1).optional(),

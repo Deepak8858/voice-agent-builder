@@ -11,7 +11,9 @@ import type {
 } from '@voiceforge/shared';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
+import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
+import { EntitlementService } from '../billing/entitlement.service';
 import { CacheService } from '../cache/cache.service';
 import {
   AgentNotFoundError,
@@ -45,6 +47,8 @@ export class CallsService {
     private readonly queue: QueueService,
     private readonly retention: RetentionService,
     private readonly cache: CacheService,
+    private readonly admission: CallAdmissionService,
+    private readonly entitlements: EntitlementService,
     private readonly voiceRegistry?: VoiceProviderRegistry,
   ) {}
 
@@ -60,6 +64,19 @@ export class CallsService {
       dto.agent_version_id,
     );
 
+    const ws = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true, retentionDays: true },
+    });
+
+    // The free browser test is a lifetime allowance. Claiming it before the
+    // provider session is created means a customer cannot obtain a second
+    // session by racing two requests, because the redemption row is unique per
+    // organization.
+    const trial = await this.entitlements.assertAllowed(ws.organizationId, {
+      kind: 'browser_test',
+    });
+
     const session = await voice.createBrowserTestSession({
       workspaceId,
       agentId: agent.id,
@@ -73,11 +90,6 @@ export class CallsService {
       transcript = { transcript: '', turns: [] };
     }
     const transcriptReady = transcript.transcript.trim().length > 0 || transcript.turns.length > 0;
-
-    const ws = await this.prisma.workspace.findUniqueOrThrow({
-      where: { id: workspaceId },
-      select: { organizationId: true, retentionDays: true },
-    });
 
     const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
 
@@ -106,6 +118,16 @@ export class CallsService {
           transcript_status: transcriptReady ? 'available' : 'pending',
         } as Prisma.InputJsonValue,
       },
+    });
+
+    await this.recordTrialRedemption({
+      organizationId: ws.organizationId,
+      initiatingUserId: actorUserId,
+      agentVersionId: version.id,
+      callId: call.id,
+      provider: voice.name,
+      providerSessionId: session.test_session_id,
+      maxDurationSeconds: trial.limit,
     });
 
     await this.audit.log({
@@ -140,15 +162,6 @@ export class CallsService {
     const allowed = await this.billing.checkFeatureGate(ws.organizationId, 'outbound');
     if (!allowed) {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
-    }
-
-    const outbound = await this.billing.canStartOutboundCall(workspaceId);
-    if (!outbound.allowed) {
-      throw new ForbiddenPlanError(
-        outbound.limit === -1
-          ? 'Outbound calls are not available on your plan.'
-          : `Monthly outbound call limit reached (${outbound.limit}). Please upgrade or wait until next billing cycle.`,
-      );
     }
 
     // Idempotency: prevent double-click double-call within 60s
@@ -219,18 +232,11 @@ export class CallsService {
       return this.toSummary(duplicateAfterLock);
     }
 
-    const result = await voice.startOutboundCall({
-      workspaceId,
-      agentId: agent.id,
-      agentVersionId: version.id,
-      toNumber: dto.to_number,
-      fromNumber: dto.from_number,
-      contactName: dto.contact_name,
-      metadata: dto.metadata,
-    });
-
     const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
 
+    // The call row is created before dispatch because the concurrency lease,
+    // the credit reservation, and the usage record are all keyed to it. It
+    // starts as `queued` and is only advanced once the provider accepts.
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
@@ -239,9 +245,8 @@ export class CallsService {
         agentVersionId: version.id,
         contactId: checkResult.contact_id,
         direction: 'outbound',
-        status: result.status,
+        status: 'queued',
         provider: voice.name,
-        providerCallId: result.provider_call_id,
         toNumber: dto.to_number,
         fromNumber: dto.from_number ?? null,
         contactName: dto.contact_name ?? null,
@@ -250,6 +255,52 @@ export class CallsService {
         retentionDays: ws.retentionDays,
         metadata: (dto.metadata as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },
+    });
+
+    const admission = await this.admission.admitCall({
+      organizationId: ws.organizationId,
+      workspaceId,
+      callId: call.id,
+      provider: voice.name,
+      direction: 'outbound',
+    });
+    if (isCallDenied(admission)) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
+      });
+      throw this.admission.toError(admission);
+    }
+
+    let result: Awaited<ReturnType<VoiceRuntimeProvider['startOutboundCall']>>;
+    try {
+      result = await voice.startOutboundCall({
+        workspaceId,
+        agentId: agent.id,
+        agentVersionId: version.id,
+        toNumber: dto.to_number,
+        fromNumber: dto.from_number,
+        contactName: dto.contact_name,
+        metadata: dto.metadata,
+      });
+    } catch (err) {
+      // The provider never took the call, so the customer keeps the reserved
+      // minute and the concurrency slot is returned immediately.
+      await this.admission.compensate(ws.organizationId, call.id, 'provider_dispatch_failed');
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
+      });
+      throw err;
+    }
+
+    const dispatched = await this.prisma.call.update({
+      where: { id: call.id },
+      data: { status: result.status, providerCallId: result.provider_call_id },
+    });
+    await this.prisma.callUsage.updateMany({
+      where: { callId: call.id },
+      data: { providerCallId: result.provider_call_id },
     });
 
     await this.compliance.attachCheckToCall(checkResult.id, call.id);
@@ -277,7 +328,49 @@ export class CallsService {
     });
     await this.invalidateCallList(workspaceId, agent.id);
 
-    return this.toSummary(call);
+    return this.toSummary(dispatched);
+  }
+
+  /**
+   * Records that the organization has spent its lifetime browser test. The row
+   * is unique per organization, so a concurrent second session loses the race
+   * and is recorded as a duplicate rather than granting a second trial.
+   */
+  private async recordTrialRedemption(input: {
+    organizationId: string;
+    initiatingUserId: string;
+    agentVersionId: string;
+    callId: string;
+    provider: string;
+    providerSessionId: string;
+    maxDurationSeconds: number;
+  }): Promise<void> {
+    const maxDurationSeconds = input.maxDurationSeconds > 0 ? input.maxDurationSeconds : 180;
+    try {
+      await this.prisma.trialRedemption.create({
+        data: {
+          organizationId: input.organizationId,
+          initiatingUserId: input.initiatingUserId,
+          agentVersionId: input.agentVersionId,
+          callId: input.callId,
+          selectedProvider: input.provider,
+          providerSessionId: input.providerSessionId,
+          expiresAt: new Date(Date.now() + maxDurationSeconds * 1000),
+          maxDurationSeconds,
+          disposition: 'claimed',
+        },
+      });
+    } catch (err) {
+      // A unique-constraint violation means the trial was already claimed; the
+      // session itself is still valid and must not be failed for it.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return;
+      }
+      throw err;
+    }
   }
 
   async list(workspaceId: string, agentId?: string): Promise<CallSummary[]> {

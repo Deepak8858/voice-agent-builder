@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { BillingReconciliationWorker } from './billing-reconciliation.worker';
+import { CallLeaseRenewalWorker } from './call-lease-renewal.worker';
 import { EvaluationWorker } from './evaluation.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
@@ -7,6 +9,7 @@ import { DigestWorker } from './digest.worker';
 import { OutboundCallWorker } from '../outbound-campaign/workers/outbound-call.worker';
 import { OrchestratorWorker } from './orchestrator.worker';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { BillingModule } from '../billing/billing.module';
 import { EmailModule } from '../email/email.module';
 import { LlmModule } from '../llm/llm.module';
 import { QueueModule } from '../queue/queue.module';
@@ -29,6 +32,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     CrmRoutingModule,
     TelephonyModule,
     EmailModule,
+    BillingModule,
   ],
   providers: [
     EvaluationWorker,
@@ -38,6 +42,8 @@ import { TelephonyModule } from '../telephony/telephony.module';
     DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
+    BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
   ],
   exports: [
     EvaluationWorker,
@@ -47,6 +53,8 @@ import { TelephonyModule } from '../telephony/telephony.module';
     DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
+    BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
   ],
 })
 export class WorkersModule {}

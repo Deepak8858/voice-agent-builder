@@ -199,7 +199,8 @@ node scripts/backup-validation.js --verbose
 | `GET /api/v1/health` (public) | 200 `{ status, db, redis }` | `curl -f https://incfrog.ai/api/v1/health` |
 | `GET /api/health` (public, web) | 200 | `curl -f https://incfrog.ai/api/health` |
 | nginx liveness (host-local) | 200 | `curl -f http://127.0.0.1/nginx-health` |
-| API metrics | 401 without token | `curl -f -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" https://incfrog.ai/api/v1/metrics` |
+| API metrics (unauthenticated) | 401 | `curl -s -o /dev/null -w "%{http_code}" https://incfrog.ai/api/v1/metrics` |
+| API metrics (with token) | 200 | `curl -f -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" https://incfrog.ai/api/v1/metrics` |
 
 Every service also carries a Compose healthcheck; `docker compose ps` reports the
 aggregate state, and `vf-api-worker` is verified as running rather than by HTTP

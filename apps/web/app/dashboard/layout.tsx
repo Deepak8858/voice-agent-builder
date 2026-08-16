@@ -13,7 +13,7 @@ async function requireDashboardUser(): Promise<SessionUser> {
     return await apiFetch<SessionUser>('/auth/me');
   } catch (err) {
     if (err instanceof ApiCallError && err.status === 401) {
-      redirect('/sign-in');
+      redirect('/sign-in?next=%2Fdashboard');
     }
     throw err;
   }

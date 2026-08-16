@@ -7,10 +7,14 @@ import { Label } from '@/components/ui/label';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
-  isDemoCheckoutFallback,
-  type DemoCheckoutFallback,
-  type WebBillingMode,
-} from '@/lib/billing-mode';
+  BILLING_DISCLOSURES,
+  FEATURE_COMPARISON,
+  PRICING_FAQ,
+} from '@/lib/billing-copy';
+import {
+  isCheckoutUnavailable,
+  type CheckoutUnavailable,
+} from '@/lib/checkout-availability';
 import { estimatePlan, formatEstimateReason, type PricingEstimateInput } from '@/lib/pricing-estimator';
 import { Check, ArrowRight, Zap } from 'lucide-react';
 import {
@@ -28,7 +32,6 @@ const SALES_EMAIL =
 interface PricingPageProps {
   isAuthenticated?: boolean;
   currentPlan?: PlanType | null;
-  billingMode?: WebBillingMode;
 }
 
 interface ResolvedCta {
@@ -51,40 +54,27 @@ function trustedCheckoutUrl(url: string): boolean {
   }
 }
 
-const FEATURE_COMPARISON = [
-  { feature: 'Voice minutes', free: '10 trial', starter: '300/mo', growth: '2,000/mo', enterprise: 'Unlimited' },
-  { feature: 'Agents', free: '1', starter: '3', growth: '10', enterprise: 'Unlimited' },
-  { feature: 'Outbound calls', free: '5 trial', starter: '100/mo', growth: '500/mo', enterprise: 'Unlimited' },
-  { feature: 'Workspaces', free: '1', starter: '2', growth: '5', enterprise: 'Unlimited' },
-  { feature: 'Tools per agent', free: '0', starter: '5', growth: '20', enterprise: 'Unlimited' },
-  { feature: 'Contacts', free: '50', starter: '500', growth: '5,000', enterprise: 'Unlimited' },
-  { feature: 'White-label', free: false, starter: 'Subdomain', growth: 'Custom domain', enterprise: 'Custom domain' },
-  { feature: 'API access', free: false, starter: true, growth: true, enterprise: true },
-  { feature: 'Bulk import', free: false, starter: false, growth: true, enterprise: true },
-  { feature: 'Advanced compliance', free: false, starter: false, growth: true, enterprise: true },
-  { feature: 'Calendar integrations', free: false, starter: false, growth: true, enterprise: true },
-  { feature: 'HIPAA-ready', free: false, starter: false, growth: false, enterprise: true },
-  { feature: 'SSO / SAML', free: false, starter: false, growth: false, enterprise: true },
-];
-
 function CheckIcon({ value }: { value: boolean | string }) {
   if (value === true) return <Check className="h-4 w-4 text-primary mx-auto" />;
   if (value === false) return <span className="text-muted-foreground text-xs">—</span>;
   return <span className="text-xs text-muted-foreground">{value}</span>;
 }
 
-async function startStripeCheckout(plan: CheckoutPlan): Promise<string | DemoCheckoutFallback> {
+async function startStripeCheckout(
+  plan: CheckoutPlan,
+  idempotencyKey: string,
+): Promise<string | CheckoutUnavailable> {
   const res = await fetch('/api/billing/checkout', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ plan }),
+    body: JSON.stringify({ plan, idempotencyKey }),
     credentials: 'include',
   });
   const data = (await res.json().catch(() => null)) as
     | { url?: string; error?: string }
-    | DemoCheckoutFallback
+    | CheckoutUnavailable
     | null;
-  if (isDemoCheckoutFallback(data)) {
+  if (isCheckoutUnavailable(data)) {
     return data;
   }
   if (!res.ok || !data?.url) {
@@ -99,20 +89,18 @@ async function startStripeCheckout(plan: CheckoutPlan): Promise<string | DemoChe
 export function PricingPage({
   isAuthenticated = false,
   currentPlan = null,
-  billingMode = 'live',
 }: PricingPageProps) {
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [checkoutFallback, setCheckoutFallback] = useState<DemoCheckoutFallback | null>(null);
+  const [unavailable, setUnavailable] = useState<CheckoutUnavailable | null>(null);
   const [estimateInput, setEstimateInput] = useState<PricingEstimateInput>({
     agents: 2,
     minutes: 250,
-    outboundCalls: 80,
+    concurrentCalls: 2,
     tools: 3,
     workspaces: 1,
     contacts: 400,
   });
-  const isDemoBilling = billingMode === 'demo';
   const estimate = useMemo(() => estimatePlan(estimateInput), [estimateInput]);
 
   function updateEstimate(key: keyof PricingEstimateInput, value: string) {
@@ -125,14 +113,14 @@ export function PricingPage({
   const handleCheckout = useCallback(async (plan: CheckoutPlan) => {
     setLoadingPlan(plan);
     setError(null);
-    setCheckoutFallback(null);
+    setUnavailable(null);
     try {
-      const result = await startStripeCheckout(plan);
+      const result = await startStripeCheckout(plan, crypto.randomUUID());
       if (typeof result === 'string') {
         window.location.assign(result);
         return;
       }
-      setCheckoutFallback(result);
+      setUnavailable(result);
       setLoadingPlan(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Checkout failed.');
@@ -157,23 +145,10 @@ export function PricingPage({
           if (isAuthenticated) {
             return { label: 'Go to dashboard', variant: 'outline', href: '/dashboard' };
           }
-          return { label: 'Start free', variant: 'outline', href: '/sign-up' };
+          return { label: plan.cta, variant: 'outline', href: '/sign-up' };
         }
         if (!isCheckoutPlan(plan.id)) {
           return { label: plan.cta, variant: 'default', disabled: true };
-        }
-        if (isDemoBilling) {
-          return isAuthenticated
-            ? {
-                label: 'Continue in demo',
-                variant: plan.highlight ? 'default' : 'outline',
-                href: '/dashboard/billing',
-              }
-            : {
-                label: 'Start free trial',
-                variant: plan.highlight ? 'default' : 'outline',
-                href: '/sign-up',
-              };
         }
         if (!isAuthenticated) {
           return {
@@ -192,7 +167,7 @@ export function PricingPage({
           onClick: () => handleCheckout(plan.id as CheckoutPlan),
         };
       },
-    [currentPlan, isAuthenticated, isDemoBilling, handleCheckout],
+    [currentPlan, isAuthenticated, handleCheckout],
   );
 
   return (
@@ -207,17 +182,8 @@ export function PricingPage({
           Choose your plan
         </h1>
         <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-          Start free. No credit card required. Scale as you grow.
+          Try one browser test on Free, then pick the plan that matches the minutes you actually run.
         </p>
-        {isDemoBilling ? (
-          <div className="mx-auto mt-6 max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
-            <p className="font-medium">Stripe checkout is paused during account review.</p>
-            <p className="mt-1 text-xs">
-              Free trial and demo workspaces remain available. Paid plan checkout will reopen when live
-              billing is re-enabled.
-            </p>
-          </div>
-        ) : null}
       </div>
 
       {/* Plan cards */}
@@ -227,15 +193,12 @@ export function PricingPage({
             {error}
           </div>
         ) : null}
-        {checkoutFallback ? (
+        {unavailable ? (
           <div className="mx-auto mb-6 max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
-            <p className="font-medium">Checkout is paused</p>
-            <p className="mt-1 text-xs">{checkoutFallback.message}</p>
+            <p className="font-medium">{unavailable.title}</p>
+            <p className="mt-1 text-xs">{unavailable.message}</p>
             <div className="mt-3 flex flex-wrap gap-3 text-xs font-medium">
-              <a className="underline underline-offset-4" href={checkoutFallback.fallbackHref}>
-                {checkoutFallback.fallbackLabel}
-              </a>
-              <a className="underline underline-offset-4" href={checkoutFallback.salesHref}>
+              <a className="underline underline-offset-4" href={unavailable.salesHref}>
                 Contact sales
               </a>
             </div>
@@ -269,7 +232,7 @@ export function PricingPage({
                 <CardContent className="flex flex-col gap-4">
                   <div className="flex items-baseline gap-1">
                     <span className="text-4xl font-bold">{plan.priceLabel}</span>
-                    {plan.interval && plan.monthlyPriceUsd !== null ? (
+                    {plan.interval && plan.id !== 'enterprise' ? (
                       <span className="text-muted-foreground">/{plan.interval}</span>
                     ) : null}
                   </div>
@@ -323,7 +286,7 @@ export function PricingPage({
                 {([
                   ['agents', 'Agents'],
                   ['minutes', 'Voice minutes'],
-                  ['outboundCalls', 'Outbound calls'],
+                  ['concurrentCalls', 'Concurrent calls'],
                   ['tools', 'Integration tools'],
                   ['workspaces', 'Workspaces'],
                   ['contacts', 'Contacts'],
@@ -395,34 +358,31 @@ export function PricingPage({
         </div>
       </div>
 
+      {/* How billing works */}
+      <div className="px-6">
+        <div className="mx-auto max-w-4xl">
+          <h2 className="text-2xl font-semibold text-center mb-8">How billing works</h2>
+          <ul className="grid gap-3 sm:grid-cols-2">
+            {BILLING_DISCLOSURES.map((disclosure) => (
+              <li
+                key={disclosure}
+                className="flex items-start gap-2 rounded-lg border border-border p-4 text-sm text-muted-foreground"
+              >
+                <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                <span>{disclosure}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
       {/* FAQ */}
       <div className="px-6">
         <div className="mx-auto max-w-3xl">
           <h2 className="text-2xl font-semibold text-center mb-8">Frequently asked</h2>
           <div className="space-y-4">
-            {[
-              {
-                q: 'What counts as a voice minute?',
-                a: 'Only outbound calls count against your minute limit. Inbound calls are free. A 2-minute call uses 2 minutes.',
-              },
-              {
-                q: 'Can I change plans later?',
-                a: 'Yes. Upgrade or downgrade at any time. Upgrades take effect immediately; downgrades at the next billing cycle.',
-              },
-              {
-                q: 'Do unused minutes roll over?',
-                a: 'No, minutes reset each billing period. Annual plans include rollover for unused minutes.',
-              },
-              {
-                q: 'What about compliance?',
-                a: 'All plans include basic compliance (DNC, DND, consent). Growth and Enterprise include advanced compliance blocks for regulated industries.',
-              },
-              {
-                q: 'Is there a free trial for paid plans?',
-                a: 'Starter plans include a 14-day free trial. No credit card required to start.',
-              },
-            ].map((faq, i) => (
-              <div key={i} className="rounded-lg border border-border p-4">
+            {PRICING_FAQ.map((faq) => (
+              <div key={faq.q} className="rounded-lg border border-border p-4">
                 <h3 className="font-medium text-sm">{faq.q}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">{faq.a}</p>
               </div>

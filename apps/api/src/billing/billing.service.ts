@@ -1,17 +1,22 @@
+import { randomBytes } from 'node:crypto';
 import {
   BadRequestException,
   HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
 import type {
   CheckoutPlan,
   BillingStatusDto,
+  BillingSummaryDto,
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
+  CreateTopUpCheckoutDto,
+  EntitlementReason,
   FeatureGate,
   InvoiceDto,
   PlanType,
@@ -19,12 +24,19 @@ import type {
   SubscriptionStatus,
   WorkspaceUsageDto,
 } from '@voiceforge/shared';
-import { PLAN_LIMITS as SHARED_PLAN_LIMITS } from '@voiceforge/shared';
+import {
+  BILLING_CATALOG_VERSION,
+  isCheckoutPlan,
+  PAID_CALL_MINIMUM_SECONDS,
+  PLAN_LIMITS as SHARED_PLAN_LIMITS,
+} from '@voiceforge/shared';
 import type { ApiErrorCode } from '@voiceforge/shared';
 import { AppError } from '../common/errors';
 import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreditLedgerService } from './credit-ledger.service';
+import { EntitlementService } from './entitlement.service';
 
 interface StripeCustomer {
   id: string;
@@ -54,7 +66,10 @@ interface StripeClient {
   };
   checkout: {
     sessions: {
-      create(params: Record<string, unknown>): Promise<StripeSession>;
+      create(
+        params: Record<string, unknown>,
+        options?: { idempotencyKey?: string },
+      ): Promise<StripeSession>;
     };
   };
   billingPortal: {
@@ -71,8 +86,8 @@ function hasControlCharacter(value: string): boolean {
   return Array.from(value).some((char) => char.charCodeAt(0) <= 31);
 }
 
-const DEMO_BILLING_MESSAGE =
-  'Live Stripe billing is disabled for this demo. Free trial limits remain active.';
+const CHECKOUT_UNCONFIGURED_MESSAGE =
+  'Stripe checkout is temporarily unavailable. No plan change was made and no free allowance was granted.';
 const SUBSCRIPTION_CACHE_TTL_SECONDS = 60;
 const NO_SUBSCRIPTION = '__none__';
 
@@ -85,10 +100,18 @@ export class BillingService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly cache?: CacheService,
+    private readonly entitlements: EntitlementService,
+    private readonly creditLedger: CreditLedgerService,
+    @Optional() private readonly cache?: CacheService,
   ) {
+    // Pin to the version the installed SDK was built for rather than a
+    // duplicated literal, and retry transient network failures so a dropped
+    // connection does not surface as a failed payment attempt.
     this.stripe = env.STRIPE_SECRET_KEY
-      ? (new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia' }) as unknown as StripeClient)
+      ? (new Stripe(env.STRIPE_SECRET_KEY, {
+          apiVersion: Stripe.API_VERSION,
+          maxNetworkRetries: 2,
+        }) as unknown as StripeClient)
       : null;
     if (!this.stripe) {
       this.logger.warn('STRIPE_SECRET_KEY is not set. Stripe operations will be no-ops.');
@@ -102,7 +125,7 @@ export class BillingService {
   getBillingStatus(): BillingStatusDto {
     const disabledMessage = this.liveBillingDisabledMessage();
     return {
-      mode: env.BILLING_MODE,
+      checkoutConfigured: this.isCheckoutConfigured(),
       liveCheckoutEnabled: !disabledMessage,
       message: disabledMessage ?? 'Live Stripe checkout and customer portal actions are enabled.',
     };
@@ -151,31 +174,120 @@ export class BillingService {
   ): Promise<{ url: string }> {
     this.assertLiveBillingEnabled();
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
+    // Enterprise is sales-assisted; it has no self-service Price and must never
+    // be reachable from a client-supplied plan value.
+    if (!isCheckoutPlan(dto.plan)) {
+      throw new BadRequestException('This plan is not available for self-service checkout.');
+    }
     const customerId = await this.getOrCreateCustomer(organizationId);
     const priceId = this.getPriceIdForPlan(dto.plan);
     const successUrl = this.withCheckoutSessionId(this.buildAppUrl(dto.successPath));
     const cancelUrl = this.buildAppUrl(dto.cancelPath);
+    const integrationIdentifier = this.newIntegrationIdentifier();
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
-      automatic_tax: { enabled: true },
+      // Tax collection stays off until the tax registrations are confirmed;
+      // enabling it before then makes Stripe reject otherwise valid sessions.
+      automatic_tax: { enabled: env.STRIPE_TAX_ENABLED },
       billing_address_collection: 'required',
       tax_id_collection: { enabled: true },
-      metadata: { organizationId, plan: dto.plan },
-      subscription_data: {
-        metadata: { organizationId, plan: dto.plan },
+      metadata: {
+        organizationId,
+        plan: dto.plan,
+        catalogVersion: BILLING_CATALOG_VERSION,
+        integration_identifier: integrationIdentifier,
       },
-    });
+      subscription_data: {
+        metadata: { organizationId, plan: dto.plan, catalogVersion: BILLING_CATALOG_VERSION },
+      },
+    }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
     await this.logBillingAudit(organizationId, 'billing.checkout_started', {
       plan: dto.plan,
       priceId,
       stripeCustomerId: customerId,
+      integrationIdentifier,
     });
     return { url: session.url };
+  }
+
+  /**
+   * Prepaid 100-minute pack. Extra usage is prepaid only, so this is a one-time
+   * `payment` session against a server-owned Price; the client never supplies a
+   * Price ID or an amount. Only an organization with paid access may buy one,
+   * because packs are consumed after included minutes.
+   */
+  async createTopUpCheckoutSession(
+    organizationId: string,
+    dto: CreateTopUpCheckoutDto,
+  ): Promise<{ url: string }> {
+    this.assertLiveBillingEnabled();
+    if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
+    const priceId = env.STRIPE_MINUTE_PACK_PRICE_ID;
+    if (!priceId) {
+      throw new BillingUnavailableError(CHECKOUT_UNCONFIGURED_MESSAGE);
+    }
+
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    if (!effective.paidAccess) {
+      throw new ForbiddenPlanError(
+        'Minute packs are available on a paid plan with an active subscription.',
+        {
+          reason:
+            effective.status === 'active' || effective.status === 'none'
+              ? 'subscription_required'
+              : 'subscription_inactive',
+          plan: effective.plan,
+          catalogVersion: effective.catalogVersion,
+        },
+      );
+    }
+
+    const customerId = await this.getOrCreateCustomer(organizationId);
+    const integrationIdentifier = this.newIntegrationIdentifier();
+    const session = await this.stripe.checkout.sessions.create({
+      customer: customerId,
+      mode: 'payment',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: this.withCheckoutSessionId(this.buildAppUrl(dto.successPath)),
+      cancel_url: this.buildAppUrl(dto.cancelPath),
+      automatic_tax: { enabled: env.STRIPE_TAX_ENABLED },
+      billing_address_collection: 'required',
+      tax_id_collection: { enabled: true },
+      metadata: {
+        organizationId,
+        purchaseType: 'minute_pack',
+        catalogVersion: BILLING_CATALOG_VERSION,
+        integration_identifier: integrationIdentifier,
+      },
+      payment_intent_data: {
+        metadata: {
+          organizationId,
+          purchaseType: 'minute_pack',
+          catalogVersion: BILLING_CATALOG_VERSION,
+        },
+      },
+    }, { idempotencyKey: dto.idempotencyKey });
+    if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
+    await this.logBillingAudit(organizationId, 'billing.topup_checkout_started', {
+      priceId,
+      stripeCustomerId: customerId,
+      catalogVersion: BILLING_CATALOG_VERSION,
+      integrationIdentifier,
+    });
+    return { url: session.url };
+  }
+
+  /**
+   * Correlates one Checkout attempt across our audit log and Stripe's dashboard
+   * without exposing anything about the organization.
+   */
+  private newIntegrationIdentifier(): string {
+    return `vf_${randomBytes(12).toString('hex')}`;
   }
 
   async createPortalSession(
@@ -201,7 +313,6 @@ export class BillingService {
     const priceIds: Record<CheckoutPlan, string | undefined> = {
       starter: env.STRIPE_STARTER_PRICE_ID,
       growth: env.STRIPE_GROWTH_PRICE_ID,
-      enterprise: env.STRIPE_ENTERPRISE_PRICE_ID,
     };
     const priceId = priceIds[plan];
     if (!priceId) {
@@ -218,9 +329,24 @@ export class BillingService {
   }
 
   private liveBillingDisabledMessage(): string | null {
-    if (env.BILLING_MODE === 'demo') return DEMO_BILLING_MESSAGE;
-    if (!this.stripe) return 'Live Stripe billing is not configured.';
-    return null;
+    return this.isCheckoutConfigured() ? null : CHECKOUT_UNCONFIGURED_MESSAGE;
+  }
+
+  /**
+   * Checkout is only usable when every server-owned identifier is present.
+   * A partially configured deployment must fail closed rather than send a
+   * customer to Stripe and then be unable to grant what they paid for. The
+   * minute-pack price is included because top-up is part of the same revenue
+   * contract as the subscription plans.
+   */
+  private isCheckoutConfigured(): boolean {
+    return Boolean(
+      this.stripe &&
+        env.STRIPE_WEBHOOK_SECRET &&
+        env.STRIPE_STARTER_PRICE_ID &&
+        env.STRIPE_GROWTH_PRICE_ID &&
+        env.STRIPE_MINUTE_PACK_PRICE_ID,
+    );
   }
 
   private buildAppUrl(path: string): string {
@@ -289,6 +415,73 @@ export class BillingService {
     return dto;
   }
 
+  /**
+   * Organization-wide billing state. Quotas, credit, and usage counts are all
+   * organization-scoped, so opening this from any workspace of the same
+   * organization returns the same numbers; a workspace is never a billing
+   * boundary.
+   */
+  async getBillingSummary(organizationId: string): Promise<BillingSummaryDto> {
+    // The plan is resolved once and handed to the entitlement check, so the
+    // summary reports one consistent commercial state instead of two reads that
+    // can straddle a subscription change.
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const [subscription, credit, usage, callDecision] = await Promise.all([
+      this.getSubscription(organizationId),
+      this.creditLedger.getCreditSummary(organizationId),
+      this.getOrganizationUsageCounts(organizationId),
+      this.entitlements.check(
+        organizationId,
+        { kind: 'paid_call', minimumSeconds: PAID_CALL_MINIMUM_SECONDS },
+        effective,
+      ),
+    ]);
+
+    return {
+      organizationId,
+      plan: effective.plan,
+      status: effective.status,
+      paidAccess: effective.paidAccess,
+      catalogVersion: effective.catalogVersion,
+      currentPeriodEnd: subscription?.currentPeriodEnd ?? null,
+      cancelAtPeriodEnd: subscription?.cancelAtPeriodEnd ?? false,
+      includedSeconds: credit.includedSeconds,
+      purchasedSeconds: credit.purchasedSeconds,
+      reservedSeconds: credit.reservedSeconds,
+      expiringSeconds: credit.expiringSeconds,
+      lifetimeBrowserTestSecondsRemaining: credit.lifetimeBrowserTestSecondsRemaining,
+      topUpAvailable: effective.paidAccess,
+      availableSeconds: credit.availableSeconds,
+      balanceStatus: credit.status,
+      entitlements: {
+        includedMinutes: effective.entitlements.includedMinutes,
+        agents: effective.entitlements.agents,
+        workspaces: effective.entitlements.workspaces,
+        nangoConnections: effective.entitlements.nangoConnections,
+        concurrentCalls: effective.entitlements.concurrentCalls,
+        outboundPstn: effective.entitlements.outboundPstn,
+        campaigns: effective.entitlements.campaigns,
+        whiteLabel: effective.entitlements.whiteLabel,
+      },
+      usage,
+      // The reason a paid call would be refused right now is the one the
+      // customer needs to act on, and it comes from the same decision path the
+      // runtime uses rather than a second copy of the rules.
+      blockedReason: callDecision.reason as EntitlementReason,
+    };
+  }
+
+  private async getOrganizationUsageCounts(
+    organizationId: string,
+  ): Promise<{ agents: number; workspaces: number; integrations: number }> {
+    const [agents, workspaces, integrations] = await Promise.all([
+      this.prisma.agent.count({ where: { workspace: { organizationId } } }),
+      this.prisma.workspace.count({ where: { organizationId } }),
+      this.prisma.integrationTool.count({ where: { organizationId } }),
+    ]);
+    return { agents, workspaces, integrations };
+  }
+
   // -------------------------------------------------------------------------
   // Usage
   // -------------------------------------------------------------------------
@@ -330,7 +523,6 @@ export class BillingService {
       periodEnd: end.toISOString(),
       metrics,
       limits: {
-        calls: limits.outboundCalls,
         minutes: limits.minutes,
         tools: limits.tools,
         agents: limits.agents,
@@ -368,87 +560,98 @@ export class BillingService {
   // Feature gates
   // -------------------------------------------------------------------------
 
+  /**
+   * Compatibility wrapper. The decision itself belongs to EntitlementService so
+   * a single policy governs every caller; only the boolean shape is preserved
+   * for existing consumers.
+   */
   async checkFeatureGate(
     organizationId: string,
     gate: FeatureGate,
   ): Promise<boolean> {
-    const sub = await this.getSubscription(organizationId);
-    let plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
-
-    // Treat expired trials as free plan
-    if (sub?.status === 'trialing' && sub?.trialEnd && new Date(sub.trialEnd) < new Date()) {
-      plan = 'free';
-    }
-
-    const limits = SHARED_PLAN_LIMITS[plan];
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const { entitlements, paidAccess, plan } = effective;
 
     switch (gate) {
       case 'outbound':
-        return limits.outboundCalls > 0 || limits.outboundCalls === -1;
-      case 'ai_insights':
-        return plan !== 'free';
+        return entitlements.outboundPstn && paidAccess;
+      // Compliance blocking is a mandatory safety control on every plan, so it
+      // is read from its own entitlement rather than inherited from campaigns.
       case 'compliance_blocks':
-        return Boolean(limits.complianceBlocks);
+        return entitlements.complianceBlocks;
       case 'white_label':
-        return plan === 'growth' || plan === 'enterprise';
-      case 'api_access':
-        return plan !== 'free';
-      case 'bulk_import':
-        return plan !== 'free';
-      case 'analytics':
-        return plan !== 'free';
+        return entitlements.whiteLabel;
       case 'multiple_workspaces':
-        return limits.workspaces !== 1;
+        return entitlements.workspaces > 1;
       case 'tools':
-        return plan !== 'free' && limits.tools !== 0;
+        return entitlements.nangoConnections > 0;
+      case 'ai_insights':
+      case 'api_access':
+      case 'bulk_import':
+      case 'analytics':
       case 'byo_telephony':
-        return plan !== 'free';
+        return plan !== 'free' && paidAccess;
       default:
         return false;
     }
   }
 
   async canPublishAgent(organizationId: string, currentAgentCount: number): Promise<boolean> {
-    const sub = await this.getSubscription(organizationId);
-    const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
-    const limit = SHARED_PLAN_LIMITS[plan].agents;
-    return limit === -1 || currentAgentCount < limit;
+    const decision = await this.entitlements.check(organizationId, {
+      kind: 'agent_create',
+      current: currentAgentCount,
+    });
+    return decision.allowed;
   }
 
-  async canOutboundCall(organizationId: string, currentCallCount: number): Promise<boolean> {
-    const sub = await this.getSubscription(organizationId);
-    const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
-    const limit = SHARED_PLAN_LIMITS[plan].outboundCalls;
-    return limit === -1 || currentCallCount < limit;
+  async canOutboundCall(organizationId: string, currentConcurrentCallCount: number): Promise<boolean> {
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    return (
+      effective.entitlements.outboundPstn &&
+      effective.paidAccess &&
+      currentConcurrentCallCount < effective.entitlements.concurrentCalls
+    );
   }
 
-  async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean; remaining: number; limit: number }> {
-    const usage = await this.getWorkspaceUsage(workspaceId);
-    const limit = usage.limits.calls ?? 0;
-    const used = usage.metrics.calls ?? 0;
-    const remaining = limit === -1 ? -1 : Math.max(0, limit - used);
-    return { allowed: remaining !== 0, remaining, limit };
+  /**
+   * Whether the organization behind this workspace may attempt a paid PSTN call
+   * at all. Credit and concurrency admission happen later in the call path; this
+   * is only the plan-level gate.
+   */
+  async canStartOutboundCall(workspaceId: string): Promise<{ allowed: boolean }> {
+    const workspace = await this.prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    const effective = await this.entitlements.getEffectivePlan(workspace.organizationId);
+    return { allowed: effective.entitlements.outboundPstn && effective.paidAccess };
   }
 
   async enforceAgentLimit(organizationId: string): Promise<void> {
     const count = await this.prisma.agent.count({
       where: { workspace: { organizationId }, status: 'published' },
     });
-    const allowed = await this.canPublishAgent(organizationId, count);
-    if (!allowed) {
-      const sub = await this.getSubscription(organizationId);
-      const plan = sub?.plan ?? 'free';
+    const decision = await this.entitlements.check(organizationId, {
+      kind: 'agent_create',
+      current: count,
+    });
+    if (!decision.allowed) {
       throw new ForbiddenPlanError(
-        `Your ${plan} plan allows a limited number of published agents. Please upgrade to publish more.`,
+        `Your ${decision.plan} plan allows ${decision.limit} published agents. Please upgrade to publish more.`,
+        {
+          reason: decision.reason,
+          current: decision.current,
+          limit: decision.limit,
+          catalogVersion: decision.catalogVersion,
+          correlationId: decision.correlationId,
+        },
       );
     }
   }
 
   async checkAgentCreationWarning(organizationId: string): Promise<{ warning: string | null; current: number; limit: number }> {
-    const sub = await this.getSubscription(organizationId);
-    const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
-    const limit = SHARED_PLAN_LIMITS[plan].agents;
-    if (limit === -1) return { warning: null, current: 0, limit: -1 };
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const limit = effective.entitlements.agents;
     const current = await this.prisma.agent.count({ where: { workspace: { organizationId } } });
     const threshold = Math.floor(limit * 0.8);
     if (current >= threshold && current <= limit) {

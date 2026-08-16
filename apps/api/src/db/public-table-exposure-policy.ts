@@ -77,6 +77,24 @@ export const AUTHENTICATED_READ_TABLES = [
   'telephony_webhook_events',
 ] as const;
 
+/**
+ * Revenue-bearing and billing-runtime tables introduced by the production
+ * billing migration. They are never read through the Supabase Data API: the
+ * NestJS API owns every read and write, so anon and authenticated get no
+ * grants and no policies.
+ */
+export const BILLING_SERVICE_ROLE_ONLY_TABLES = [
+  'billing_credit_buckets',
+  'billing_ledger_entries',
+  'organization_credit_balances',
+  'call_usages',
+  'runtime_usage_events',
+  'trial_redemptions',
+  'agent_provider_deployments',
+  'provider_cost_events',
+  'call_concurrency_leases',
+] as const;
+
 export const SERVICE_ROLE_ONLY_TABLES = [
   'contacts',
   'consent_records',
@@ -89,6 +107,7 @@ export const SERVICE_ROLE_ONLY_TABLES = [
   'webhook_events',
   'google_calendar_configs',
   'referrals',
+  ...BILLING_SERVICE_ROLE_ONLY_TABLES,
 ] as const;
 
 export const LEGACY_SERVICE_ROLE_ONLY_TABLES = [
