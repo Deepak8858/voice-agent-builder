@@ -209,17 +209,26 @@ describe('AzureAiFoundryAdapter', () => {
     await expect(adapter.generate(BASE_DTO)).rejects.toThrow();
   });
 
-  it('throws when model returns valid JSON but invalid AgentSpec', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
-        }),
-        { status: 200 },
-      ),
+  it('falls back to the seed template when the model spec stays invalid after self-repair', async () => {
+    // A fresh Response per call: the self-repair retry reads the body twice.
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
+          }),
+          { status: 200 },
+        ),
     );
+    globalThis.fetch = fetchMock;
 
     const adapter = new AzureAiFoundryAdapter(mockCacheService);
-    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('invalid Agent Spec');
+    const result = await adapter.generate(BASE_DTO);
+
+    // One self-repair retry, then fall back rather than throw a 500.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.rationale).toContain('fell back to template');
+    expect(result.matched_template_slug).toBe('ai-receptionist');
+    expect(result.spec.name).toBeTruthy();
   });
 });

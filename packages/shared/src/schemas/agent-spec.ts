@@ -89,18 +89,36 @@ export const AgentHandoffSchema = z.object({
   conditions: z.array(z.string()).default([]),
 });
 
+/**
+ * A call window only makes sense with all three fields. Models sometimes emit
+ * the key with fields missing; drop such a partial object so the spec degrades
+ * to "no window" instead of failing validation.
+ */
+function dropPartialCallWindow(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return undefined;
+  const w = value as Record<string, unknown>;
+  const complete =
+    typeof w.timezone === 'string' &&
+    typeof w.start_hour === 'number' &&
+    typeof w.end_hour === 'number';
+  return complete ? value : undefined;
+}
+
 export const AgentComplianceSchema = z.object({
   ai_disclosure_required: z.boolean().default(true),
   recording_notice_required: z.boolean().default(false),
   opt_out_enabled: z.boolean().default(true),
   consent_required_for_outbound: z.boolean().default(true),
-  allowed_call_window: z
-    .object({
-      timezone: z.string(),
-      start_hour: z.number().int().min(0).max(23),
-      end_hour: z.number().int().min(0).max(23),
-    })
-    .optional(),
+  allowed_call_window: z.preprocess(
+    dropPartialCallWindow,
+    z
+      .object({
+        timezone: z.string(),
+        start_hour: z.number().int().min(0).max(23),
+        end_hour: z.number().int().min(0).max(23),
+      })
+      .optional(),
+  ),
 });
 
 export const AgentAnalyticsConfigSchema = z.object({
