@@ -12,9 +12,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   AgentGenSessionSchema,
+  FinalizeGenSessionResultSchema,
   GEN_PROMPT_MAX_LENGTH,
   type AgentGenSession,
-  type AgentSummary,
   type KnowledgeSourceSummary,
   type SendGenMessageDto,
   type SessionUser,
@@ -272,7 +272,7 @@ export default function AiGenerateAgentPage() {
   const finalizeMutation = useMutation({
     mutationFn: async (publish: boolean) => {
       if (!workspaceId || !session) throw new Error('No generation session to finalize.');
-      return call<{ session: AgentGenSession; agent: AgentSummary }>(
+      const result = await call<unknown>(
         `/workspaces/${workspaceId}/agent-gen-sessions/${session.id}/finalize`,
         {
           method: 'POST',
@@ -282,6 +282,7 @@ export default function AiGenerateAgentPage() {
           }),
         },
       );
+      return FinalizeGenSessionResultSchema.parse(result);
     },
     onSuccess: ({ agent }, publish) => {
       toast.success(publish ? 'Agent created and published.' : 'Agent created.');

@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { HttpException, HttpStatus } from '@nestjs/common';
 import type { AgentGenSession as PrismaAgentGenSession } from '@prisma/client';
 import {
+  AgentGenMessageSchema,
   AgentSpecSchema,
   type AgentGenMessage,
   type AgentGenSession,
@@ -151,6 +152,7 @@ export class AgentGenService {
     const content = this.composeMessageContent(dto, resolvedIds);
     const messages = [...this.parseMessages(row.messages)];
     messages.push({ role: 'user', content, at: new Date().toISOString() });
+    const templateSlug = row.templateSlug ?? dto.context?.template_slug ?? null;
 
     const generatingAt = new Date();
     // Atomic claim: the WHERE clause is the source of truth for the state
@@ -167,6 +169,7 @@ export class AgentGenService {
         generatingAt,
         lastError: null,
         messages: messages as unknown as object,
+        templateSlug,
       },
     });
     if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
@@ -175,7 +178,7 @@ export class AgentGenService {
       {
         sessionId: row.id,
         workspaceId,
-        template_slug: dto.context?.template_slug,
+        template_slug: templateSlug ?? undefined,
       },
       generatingAt,
     );
@@ -207,7 +210,14 @@ export class AgentGenService {
     });
     if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
 
-    await this.enqueueGeneration({ sessionId: row.id, workspaceId }, retryingAt);
+    await this.enqueueGeneration(
+      {
+        sessionId: row.id,
+        workspaceId,
+        template_slug: row.templateSlug ?? undefined,
+      },
+      retryingAt,
+    );
 
     const updated = await this.prisma.agentGenSession.findUnique({ where: { id: row.id } });
     return this.serialize(updated ?? row);
@@ -471,7 +481,10 @@ export class AgentGenService {
 
   private parseMessages(raw: unknown): AgentGenMessage[] {
     if (!Array.isArray(raw)) return [];
-    return raw as AgentGenMessage[];
+    return raw.flatMap((message) => {
+      const parsed = AgentGenMessageSchema.safeParse(message);
+      return parsed.success ? [parsed.data] : [];
+    });
   }
 
   private serialize(row: PrismaAgentGenSession): AgentGenSession {

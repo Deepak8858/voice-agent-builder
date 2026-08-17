@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AgentSpecSchema } from './agent-spec';
+import { AgentSummarySchema } from './agent';
 
 // ---------------------------------------------------------------------------
 // Chat-to-agent generation sessions (server-persisted, refresh-safe).
@@ -70,6 +71,12 @@ export const AgentGenSessionSchema = z.object({
   updated_at: z.string(),
 });
 export type AgentGenSession = z.infer<typeof AgentGenSessionSchema>;
+
+export const FinalizeGenSessionResultSchema = z.object({
+  session: AgentGenSessionSchema,
+  agent: AgentSummarySchema,
+});
+export type FinalizeGenSessionResult = z.infer<typeof FinalizeGenSessionResultSchema>;
 
 // Result contract the LLM chat generation must satisfy.
 export const ChatGenerateResultSchema = z.object({

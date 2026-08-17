@@ -8,10 +8,12 @@ import { env } from '../config/env';
 function mockExecutionContext(
   user?: Partial<SessionUser>,
   params: Record<string, string> = {},
+  routePath?: string,
 ): ExecutionContext {
   return {
     switchToHttp: () => ({
-      getRequest: <T extends object>() => ({ user, params }) as T,
+      getRequest: <T extends object>() =>
+        ({ user, params, ...(routePath ? { route: { path: routePath } } : {}) }) as T,
       getResponse: () => ({}),
     }),
     getHandler: () => ({}),
@@ -77,6 +79,21 @@ describe('GenerationRateLimitGuard', () => {
     expect(mockCache.incr).toHaveBeenCalledWith(
       'vf:v1:ratelimit:gen:ws_active:user_abc',
       expect.any(Number),
+    );
+  });
+
+  it('uses a separate counter for finalization', async () => {
+    const ctx = mockExecutionContext(
+      { id: 'user_abc', active_workspace_id: 'ws_other' },
+      { workspaceId: 'ws_xyz' },
+      ':sessionId/finalize',
+    );
+
+    await guard.canActivate(ctx);
+
+    expect(mockCache.incr).toHaveBeenCalledWith(
+      'vf:v1:ratelimit:finalize:ws_xyz:user_abc',
+      env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS,
     );
   });
 

@@ -1,6 +1,8 @@
 import type { ArgumentsHost } from '@nestjs/common';
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
@@ -89,6 +91,30 @@ afterEach(() => {
 });
 
 describe('HttpExceptionFilter capture matrix', () => {
+  it('whitelists only retryAfterSeconds from rate-limit details', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, body } = makeHost();
+
+    filter.catch(
+      new HttpException(
+        {
+          code: 'RATE_LIMITED',
+          message: 'Slow down.',
+          details: { retryAfterSeconds: 300, internalCounterKey: 'secret' },
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      ),
+      host,
+    );
+
+    const response = body() as {
+      error: { code: string; details?: Record<string, unknown> };
+    };
+    expect(response.error.code).toBe('RATE_LIMITED');
+    expect(response.error.details).toEqual({ retryAfterSeconds: 300 });
+  });
+
   it('captures a 5xx HttpException', async () => {
     const HttpExceptionFilter = await loadFilter(false);
     const posthog = makePosthog();

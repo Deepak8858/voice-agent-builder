@@ -244,18 +244,17 @@ const EnvSchema = z.object({
       message: 'VOICE_PROVIDER=mock is not allowed in production',
     });
   }
-  // The Azure adapter has no safe default endpoint; require it explicitly in
-  // production so a misconfigured deployment fails at boot, not per-request.
-  if (
-    value.NODE_ENV === 'production' &&
-    value.LLM_PROVIDER === 'azure-aifoundry' &&
-    !value.LLM_BASE_URL
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['LLM_BASE_URL'],
-      message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
-    });
+  if (value.NODE_ENV === 'production' && value.LLM_PROVIDER === 'azure-aifoundry') {
+    const isHttpsEndpoint =
+      value.LLM_BASE_URL !== undefined && new URL(value.LLM_BASE_URL).protocol === 'https:';
+    if (!isHttpsEndpoint) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['LLM_BASE_URL'],
+        message:
+          'LLM_BASE_URL is required and must use HTTPS in production when LLM_PROVIDER=azure-aifoundry',
+      });
+    }
   }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after
   // checkout and from the billing portal. It defaults to localhost, so a
