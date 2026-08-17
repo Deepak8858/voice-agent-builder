@@ -10,10 +10,7 @@ const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 // Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
 // network) so server-side calls never loop out through nginx; fall back to the
 // public URL. The resolved base must include the NestJS global prefix /api/v1.
-const API_BASE = resolveApiBase(
-  process.env.INTERNAL_API_URL,
-  process.env.NEXT_PUBLIC_API_URL,
-);
+const API_BASE = resolveApiBase(process.env.INTERNAL_API_URL, process.env.NEXT_PUBLIC_API_URL);
 
 function resolveApiBase(
   internalApiUrl: string | undefined,
@@ -39,18 +36,11 @@ const cachedServerGet = cache(async (path: string, accessToken: string | null) =
  * Reads Supabase session from cookies, adds the internal key and verified
  * bearer token, then calls NestJS directly.
  */
-export async function apiFetch<T>(
-  path: string,
-  init: RequestInit = {},
-): Promise<T> {
+export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const cookieStore = await cookies();
   const accessToken = extractSupabaseAccessToken(cookieStore.getAll(), SUPABASE_URL);
   const method = (init.method ?? 'GET').toUpperCase();
-  const cacheableGet =
-    method === 'GET' &&
-    !init.body &&
-    !init.headers &&
-    !init.signal;
+  const cacheableGet = method === 'GET' && !init.body && !init.headers && !init.signal;
 
   if (cacheableGet) {
     return (await cachedServerGet(path, accessToken)) as T;
