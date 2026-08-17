@@ -37,7 +37,7 @@ function schemaTableNames(): string[] {
   const schema = readSchema();
   return [...schema.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)].map((model) => {
     const [, modelName, body] = model;
-    return /@@map\("([^"]+)"\)/.exec(body!)?.[1] ?? modelName!;
+    return /^\s*@@map\("([^"]+)"\)/m.exec(body!)?.[1] ?? modelName!;
   });
 }
 
