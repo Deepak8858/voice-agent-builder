@@ -1,21 +1,7 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
-import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import dynamic from 'next/dynamic';
 import type {
   AgentMetricsResponse,
   ComplianceMetrics,
@@ -29,9 +15,35 @@ import {
   CardContent,
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/lib/use-api';
 import { BarChart3, TrendingUp, ShieldCheck, Calendar } from 'lucide-react';
 import { useState } from 'react';
+
+/**
+ * recharts (and its d3 dependencies) is loaded only once this panel is on
+ * screen, and never on the server, where it would just be re-rendered on
+ * hydration anyway. Placeholders keep the layout height stable so the charts
+ * do not shift the page when they arrive.
+ */
+function ChartPlaceholder({ height }: { height: number }) {
+  return <Skeleton className="w-full rounded-lg" style={{ height }} />;
+}
+
+const CallVolumeChart = dynamic(
+  () => import('@/components/analytics/analytics-charts').then((m) => m.CallVolumeChart),
+  { ssr: false, loading: () => <ChartPlaceholder height={220} /> },
+);
+
+const OutcomePieChart = dynamic(
+  () => import('@/components/analytics/analytics-charts').then((m) => m.OutcomePieChart),
+  { ssr: false, loading: () => <ChartPlaceholder height={200} /> },
+);
+
+const AgentPerformanceChart = dynamic(
+  () => import('@/components/analytics/analytics-charts').then((m) => m.AgentPerformanceChart),
+  { ssr: false, loading: () => <ChartPlaceholder height={220} /> },
+);
 
 interface AnalyticsPanelProps {
   workspaceId: string;
@@ -87,28 +99,35 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
 
   const queryRange = buildRangeDays(RANGE_DAYS[range]);
 
+  // `keepPreviousData`: switching the range keeps the current charts on screen
+  // while the new window loads, instead of flashing every panel back to
+  // "Loading…" and collapsing the layout.
   const overview = useQuery({
     queryKey: ['analytics', 'workspace', workspaceId, range],
     queryFn: () =>
       call<WorkspaceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/workspace`, queryRange)),
+    placeholderData: keepPreviousData,
   });
 
   const agents = useQuery({
     queryKey: ['analytics', 'agents', workspaceId, range],
     queryFn: () =>
       call<AgentMetricsResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/agents`, queryRange)),
+    placeholderData: keepPreviousData,
   });
 
   const compliance = useQuery({
     queryKey: ['analytics', 'compliance', workspaceId, range],
     queryFn: () =>
       call<ComplianceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/compliance`, queryRange)),
+    placeholderData: keepPreviousData,
   });
 
   const timeseries = useQuery({
     queryKey: ['analytics', 'timeseries', workspaceId, range],
     queryFn: () =>
       call<TimeseriesResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange)),
+    placeholderData: keepPreviousData,
   });
 
   // derive chart data
@@ -185,58 +204,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
           ) : tsData.length === 0 ? (
             <p className="text-sm text-muted-foreground">No call data for this period.</p>
           ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={tsData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorCalls" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="colorSuccess" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: 'var(--card)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                  }}
-                />
-                <Legend wrapperStyle={{ fontSize: '12px' }} />
-                <Area
-                  type="monotone"
-                  dataKey="calls"
-                  name="Total calls"
-                  stroke="#6366f1"
-                  strokeWidth={2}
-                  fill="url(#colorCalls)"
-                />
-                <Area
-                  type="monotone"
-                  dataKey="success"
-                  name="Successful"
-                  stroke="#22c55e"
-                  strokeWidth={2}
-                  fill="url(#colorSuccess)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <CallVolumeChart data={tsData} />
           )}
         </CardContent>
       </Card>
@@ -258,34 +226,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
               <p className="text-sm text-muted-foreground">No outcome data yet.</p>
             ) : (
               <div className="flex flex-col items-center gap-3">
-                <ResponsiveContainer width="100%" height={200}>
-                  <PieChart>
-                    <Pie
-                      data={outcomeData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={55}
-                      outerRadius={85}
-                      paddingAngle={3}
-                      dataKey="value"
-                    >
-                      {outcomeData.map((_, i) => (
-                        <Cell
-                          key={`cell-${i}`}
-                          fill={OUTCOME_COLORS[i % OUTCOME_COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{
-                        background: 'var(--card)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+                <OutcomePieChart data={outcomeData} colors={OUTCOME_COLORS} />
                 <div className="flex flex-wrap justify-center gap-x-4 gap-y-1">
                   {outcomeData.map((entry, i) => (
                     <div key={entry.name} className="flex items-center gap-1.5 text-xs">
@@ -318,40 +259,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
             ) : agentPerfData.length === 0 ? (
               <p className="text-sm text-muted-foreground">No call activity yet.</p>
             ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart
-                  data={agentPerfData}
-                  layout="vertical"
-                  margin={{ top: 0, right: 30, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
-                    tickLine={false}
-                    axisLine={false}
-                    width={90}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'var(--card)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                    }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: '12px' }} />
-                  <Bar dataKey="calls" name="Calls" fill="#6366f1" radius={[0, 4, 4, 0]} />
-                  <Bar dataKey="successRate" name="Success %" fill="#22c55e" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <AgentPerformanceChart data={agentPerfData} />
             )}
           </CardContent>
         </Card>

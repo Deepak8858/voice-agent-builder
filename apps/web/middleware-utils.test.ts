@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
-import { updateSupabaseSession } from './middleware-utils';
+import {
+  PROTECTED_PREFIXES,
+  PUBLIC_PREFIXES,
+  updateSupabaseSession,
+} from './middleware-utils';
 
 const SUPABASE_URL = 'https://projref.supabase.co';
 
@@ -85,5 +89,33 @@ describe('updateSupabaseSession', () => {
     );
 
     expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('takes the public fast path without a session', async () => {
+    const res = await updateSupabaseSession(request('/pricing'));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('never lets the public fast path cover a protected prefix', () => {
+    for (const publicPrefix of PUBLIC_PREFIXES) {
+      for (const protectedPrefix of PROTECTED_PREFIXES) {
+        const shadowed =
+          publicPrefix === '/'
+            ? protectedPrefix === '/'
+            : protectedPrefix === publicPrefix ||
+              protectedPrefix.startsWith(`${publicPrefix}/`);
+
+        expect(shadowed, `${publicPrefix} must not shadow ${protectedPrefix}`).toBe(false);
+      }
+    }
+  });
+
+  it('still guards a protected route that shares a public prefix string', async () => {
+    const res = await updateSupabaseSession(request('/settings'));
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toBe('http://localhost/sign-in?next=%2Fsettings');
   });
 });

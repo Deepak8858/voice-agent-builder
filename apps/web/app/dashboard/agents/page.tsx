@@ -1,31 +1,38 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { AgentsListClient } from '@/components/agents/agents-list-client';
 import { PageHeader } from '@/components/dashboard/page-header';
 import { StatCard } from '@/components/dashboard/stat-card';
-import type { AgentSummary, SessionUser } from '@voiceforge/shared';
+import { CardGridSkeleton, StatGridSkeleton } from '@/components/dashboard/page-skeleton';
+import { SessionErrorCard } from '@/components/dashboard/session-error-card';
+import type { AgentSummary } from '@voiceforge/shared';
 import { Bot, Plus, Radio, FileEdit, PauseCircle } from 'lucide-react';
 
-export default async function AgentsPage() {
-  let agents: AgentSummary[] = [];
-  let apiError: string | null = null;
+interface AgentsData {
+  agents: AgentSummary[];
+  apiError: string | null;
+}
 
+/**
+ * One fetch per request, shared by both suspended sections below.
+ * `requireSessionUser` reuses the request-scoped `/auth/me` rather than adding
+ * a second session round trip in front of the agent list.
+ */
+async function loadAgents(): Promise<AgentsData> {
+  const me = await requireSessionUser('/dashboard/agents');
   try {
-    const me = await apiFetch<SessionUser>('/auth/me');
     const res = await apiFetch<{ items: AgentSummary[] }>(
       `/workspaces/${me.active_workspace_id}/agents`,
     );
-    agents = res.items;
+    return { agents: res.items, apiError: null };
   } catch (err) {
-    apiError = (err as Error).message;
+    return { agents: [], apiError: (err as Error).message };
   }
+}
 
-  const activeCount = agents.filter((agent) => agent.status === 'published').length;
-  const draftCount = agents.filter((agent) => agent.status === 'draft').length;
-  const pausedCount = agents.filter((agent) => agent.status === 'paused').length;
-
+export default function AgentsPage() {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
@@ -42,32 +49,37 @@ export default async function AgentsPage() {
         }
       />
 
-      {apiError ? (
-        <Card className="border-destructive/40 bg-destructive/5">
-          <CardHeader>
-            <CardTitle className="text-destructive">Could not load agents</CardTitle>
-            <CardDescription>
-              The backend returned:{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Check that the API is running and that the workspace session is valid.
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Total" value={agents.length} description="All workspace agents" icon={<Bot className="h-5 w-5" />} />
-            <StatCard label="Active" value={activeCount} description="Published agents" icon={<Radio className="h-5 w-5" />} tone="success" />
-            <StatCard label="Draft" value={draftCount} description="Still being configured" icon={<FileEdit className="h-5 w-5" />} tone="warning" />
-            <StatCard label="Paused" value={pausedCount} description="Temporarily disabled" icon={<PauseCircle className="h-5 w-5" />} tone="info" />
-          </div>
-          <AgentsListClient agents={agents} />
-        </>
-      )}
+      <Suspense fallback={<StatGridSkeleton />}>
+        <AgentStats />
+      </Suspense>
+
+      <Suspense fallback={<CardGridSkeleton cards={6} />}>
+        <AgentList />
+      </Suspense>
     </div>
   );
+}
+
+async function AgentStats() {
+  const { agents, apiError } = await loadAgents();
+  if (apiError) return <SessionErrorCard title="Could not load agents" message={apiError} />;
+
+  const activeCount = agents.filter((agent) => agent.status === 'published').length;
+  const draftCount = agents.filter((agent) => agent.status === 'draft').length;
+  const pausedCount = agents.filter((agent) => agent.status === 'paused').length;
+
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <StatCard label="Total" value={agents.length} description="All workspace agents" icon={<Bot className="h-5 w-5" />} />
+      <StatCard label="Active" value={activeCount} description="Published agents" icon={<Radio className="h-5 w-5" />} tone="success" />
+      <StatCard label="Draft" value={draftCount} description="Still being configured" icon={<FileEdit className="h-5 w-5" />} tone="warning" />
+      <StatCard label="Paused" value={pausedCount} description="Temporarily disabled" icon={<PauseCircle className="h-5 w-5" />} tone="info" />
+    </div>
+  );
+}
+
+async function AgentList() {
+  const { agents, apiError } = await loadAgents();
+  if (apiError) return null;
+  return <AgentsListClient agents={agents} />;
 }

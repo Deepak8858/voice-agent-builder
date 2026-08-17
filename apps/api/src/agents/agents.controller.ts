@@ -68,8 +68,11 @@ export class AgentsController {
   async list(
     @Param('workspaceId') workspaceId: string,
     @Res({ passthrough: true }) res: Response,
+    @CurrentUser() user: SessionUser,
   ) {
-    const result = await this.agents.list(workspaceId);
+    // The user id scopes the cached response; the workspace guard has already
+    // authorized this pairing, so caching cannot widen access.
+    const result = await this.agents.list(workspaceId, user?.id);
     res.setHeader('X-Cache-Hit', result.fromCache ? 'true' : 'false');
     return { items: result.agents };
   }
