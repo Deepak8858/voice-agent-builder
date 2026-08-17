@@ -28,9 +28,17 @@ function readSchema(): string {
   return fs.readFileSync(path.join(repoRoot, 'apps/api/prisma/schema.prisma'), 'utf8');
 }
 
-function mappedTableNames(): string[] {
+/**
+ * A model without `@@map` is backed by a table named after the model, so the
+ * table name has to be derived from the model name in that case. Matching only
+ * `@@map` would let an unmapped model slip past the coverage assertion below.
+ */
+function schemaTableNames(): string[] {
   const schema = readSchema();
-  return [...schema.matchAll(/@@map\("([^"]+)"\)/g)].map((match) => match[1]!);
+  return [...schema.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)].map((model) => {
+    const [, modelName, body] = model;
+    return /@@map\("([^"]+)"\)/.exec(body!)?.[1] ?? modelName!;
+  });
 }
 
 function migrationSql(): string {
@@ -65,10 +73,11 @@ describe('prisma migration layout', () => {
 });
 
 describe('Data API exposure policy coverage', () => {
-  it('classifies every table mapped by the Prisma schema', () => {
+  it('classifies every table backing a model in the Prisma schema', () => {
     const known = new Set<string>(EXPECTED_PUBLIC_TABLES);
-    const unclassified = mappedTableNames().filter((table) => !known.has(table));
+    const unclassified = schemaTableNames().filter((table) => !known.has(table));
 
     expect(unclassified).toEqual([]);
   });
 });
+

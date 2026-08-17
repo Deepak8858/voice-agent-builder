@@ -34,10 +34,16 @@ CREATE INDEX IF NOT EXISTS "agent_gen_sessions_workspace_id_user_id_status_idx"
 CREATE INDEX IF NOT EXISTS "agent_gen_sessions_status_generating_at_idx"
     ON "agent_gen_sessions"("status", "generating_at");
 
+-- conname is unique per relation, not per database, so each check is scoped by
+-- conrelid. Without it, an identically named constraint on some other table
+-- would suppress creation here and the migration would report success while
+-- leaving the tenancy foreign keys missing.
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_gen_sessions_status_check'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agent_gen_sessions_status_check'
+      AND conrelid = 'public.agent_gen_sessions'::regclass
   ) THEN
     ALTER TABLE "agent_gen_sessions"
       ADD CONSTRAINT "agent_gen_sessions_status_check"
@@ -45,7 +51,9 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_gen_sessions_workspace_id_fkey'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agent_gen_sessions_workspace_id_fkey'
+      AND conrelid = 'public.agent_gen_sessions'::regclass
   ) THEN
     ALTER TABLE "agent_gen_sessions"
       ADD CONSTRAINT "agent_gen_sessions_workspace_id_fkey"
@@ -54,7 +62,9 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_gen_sessions_organization_id_fkey'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agent_gen_sessions_organization_id_fkey'
+      AND conrelid = 'public.agent_gen_sessions'::regclass
   ) THEN
     ALTER TABLE "agent_gen_sessions"
       ADD CONSTRAINT "agent_gen_sessions_organization_id_fkey"
@@ -63,7 +73,9 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_gen_sessions_user_id_fkey'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agent_gen_sessions_user_id_fkey'
+      AND conrelid = 'public.agent_gen_sessions'::regclass
   ) THEN
     ALTER TABLE "agent_gen_sessions"
       ADD CONSTRAINT "agent_gen_sessions_user_id_fkey"
@@ -72,7 +84,9 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'agent_gen_sessions_agent_id_fkey'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'agent_gen_sessions_agent_id_fkey'
+      AND conrelid = 'public.agent_gen_sessions'::regclass
   ) THEN
     ALTER TABLE "agent_gen_sessions"
       ADD CONSTRAINT "agent_gen_sessions_agent_id_fkey"
