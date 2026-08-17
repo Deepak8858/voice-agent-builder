@@ -1,35 +1,12 @@
-import { apiFetch } from '@/lib/api';
+import { Suspense } from 'react';
+import { getSessionUser } from '@/lib/api';
 import { KnowledgePanel } from '@/components/knowledge-panel';
 import { PageHeader } from '@/components/dashboard';
+import { PanelSkeleton } from '@/components/dashboard/page-skeleton';
+import { SessionErrorCard } from '@/components/dashboard/session-error-card';
 import type { SessionUser } from '@voiceforge/shared';
 
-export default async function KnowledgePage() {
-  let me: SessionUser | null = null;
-  let apiError: string | null = null;
-
-  try {
-    me = await apiFetch<SessionUser>('/auth/me');
-  } catch (err) {
-    apiError = (err as Error).message;
-  }
-
-  if (apiError || !me) {
-    return (
-      <div className="flex flex-col gap-8">
-        <PageHeader
-          eyebrow="Knowledge base"
-          title="Knowledge"
-          description={
-            <>
-              Could not load knowledge:{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
-            </>
-          }
-        />
-      </div>
-    );
-  }
-
+export default function KnowledgePage() {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
@@ -38,11 +15,29 @@ export default async function KnowledgePage() {
         description="Workspace-level knowledge sources your agents can reference in addition to their own agent-scoped sources."
       />
 
-      <KnowledgePanel
-        workspaceId={me.active_workspace_id ?? ''}
-        agentId={null}
-        title="Workspace knowledge"
-      />
+      <Suspense fallback={<PanelSkeleton />}>
+        <KnowledgeSection />
+      </Suspense>
     </div>
+  );
+}
+
+async function KnowledgeSection() {
+  let me: SessionUser | null = null;
+  let apiError: string | null = null;
+  try {
+    me = await getSessionUser();
+  } catch (err) {
+    apiError = (err as Error).message;
+  }
+
+  if (!me) return <SessionErrorCard title="Could not load knowledge" message={apiError} />;
+
+  return (
+    <KnowledgePanel
+      workspaceId={me.active_workspace_id ?? ''}
+      agentId={null}
+      title="Workspace knowledge"
+    />
   );
 }

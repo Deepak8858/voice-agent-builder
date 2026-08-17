@@ -1,7 +1,8 @@
 import 'server-only';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
-import type { ApiEnvelope } from '@voiceforge/shared';
+import { redirect } from 'next/navigation';
+import type { ApiEnvelope, SessionUser } from '@voiceforge/shared';
 import { buildApiContextHeaders } from './api-context-headers';
 import { extractSupabaseAccessToken } from './supabase/access-token';
 
@@ -86,6 +87,38 @@ async function rawApiFetch<T>(
     throw new ApiCallError(code, msg, res.status, body?.error?.details);
   }
   return body.data as T;
+}
+
+/**
+ * The session for the current request.
+ *
+ * Every dashboard page used to `await apiFetch('/auth/me')` itself, on top of
+ * the layout's own call, and only then start fetching its data — a serial
+ * chain of round trips on every navigation. `apiFetch` already dedups plain
+ * GETs through React `cache()`, so within one server render this resolves once
+ * and every later caller gets the same in-flight promise; the waterfall
+ * collapses to a single `/auth/me`.
+ *
+ * Kept as a named helper so pages express the intent ("reuse the request's
+ * session") rather than relying on an implementation detail of `apiFetch`.
+ */
+export function getSessionUser(): Promise<SessionUser> {
+  return apiFetch<SessionUser>('/auth/me');
+}
+
+/**
+ * Same, but converts an expired/absent session into the sign-in redirect.
+ * This is the server-side enforcement point for dashboard routes.
+ */
+export async function requireSessionUser(nextPath = '/dashboard'): Promise<SessionUser> {
+  try {
+    return await getSessionUser();
+  } catch (err) {
+    if (err instanceof ApiCallError && err.status === 401) {
+      redirect(`/sign-in?next=${encodeURIComponent(nextPath)}`);
+    }
+    throw err;
+  }
 }
 
 export class ApiCallError extends Error {
