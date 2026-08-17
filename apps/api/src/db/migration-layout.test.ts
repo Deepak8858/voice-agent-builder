@@ -30,7 +30,10 @@ function readSchema(): string {
 
 function mappedTableNames(): string[] {
   const schema = readSchema();
-  return [...schema.matchAll(/@@map\("([^"]+)"\)/g)].map((match) => match[1]!);
+  return [...schema.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)].map((match) => {
+    const [, modelName, body] = match;
+    return /@@map\("([^"]+)"\)/.exec(body!)?.[1] ?? modelName!;
+  });
 }
 
 function migrationSql(): string {
@@ -58,9 +61,7 @@ describe('prisma migration layout', () => {
     const sql = migrationSql();
 
     expect(sql).toMatch(/create table (if not exists )?"?agent_gen_sessions"?/i);
-    expect(sql).toMatch(
-      /alter table "?(public\.)?agent_gen_sessions"? enable row level security/i,
-    );
+    expect(sql).toMatch(/alter table "?(public\.)?agent_gen_sessions"? enable row level security/i);
   });
 });
 
