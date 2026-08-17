@@ -2,18 +2,24 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const SendMessageNode = memo(function SendMessageNode({ data }: NodeProps) {
-  const channel = (data?.channel as string) || 'sms';
-  const body = (data?.body as string) || 'Message body...';
+export const SendMessageNode = memo(function SendMessageNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('send_message');
+  const channel = data?.channel === 'email' ? 'Email' : 'SMS';
+  const body = typeof data?.body === 'string' && data.body.trim() ? data.body : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-teal-400 bg-teal-50 px-4 py-3 shadow-sm dark:bg-teal-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-teal-600">
-        Send {channel}
-      </p>
-      <p className="line-clamp-3 text-sm text-teal-900 dark:text-teal-100">{body}</p>
-      <Handle type="target" position={Position.Top} className="!bg-teal-400" />
-      <Handle type="source" position={Position.Bottom} className="!bg-teal-400" />
-    </div>
+    <NodeCard
+      icon={meta.icon}
+      title={`Send ${channel}`}
+      theme={meta.theme}
+      preview={body || 'No message yet'}
+      incomplete={!body}
+      selected={selected}
+    >
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+      <Handle type="source" position={Position.Bottom} className={meta.theme.handle} />
+    </NodeCard>
   );
 });

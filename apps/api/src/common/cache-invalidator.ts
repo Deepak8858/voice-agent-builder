@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { CacheService } from '../cache/cache.service';
+import { ResponseCacheService } from '../cache/response-cache.service';
 
 /**
  * Centralized cache invalidation service. Provides semantic methods for
@@ -7,10 +8,19 @@ import { CacheService } from '../cache/cache.service';
  */
 @Injectable()
 export class CacheInvalidator {
-  constructor(private readonly cache: CacheService) {}
+  constructor(
+    private readonly cache: CacheService,
+    // Optional so the many unit tests that construct services with a bare
+    // invalidator stub keep working, and so a missing provider degrades to
+    // "entries expire on their TTL" rather than a boot failure.
+    @Optional() private readonly responseCache?: ResponseCacheService,
+  ) {}
 
-  invalidateAgentList(workspaceId: string) {
-    return this.cache.del(`agents:list:${workspaceId}`);
+  async invalidateAgentList(workspaceId: string) {
+    await this.cache.del(`agents:list:${workspaceId}`);
+    // Agent mutations change what every member of the workspace should see,
+    // so bump the whole workspace's response-cache generation as well.
+    await this.responseCache?.invalidateWorkspace(workspaceId);
   }
 
   invalidateWorkspaceList(userId: string) {

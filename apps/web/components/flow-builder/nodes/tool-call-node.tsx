@@ -2,15 +2,24 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const ToolCallNode = memo(function ToolCallNode({ data }: NodeProps) {
-  const toolName = (data?.tool_name as string) ?? 'tool...';
+export const ToolCallNode = memo(function ToolCallNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('tool_call');
+  const toolName = typeof data?.tool_name === 'string' && data.tool_name.trim() ? data.tool_name : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-orange-400 bg-orange-50 px-4 py-3 shadow-sm dark:bg-orange-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-orange-500">Tool Call</p>
-      <p className="font-mono text-sm text-orange-900 dark:text-orange-100">{toolName}</p>
-      <Handle type="target" position={Position.Top} className="!bg-orange-400" />
-      <Handle type="source" position={Position.Bottom} className="!bg-orange-400" />
-    </div>
+    <NodeCard
+      icon={meta.icon}
+      title="Tool Call"
+      theme={meta.theme}
+      preview={toolName || 'No tool selected'}
+      previewMono={Boolean(toolName)}
+      incomplete={!toolName}
+      selected={selected}
+    >
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+      <Handle type="source" position={Position.Bottom} className={meta.theme.handle} />
+    </NodeCard>
   );
 });

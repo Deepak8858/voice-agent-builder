@@ -1,9 +1,16 @@
+import dagre from '@dagrejs/dagre';
 import type { Edge, Node, XYPosition } from '@xyflow/react';
 import type { AgentSpec } from '@voiceforge/shared';
 
 const NODE_X = 120;
 const NODE_Y_START = 40;
 const NODE_Y_GAP = 160;
+
+/** Fallback node dimensions used when React Flow has not measured a node yet. */
+export const LAYOUT_NODE_WIDTH = 230;
+export const LAYOUT_NODE_HEIGHT = 100;
+const LAYOUT_NODE_SEPARATION = 60;
+const LAYOUT_RANK_SEPARATION = 70;
 
 export type AgentFlow = NonNullable<AgentSpec['flow']>;
 
@@ -93,6 +100,169 @@ export function createFlowNode(
   };
 }
 
+/**
+ * Lays the graph out top-to-bottom with dagre. Returns new node objects with
+ * updated positions; edges are unchanged.
+ */
+export function autoLayoutNodes(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return nodes;
+
+  const graph = new dagre.graphlib.Graph({ multigraph: true });
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({
+    rankdir: 'TB',
+    nodesep: LAYOUT_NODE_SEPARATION,
+    ranksep: LAYOUT_RANK_SEPARATION,
+  });
+
+  for (const node of nodes) {
+    graph.setNode(node.id, {
+      width: node.measured?.width ?? LAYOUT_NODE_WIDTH,
+      height: node.measured?.height ?? LAYOUT_NODE_HEIGHT,
+    });
+  }
+  for (const edge of edges) {
+    if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
+      graph.setEdge(edge.source, edge.target, {}, edge.id);
+    }
+  }
+
+  dagre.layout(graph);
+
+  return nodes.map((node) => {
+    const laidOut = graph.node(node.id);
+    if (!laidOut) return node;
+    const width = node.measured?.width ?? LAYOUT_NODE_WIDTH;
+    const height = node.measured?.height ?? LAYOUT_NODE_HEIGHT;
+    // dagre positions are node centers; React Flow uses top-left corners.
+    return {
+      ...node,
+      position: { x: laidOut.x - width / 2, y: laidOut.y - height / 2 },
+    };
+  });
+}
+
+/**
+ * True when any two nodes' estimated bounding boxes intersect. Used to detect
+ * AI-generated flows that render as an overlapping vertical stack so the
+ * builder can auto-tidy them on load.
+ */
+export function nodesOverlap(nodes: Node[]): boolean {
+  for (let i = 0; i < nodes.length; i += 1) {
+    const a = nodes[i];
+    if (!a) continue;
+    const aWidth = a.measured?.width ?? LAYOUT_NODE_WIDTH;
+    const aHeight = a.measured?.height ?? LAYOUT_NODE_HEIGHT;
+    for (let j = i + 1; j < nodes.length; j += 1) {
+      const b = nodes[j];
+      if (!b) continue;
+      const bWidth = b.measured?.width ?? LAYOUT_NODE_WIDTH;
+      const bHeight = b.measured?.height ?? LAYOUT_NODE_HEIGHT;
+      const separated =
+        a.position.x + aWidth <= b.position.x ||
+        b.position.x + bWidth <= a.position.x ||
+        a.position.y + aHeight <= b.position.y ||
+        b.position.y + bHeight <= a.position.y;
+      if (!separated) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Client-side per-node configuration checks (UX only — the server-side flow
+ * validation remains the authority via the PUT /flow endpoint).
+ */
+export interface NodeConfigIssue {
+  field: string;
+  message: string;
+}
+
+export function validateNodeConfig(node: Node): NodeConfigIssue[] {
+  const data = asRecord(node.data);
+  const issues: NodeConfigIssue[] = [];
+  const addIssue = (field: string, message: string) => issues.push({ field, message });
+  const type = normalizeVisualNodeType(node.type ?? '');
+
+  switch (type) {
+    case 'speak':
+      if (!hasText(data['text'])) addIssue('text', 'Add the text the agent should speak.');
+      break;
+    case 'ask_question':
+      if (!hasText(data['question'])) addIssue('question', 'Add the question the agent should ask.');
+      if (!hasText(data['capture_field'])) {
+        addIssue('capture_field', 'Set a capture field so the answer is stored.');
+      }
+      break;
+    case 'condition':
+      if (!hasText(data['expression'])) addIssue('expression', 'Add a condition expression.');
+      break;
+    case 'tool_call':
+      if (!hasText(data['tool_name'])) addIssue('tool_name', 'Choose the tool to call.');
+      break;
+    case 'send_message': {
+      const channel = data['channel'];
+      if (channel !== 'sms' && channel !== 'email') {
+        addIssue('channel', 'Channel must be sms or email.');
+      }
+      if (!hasText(data['body'])) addIssue('body', 'Add the message body to send.');
+      break;
+    }
+    case 'transfer': {
+      const phone = data['target_phone'];
+      if (typeof phone === 'string' && phone.trim().length > 0 && !isPhoneLike(phone)) {
+        addIssue('target_phone', 'Transfer number should look like a phone number, e.g. +14155551212.');
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return issues;
+}
+
+/** Aggregates graph-level and per-node issues for the whole canvas. */
+export function collectFlowIssues(nodes: Node[], edges: Edge[]): string[] {
+  const flow = convertReactFlowToAgentFlow(nodes, edges);
+  const issues = [...validateAgentFlow(flow)];
+  for (const node of nodes) {
+    for (const issue of validateNodeConfig(node)) {
+      issues.push(`${nodeDisplayName(node)}: ${issue.message}`);
+    }
+  }
+  return issues;
+}
+
+/** Creates a copy of a node with a fresh id and a slight position offset. */
+export function duplicateFlowNode(node: Node, id = freshNodeId(node.type ?? 'node')): Node {
+  return {
+    ...node,
+    id,
+    position: { x: node.position.x + 48, y: node.position.y + 48 },
+    data: { ...asRecord(node.data) },
+    selected: false,
+  };
+}
+
+export function freshNodeId(type: string): string {
+  return `${type}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function nodeDisplayName(node: Node): string {
+  const label = optionalString(asRecord(node.data)['label']);
+  const type = (node.type ?? 'node').replace(/_/g, ' ');
+  return label ? `${label} (${type})` : `${type} "${node.id}"`;
+}
+
+function hasText(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isPhoneLike(value: string): boolean {
+  return /^\+?[0-9\s().-]{7,20}$/.test(value.trim());
+}
+
 export function updateNodeData(
   nodes: Node[],
   nodeId: string,
@@ -116,12 +286,12 @@ export function convertAgentFlowToReactFlow(flow: AgentFlow): { nodes: Node[]; e
     nodeMap.set(node.id, {
       id: node.id,
       type: normalizeVisualNodeType(node.type),
-      position: { x: NODE_X, y: NODE_Y_START + index * NODE_Y_GAP },
+      position: node.position ?? { x: NODE_X, y: NODE_Y_START + index * NODE_Y_GAP },
       data: {
         label: node.type === 'start' ? 'Start' : node.type === 'end' ? 'End' : '',
         ...Object.fromEntries(
           Object.entries(node).filter(
-            ([key]) => !['id', 'type', 'next', 'on_true', 'on_false'].includes(key),
+            ([key]) => !['id', 'type', 'next', 'on_true', 'on_false', 'position'].includes(key),
           ),
         ),
       },
@@ -184,8 +354,12 @@ export function validateAgentFlow(flow: AgentFlow): string[] {
   if (flow.nodes.length < 2) {
     issues.push('Flow must include at least two nodes.');
   }
+  const startCount = flow.nodes.filter((node) => node.type === 'start').length;
+  if (startCount !== 1) {
+    issues.push('Flow must include exactly one start node.');
+  }
   if (!ids.has(flow.start_node_id)) {
-    issues.push(`Start node "${flow.start_node_id}" is missing from the flow.`);
+    issues.push(`Start node \"${flow.start_node_id}\" is missing from the flow.`);
   }
   if (!flow.nodes.some((node) => node.type === 'end')) {
     issues.push('Flow must include an end node.');
@@ -212,6 +386,7 @@ function toAgentFlowNode(
   const base = {
     id: node.id,
     ...(label ? { label } : {}),
+    position: node.position,
   };
 
   switch (normalizeVisualNodeType(node.type ?? 'end')) {

@@ -18,7 +18,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { RichTextEditor } from '@/components/ui/rich-text-editor';
+import { LazyRichTextEditor } from '@/components/ui/lazy-rich-text-editor';
 import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { BookOpen, Search, Trash2, Upload, FileText } from 'lucide-react';
@@ -54,9 +54,17 @@ export function KnowledgePanel({
     ? `/workspaces/${workspaceId}/agents/${agentId}/knowledge-sources`
     : `/workspaces/${workspaceId}/knowledge-sources?scope=workspace`;
 
+  // Retain placeholder data only while refetching the exact same tenant and
+  // agent scope. A scope change must never display the previous scope's rows.
   const listQuery = useQuery({
     queryKey: listKey,
     queryFn: () => call<{ items: KnowledgeSourceSummary[] }>(listUrl),
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      return previousKey?.[1] === workspaceId && previousKey?.[2] === (agentId ?? 'workspace')
+        ? previousData
+        : undefined;
+    },
   });
 
   const createMutation = useMutation({
@@ -225,7 +233,7 @@ export function KnowledgePanel({
             {sourceType === 'text' ? (
               <div className="sm:col-span-2">
                 <Label>Content</Label>
-                <RichTextEditor
+                <LazyRichTextEditor
                   value={content}
                   onChange={setContent}
                   placeholder="Paste FAQ, policies, hours, pricing..."
