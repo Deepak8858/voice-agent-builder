@@ -3,204 +3,275 @@
 import { useCallback } from 'react';
 import type { Node } from '@xyflow/react';
 import type { ToolSummary } from '@voiceforge/shared';
+import { Copy, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
-import { Loader2, Save } from 'lucide-react';
+import { validateNodeConfig } from './flow-builder-model';
+import { getNodeMeta } from './nodes/node-meta';
 
 interface NodeConfigPanelProps {
   node: Node | null;
   availableTools?: ToolSummary[];
   onChange: (nodeId: string, data: Record<string, unknown>) => void;
-  onSave: () => void;
-  isSaving?: boolean;
+  onDelete: (nodeId: string) => void;
+  onDuplicate: (nodeId: string) => void;
 }
+
+interface FieldProps {
+  label: string;
+  helper: string;
+  error?: string;
+  children: React.ReactNode;
+}
+
+function Field({ label, helper, error, children }: FieldProps) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-semibold text-foreground">{label}</span>
+      {children}
+      <span className="text-[11px] leading-relaxed text-muted-foreground">{helper}</span>
+      {error ? <span className="text-[11px] font-medium text-destructive">{error}</span> : null}
+    </label>
+  );
+}
+
+const selectClassName =
+  'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2';
 
 export function NodeConfigPanel({
   node,
   availableTools = [],
   onChange,
-  onSave,
-  isSaving = false,
+  onDelete,
+  onDuplicate,
 }: NodeConfigPanelProps) {
   const handleChange = useCallback(
     (field: string, value: unknown) => {
-      if (!node) return;
-      onChange(node.id, { [field]: value });
+      if (node) onChange(node.id, { [field]: value });
     },
     [node, onChange],
   );
 
   if (!node) {
     return (
-      <div className="flex h-full flex-col p-4">
-        <p className="text-sm text-muted-foreground">Select a node to configure it.</p>
+      <div className="ph-no-capture flex h-full flex-col items-center justify-center p-8 text-center">
+        <p className="text-sm font-medium text-foreground">No node selected</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Select a node on the canvas to inspect and configure it.
+        </p>
       </div>
     );
   }
 
+  const issues = validateNodeConfig(node);
+  const meta = getNodeMeta(node.type);
+  const commonError = (prefix: string) => issues.find((issue) => issue.toLowerCase().includes(prefix));
+
   return (
-    /*
-     * ph-no-capture: node config holds spoken scripts, transfer phone numbers,
-     * message bodies and tool configuration.
-     */
-    <div className="ph-no-capture flex h-full flex-col p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold capitalize text-foreground">
-          {node.type?.replace('_', ' ')}
-        </h3>
-        <Button size="sm" onClick={onSave} disabled={isSaving} className="gap-1">
-          {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-          Save
-        </Button>
+    /* ph-no-capture: this panel can contain spoken scripts, phone numbers,
+       message bodies, and tool configuration. */
+    <div className="ph-no-capture flex h-full flex-col">
+      <div className="border-b border-border px-5 py-4">
+        <div className="flex items-center gap-2">
+          <span className={`flex h-7 w-7 items-center justify-center rounded-md ${meta.palette}`}>
+            <meta.icon className="h-4 w-4" aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold text-foreground">{meta.label}</h2>
+            <p className="text-[11px] text-muted-foreground">{meta.description}</p>
+          </div>
+        </div>
+        {issues.length > 0 ? (
+          <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+            <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+              {issues.length} field{issues.length === 1 ? '' : 's'} need attention
+            </p>
+          </div>
+        ) : null}
       </div>
 
-      <div className="flex flex-col gap-4">
-        {node.type === 'speak' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Text to speak</span>
-            <Textarea
-              rows={4}
-              value={(node.data?.text as string) ?? ''}
-              onChange={(e) => handleChange('text', e.target.value)}
-              placeholder="What should the agent say?"
-            />
-          </label>
-        )}
-
-        {node.type === 'ask_question' && (
-          <>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Question</span>
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="flex flex-col gap-5">
+          {node.type === 'speak' ? (
+            <Field
+              label="Text to speak"
+              helper="The exact words the agent says at this step."
+              error={commonError('text')}
+            >
               <Textarea
-                rows={3}
-                value={(node.data?.question as string) ?? ''}
-                onChange={(e) => handleChange('question', e.target.value)}
-                placeholder="What should the agent ask?"
+                rows={5}
+                value={typeof node.data?.text === 'string' ? node.data.text : ''}
+                onChange={(event) => handleChange('text', event.target.value)}
+                placeholder="What should the agent say?"
               />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Capture field name</span>
+            </Field>
+          ) : null}
+
+          {node.type === 'ask_question' ? (
+            <>
+              <Field
+                label="Question"
+                helper="Ask one clear question at a time."
+                error={commonError('question')}
+              >
+                <Textarea
+                  rows={4}
+                  value={typeof node.data?.question === 'string' ? node.data.question : ''}
+                  onChange={(event) => handleChange('question', event.target.value)}
+                  placeholder="What should the agent ask?"
+                />
+              </Field>
+              <Field
+                label="Capture field"
+                helper="Variable name used to store the caller's answer, such as full_name."
+                error={commonError('capture')}
+              >
+                <Input
+                  value={typeof node.data?.capture_field === 'string' ? node.data.capture_field : ''}
+                  onChange={(event) => handleChange('capture_field', event.target.value)}
+                  placeholder="full_name"
+                  className="font-mono text-sm"
+                />
+              </Field>
+            </>
+          ) : null}
+
+          {node.type === 'condition' ? (
+            <Field
+              label="Expression"
+              helper="Routes the call through the true or false connection."
+              error={commonError('expression')}
+            >
               <Input
-                type="text"
-                value={(node.data?.capture_field as string) ?? ''}
-                onChange={(e) => handleChange('capture_field', e.target.value)}
-                placeholder="e.g. full_name"
+                value={typeof node.data?.expression === 'string' ? node.data.expression : ''}
+                onChange={(event) => handleChange('expression', event.target.value)}
+                placeholder="intent === 'urgent'"
+                className="font-mono text-sm"
               />
-            </label>
-          </>
-        )}
+            </Field>
+          ) : null}
 
-        {node.type === 'condition' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Expression</span>
-            <Input
-              type="text"
-              className="font-mono text-xs"
-              value={(node.data?.expression as string) ?? ''}
-              onChange={(e) => handleChange('expression', e.target.value)}
-              placeholder="e.g. full_name contains 'urgent'"
-            />
-          </label>
-        )}
+          {node.type === 'tool_call' ? (
+            <Field
+              label="Tool"
+              helper="Choose an enabled workspace tool to run at this step."
+              error={commonError('tool')}
+            >
+              <select
+                className={selectClassName}
+                value={typeof node.data?.tool_name === 'string' ? node.data.tool_name : ''}
+                onChange={(event) => handleChange('tool_name', event.target.value)}
+              >
+                <option value="">Select a tool</option>
+                {availableTools.map((tool) => (
+                  <option key={tool.id} value={tool.name}>
+                    {tool.name} ({tool.tool_type})
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : null}
 
-        {node.type === 'tool_call' && (
-          <div className="flex flex-col gap-3">
-            {availableTools.length > 0 ? (
-              <label className="flex flex-col gap-1.5">
-                <span className="text-xs font-medium text-muted-foreground">Created tool</span>
+          {node.type === 'knowledge_lookup' ? (
+            <Field
+              label="Query field"
+              helper="Optional variable to use as the search query; leave empty for the latest caller message."
+            >
+              <Input
+                value={typeof node.data?.query_field === 'string' ? node.data.query_field : ''}
+                onChange={(event) => handleChange('query_field', event.target.value)}
+                placeholder="caller_question"
+                className="font-mono text-sm"
+              />
+            </Field>
+          ) : null}
+
+          {node.type === 'transfer' ? (
+            <Field
+              label="Transfer phone number"
+              helper="Use E.164 format. Leave empty to use the default human handoff destination."
+              error={commonError('number')}
+            >
+              <Input
+                value={typeof node.data?.target_phone === 'string' ? node.data.target_phone : ''}
+                onChange={(event) => handleChange('target_phone', event.target.value)}
+                placeholder="+14155551212"
+                inputMode="tel"
+              />
+            </Field>
+          ) : null}
+
+          {node.type === 'send_message' ? (
+            <>
+              <Field
+                label="Channel"
+                helper="Choose how this message is delivered."
+                error={commonError('channel')}
+              >
                 <select
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={(node.data?.tool_name as string) ?? ''}
-                  onChange={(e) => handleChange('tool_name', e.target.value)}
+                  className={selectClassName}
+                  value={node.data?.channel === 'email' ? 'email' : 'sms'}
+                  onChange={(event) => handleChange('channel', event.target.value)}
                 >
-                  <option value="">Select a tool</option>
-                  {availableTools.map((tool) => (
-                    <option key={tool.id} value={tool.name}>
-                      {tool.name} ({tool.tool_type})
-                    </option>
-                  ))}
+                  <option value="sms">SMS</option>
+                  <option value="email">Email</option>
                 </select>
-              </label>
-            ) : null}
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Tool name</span>
-              <Input
-                type="text"
-                className="font-mono text-xs"
-                value={(node.data?.tool_name as string) ?? ''}
-                onChange={(e) => handleChange('tool_name', e.target.value)}
-                placeholder="e.g. google_calendar_booking"
-              />
-            </label>
-          </div>
-        )}
+              </Field>
+              <Field
+                label="Message body"
+                helper="The plain-text message sent to the contact."
+                error={commonError('body')}
+              >
+                <Textarea
+                  rows={5}
+                  value={typeof node.data?.body === 'string' ? node.data.body : ''}
+                  onChange={(event) => handleChange('body', event.target.value)}
+                  placeholder="Message to send"
+                />
+              </Field>
+            </>
+          ) : null}
 
-        {node.type === 'knowledge_lookup' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Query field</span>
-            <Input
-              type="text"
-              className="font-mono text-xs"
-              value={(node.data?.query_field as string) ?? ''}
-              onChange={(e) => handleChange('query_field', e.target.value)}
-              placeholder="e.g. caller_question"
-            />
-          </label>
-        )}
-
-        {node.type === 'transfer' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Transfer to (phone)</span>
-            <Input
-              type="text"
-              value={(node.data?.target_phone as string) ?? ''}
-              onChange={(e) => handleChange('target_phone', e.target.value)}
-              placeholder="+14155551212 or leave empty for human agent"
-            />
-          </label>
-        )}
-
-        {node.type === 'send_message' && (
-          <>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Channel</span>
-              <Input
-                type="text"
-                value={(node.data?.channel as string) ?? 'sms'}
-                onChange={(e) => handleChange('channel', e.target.value)}
-                placeholder="sms or email"
-              />
-            </label>
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Message body</span>
+          {node.type === 'fallback' ? (
+            <Field
+              label="Fallback message"
+              helper="Optional safe response when the agent cannot confidently continue."
+            >
               <Textarea
                 rows={4}
-                value={(node.data?.body as string) ?? ''}
-                onChange={(e) => handleChange('body', e.target.value)}
-                placeholder="Message to send"
+                value={typeof node.data?.message === 'string' ? node.data.message : ''}
+                onChange={(event) => handleChange('message', event.target.value)}
+                placeholder="Let me connect you with someone who can help."
               />
-            </label>
-          </>
-        )}
+            </Field>
+          ) : null}
 
-        {node.type === 'fallback' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">Fallback message</span>
-            <Textarea
-              rows={3}
-              value={(node.data?.message as string) ?? ''}
-              onChange={(e) => handleChange('message', e.target.value)}
-              placeholder="What should the agent say when it is unsure?"
-            />
-          </label>
-        )}
+          {(node.type === 'start' || node.type === 'end') ? (
+            <p className="rounded-md border border-dashed border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
+              This node has no configurable fields.
+            </p>
+          ) : null}
+        </div>
+      </div>
 
-        {(node.type === 'start' || node.type === 'end') && (
-          <p className="text-xs text-muted-foreground">
-            No configuration needed for {node.type} nodes.
-          </p>
-        )}
+      <div className="grid grid-cols-2 gap-2 border-t border-border p-4">
+        <Button type="button" variant="outline" size="sm" onClick={() => onDuplicate(node.id)}>
+          <Copy className="mr-1.5 h-3.5 w-3.5" />
+          Duplicate
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="text-destructive hover:text-destructive"
+          disabled={node.type === 'start'}
+          title={node.type === 'start' ? 'The start node cannot be deleted' : 'Delete node'}
+          onClick={() => onDelete(node.id)}
+        >
+          <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+          Delete
+        </Button>
       </div>
     </div>
   );

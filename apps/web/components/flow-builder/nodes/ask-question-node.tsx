@@ -2,19 +2,28 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const AskQuestionNode = memo(function AskQuestionNode({ data }: NodeProps) {
-  const question = (data?.question as string) ?? 'Ask a question...';
-  const captureField = (data?.capture_field as string) ?? '';
+export const AskQuestionNode = memo(function AskQuestionNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('ask_question');
+  const question = typeof data?.question === 'string' && data.question.trim() ? data.question : '';
+  const captureField =
+    typeof data?.capture_field === 'string' && data.capture_field.trim() ? data.capture_field : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-violet-400 bg-violet-50 px-4 py-3 shadow-sm dark:bg-violet-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-violet-500">Ask Question</p>
-      <p className="mb-1 line-clamp-2 text-sm text-violet-900 dark:text-violet-100">{question}</p>
+    <NodeCard
+      icon={meta.icon}
+      title="Ask Question"
+      theme={meta.theme}
+      preview={question || 'No question yet'}
+      incomplete={!question || !captureField}
+      selected={selected}
+    >
       {captureField ? (
-        <p className="text-xs text-violet-500">Captures: {captureField}</p>
+        <p className="mt-1 truncate text-xs text-violet-500">Captures: {captureField}</p>
       ) : null}
-      <Handle type="target" position={Position.Top} className="!bg-violet-400" />
-      <Handle type="source" position={Position.Bottom} className="!bg-violet-400" />
-    </div>
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+      <Handle type="source" position={Position.Bottom} className={meta.theme.handle} />
+    </NodeCard>
   );
 });

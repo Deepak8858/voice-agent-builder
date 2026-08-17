@@ -1,6 +1,7 @@
 'use client';
 
 import type { NodeTypes } from '@xyflow/react';
+import { Plus } from 'lucide-react';
 import { StartNode } from './nodes/start-node';
 import { SpeakNode } from './nodes/speak-node';
 import { AskQuestionNode } from './nodes/ask-question-node';
@@ -11,19 +12,31 @@ import { SendMessageNode } from './nodes/send-message-node';
 import { ToolCallNode } from './nodes/tool-call-node';
 import { TransferNode } from './nodes/transfer-node';
 import { EndNode } from './nodes/end-node';
+import { NODE_META } from './nodes/node-meta';
 
-export const NODE_PALETTE = [
-  { type: 'start', label: 'Start', icon: '▶', color: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' },
-  { type: 'speak', label: 'LLM Speak', icon: '💬', color: 'bg-blue-500/10 text-blue-600 border-blue-500/20' },
-  { type: 'ask_question', label: 'Ask Question', icon: '❓', color: 'bg-violet-500/10 text-violet-600 border-violet-500/20' },
-  { type: 'condition', label: 'Condition', icon: '🔀', color: 'bg-amber-500/10 text-amber-600 border-amber-500/20' },
-  { type: 'knowledge_lookup', label: 'Knowledge', icon: '⌕', color: 'bg-cyan-500/10 text-cyan-700 border-cyan-500/20' },
-  { type: 'tool_call', label: 'Tool Call', icon: '🔧', color: 'bg-orange-500/10 text-orange-600 border-orange-500/20' },
-  { type: 'transfer', label: 'Transfer', icon: '📞', color: 'bg-red-500/10 text-red-600 border-red-500/20' },
-  { type: 'send_message', label: 'Send Message', icon: '✉', color: 'bg-teal-500/10 text-teal-700 border-teal-500/20' },
-  { type: 'fallback', label: 'Fallback', icon: '↩', color: 'bg-slate-500/10 text-slate-600 border-slate-500/20' },
-  { type: 'end', label: 'End', icon: '■', color: 'bg-muted text-muted-foreground border-border' },
+/** Node types available in the palette (start is placed once automatically). */
+const PALETTE_TYPES = [
+  'speak',
+  'ask_question',
+  'condition',
+  'knowledge_lookup',
+  'tool_call',
+  'transfer',
+  'send_message',
+  'fallback',
+  'end',
 ] as const;
+
+export const NODE_PALETTE = PALETTE_TYPES.map((type) => {
+  const meta = NODE_META[type];
+  return {
+    type,
+    label: meta?.label ?? type,
+    description: meta?.description ?? '',
+    icon: meta?.icon,
+    color: meta?.palette ?? '',
+  };
+});
 
 export const NODE_TYPES: NodeTypes = {
   start: StartNode,
@@ -40,24 +53,36 @@ export const NODE_TYPES: NodeTypes = {
 
 interface NodePaletteProps {
   onDragStart: (event: React.DragEvent, nodeType: string) => void;
+  /** Click-to-add: appends the node below the current selection and connects it. */
+  onAddNode?: (nodeType: string) => void;
+  compact?: boolean;
 }
 
-export function NodePalette({ onDragStart }: NodePaletteProps) {
+export function NodePalette({ onDragStart, onAddNode, compact = false }: NodePaletteProps) {
   return (
-    <div className="flex flex-col gap-2 p-4">
-      <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
-        Node Types
+    <div className={compact ? 'flex flex-col gap-1.5 p-3' : 'flex flex-col gap-2 p-4'}>
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+        Add nodes
       </p>
-      {NODE_PALETTE.map(({ type, label, icon, color }) => (
-        <div
+      <p className="mb-2 text-[11px] leading-snug text-sidebar-foreground/50">
+        Click to add after the selected node, or drag onto the canvas.
+      </p>
+      {NODE_PALETTE.map(({ type, label, icon: Icon, color }) => (
+        <button
           key={type}
+          type="button"
           draggable
           onDragStart={(e) => onDragStart(e, type)}
-          className={`flex cursor-grab items-center gap-3 rounded-lg border px-3 py-2.5 text-sm font-medium transition-all hover:opacity-80 active:cursor-grabbing ${color}`}
+          onClick={() => onAddNode?.(type)}
+          title={`Add ${label}`}
+          className={`group flex w-full cursor-grab items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left text-sm font-medium transition-all hover:opacity-80 active:cursor-grabbing ${color}`}
         >
-          <span className="text-base">{icon}</span>
-          <span>{label}</span>
-        </div>
+          {Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden /> : null}
+          <span className="min-w-0 flex-1 truncate">{label}</span>
+          {onAddNode ? (
+            <Plus className="h-3.5 w-3.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-70" aria-hidden />
+          ) : null}
+        </button>
       ))}
     </div>
   );
