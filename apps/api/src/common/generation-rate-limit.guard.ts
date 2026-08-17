@@ -41,7 +41,10 @@ export class GenerationRateLimitGuard implements CanActivate {
       ((req.params ?? {}) as Record<string, string | undefined>).workspaceId ??
       user.active_workspace_id ??
       'global';
-    const key = `vf:v1:ratelimit:gen:${workspaceId}:${user.id}`;
+    const routePath = (req.route as { path?: unknown } | undefined)?.path;
+    const scope =
+      typeof routePath === 'string' && routePath.endsWith('/finalize') ? 'finalize' : 'gen';
+    const key = `vf:v1:ratelimit:${scope}:${workspaceId}:${user.id}`;
     const count = await this.cache.incr(key, this.windowSec);
 
     if (count > this.max) {

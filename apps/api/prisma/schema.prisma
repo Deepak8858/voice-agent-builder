@@ -265,6 +265,7 @@ model AgentGenSession {
   userId         String   @map("user_id") @db.Uuid
   status         String   @default("awaiting_user") // awaiting_user | generating | finalizing | completed | failed
   messages       Json     @default("[]") // [{role: 'user'|'assistant', content, at}]
+  templateSlug   String?  @map("template_slug")
   currentSpec    Json?    @map("current_spec")
   specValid      Boolean  @default(false) @map("spec_valid")
   agentId        String?  @map("agent_id") @db.Uuid // set on finalize

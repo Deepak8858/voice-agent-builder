@@ -32,6 +32,7 @@ function sessionRow(overrides: Record<string, unknown> = {}) {
     userId: USER,
     status: 'awaiting_user',
     messages: [] as unknown,
+    templateSlug: null as string | null,
     currentSpec: null as unknown,
     specValid: false,
     agentId: null as string | null,
@@ -143,6 +144,7 @@ describe('AgentGenService.sendMessage', () => {
     expect(update.data.status).toBe('generating');
     expect(update.data.generatingAt).toBeInstanceOf(Date);
     expect(update.data.lastError).toBeNull();
+    expect(update.data.templateSlug).toBe('ai-receptionist');
     const messages = update.data.messages as Array<{ role: string; content: string }>;
     expect(messages).toHaveLength(2);
     expect(messages[1]).toMatchObject({ role: 'user' });
@@ -254,7 +256,7 @@ describe('AgentGenService.retry', () => {
   it('re-enqueues a failed session without appending a new message', async () => {
     const history = [{ role: 'user', content: 'build it', at: '2026-01-01T00:00:00.000Z' }];
     mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
-      sessionRow({ status: 'failed', messages: history }),
+      sessionRow({ status: 'failed', messages: history, templateSlug: 'ai-receptionist' }),
     );
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
       sessionRow({ status: 'generating', generatingAt: new Date(), messages: history }),
@@ -269,7 +271,7 @@ describe('AgentGenService.retry', () => {
     expect(claim.data).not.toHaveProperty('messages');
     expect(mocks.queueHandle.add).toHaveBeenCalledWith(
       AGENT_GEN_JOB,
-      { sessionId: SESSION_ID, workspaceId: WS },
+      { sessionId: SESSION_ID, workspaceId: WS, template_slug: 'ai-receptionist' },
       expect.objectContaining({ attempts: AGENT_GEN_JOB_ATTEMPTS }),
     );
   });
@@ -358,6 +360,24 @@ describe('AgentGenService.processGeneration', () => {
 
     expect(mocks.llm.chatGenerate).toHaveBeenCalledWith(
       expect.objectContaining({ currentSpec: VALID_SPEC }),
+    );
+  });
+
+  it('drops malformed persisted messages before sending history to the model', async () => {
+    const valid = { role: 'user', content: 'build it', at: '2026-01-01T00:00:00.000Z' };
+    mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
+      sessionRow({
+        status: 'generating',
+        generatingAt: new Date(),
+        messages: [valid, { role: 'assistant', content: 'bad timestamp', at: 'yesterday' }],
+      }),
+    );
+    mocks.llm.chatGenerate.mockResolvedValue({ assistant_message: 'Done.', spec: VALID_SPEC });
+
+    await mocks.service.processGeneration(payload, true);
+
+    expect(mocks.llm.chatGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ messages: [valid] }),
     );
   });
 

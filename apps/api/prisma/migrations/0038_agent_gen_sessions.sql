@@ -11,6 +11,7 @@ CREATE TABLE agent_gen_sessions (
   status VARCHAR(20) NOT NULL DEFAULT 'awaiting_user'
     CHECK (status IN ('awaiting_user', 'generating', 'finalizing', 'completed', 'failed')),
   messages JSONB NOT NULL DEFAULT '[]',
+  template_slug VARCHAR(120),
   current_spec JSONB,
   spec_valid BOOLEAN NOT NULL DEFAULT false,
   agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
