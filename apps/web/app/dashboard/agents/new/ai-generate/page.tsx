@@ -2,20 +2,22 @@
 
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import type {
-  AgentGenSession,
-  AgentSummary,
-  KnowledgeSourceSummary,
-  SendGenMessageDto,
-  SessionUser,
+import {
+  AgentGenSessionSchema,
+  GEN_PROMPT_MAX_LENGTH,
+  type AgentGenSession,
+  type AgentSummary,
+  type KnowledgeSourceSummary,
+  type SendGenMessageDto,
+  type SessionUser,
 } from '@voiceforge/shared';
 import {
   Bot,
@@ -47,7 +49,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useApi } from '@/lib/use-api';
 
-const MAX_MESSAGE_LENGTH = 4000;
+const MAX_KNOWLEDGE_SOURCES = 20;
 const CRM_PROVIDERS = ['pipedrive', 'hubspot', 'salesforce', 'generic_webhook'] as const;
 type CrmProvider = (typeof CRM_PROVIDERS)[number];
 type CallDirection = 'inbound' | 'outbound' | 'both';
@@ -68,16 +70,30 @@ interface ContextDraft {
   knowledgeSourceIds: string[];
 }
 
+// An empty timezone means "use the browser timezone", which is only resolved on
+// the client so server and client markup match during hydration.
 const DEFAULT_CONTEXT: ContextDraft = {
   templateSlug: '',
   businessName: '',
-  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  timezone: '',
   callDirection: 'inbound',
   crmProviders: [],
   sttModel: 'nova-3',
   ttsVoice: 'aura-2-en-us',
   knowledgeSourceIds: [],
 };
+
+const subscribeToNothing = () => () => {};
+const getBrowserTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+const getServerTimezone = () => 'UTC';
+
+interface SpecEdit {
+  key: string | null;
+  spec: unknown;
+  valid: boolean;
+}
+
+const NO_SPEC_EDIT: SpecEdit = { key: null, spec: null, valid: true };
 
 export default function AiGenerateAgentPage() {
   const router = useRouter();
@@ -87,9 +103,14 @@ export default function AiGenerateAgentPage() {
   const [context, setContext] = useState<ContextDraft>(DEFAULT_CONTEXT);
   const [contextOpen, setContextOpen] = useState(true);
   const [createdSessionId, setCreatedSessionId] = useState<string | null>(null);
-  const [editedSpec, setEditedSpec] = useState<unknown>(null);
-  const [editedSpecValid, setEditedSpecValid] = useState(true);
+  const [specEdit, setSpecEdit] = useState<SpecEdit>(NO_SPEC_EDIT);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const threadEndRef = useRef<HTMLDivElement>(null);
+  const browserTimezone = useSyncExternalStore(
+    subscribeToNothing,
+    getBrowserTimezone,
+    getServerTimezone,
+  );
 
   const meQuery = useQuery({
     queryKey: ['auth', 'me', 'agent-generation'],
@@ -101,10 +122,10 @@ export default function AiGenerateAgentPage() {
     queryKey: ['agent-gen-session', 'active', workspaceId],
     enabled: Boolean(workspaceId),
     queryFn: async () => {
-      const result = await call<{ session: AgentGenSession | null }>(
+      const result = await call<{ session: unknown }>(
         `/workspaces/${workspaceId}/agent-gen-sessions/active`,
       );
-      return result.session;
+      return result.session ? AgentGenSessionSchema.parse(result.session) : null;
     },
   });
 
@@ -112,14 +133,27 @@ export default function AiGenerateAgentPage() {
   const sessionQuery = useQuery({
     queryKey: ['agent-gen-session', workspaceId, sessionId],
     enabled: Boolean(workspaceId && sessionId),
-    queryFn: () =>
-      call<AgentGenSession>(
+    queryFn: async () => {
+      const result = await call<unknown>(
         `/workspaces/${workspaceId}/agent-gen-sessions/${sessionId}`,
-      ),
+      );
+      return AgentGenSessionSchema.parse(result);
+    },
     refetchInterval: (query) =>
       query.state.data?.status === 'generating' ? 2000 : false,
   });
   const session = sessionQuery.data ?? activeSessionQuery.data ?? null;
+
+  const resolvedContext: ContextDraft = {
+    ...context,
+    timezone: context.timezone || browserTimezone,
+  };
+
+  // Identity of the spec currently on screen. SpecPreview remounts on this key,
+  // so edits made against an older spec are discarded rather than submitted.
+  const specKey = session ? `${session.id}-${session.updated_at}` : null;
+  const editedSpec = specEdit.key === specKey ? specEdit.spec : null;
+  const editedSpecValid = specEdit.key === specKey ? specEdit.valid : true;
 
   const templatesQuery = useQuery({
     queryKey: ['templates', 'agent-generation'],
@@ -139,6 +173,12 @@ export default function AiGenerateAgentPage() {
       toast.error(`Session: ${meQuery.error.message}`);
     }
   }, [meQuery.error]);
+
+  useEffect(() => {
+    if (activeSessionQuery.error instanceof Error) {
+      toast.error(`Could not restore your conversation: ${activeSessionQuery.error.message}`);
+    }
+  }, [activeSessionQuery.error]);
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -167,43 +207,63 @@ export default function AiGenerateAgentPage() {
     return created;
   };
 
+  const handleGenerationError = (error: Error & { code?: string; details?: unknown }) => {
+    if (error.code === 'INVALID_STATUS') {
+      void sessionQuery.refetch();
+      toast.info('Generation is already running. Reconnected to its progress.');
+      return;
+    }
+    if (error.code === 'RATE_LIMITED') {
+      const retryAfter = getRetryAfterSeconds(error.details);
+      toast.error(
+        retryAfter
+          ? `Generation limit reached. Try again in ${formatWait(retryAfter)}.`
+          : 'Generation limit reached. Please wait a few minutes and try again.',
+      );
+      return;
+    }
+    toast.error(error.message);
+  };
+
   const sendMutation = useMutation({
-    mutationFn: async ({ content, retry = false }: { content: string; retry?: boolean }) => {
+    mutationFn: async ({ content }: { content: string }) => {
       const activeSession = await ensureSession();
       const isFirstMessage = activeSession.messages.length === 0;
       const body: SendGenMessageDto = {
         content,
-        ...(isFirstMessage && !retry ? { context: buildContext(context) } : {}),
+        ...(isFirstMessage ? { context: buildContext(resolvedContext) } : {}),
       };
-      return call<AgentGenSession>(
+      const result = await call<unknown>(
         `/workspaces/${activeSession.workspace_id}/agent-gen-sessions/${activeSession.id}/messages`,
         { method: 'POST', body: JSON.stringify(body) },
       );
+      return AgentGenSessionSchema.parse(result);
     },
     onSuccess: (next) => {
       setSessionData(next);
       setMessage('');
       setContextOpen(false);
-      setEditedSpec(null);
-      setEditedSpecValid(true);
+      setSpecEdit(NO_SPEC_EDIT);
     },
-    onError: (error: Error & { code?: string; details?: unknown }) => {
-      if (error.code === 'INVALID_STATUS') {
-        void sessionQuery.refetch();
-        toast.info('Generation is already running. Reconnected to its progress.');
-        return;
-      }
-      if (error.code === 'RATE_LIMITED') {
-        const retryAfter = getRetryAfterSeconds(error.details);
-        toast.error(
-          retryAfter
-            ? `Generation limit reached. Try again in ${formatWait(retryAfter)}.`
-            : 'Generation limit reached. Please wait a few minutes and try again.',
-        );
-        return;
-      }
-      toast.error(error.message);
+    onError: handleGenerationError,
+  });
+
+  // Re-runs generation for a failed session without appending a duplicate
+  // user message to the transcript.
+  const retryMutation = useMutation({
+    mutationFn: async () => {
+      if (!workspaceId || !session) throw new Error('No generation session to retry.');
+      const result = await call<unknown>(
+        `/workspaces/${workspaceId}/agent-gen-sessions/${session.id}/retry`,
+        { method: 'POST' },
+      );
+      return AgentGenSessionSchema.parse(result);
     },
+    onSuccess: (next) => {
+      setSessionData(next);
+      setSpecEdit(NO_SPEC_EDIT);
+    },
+    onError: handleGenerationError,
   });
 
   const finalizeMutation = useMutation({
@@ -249,37 +309,52 @@ export default function AiGenerateAgentPage() {
       setMessage('');
       setContext(DEFAULT_CONTEXT);
       setContextOpen(true);
-      setEditedSpec(null);
-      setEditedSpecValid(true);
+      setSpecEdit(NO_SPEC_EDIT);
+      setConfirmingReset(false);
       toast.success('Started a fresh conversation.');
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      setConfirmingReset(false);
+      toast.error(error.message);
+    },
   });
 
   const isGenerating = session?.status === 'generating';
+  const isCompleted = session?.status === 'completed';
   const isBootstrapping = meQuery.isPending || (Boolean(workspaceId) && activeSessionQuery.isPending);
   const canFinalize = Boolean(
     session?.current_spec &&
       session.spec_valid &&
       session.status !== 'generating' &&
+      !isCompleted &&
       editedSpecValid,
-  );
-  const lastUserMessage = useMemo(
-    () => [...(session?.messages ?? [])].reverse().find((item) => item.role === 'user'),
-    [session?.messages],
   );
 
   const submitMessage = () => {
     const content = message.trim();
-    if (!content || sendMutation.isPending || isGenerating) return;
+    if (!content || sendMutation.isPending || isGenerating || isCompleted) return;
     sendMutation.mutate({ content });
   };
 
   const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ignore Enter while an IME candidate window is open.
+    if (event.nativeEvent.isComposing || event.key === 'Process') return;
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submitMessage();
     }
+  };
+
+  const startOver = () => {
+    if (confirmingReset) {
+      setConfirmingReset(false);
+      deleteMutation.mutate();
+      return;
+    }
+    setConfirmingReset(true);
+    toast.warning('This deletes the current conversation and its draft spec.', {
+      description: 'Click “Confirm start over” again to continue.',
+    });
   };
 
   return (
@@ -292,18 +367,18 @@ export default function AiGenerateAgentPage() {
           session ? (
             <Button
               type="button"
-              variant="outline"
+              variant={confirmingReset ? 'destructive' : 'outline'}
               size="sm"
               className="gap-2"
               disabled={deleteMutation.isPending || isGenerating}
-              onClick={() => deleteMutation.mutate()}
+              onClick={startOver}
             >
               {deleteMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <RotateCcw className="h-4 w-4" />
               )}
-              Start over
+              {confirmingReset ? 'Confirm start over' : 'Start over'}
             </Button>
           ) : null
         }
@@ -367,25 +442,21 @@ export default function AiGenerateAgentPage() {
                   <p className="mt-1 text-sm text-muted-foreground">
                     {session.last_error ?? 'The generation could not be completed.'}
                   </p>
-                  {lastUserMessage ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="mt-3 gap-2"
-                      disabled={sendMutation.isPending}
-                      onClick={() =>
-                        sendMutation.mutate({ content: lastUserMessage.content, retry: true })
-                      }
-                    >
-                      {sendMutation.isPending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RotateCcw className="h-3.5 w-3.5" />
-                      )}
-                      Retry generation
-                    </Button>
-                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="mt-3 gap-2"
+                    disabled={retryMutation.isPending}
+                    onClick={() => retryMutation.mutate()}
+                  >
+                    {retryMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    )}
+                    Retry generation
+                  </Button>
                 </div>
               ) : null}
               <div ref={threadEndRef} />
@@ -395,7 +466,7 @@ export default function AiGenerateAgentPage() {
               <ContextDrawer
                 open={contextOpen}
                 onOpenChange={setContextOpen}
-                context={context}
+                context={resolvedContext}
                 onChange={setContext}
                 disabled={Boolean(session?.messages.length)}
                 templates={templatesQuery.data?.items ?? []}
@@ -408,15 +479,17 @@ export default function AiGenerateAgentPage() {
                 <Textarea
                   aria-label="Message the agent generator"
                   value={message}
-                  maxLength={MAX_MESSAGE_LENGTH}
+                  maxLength={GEN_PROMPT_MAX_LENGTH}
                   rows={3}
-                  disabled={isBootstrapping || isGenerating || sendMutation.isPending}
+                  disabled={isBootstrapping || isGenerating || isCompleted || sendMutation.isPending}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder={
-                    session?.messages.length
-                      ? 'Ask for a change, add a requirement, or clarify the workflow…'
-                      : 'Describe the voice agent you want to build…'
+                    isCompleted
+                      ? 'This conversation is complete. Start over to build another agent.'
+                      : session?.messages.length
+                        ? 'Ask for a change, add a requirement, or clarify the workflow…'
+                        : 'Describe the voice agent you want to build…'
                   }
                   className="min-h-24 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
                 />
@@ -426,7 +499,7 @@ export default function AiGenerateAgentPage() {
                   </span>
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-xs text-muted-foreground">
-                      {message.length}/{MAX_MESSAGE_LENGTH}
+                      {message.length}/{GEN_PROMPT_MAX_LENGTH}
                     </span>
                     <Button
                       type="button"
@@ -437,6 +510,7 @@ export default function AiGenerateAgentPage() {
                         !message.trim() ||
                         isBootstrapping ||
                         isGenerating ||
+                        isCompleted ||
                         sendMutation.isPending
                       }
                       onClick={submitMessage}
@@ -473,11 +547,19 @@ export default function AiGenerateAgentPage() {
           <CardContent className="ph-no-capture min-h-0 flex-1 overflow-y-auto p-4 sm:p-5">
             {session?.current_spec ? (
               <SpecPreview
-                key={`${session.id}-${session.updated_at}`}
+                key={specKey ?? 'spec'}
                 spec={session.current_spec}
                 onEdited={(spec, validation) => {
-                  setEditedSpec(spec);
-                  setEditedSpecValid(validation.isValid);
+                  // Bail out when nothing changed: FormModeEditor re-reports
+                  // validation on every render, and a fresh object here would
+                  // re-render forever.
+                  setSpecEdit((prev) =>
+                    prev.key === specKey &&
+                    prev.spec === spec &&
+                    prev.valid === validation.isValid
+                      ? prev
+                      : { key: specKey, spec, valid: validation.isValid },
+                  );
                 }}
               />
             ) : (
@@ -502,7 +584,10 @@ export default function AiGenerateAgentPage() {
             )}
           </CardContent>
 
-          {session?.current_spec && session.spec_valid && session.status !== 'generating' ? (
+          {session?.current_spec &&
+          session.spec_valid &&
+          session.status !== 'generating' &&
+          !isCompleted ? (
             <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-border/80 bg-card/95 p-4 backdrop-blur">
               <Button
                 type="button"
@@ -592,6 +677,14 @@ function SessionStatusBadge({ session }: { session: AgentGenSession | null }) {
     );
   }
   if (session.status === 'failed') return <Badge variant="destructive">Needs retry</Badge>;
+  if (session.status === 'completed') {
+    return (
+      <Badge variant="secondary" className="gap-1.5">
+        <Check className="h-3 w-3" />
+        Completed
+      </Badge>
+    );
+  }
   return <Badge variant="outline">Ready for your input</Badge>;
 }
 
@@ -684,8 +777,12 @@ function ContextDrawer({
           </div>
 
           <div>
-            <Label className="text-xs">CRM providers</Label>
-            <div className="mt-2 flex flex-wrap gap-2">
+            <Label id="generation-crm-label" className="text-xs">CRM providers</Label>
+            <div
+              role="group"
+              aria-labelledby="generation-crm-label"
+              className="mt-2 flex flex-wrap gap-2"
+            >
               {CRM_PROVIDERS.map((provider) => {
                 const selected = context.crmProviders.includes(provider);
                 return (
@@ -744,38 +841,55 @@ function ContextDrawer({
           </div>
 
           <div>
-            <Label className="text-xs">Workspace knowledge</Label>
+            <Label id="generation-knowledge-label" className="text-xs">
+              Workspace knowledge ({context.knowledgeSourceIds.length}/{MAX_KNOWLEDGE_SOURCES})
+            </Label>
             {knowledgePending ? (
               <p className="mt-2 text-xs text-muted-foreground">Loading knowledge sources…</p>
             ) : knowledgeSources.length ? (
-              <div className="mt-2 max-h-36 space-y-2 overflow-y-auto rounded-lg border border-border bg-background p-3">
-                {knowledgeSources.map((source) => (
-                  <label key={source.id} className="flex items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 rounded border-border"
-                      checked={context.knowledgeSourceIds.includes(source.id)}
-                      onChange={() =>
-                        onChange({
-                          ...context,
-                          knowledgeSourceIds: context.knowledgeSourceIds.includes(source.id)
-                            ? context.knowledgeSourceIds.filter((id) => id !== source.id)
-                            : [...context.knowledgeSourceIds, source.id],
-                        })
-                      }
-                    />
-                    <span className="min-w-0">
-                      <span className="block truncate">{source.title}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {source.source_type} · {source.chunk_count} chunks
+              <div
+                role="group"
+                aria-labelledby="generation-knowledge-label"
+                className="mt-2 max-h-36 space-y-2 overflow-y-auto rounded-lg border border-border bg-background p-3"
+              >
+                {knowledgeSources.map((source) => {
+                  const selected = context.knowledgeSourceIds.includes(source.id);
+                  const capReached =
+                    context.knowledgeSourceIds.length >= MAX_KNOWLEDGE_SOURCES;
+                  return (
+                    <label key={source.id} className="flex items-start gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 rounded border-border"
+                        checked={selected}
+                        disabled={!selected && capReached}
+                        onChange={() =>
+                          onChange({
+                            ...context,
+                            knowledgeSourceIds: selected
+                              ? context.knowledgeSourceIds.filter((id) => id !== source.id)
+                              : [...context.knowledgeSourceIds, source.id],
+                          })
+                        }
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate">{source.title}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {source.source_type} · {source.chunk_count} chunks
+                        </span>
                       </span>
-                    </span>
-                  </label>
-                ))}
+                    </label>
+                  );
+                })}
               </div>
             ) : (
               <p className="mt-2 text-xs text-muted-foreground">No workspace knowledge sources yet.</p>
             )}
+            {context.knowledgeSourceIds.length >= MAX_KNOWLEDGE_SOURCES ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                You can attach up to {MAX_KNOWLEDGE_SOURCES} knowledge sources.
+              </p>
+            ) : null}
           </div>
         </fieldset>
       </CollapsibleContent>
@@ -791,11 +905,6 @@ function SpecPreview({
   onEdited: (spec: unknown, validation: AgentSpecValidationState) => void;
 }) {
   const [spec, setSpec] = useState(initialSpec);
-  const [validation, setValidation] = useState<AgentSpecValidationState>({
-    isValid: true,
-    issues: [],
-    parsedSpec: null,
-  });
   const summary = asRecord(spec);
 
   return (
@@ -818,13 +927,11 @@ function SpecPreview({
         <CollapsibleContent className="pt-3">
           <FormModeEditor
             spec={spec}
-            onChange={(next) => {
-              setSpec(next);
-              onEdited(next, validation);
-            }}
+            onChange={setSpec}
             defaultMode="form"
             onValidationChange={(nextValidation) => {
-              setValidation(nextValidation);
+              // Validation is derived from `spec`, so reporting both from this
+              // callback keeps the edited spec and its validity in sync.
               if (spec !== initialSpec) onEdited(spec, nextValidation);
             }}
           />

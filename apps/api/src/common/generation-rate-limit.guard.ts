@@ -34,7 +34,14 @@ export class GenerationRateLimitGuard implements CanActivate {
     // Without user context the auth guard rejects anyway.
     if (!user) return true;
 
-    const key = `vf:v1:ratelimit:gen:${user.active_workspace_id ?? 'global'}:${user.id}`;
+    // Scope to the route's workspace (already authorized by WorkspaceGuard)
+    // rather than the user's active workspace, which may differ from the
+    // workspace actually being billed for the generation.
+    const workspaceId =
+      ((req.params ?? {}) as Record<string, string | undefined>).workspaceId ??
+      user.active_workspace_id ??
+      'global';
+    const key = `vf:v1:ratelimit:gen:${workspaceId}:${user.id}`;
     const count = await this.cache.incr(key, this.windowSec);
 
     if (count > this.max) {
@@ -43,7 +50,9 @@ export class GenerationRateLimitGuard implements CanActivate {
         {
           code: 'RATE_LIMITED',
           message: 'Generation rate limit reached. Please wait a few minutes and try again.',
-          retryAfterSeconds: this.windowSec,
+          // Nested under details so the global exception filter preserves it
+          // in the API envelope (top-level extras are stripped).
+          details: { retryAfterSeconds: this.windowSec },
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );

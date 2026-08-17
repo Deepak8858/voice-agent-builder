@@ -80,9 +80,22 @@ export class AnthropicLlmAdapter implements LlmAgentGenerator {
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
       .join('\n\n');
+    // Anthropic rejects adjacent same-role turns and empty message lists, so
+    // merge consecutive same-role messages and require at least one turn.
     const turns = messages
       .filter((m) => m.role !== 'system')
-      .map((m) => ({ role: m.role, content: m.content }));
+      .reduce<Array<{ role: string; content: string }>>((acc, m) => {
+        const last = acc.at(-1);
+        if (last && last.role === m.role) {
+          last.content = `${last.content}\n\n${m.content}`;
+          return acc;
+        }
+        acc.push({ role: m.role, content: m.content });
+        return acc;
+      }, []);
+    if (turns.length === 0) {
+      throw new Error('Anthropic chat generation requires at least one user turn.');
+    }
 
     const res = await fetch(`${baseUrl}/messages`, {
       method: 'POST',

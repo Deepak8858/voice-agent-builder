@@ -170,7 +170,9 @@ export async function runChatGenerationWith(
   const firstCheck = validateChatResult(first);
   if (firstCheck.ok) return firstCheck.result;
 
-  logger.warn(`[${providerName}] invalid chat result, attempting self-repair: ${firstCheck.issues.slice(0, 300)}`);
+  // Explicit narrowing: from here on firstCheck is the failure variant.
+  const firstIssues = firstCheck.issues;
+  logger.warn(`[${providerName}] invalid chat result, attempting self-repair: ${firstIssues.slice(0, 300)}`);
 
   const repairMessages: ChatMessage[] = [
     ...messages,
@@ -179,7 +181,7 @@ export async function runChatGenerationWith(
       role: 'user',
       content: [
         'Your previous response failed validation with these issues:',
-        firstCheck.issues,
+        firstIssues,
         'Return the corrected full JSON object {"assistant_message", "spec"} that fixes ALL issues. JSON only.',
       ].join('\n'),
     },

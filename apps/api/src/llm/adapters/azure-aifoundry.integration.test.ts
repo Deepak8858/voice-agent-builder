@@ -14,6 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { GenerateAgentDto, GenerateAgentResult, AgentSpec } from '@voiceforge/shared';
 
+// Each test re-imports the adapter via vi.resetModules() + dynamic import,
+// which is slow when the full suite runs in parallel; the default 5s timeout
+// flakes under load.
+vi.setConfig({ testTimeout: 20_000 });
+
 const inMemoryCacheStore = new Map<string, unknown>();
 
 function makeValidSpec(overrides: Partial<AgentSpec> = {}): AgentSpec {

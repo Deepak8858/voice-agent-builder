@@ -35,12 +35,29 @@ CREATE POLICY "agent_gen_sessions_owner_select"
   ON public.agent_gen_sessions FOR SELECT
   USING (user_id IN (
     SELECT u.id FROM public.users u
-    WHERE u.auth_user_id = current_setting('request.jwt.claims', true)::json->>'sub'
+    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
   ));
 
+-- Writes additionally require the owner to be a member of the row's workspace
+-- and the organization to match that workspace, so a compromised JWT cannot
+-- write rows pointing at another tenant.
 CREATE POLICY "agent_gen_sessions_owner_write"
   ON public.agent_gen_sessions FOR ALL
   USING (user_id IN (
     SELECT u.id FROM public.users u
-    WHERE u.auth_user_id = current_setting('request.jwt.claims', true)::json->>'sub'
-  ));
+    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+  ))
+  WITH CHECK (
+    user_id IN (
+      SELECT u.id FROM public.users u
+      WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+    )
+    AND workspace_id IN (
+      SELECT wm.workspace_id FROM public.workspace_memberships wm
+      JOIN public.users u ON u.id = wm.user_id
+      WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+    )
+    AND organization_id = (
+      SELECT w.organization_id FROM public.workspaces w WHERE w.id = workspace_id
+    )
+  );

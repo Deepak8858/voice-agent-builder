@@ -16,7 +16,7 @@ export type AgentGenSessionStatus = z.infer<typeof AgentGenSessionStatusSchema>;
 export const AgentGenMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string().min(1).max(8000),
-  at: z.string(), // ISO timestamp
+  at: z.string().datetime(), // ISO timestamp
 });
 export type AgentGenMessage = z.infer<typeof AgentGenMessageSchema>;
 

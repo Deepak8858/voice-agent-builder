@@ -5,10 +5,13 @@ import { GenerationRateLimitGuard } from './generation-rate-limit.guard';
 import type { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 
-function mockExecutionContext(user?: Partial<SessionUser>): ExecutionContext {
+function mockExecutionContext(
+  user?: Partial<SessionUser>,
+  params?: Record<string, string>,
+): ExecutionContext {
   return {
     switchToHttp: () => ({
-      getRequest: <T extends object>() => ({ user }) as T,
+      getRequest: <T extends object>() => ({ user, params }) as T,
       getResponse: () => ({}),
     }),
     getHandler: () => ({}),
@@ -32,7 +35,7 @@ describe('GenerationRateLimitGuard', () => {
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
   });
 
-  it('throws 429 with retryAfterSeconds once the counter exceeds the max', async () => {
+  it('throws 429 with retryAfterSeconds in details once the counter exceeds the max', async () => {
     mockCache.incr.mockResolvedValue(env.AGENT_GEN_RATE_LIMIT_MAX + 1);
     const ctx = mockExecutionContext({ id: 'user_1', active_workspace_id: 'ws_1' });
 
@@ -40,7 +43,7 @@ describe('GenerationRateLimitGuard', () => {
       status: 429,
       response: {
         code: 'RATE_LIMITED',
-        retryAfterSeconds: env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS,
+        details: { retryAfterSeconds: env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS },
       },
     });
   });
@@ -52,7 +55,21 @@ describe('GenerationRateLimitGuard', () => {
     expect(mockCache.incr).not.toHaveBeenCalled();
   });
 
-  it('scopes the counter to the user and workspace with the window TTL', async () => {
+  it('scopes the counter to the route workspace param over the active workspace', async () => {
+    const ctx = mockExecutionContext(
+      { id: 'user_abc', active_workspace_id: 'ws_other' },
+      { workspaceId: 'ws_xyz' },
+    );
+
+    await guard.canActivate(ctx);
+
+    expect(mockCache.incr).toHaveBeenCalledWith(
+      'vf:v1:ratelimit:gen:ws_xyz:user_abc',
+      env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS,
+    );
+  });
+
+  it('falls back to the active workspace when the route has no workspace param', async () => {
     const ctx = mockExecutionContext({ id: 'user_abc', active_workspace_id: 'ws_xyz' });
 
     await guard.canActivate(ctx);
@@ -63,7 +80,7 @@ describe('GenerationRateLimitGuard', () => {
     );
   });
 
-  it('falls back to a global scope when the user has no active workspace', async () => {
+  it('falls back to a global scope when neither param nor active workspace exists', async () => {
     const ctx = mockExecutionContext({ id: 'user_abc' });
 
     await guard.canActivate(ctx);

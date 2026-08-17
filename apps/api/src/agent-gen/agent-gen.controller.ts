@@ -77,8 +77,24 @@ export class AgentGenController {
     return this.sessions.sendMessage(workspaceId, user.id, sessionId, dto);
   }
 
+  /**
+   * Re-runs generation for a failed session without appending a new user
+   * message (used by the client's Retry button). 202 like sendMessage.
+   */
+  @Post(':sessionId/retry')
+  @UseGuards(GenerationRateLimitGuard)
+  @HttpCode(HttpStatus.ACCEPTED)
+  async retry(
+    @Param('workspaceId') workspaceId: string,
+    @Param('sessionId') sessionId: string,
+    @CurrentUser() user: SessionUser,
+  ) {
+    return this.sessions.retry(workspaceId, user.id, sessionId);
+  }
+
   /** Creates the real agent from the session's spec; optionally publishes. */
   @Post(':sessionId/finalize')
+  @UseGuards(GenerationRateLimitGuard)
   async finalize(
     @Param('workspaceId') workspaceId: string,
     @Param('sessionId') sessionId: string,

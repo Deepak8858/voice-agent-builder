@@ -32,12 +32,23 @@ export class AzureAiFoundryAdapter implements LlmAgentGenerator {
   private readonly apiVersion = env.LLM_API_VERSION;
 
   constructor(private readonly cache: LlmCacheService) {
-    const base = env.LLM_BASE_URL ?? 'https://deepak7238kgs-0666-resource.services.ai.azure.com/openai/v1';
-    this.endpoint = base.replace(/\/$/, '');
+    // No default endpoint: an Azure resource URL is deployment-specific, so a
+    // hardcoded fallback would silently send prompts to the wrong resource.
+    // The adapter is constructed eagerly by the DI container even when another
+    // provider is selected, so the throw is deferred to first use; the LLM
+    // module factory and the production env check fail fast when this adapter
+    // is actually selected without LLM_BASE_URL.
+    this.endpoint = (env.LLM_BASE_URL ?? '').replace(/\/$/, '');
     this.model = env.LLM_MODEL ?? 'gpt-5.4-mini';
   }
 
   private completionsUrl(): string {
+    if (!this.endpoint) {
+      throw new Error(
+        'LLM_BASE_URL is required when LLM_PROVIDER=azure-aifoundry (e.g. ' +
+          'https://<resource>.openai.azure.com/openai/v1 or a Cloudflare AI Gateway azure-openai route).',
+      );
+    }
     const url = `${this.endpoint}/chat/completions`;
     return this.apiVersion ? `${url}?api-version=${this.apiVersion}` : url;
   }

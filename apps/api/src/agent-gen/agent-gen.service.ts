@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { QueueService } from '../queue/queue.service';
 import { AgentsService } from '../agents/agents.service';
+import { KnowledgeService } from '../knowledge/knowledge.service';
 import { AppError, AgentSpecInvalidError } from '../common/errors';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { env } from '../config/env';
@@ -76,6 +77,7 @@ export class AgentGenService {
     private readonly audit: AuditService,
     private readonly queue: QueueService,
     private readonly agents: AgentsService,
+    private readonly knowledge: KnowledgeService,
     @Inject(LLM_PROVIDER_TOKEN) private readonly llm: LlmAgentGenerator,
   ) {}
 
@@ -108,8 +110,11 @@ export class AgentGenService {
   }
 
   async deleteSession(workspaceId: string, userId: string, sessionId: string): Promise<void> {
-    await this.findOwnedRow(workspaceId, userId, sessionId);
-    await this.prisma.agentGenSession.delete({ where: { id: sessionId } });
+    // Single scoped delete: no read-then-write gap, and repeated deletes are
+    // idempotent instead of throwing P2025.
+    await this.prisma.agentGenSession.deleteMany({
+      where: { id: sessionId, workspaceId, userId },
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -129,12 +134,22 @@ export class AgentGenService {
       throw new GenSessionInvalidStateError('This session is already completed. Start a new one.');
     }
 
-    const content = this.composeMessageContent(dto);
+    // Knowledge source ids come from the client; keep only ids that belong to
+    // this workspace so the prompt can never reference another tenant's data.
+    const requestedIds = dto.context?.knowledge_source_ids ?? [];
+    const resolvedIds =
+      requestedIds.length > 0
+        ? await this.knowledge.resolveReferencedSourceIds(workspaceId, null, requestedIds)
+        : [];
+
+    const content = this.composeMessageContent(dto, resolvedIds);
     const messages = [...this.parseMessages(row.messages)];
     messages.push({ role: 'user', content, at: new Date().toISOString() });
 
-    const updated = await this.prisma.agentGenSession.update({
-      where: { id: row.id },
+    // Atomic claim: the WHERE clause is the source of truth for the state
+    // transition, so two concurrent senders cannot both enqueue a job.
+    const claimed = await this.prisma.agentGenSession.updateMany({
+      where: { id: row.id, status: { in: ['awaiting_user', 'failed'] } },
       data: {
         status: 'generating',
         generatingAt: new Date(),
@@ -142,20 +157,65 @@ export class AgentGenService {
         messages: messages as unknown as object,
       },
     });
+    if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
 
-    const payload: AgentGenJobPayload = {
+    await this.enqueueGeneration({
       sessionId: row.id,
       workspaceId,
       template_slug: dto.context?.template_slug,
-    };
-    await this.queue.queue(AGENT_GEN_QUEUE).add(AGENT_GEN_JOB, payload, {
-      attempts: AGENT_GEN_JOB_ATTEMPTS,
-      backoff: { type: 'exponential', delay: 2_000 },
-      removeOnComplete: 100,
-      removeOnFail: 100,
     });
 
-    return this.serialize(updated);
+    const updated = await this.prisma.agentGenSession.findUnique({ where: { id: row.id } });
+    return this.serialize(updated ?? row);
+  }
+
+  /**
+   * Re-runs generation for a failed session without appending a new user
+   * message, so a retry never duplicates the last message in history.
+   */
+  async retry(workspaceId: string, userId: string, sessionId: string): Promise<AgentGenSession> {
+    const row = await this.sweepIfStale(await this.findOwnedRow(workspaceId, userId, sessionId));
+
+    if (row.status === 'generating') throw new GenSessionBusyError(sessionId);
+    if (row.status !== 'failed') {
+      throw new GenSessionInvalidStateError('Only a failed generation can be retried.');
+    }
+    const hasUserMessage = this.parseMessages(row.messages).some((m) => m.role === 'user');
+    if (!hasUserMessage) {
+      throw new GenSessionInvalidStateError('Nothing to retry. Send a message first.');
+    }
+
+    const claimed = await this.prisma.agentGenSession.updateMany({
+      where: { id: row.id, status: 'failed' },
+      data: { status: 'generating', generatingAt: new Date(), lastError: null },
+    });
+    if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
+
+    await this.enqueueGeneration({ sessionId: row.id, workspaceId });
+
+    const updated = await this.prisma.agentGenSession.findUnique({ where: { id: row.id } });
+    return this.serialize(updated ?? row);
+  }
+
+  /**
+   * Enqueues the generation job. If the enqueue itself fails (e.g. Redis is
+   * unreachable) the session is failed immediately instead of sitting in
+   * 'generating' until the stale sweep fires.
+   */
+  private async enqueueGeneration(payload: AgentGenJobPayload): Promise<void> {
+    try {
+      await this.queue.queue(AGENT_GEN_QUEUE).add(AGENT_GEN_JOB, payload, {
+        attempts: AGENT_GEN_JOB_ATTEMPTS,
+        backoff: { type: 'exponential', delay: 2_000 },
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[agent-gen] enqueue failed for session ${payload.sessionId}: ${message}`);
+      await this.markFailed(payload.sessionId, 'Could not queue the generation. Please try again.');
+      throw err;
+    }
   }
 
   /**
@@ -179,8 +239,11 @@ export class AgentGenService {
         ...history,
         { role: 'assistant' as const, content: result.assistant_message, at: new Date().toISOString() },
       ];
-      await this.prisma.agentGenSession.update({
-        where: { id: row.id },
+      // Constrained to the claim this job holds (status + generatingAt): if
+      // the stale sweep or another actor already moved the session on, this
+      // result is discarded instead of clobbering newer state.
+      await this.prisma.agentGenSession.updateMany({
+        where: { id: row.id, status: 'generating', generatingAt: row.generatingAt },
         data: {
           status: 'awaiting_user',
           generatingAt: null,
@@ -237,24 +300,46 @@ export class AgentGenService {
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
     const spec: AgentSpec = parsed.data;
 
-    const agent = await this.agents.create(workspaceId, userId, {
-      name: spec.name,
-      industry: spec.industry,
-      agent_type: spec.agent_type,
-      spec,
+    // Atomic claim before the (expensive) agent creation: two concurrent
+    // finalize calls cannot both create an agent — the loser sees count 0.
+    const claimed = await this.prisma.agentGenSession.updateMany({
+      where: { id: row.id, status: { in: ['awaiting_user', 'failed'] } },
+      data: {
+        status: 'completed',
+        ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
+      },
     });
+    if (claimed.count === 0) {
+      throw new GenSessionInvalidStateError('This session was already finalized.', {
+        agentId: row.agentId,
+      });
+    }
 
-    if (dto.publish) {
-      await this.agents.publish(workspaceId, agent.id, userId);
+    let agent: Awaited<ReturnType<AgentsService['create']>>;
+    try {
+      agent = await this.agents.create(workspaceId, userId, {
+        name: spec.name,
+        industry: spec.industry,
+        agent_type: spec.agent_type,
+        spec,
+      });
+
+      if (dto.publish) {
+        await this.agents.publish(workspaceId, agent.id, userId);
+      }
+    } catch (err) {
+      // Release the claim so the user can retry finalization.
+      const message = err instanceof Error ? err.message : String(err);
+      await this.prisma.agentGenSession.updateMany({
+        where: { id: row.id, status: 'completed', agentId: null },
+        data: { status: row.status, lastError: message.slice(0, 2000) },
+      });
+      throw err;
     }
 
     const updated = await this.prisma.agentGenSession.update({
       where: { id: row.id },
-      data: {
-        status: 'completed',
-        agentId: agent.id,
-        ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
-      },
+      data: { agentId: agent.id },
     });
 
     await this.audit.log({
@@ -308,7 +393,7 @@ export class AgentGenService {
    * the message content the model sees, so it needs no schema of its own and
    * survives in the conversation history.
    */
-  private composeMessageContent(dto: SendGenMessageDto): string {
+  private composeMessageContent(dto: SendGenMessageDto, resolvedKnowledgeIds: string[]): string {
     const ctx = dto.context;
     if (!ctx) return dto.content;
     const lines = [
@@ -318,8 +403,9 @@ export class AgentGenService {
       ctx.crm_providers?.length ? `CRM integrations: ${ctx.crm_providers.join(', ')}` : '',
       ctx.voice_config?.stt_model ? `Preferred STT model: ${ctx.voice_config.stt_model}` : '',
       ctx.voice_config?.tts_voice ? `Preferred TTS voice: ${ctx.voice_config.tts_voice}` : '',
-      ctx.knowledge_source_ids?.length
-        ? `Attach these knowledge_source_ids on knowledge.source_ids: ${JSON.stringify(ctx.knowledge_source_ids)}`
+      // Only workspace-verified ids reach the prompt (resolved by the caller).
+      resolvedKnowledgeIds.length
+        ? `Attach these knowledge_source_ids on knowledge.source_ids: ${JSON.stringify(resolvedKnowledgeIds)}`
         : '',
     ].filter(Boolean);
     if (lines.length === 0) return dto.content;
