@@ -139,8 +139,11 @@ export default function AiGenerateAgentPage() {
       );
       return AgentGenSessionSchema.parse(result);
     },
-    refetchInterval: (query) =>
-      query.state.data?.status === 'generating' ? 2000 : false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      // Both are transient server-side states the client waits out.
+      return status === 'generating' || status === 'finalizing' ? 2000 : false;
+    },
   });
   const session = sessionQuery.data ?? activeSessionQuery.data ?? null;
 
@@ -320,19 +323,19 @@ export default function AiGenerateAgentPage() {
   });
 
   const isGenerating = session?.status === 'generating';
+  const isFinalizing = session?.status === 'finalizing';
   const isCompleted = session?.status === 'completed';
+  // The session is server-busy while a generation or finalization runs; the
+  // composer and finalize actions stay locked until it settles.
+  const isBusy = isGenerating || isFinalizing;
   const isBootstrapping = meQuery.isPending || (Boolean(workspaceId) && activeSessionQuery.isPending);
   const canFinalize = Boolean(
-    session?.current_spec &&
-      session.spec_valid &&
-      session.status !== 'generating' &&
-      !isCompleted &&
-      editedSpecValid,
+    session?.current_spec && session.spec_valid && !isBusy && !isCompleted && editedSpecValid,
   );
 
   const submitMessage = () => {
     const content = message.trim();
-    if (!content || sendMutation.isPending || isGenerating || isCompleted) return;
+    if (!content || sendMutation.isPending || isBusy || isCompleted) return;
     sendMutation.mutate({ content });
   };
 
@@ -370,7 +373,7 @@ export default function AiGenerateAgentPage() {
               variant={confirmingReset ? 'destructive' : 'outline'}
               size="sm"
               className="gap-2"
-              disabled={deleteMutation.isPending || isGenerating}
+              disabled={deleteMutation.isPending || isBusy}
               onClick={startOver}
             >
               {deleteMutation.isPending ? (
@@ -422,7 +425,7 @@ export default function AiGenerateAgentPage() {
                 </ChatPlaceholder>
               )}
 
-              {isGenerating ? (
+              {isBusy ? (
                 <div className="flex items-start gap-2">
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
                     <Bot className="h-4 w-4" />
@@ -430,7 +433,7 @@ export default function AiGenerateAgentPage() {
                   <div className="rounded-2xl rounded-tl-md border border-border bg-muted/50 px-4 py-3">
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      Shaping your Agent Spec…
+                      {isFinalizing ? 'Creating your agent…' : 'Shaping your Agent Spec…'}
                     </div>
                   </div>
                 </div>
@@ -481,7 +484,7 @@ export default function AiGenerateAgentPage() {
                   value={message}
                   maxLength={GEN_PROMPT_MAX_LENGTH}
                   rows={3}
-                  disabled={isBootstrapping || isGenerating || isCompleted || sendMutation.isPending}
+                  disabled={isBootstrapping || isBusy || isCompleted || sendMutation.isPending}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder={
@@ -509,7 +512,7 @@ export default function AiGenerateAgentPage() {
                       disabled={
                         !message.trim() ||
                         isBootstrapping ||
-                        isGenerating ||
+                        isBusy ||
                         isCompleted ||
                         sendMutation.isPending
                       }
@@ -566,14 +569,14 @@ export default function AiGenerateAgentPage() {
               <div className="flex min-h-[460px] items-center justify-center">
                 <div className="max-w-sm text-center">
                   <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-muted/50 text-muted-foreground">
-                    {isGenerating ? (
+                    {isBusy ? (
                       <Loader2 className="h-5 w-5 animate-spin" />
                     ) : (
                       <Bot className="h-5 w-5" />
                     )}
                   </div>
                   <h2 className="mt-4 text-sm font-medium">
-                    {isGenerating ? 'Generating your first spec' : 'Your Agent Spec will appear here'}
+                    {isBusy ? 'Generating your first spec' : 'Your Agent Spec will appear here'}
                   </h2>
                   <p className="mt-1 text-sm leading-6 text-muted-foreground">
                     Continue the conversation to refine behavior, voice, compliance, handoff,
@@ -584,10 +587,7 @@ export default function AiGenerateAgentPage() {
             )}
           </CardContent>
 
-          {session?.current_spec &&
-          session.spec_valid &&
-          session.status !== 'generating' &&
-          !isCompleted ? (
+          {session?.current_spec && session.spec_valid && !isBusy && !isCompleted ? (
             <div className="sticky bottom-0 flex flex-wrap justify-end gap-2 border-t border-border/80 bg-card/95 p-4 backdrop-blur">
               <Button
                 type="button"
@@ -668,11 +668,11 @@ function ChatPlaceholder({ icon, children }: { icon: React.ReactNode; children: 
 
 function SessionStatusBadge({ session }: { session: AgentGenSession | null }) {
   if (!session) return <Badge variant="outline">New conversation</Badge>;
-  if (session.status === 'generating') {
+  if (session.status === 'generating' || session.status === 'finalizing') {
     return (
       <Badge variant="secondary" className="gap-1.5">
         <Loader2 className="h-3 w-3 animate-spin" />
-        Generating
+        {session.status === 'finalizing' ? 'Creating agent' : 'Generating'}
       </Badge>
     );
   }

@@ -9,7 +9,7 @@ CREATE TABLE agent_gen_sessions (
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   status VARCHAR(20) NOT NULL DEFAULT 'awaiting_user'
-    CHECK (status IN ('awaiting_user', 'generating', 'completed', 'failed')),
+    CHECK (status IN ('awaiting_user', 'generating', 'finalizing', 'completed', 'failed')),
   messages JSONB NOT NULL DEFAULT '[]',
   current_spec JSONB,
   spec_valid BOOLEAN NOT NULL DEFAULT false,
@@ -33,9 +33,13 @@ ALTER TABLE public.agent_gen_sessions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "agent_gen_sessions_owner_select"
   ON public.agent_gen_sessions FOR SELECT
-  USING (user_id IN (
-    SELECT u.id FROM public.users u
-    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+  USING (EXISTS (
+    SELECT 1
+    FROM public.users u
+    JOIN public.workspace_memberships wm ON wm.user_id = u.id
+    WHERE u.id = agent_gen_sessions.user_id
+      AND wm.workspace_id = agent_gen_sessions.workspace_id
+      AND u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
   ));
 
 -- Writes additionally require the owner to be a member of the row's workspace
@@ -43,21 +47,25 @@ CREATE POLICY "agent_gen_sessions_owner_select"
 -- write rows pointing at another tenant.
 CREATE POLICY "agent_gen_sessions_owner_write"
   ON public.agent_gen_sessions FOR ALL
-  USING (user_id IN (
-    SELECT u.id FROM public.users u
-    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+  USING (EXISTS (
+    SELECT 1
+    FROM public.users u
+    JOIN public.workspace_memberships wm ON wm.user_id = u.id
+    WHERE u.id = agent_gen_sessions.user_id
+      AND wm.workspace_id = agent_gen_sessions.workspace_id
+      AND u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
   ))
   WITH CHECK (
-    user_id IN (
-      SELECT u.id FROM public.users u
-      WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
-    )
-    AND workspace_id IN (
-      SELECT wm.workspace_id FROM public.workspace_memberships wm
-      JOIN public.users u ON u.id = wm.user_id
-      WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+    EXISTS (
+      SELECT 1
+      FROM public.users u
+      JOIN public.workspace_memberships wm ON wm.user_id = u.id
+      WHERE u.id = agent_gen_sessions.user_id
+        AND wm.workspace_id = agent_gen_sessions.workspace_id
+        AND u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
     )
     AND organization_id = (
-      SELECT w.organization_id FROM public.workspaces w WHERE w.id = workspace_id
+      SELECT w.organization_id FROM public.workspaces w
+      WHERE w.id = agent_gen_sessions.workspace_id
     )
   );

@@ -8,6 +8,11 @@ const BooleanEnvSchema = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const OptionalUrlEnvSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().url().optional(),
+);
+
 /**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
@@ -113,7 +118,7 @@ const EnvSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
   LLM_MODEL: z.string().optional(),
-  LLM_BASE_URL: z.string().optional(),
+  LLM_BASE_URL: OptionalUrlEnvSchema,
   OPENAI_API_KEY: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),

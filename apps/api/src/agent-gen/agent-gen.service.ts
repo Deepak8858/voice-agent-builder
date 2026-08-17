@@ -63,7 +63,7 @@ export interface AgentGenJobPayload {
  *   awaiting_user --sendMessage--> generating --worker ok--> awaiting_user
  *                                  generating --worker err-> failed
  *   failed --sendMessage--> generating (retry keeps history + last spec)
- *   awaiting_user/failed --finalize (spec valid)--> completed
+ *   awaiting_user/failed --finalize--> finalizing --> completed
  *
  * All state lives in Postgres so a page refresh mid-generation resumes
  * cleanly: the client re-reads the session and keeps polling.
@@ -104,7 +104,11 @@ export class AgentGenService {
     return this.serialize(await this.sweepIfStale(row));
   }
 
-  async getSession(workspaceId: string, userId: string, sessionId: string): Promise<AgentGenSession> {
+  async getSession(
+    workspaceId: string,
+    userId: string,
+    sessionId: string,
+  ): Promise<AgentGenSession> {
     const row = await this.findOwnedRow(workspaceId, userId, sessionId);
     return this.serialize(await this.sweepIfStale(row));
   }
@@ -129,7 +133,9 @@ export class AgentGenService {
   ): Promise<AgentGenSession> {
     const row = await this.sweepIfStale(await this.findOwnedRow(workspaceId, userId, sessionId));
 
-    if (row.status === 'generating') throw new GenSessionBusyError(sessionId);
+    if (row.status === 'generating' || row.status === 'finalizing') {
+      throw new GenSessionBusyError(sessionId);
+    }
     if (row.status === 'completed') {
       throw new GenSessionInvalidStateError('This session is already completed. Start a new one.');
     }
@@ -146,24 +152,33 @@ export class AgentGenService {
     const messages = [...this.parseMessages(row.messages)];
     messages.push({ role: 'user', content, at: new Date().toISOString() });
 
+    const generatingAt = new Date();
     // Atomic claim: the WHERE clause is the source of truth for the state
     // transition, so two concurrent senders cannot both enqueue a job.
     const claimed = await this.prisma.agentGenSession.updateMany({
-      where: { id: row.id, status: { in: ['awaiting_user', 'failed'] } },
+      where: {
+        id: row.id,
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'failed'] },
+      },
       data: {
         status: 'generating',
-        generatingAt: new Date(),
+        generatingAt,
         lastError: null,
         messages: messages as unknown as object,
       },
     });
     if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
 
-    await this.enqueueGeneration({
-      sessionId: row.id,
-      workspaceId,
-      template_slug: dto.context?.template_slug,
-    });
+    await this.enqueueGeneration(
+      {
+        sessionId: row.id,
+        workspaceId,
+        template_slug: dto.context?.template_slug,
+      },
+      generatingAt,
+    );
 
     const updated = await this.prisma.agentGenSession.findUnique({ where: { id: row.id } });
     return this.serialize(updated ?? row);
@@ -185,13 +200,14 @@ export class AgentGenService {
       throw new GenSessionInvalidStateError('Nothing to retry. Send a message first.');
     }
 
+    const retryingAt = new Date();
     const claimed = await this.prisma.agentGenSession.updateMany({
       where: { id: row.id, status: 'failed' },
-      data: { status: 'generating', generatingAt: new Date(), lastError: null },
+      data: { status: 'generating', generatingAt: retryingAt, lastError: null },
     });
     if (claimed.count === 0) throw new GenSessionBusyError(sessionId);
 
-    await this.enqueueGeneration({ sessionId: row.id, workspaceId });
+    await this.enqueueGeneration({ sessionId: row.id, workspaceId }, retryingAt);
 
     const updated = await this.prisma.agentGenSession.findUnique({ where: { id: row.id } });
     return this.serialize(updated ?? row);
@@ -202,7 +218,10 @@ export class AgentGenService {
    * unreachable) the session is failed immediately instead of sitting in
    * 'generating' until the stale sweep fires.
    */
-  private async enqueueGeneration(payload: AgentGenJobPayload): Promise<void> {
+  private async enqueueGeneration(
+    payload: AgentGenJobPayload,
+    generatingAt?: Date,
+  ): Promise<void> {
     try {
       await this.queue.queue(AGENT_GEN_QUEUE).add(AGENT_GEN_JOB, payload, {
         attempts: AGENT_GEN_JOB_ATTEMPTS,
@@ -213,7 +232,11 @@ export class AgentGenService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`[agent-gen] enqueue failed for session ${payload.sessionId}: ${message}`);
-      await this.markFailed(payload.sessionId, 'Could not queue the generation. Please try again.');
+      await this.markFailed(
+        payload.sessionId,
+        'Could not queue the generation. Please try again.',
+        generatingAt,
+      );
       throw err;
     }
   }
@@ -237,7 +260,11 @@ export class AgentGenService {
 
       const messages = [
         ...history,
-        { role: 'assistant' as const, content: result.assistant_message, at: new Date().toISOString() },
+        {
+          role: 'assistant' as const,
+          content: result.assistant_message,
+          at: new Date().toISOString(),
+        },
       ];
       // Constrained to the claim this job holds (status + generatingAt): if
       // the stale sweep or another actor already moved the session on, this
@@ -257,14 +284,23 @@ export class AgentGenService {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`[agent-gen] generation failed for session ${row.id}: ${message}`);
       if (!isFinalAttempt) throw err; // let BullMQ retry with backoff
-      await this.markFailed(row.id, message);
+      await this.markFailed(row.id, message, row.generatingAt);
     }
   }
 
   /** Marks a session failed; used by the worker's terminal failure path. */
-  async markFailed(sessionId: string, error: string): Promise<void> {
+  async markFailed(
+    sessionId: string,
+    error: string,
+    generatingAt?: Date | null,
+    status: 'generating' | 'finalizing' = 'generating',
+  ): Promise<void> {
     await this.prisma.agentGenSession.updateMany({
-      where: { id: sessionId, status: 'generating' },
+      where: {
+        id: sessionId,
+        status,
+        ...(generatingAt ? { generatingAt } : {}),
+      },
       data: {
         status: 'failed',
         generatingAt: null,
@@ -285,7 +321,9 @@ export class AgentGenService {
   ) {
     const row = await this.sweepIfStale(await this.findOwnedRow(workspaceId, userId, sessionId));
 
-    if (row.status === 'generating') throw new GenSessionBusyError(sessionId);
+    if (row.status === 'generating' || row.status === 'finalizing') {
+      throw new GenSessionBusyError(sessionId);
+    }
     if (row.status === 'completed') {
       throw new GenSessionInvalidStateError('This session was already finalized.', {
         agentId: row.agentId,
@@ -302,20 +340,19 @@ export class AgentGenService {
 
     // Atomic claim before the (expensive) agent creation: two concurrent
     // finalize calls cannot both create an agent — the loser sees count 0.
-    const claimed = await this.prisma.agentGenSession.updateMany({
-      where: { id: row.id, status: { in: ['awaiting_user', 'failed'] } },
-      data: {
-        status: 'completed',
-        ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
+    const finalizingAt = new Date();
+    const claim = await this.prisma.agentGenSession.updateMany({
+      where: {
+        id: row.id,
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'failed'] },
       },
+      data: { status: 'finalizing', generatingAt: finalizingAt, lastError: null },
     });
-    if (claimed.count === 0) {
-      throw new GenSessionInvalidStateError('This session was already finalized.', {
-        agentId: row.agentId,
-      });
-    }
+    if (claim.count === 0) throw new GenSessionBusyError(sessionId);
 
-    let agent: Awaited<ReturnType<AgentsService['create']>>;
+    let agent: Awaited<ReturnType<AgentsService['create']>> | null = null;
     try {
       agent = await this.agents.create(workspaceId, userId, {
         name: spec.name,
@@ -327,31 +364,39 @@ export class AgentGenService {
       if (dto.publish) {
         await this.agents.publish(workspaceId, agent.id, userId);
       }
-    } catch (err) {
-      // Release the claim so the user can retry finalization.
-      const message = err instanceof Error ? err.message : String(err);
-      await this.prisma.agentGenSession.updateMany({
-        where: { id: row.id, status: 'completed', agentId: null },
-        data: { status: row.status, lastError: message.slice(0, 2000) },
+
+      const updated = await this.prisma.agentGenSession.update({
+        where: { id: row.id },
+        data: {
+          status: 'completed',
+          generatingAt: null,
+          agentId: agent.id,
+          ...(dto.spec_override ? { currentSpec: spec as unknown as object, specValid: true } : {}),
+        },
       });
+
+      await this.audit.log({
+        workspaceId,
+        actorUserId: userId,
+        action: 'agent.generate.finalize',
+        resourceType: 'agent',
+        resourceId: agent.id,
+        metadata: { session_id: row.id, published: Boolean(dto.publish) },
+      });
+
+      return { session: this.serialize(updated), agent };
+    } catch (err) {
+      if (agent) {
+        await this.prisma.agentGenSession.updateMany({
+          where: { id: row.id, status: 'finalizing', generatingAt: finalizingAt },
+          data: { status: 'completed', generatingAt: null, agentId: agent.id },
+        });
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        await this.markFailed(row.id, message, finalizingAt, 'finalizing');
+      }
       throw err;
     }
-
-    const updated = await this.prisma.agentGenSession.update({
-      where: { id: row.id },
-      data: { agentId: agent.id },
-    });
-
-    await this.audit.log({
-      workspaceId,
-      actorUserId: userId,
-      action: 'agent.generate.finalize',
-      resourceType: 'agent',
-      resourceId: agent.id,
-      metadata: { session_id: row.id, published: Boolean(dto.publish) },
-    });
-
-    return { session: this.serialize(updated), agent };
   }
 
   // -------------------------------------------------------------------------
@@ -360,7 +405,11 @@ export class AgentGenService {
 
   private async findActiveRow(workspaceId: string, userId: string) {
     return this.prisma.agentGenSession.findFirst({
-      where: { workspaceId, userId, status: { in: ['awaiting_user', 'generating', 'failed'] } },
+      where: {
+        workspaceId,
+        userId,
+        status: { in: ['awaiting_user', 'generating', 'finalizing', 'failed'] },
+      },
       orderBy: { updatedAt: 'desc' },
     });
   }
@@ -379,12 +428,20 @@ export class AgentGenService {
    * offer a retry instead of polling forever.
    */
   private async sweepIfStale(row: PrismaAgentGenSession): Promise<PrismaAgentGenSession> {
-    if (row.status !== 'generating' || !row.generatingAt) return row;
+    if (!['generating', 'finalizing'].includes(row.status) || !row.generatingAt) return row;
     const ageMs = Date.now() - row.generatingAt.getTime();
     if (ageMs < env.AGENT_GEN_STALE_AFTER_SECONDS * 1_000) return row;
 
-    this.logger.warn(`[agent-gen] session ${row.id} stale after ${Math.round(ageMs / 1000)}s; marking failed`);
-    await this.markFailed(row.id, 'Generation timed out. Please try again.');
+    this.logger.warn(
+      `[agent-gen] session ${row.id} stale after ${Math.round(ageMs / 1000)}s; marking failed`,
+    );
+    const status = row.status as 'generating' | 'finalizing';
+    await this.markFailed(
+      row.id,
+      'Operation timed out. Please try again.',
+      row.generatingAt,
+      status,
+    );
     return (await this.prisma.agentGenSession.findUnique({ where: { id: row.id } })) ?? row;
   }
 

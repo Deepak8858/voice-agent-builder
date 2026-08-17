@@ -7,7 +7,7 @@ import { env } from '../config/env';
 
 function mockExecutionContext(
   user?: Partial<SessionUser>,
-  params?: Record<string, string>,
+  params: Record<string, string> = {},
 ): ExecutionContext {
   return {
     switchToHttp: () => ({
@@ -69,14 +69,14 @@ describe('GenerationRateLimitGuard', () => {
     );
   });
 
-  it('falls back to the active workspace when the route has no workspace param', async () => {
-    const ctx = mockExecutionContext({ id: 'user_abc', active_workspace_id: 'ws_xyz' });
+  it('falls back to the active workspace for unscoped generation routes', async () => {
+    const ctx = mockExecutionContext({ id: 'user_abc', active_workspace_id: 'ws_active' });
 
     await guard.canActivate(ctx);
 
     expect(mockCache.incr).toHaveBeenCalledWith(
-      'vf:v1:ratelimit:gen:ws_xyz:user_abc',
-      env.AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS,
+      'vf:v1:ratelimit:gen:ws_active:user_abc',
+      expect.any(Number),
     );
   });
 

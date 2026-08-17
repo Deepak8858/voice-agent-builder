@@ -134,7 +134,12 @@ describe('AgentGenService.sendMessage', () => {
     expect(result.status).toBe('generating');
 
     const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
-    expect(update.where).toEqual({ id: SESSION_ID, status: { in: ['awaiting_user', 'failed'] } });
+    expect(update.where).toEqual({
+      id: SESSION_ID,
+      workspaceId: WS,
+      userId: USER,
+      status: { in: ['awaiting_user', 'failed'] },
+    });
     expect(update.data.status).toBe('generating');
     expect(update.data.generatingAt).toBeInstanceOf(Date);
     expect(update.data.lastError).toBeNull();
@@ -172,10 +177,15 @@ describe('AgentGenService.sendMessage', () => {
       mocks.service.sendMessage(WS, USER, SESSION_ID, { content: 'hi' }),
     ).rejects.toThrow('redis down');
 
-    // First updateMany call is the claim; a later one flips it to failed.
-    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'generating' },
-      data: expect.objectContaining({ status: 'failed' }),
+    // First updateMany call is the claim; a later one flips it to failed,
+    // constrained to the generatingAt stamped by that same claim.
+    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({
+        id: SESSION_ID,
+        status: 'generating',
+        generatingAt: expect.any(Date),
+      }),
+      data: expect.objectContaining({ status: 'failed', generatingAt: null }),
     });
   });
 
@@ -185,7 +195,11 @@ describe('AgentGenService.sendMessage', () => {
 
     await mocks.service.sendMessage(WS, USER, SESSION_ID, {
       content: 'build it',
-      context: { business_name: 'Smile Dental', call_direction: 'inbound', crm_providers: ['hubspot'] },
+      context: {
+        business_name: 'Smile Dental',
+        call_direction: 'inbound',
+        crm_providers: ['hubspot'],
+      },
     });
 
     const update = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
@@ -219,7 +233,7 @@ describe('AgentGenService.sendMessage', () => {
     expect(content).not.toContain(foreignId);
   });
 
-  it('allows retrying from a failed session', async () => {
+  it('resumes a failed session by appending the new message', async () => {
     mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ status: 'failed' }));
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(sessionRow({ status: 'generating' }));
 
@@ -290,12 +304,14 @@ describe('AgentGenService.processGeneration', () => {
   });
 
   it('is a no-op for sessions no longer generating (idempotent retry)', async () => {
-    mocks.prisma.agentGenSession.findUnique.mockResolvedValue(sessionRow({ status: 'awaiting_user' }));
+    mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
+      sessionRow({ status: 'awaiting_user' }),
+    );
 
     await mocks.service.processGeneration(payload, true);
 
     expect(mocks.llm.chatGenerate).not.toHaveBeenCalled();
-    expect(mocks.prisma.agentGenSession.update).not.toHaveBeenCalled();
+    expect(mocks.prisma.agentGenSession.updateMany).not.toHaveBeenCalled();
   });
 
   it('appends the assistant reply, stores the spec, and returns to awaiting_user on success', async () => {
@@ -304,7 +320,10 @@ describe('AgentGenService.processGeneration', () => {
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
       sessionRow({ status: 'generating', generatingAt, messages: history }),
     );
-    mocks.llm.chatGenerate.mockResolvedValue({ assistant_message: 'Here is a draft.', spec: VALID_SPEC });
+    mocks.llm.chatGenerate.mockResolvedValue({
+      assistant_message: 'Here is a draft.',
+      spec: VALID_SPEC,
+    });
 
     await mocks.service.processGeneration({ ...payload, template_slug: 'ai-receptionist' }, true);
 
@@ -361,7 +380,7 @@ describe('AgentGenService.processGeneration', () => {
     await expect(mocks.service.processGeneration(payload, true)).resolves.toBeUndefined();
 
     expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'generating' },
+      where: expect.objectContaining({ id: SESSION_ID, status: 'generating' }),
       data: expect.objectContaining({
         status: 'failed',
         generatingAt: null,
@@ -384,13 +403,13 @@ describe('AgentGenService stale sweep', () => {
       sessionRow({ status: 'generating', generatingAt: staleAt }),
     );
     mocks.prisma.agentGenSession.findUnique.mockResolvedValue(
-      sessionRow({ status: 'failed', lastError: 'Generation timed out. Please try again.' }),
+      sessionRow({ status: 'failed', lastError: 'Operation timed out. Please try again.' }),
     );
 
     const session = await mocks.service.getSession(WS, USER, SESSION_ID);
 
     expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'generating' },
+      where: expect.objectContaining({ id: SESSION_ID, status: 'generating' }),
       data: expect.objectContaining({ status: 'failed' }),
     });
     expect(session.status).toBe('failed');
@@ -441,8 +460,22 @@ describe('AgentGenService.finalize', () => {
     ).rejects.toBeInstanceOf(GenSessionInvalidStateError);
   });
 
+  it('does not create an agent after losing the finalize claim race', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
+    mocks.prisma.agentGenSession.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(
+      mocks.service.finalize(WS, USER, SESSION_ID, { publish: false }),
+    ).rejects.toBeInstanceOf(GenSessionBusyError);
+    expect(mocks.agents.create).not.toHaveBeenCalled();
+  });
+
   it('creates the agent from the session spec and marks the session completed', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );
@@ -451,8 +484,13 @@ describe('AgentGenService.finalize', () => {
 
     // Atomic claim happens before the agent is created.
     expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: { in: ['awaiting_user', 'failed'] } },
-      data: expect.objectContaining({ status: 'completed' }),
+      where: {
+        id: SESSION_ID,
+        workspaceId: WS,
+        userId: USER,
+        status: { in: ['awaiting_user', 'failed'] },
+      },
+      data: expect.objectContaining({ status: 'finalizing' }),
     });
     expect(mocks.agents.create).toHaveBeenCalledWith(WS, USER, {
       name: VALID_SPEC.name,
@@ -463,7 +501,11 @@ describe('AgentGenService.finalize', () => {
     expect(mocks.agents.publish).not.toHaveBeenCalled();
     expect(mocks.prisma.agentGenSession.update).toHaveBeenCalledWith({
       where: { id: SESSION_ID },
-      data: { agentId: 'agent-1' },
+      data: expect.objectContaining({
+        status: 'completed',
+        generatingAt: null,
+        agentId: 'agent-1',
+      }),
     });
     expect(mocks.audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'agent.generate.finalize', resourceId: 'agent-1' }),
@@ -472,19 +514,10 @@ describe('AgentGenService.finalize', () => {
     expect(result.agent).toMatchObject({ id: 'agent-1' });
   });
 
-  it('throws invalid-state and skips agent creation when the claim loses the race', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
-    mocks.prisma.agentGenSession.updateMany.mockResolvedValue({ count: 0 });
-
-    await expect(
-      mocks.service.finalize(WS, USER, SESSION_ID, { publish: false }),
-    ).rejects.toBeInstanceOf(GenSessionInvalidStateError);
-    expect(mocks.agents.create).not.toHaveBeenCalled();
-    expect(mocks.audit.log).not.toHaveBeenCalled();
-  });
-
   it('publishes the agent when the publish flag is set', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );
@@ -494,7 +527,7 @@ describe('AgentGenService.finalize', () => {
     expect(mocks.agents.publish).toHaveBeenCalledWith(WS, 'agent-1', USER);
   });
 
-  it('releases the claim and records the error when publish fails after creation', async () => {
+  it('completes the session when publish fails after the agent was created', async () => {
     mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
     mocks.agents.publish.mockRejectedValue(new Error('provider deploy failed'));
 
@@ -502,19 +535,41 @@ describe('AgentGenService.finalize', () => {
       mocks.service.finalize(WS, USER, SESSION_ID, { publish: true }),
     ).rejects.toThrow('provider deploy failed');
 
-    // The completed claim is rolled back to the pre-claim status with the error.
-    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenCalledWith({
-      where: { id: SESSION_ID, status: 'completed', agentId: null },
+    // The agent exists, so the session is settled as completed rather than
+    // left stuck in 'finalizing'.
+    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({ id: SESSION_ID, status: 'finalizing' }),
       data: expect.objectContaining({
-        status: 'awaiting_user',
-        lastError: expect.stringContaining('provider deploy failed'),
+        status: 'completed',
+        generatingAt: null,
+        agentId: 'agent-1',
+      }),
+    });
+    expect(mocks.audit.log).not.toHaveBeenCalled();
+  });
+
+  it('fails the session when agent creation itself fails', async () => {
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.agents.create.mockRejectedValue(new Error('database unavailable'));
+
+    await expect(
+      mocks.service.finalize(WS, USER, SESSION_ID, { publish: false }),
+    ).rejects.toThrow('database unavailable');
+
+    expect(mocks.prisma.agentGenSession.updateMany).toHaveBeenLastCalledWith({
+      where: expect.objectContaining({ id: SESSION_ID, status: 'finalizing' }),
+      data: expect.objectContaining({
+        status: 'failed',
+        lastError: expect.stringContaining('database unavailable'),
       }),
     });
     expect(mocks.audit.log).not.toHaveBeenCalled();
   });
 
   it('validates spec_override and rejects an invalid one', async () => {
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
 
     await expect(
       mocks.service.finalize(WS, USER, SESSION_ID, {
@@ -527,7 +582,9 @@ describe('AgentGenService.finalize', () => {
 
   it('uses a valid spec_override over the session spec and persists it', async () => {
     const override: AgentSpec = { ...VALID_SPEC, name: 'Edited Locally' };
-    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(sessionRow({ currentSpec: VALID_SPEC }));
+    mocks.prisma.agentGenSession.findFirst.mockResolvedValue(
+      sessionRow({ currentSpec: VALID_SPEC }),
+    );
     mocks.prisma.agentGenSession.update.mockResolvedValue(
       sessionRow({ status: 'completed', agentId: 'agent-1' }),
     );
@@ -539,9 +596,9 @@ describe('AgentGenService.finalize', () => {
       USER,
       expect.objectContaining({ name: 'Edited Locally' }),
     );
-    // The override is persisted as part of the atomic claim.
-    const claim = mocks.prisma.agentGenSession.updateMany.mock.calls[0]![0];
-    expect(claim.data.specValid).toBe(true);
-    expect(claim.data.currentSpec).toMatchObject({ name: 'Edited Locally' });
+    // The override is persisted with the completion write.
+    const completion = mocks.prisma.agentGenSession.update.mock.calls[0]![0];
+    expect(completion.data.specValid).toBe(true);
+    expect(completion.data.currentSpec).toMatchObject({ name: 'Edited Locally' });
   });
 });

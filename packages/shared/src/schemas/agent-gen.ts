@@ -8,6 +8,7 @@ import { AgentSpecSchema } from './agent-spec';
 export const AgentGenSessionStatusSchema = z.enum([
   'awaiting_user',
   'generating',
+  'finalizing',
   'completed',
   'failed',
 ]);
@@ -24,6 +25,8 @@ export const GEN_PROMPT_MAX_LENGTH = 4000;
 
 export const SendGenMessageDtoSchema = z.object({
   content: z.string().min(1).max(GEN_PROMPT_MAX_LENGTH),
+  // Retries go through POST /:sessionId/retry, which re-runs the existing
+  // history instead of appending a duplicate user message.
   // Optional context, typically attached to the first message only.
   context: z
     .object({
