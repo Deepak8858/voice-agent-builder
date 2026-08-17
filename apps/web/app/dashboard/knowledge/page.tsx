@@ -32,10 +32,15 @@ async function KnowledgeSection() {
   }
 
   if (!me) return <SessionErrorCard title="Could not load knowledge" message={apiError} />;
+  if (!me.active_workspace_id) {
+    return (
+      <SessionErrorCard title="Could not load knowledge" message="No active workspace selected." />
+    );
+  }
 
   return (
     <KnowledgePanel
-      workspaceId={me.active_workspace_id ?? ''}
+      workspaceId={me.active_workspace_id}
       agentId={null}
       title="Workspace knowledge"
     />

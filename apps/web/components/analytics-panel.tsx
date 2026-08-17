@@ -1,6 +1,6 @@
 'use client';
 
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import type {
   AgentMetricsResponse,
@@ -8,12 +8,7 @@ import type {
   WorkspaceMetrics,
   TimeseriesResponse,
 } from '@voiceforge/shared';
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-} from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/lib/use-api';
@@ -67,10 +62,7 @@ function buildRangeDays(days: number) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function appendQuery(
-  path: string,
-  query: { from: string; to: string },
-): string {
+function appendQuery(path: string, query: { from: string; to: string }): string {
   const params = new URLSearchParams({
     from: query.from,
     to: query.to,
@@ -99,42 +91,46 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
 
   const queryRange = buildRangeDays(RANGE_DAYS[range]);
 
-  // `keepPreviousData`: switching the range keeps the current charts on screen
-  // while the new window loads, instead of flashing every panel back to
-  // "Loading…" and collapsing the layout.
+  // Do not carry metrics across range keys: stale data under a new range label
+  // is more misleading than showing the existing loading placeholders.
   const overview = useQuery({
     queryKey: ['analytics', 'workspace', workspaceId, range],
     queryFn: () =>
-      call<WorkspaceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/workspace`, queryRange)),
-    placeholderData: keepPreviousData,
+      call<WorkspaceMetrics>(
+        appendQuery(`/workspaces/${workspaceId}/analytics/workspace`, queryRange),
+      ),
   });
 
   const agents = useQuery({
     queryKey: ['analytics', 'agents', workspaceId, range],
     queryFn: () =>
-      call<AgentMetricsResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/agents`, queryRange)),
-    placeholderData: keepPreviousData,
+      call<AgentMetricsResponse>(
+        appendQuery(`/workspaces/${workspaceId}/analytics/agents`, queryRange),
+      ),
   });
 
   const compliance = useQuery({
     queryKey: ['analytics', 'compliance', workspaceId, range],
     queryFn: () =>
-      call<ComplianceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/compliance`, queryRange)),
-    placeholderData: keepPreviousData,
+      call<ComplianceMetrics>(
+        appendQuery(`/workspaces/${workspaceId}/analytics/compliance`, queryRange),
+      ),
   });
 
   const timeseries = useQuery({
     queryKey: ['analytics', 'timeseries', workspaceId, range],
     queryFn: () =>
-      call<TimeseriesResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange)),
-    placeholderData: keepPreviousData,
+      call<TimeseriesResponse>(
+        appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange),
+      ),
   });
 
   // derive chart data
-  const outcomeData = overview.data?.outcomes.map((o) => ({
-    name: o.outcome.replace(/_/g, ' '),
-    value: o.count,
-  })) ?? [];
+  const outcomeData =
+    overview.data?.outcomes.map((o) => ({
+      name: o.outcome.replace(/_/g, ' '),
+      value: o.count,
+    })) ?? [];
 
   const agentPerfData = (agents.data?.agents ?? []).slice(0, 10).map((a) => ({
     name: a.agent_name.length > 20 ? a.agent_name.slice(0, 18) + '…' : a.agent_name,
@@ -145,10 +141,7 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
 
   const tsData = (timeseries.data?.data ?? []).map((d) => ({
     date: d.date,
-    label:
-      timeseries.data?.granularity === 'weekly'
-        ? d.date
-        : d.date.slice(5), // MM-DD for daily
+    label: timeseries.data?.granularity === 'weekly' ? d.date : d.date.slice(5), // MM-DD for daily
     calls: d.calls,
     success: d.success,
     failed: d.failed,
@@ -296,13 +289,8 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
                   </thead>
                   <tbody>
                     {agents.data?.agents.map((a) => (
-                      <tr
-                        key={a.agent_id}
-                        className="border-b border-border last:border-0"
-                      >
-                        <td className="py-2 pr-4 font-medium text-foreground">
-                          {a.agent_name}
-                        </td>
+                      <tr key={a.agent_id} className="border-b border-border last:border-0">
+                        <td className="py-2 pr-4 font-medium text-foreground">{a.agent_name}</td>
                         <td className="py-2 pr-4 font-mono">{a.total_calls}</td>
                         <td className="py-2 pr-4 font-mono">{pct(a.success_rate)}</td>
                         <td className="py-2 pr-4 font-mono">{pct(a.booking_rate)}</td>

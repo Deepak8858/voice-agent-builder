@@ -44,12 +44,31 @@ export class ResponseCacheService {
     return this.cache.readThrough(key, ttlSeconds, loader);
   }
 
-  /** Scoped read. Returns null on a miss, an invalid scope, or no Redis. */
-  async get<T>(
+  /**
+   * Read through one pinned cache generation and report whether it was a hit.
+   * Resolving the key once prevents a concurrent invalidation from publishing
+   * data loaded under the old generation into the new generation.
+   */
+  async readThroughWithStatus<T>(
     scope: ResponseCacheScope,
     route: string,
+    ttlSeconds: number,
+    loader: () => Promise<T>,
     variant?: string,
-  ): Promise<T | null> {
+  ): Promise<{ value: T; fromCache: boolean }> {
+    const key = await this.resolveKey(scope, route, variant);
+    if (key === null) return { value: await loader(), fromCache: false };
+
+    const cached = await this.cache.get<T>(key);
+    if (cached !== null) return { value: cached, fromCache: true };
+
+    const value = await loader();
+    await this.cache.set(key, value, ttlSeconds);
+    return { value, fromCache: false };
+  }
+
+  /** Scoped read. Returns null on a miss, an invalid scope, or no Redis. */
+  async get<T>(scope: ResponseCacheScope, route: string, variant?: string): Promise<T | null> {
     const key = await this.resolveKey(scope, route, variant);
     if (key === null) return null;
     return this.cache.get<T>(key);

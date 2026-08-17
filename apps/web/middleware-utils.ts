@@ -24,22 +24,21 @@ export const PROTECTED_PREFIXES = [
  * Marketing and auth routes that are public by definition. Matching one skips
  * the cookie scan entirely.
  *
- * This is a performance shortcut, not an authorization decision: a path here
- * would fall through to `NextResponse.next()` anyway because it is not in
- * `PROTECTED_PREFIXES`. `middleware-utils.test.ts` asserts the two lists never
- * overlap, so adding a protected route to this list cannot silently open it.
+ * This is a performance shortcut, not an authorization decision. Protected
+ * prefixes are evaluated first, so even a future overlap cannot bypass auth.
  */
-export const PUBLIC_PREFIXES = [
-  '/',
-  '/sign-in',
-  '/sign-up',
-  '/pricing',
-  '/auth',
-  '/legal',
-];
+export const PUBLIC_PREFIXES = ['/', '/sign-in', '/sign-up', '/pricing', '/auth', '/legal'];
 
 function matchesPrefix(path: string, prefixes: readonly string[]): boolean {
   return prefixes.some((p) => (p === '/' ? path === '/' : path === p || path.startsWith(`${p}/`)));
+}
+
+export function isPublicFastPath(
+  path: string,
+  protectedPrefixes: readonly string[] = PROTECTED_PREFIXES,
+  publicPrefixes: readonly string[] = PUBLIC_PREFIXES,
+): boolean {
+  return !matchesPrefix(path, protectedPrefixes) && matchesPrefix(path, publicPrefixes);
 }
 
 export async function updateSupabaseSession(
@@ -49,9 +48,8 @@ export async function updateSupabaseSession(
   const path = req.nextUrl.pathname;
   const pass = () => NextResponse.next({ request: { headers: requestHeaders } });
 
-  if (matchesPrefix(path, PUBLIC_PREFIXES)) return pass();
-
   const needsAuth = matchesPrefix(path, PROTECTED_PREFIXES);
+  if (isPublicFastPath(path)) return pass();
 
   if (needsAuth && !hasSupabaseAuthCookie(req)) {
     const redirect = req.nextUrl.clone();

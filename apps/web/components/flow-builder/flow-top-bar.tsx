@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Loader2, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,25 @@ export function FlowTopBar({
 }: FlowTopBarProps) {
   const [showIssues, setShowIssues] = useState(false);
   const hasIssues = issues.length > 0;
+  const issuesControlRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showIssues) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowIssues(false);
+    };
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!issuesControlRef.current?.contains(event.target as Node)) {
+        setShowIssues(false);
+      }
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => {
+      window.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('pointerdown', closeOnOutsideClick);
+    };
+  }, [showIssues]);
 
   return (
     <header className="flex items-center gap-3 border-b border-border bg-background px-4 py-2.5">
@@ -62,14 +81,15 @@ export function FlowTopBar({
         </p>
       </div>
 
-      <div className="relative shrink-0">
+      <div ref={issuesControlRef} className="relative shrink-0">
         <Button
           type="button"
           variant="ghost"
           size="sm"
           className={hasIssues ? 'text-amber-600' : 'text-emerald-600'}
-          onClick={() => setShowIssues((open) => hasIssues && !open)}
-          aria-expanded={showIssues && hasIssues}
+          onClick={() => setShowIssues((open) => !open)}
+          disabled={!hasIssues}
+          aria-expanded={showIssues}
         >
           {hasIssues ? (
             <>
@@ -87,8 +107,11 @@ export function FlowTopBar({
           <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-lg border border-border bg-popover p-3 shadow-lg">
             <p className="mb-2 text-xs font-semibold text-foreground">Fix these before saving</p>
             <ul className="flex max-h-64 list-disc flex-col gap-1.5 overflow-y-auto pl-4">
-              {issues.map((issue) => (
-                <li key={issue} className="text-[11px] leading-relaxed text-muted-foreground">
+              {issues.map((issue, index) => (
+                <li
+                  key={`${issue}-${index}`}
+                  className="text-[11px] leading-relaxed text-muted-foreground"
+                >
                   {issue}
                 </li>
               ))}

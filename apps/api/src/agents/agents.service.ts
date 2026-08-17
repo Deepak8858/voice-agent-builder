@@ -116,12 +116,13 @@ export class AgentsService {
 
     if (this.responseCache && userId) {
       const scope = { workspaceId, userId };
-      const cached = await this.responseCache.get<AgentSummary[]>(scope, 'agents');
-      if (cached !== null) return { agents: cached, fromCache: true };
-
-      const summaries = await load();
-      await this.responseCache.set(scope, 'agents', summaries, AGENTS_LIST_TTL_SECONDS);
-      return { agents: summaries, fromCache: false };
+      const result = await this.responseCache.readThroughWithStatus(
+        scope,
+        'agents',
+        AGENTS_LIST_TTL_SECONDS,
+        load,
+      );
+      return { agents: result.value, fromCache: result.fromCache };
     }
 
     const key = `agents:list:${workspaceId}`;
@@ -148,13 +149,14 @@ export class AgentsService {
         id: v.id,
         agent_id: v.agentId,
         version_number: v.versionNumber,
-        deployment_status: v.deploymentStatus as AgentDetail['versions'][number]['deployment_status'],
+        deployment_status:
+          v.deploymentStatus as AgentDetail['versions'][number]['deployment_status'],
         provider: v.provider,
         provider_runtime_id: v.providerRuntimeId,
         created_at: v.createdAt.toISOString(),
         note: v.note,
       })),
-      active_spec: activeSpec ? ((activeSpec as unknown) as AgentSpec) : null,
+      active_spec: activeSpec ? (activeSpec as unknown as AgentSpec) : null,
     };
   }
 
@@ -371,7 +373,7 @@ export class AgentsService {
 
     const voice =
       versionToPublish.providerRuntimeId && versionToPublish.provider
-        ? this.voiceRegistry?.byName(versionToPublish.provider) ?? this.voice
+        ? (this.voiceRegistry?.byName(versionToPublish.provider) ?? this.voice)
         : await this.voiceForOrganization(ws.organizationId);
 
     let providerRuntimeId = versionToPublish.providerRuntimeId;
@@ -404,7 +406,8 @@ export class AgentsService {
       where: { id: agentId },
       data: {
         status: deploymentStatus === 'deployed' ? 'published' : agent.status,
-        activeVersionId: deploymentStatus === 'deployed' ? versionToPublish.id : agent.activeVersionId,
+        activeVersionId:
+          deploymentStatus === 'deployed' ? versionToPublish.id : agent.activeVersionId,
       },
     });
     await this.prisma.agentVersion.update({
@@ -618,10 +621,7 @@ function buildAgentFlow(nodes: FlowSaveNode[], edges: FlowSaveEdge[]): AgentFlow
   };
 }
 
-function toAgentFlowNode(
-  node: FlowSaveNode,
-  outgoing: Map<string, FlowSaveEdge[]>,
-): AgentFlowNode {
+function toAgentFlowNode(node: FlowSaveNode, outgoing: Map<string, FlowSaveEdge[]>): AgentFlowNode {
   const data = asRecord(node.data);
   const label = optionalString(data['label']);
   const next = nextTarget(node.id, outgoing);

@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { cache, Suspense } from 'react';
 import Link from 'next/link';
 import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -16,12 +16,14 @@ interface AgentsData {
 }
 
 /**
- * One fetch per request, shared by both suspended sections below.
- * `requireSessionUser` reuses the request-scoped `/auth/me` rather than adding
- * a second session round trip in front of the agent list.
+ * React `cache()` shares this loader once per server request across both
+ * suspended sections below.
  */
-async function loadAgents(): Promise<AgentsData> {
+const loadAgents = cache(async (): Promise<AgentsData> => {
   const me = await requireSessionUser('/dashboard/agents');
+  if (!me.active_workspace_id) {
+    return { agents: [], apiError: 'No active workspace selected.' };
+  }
   try {
     const res = await apiFetch<{ items: AgentSummary[] }>(
       `/workspaces/${me.active_workspace_id}/agents`,
@@ -30,7 +32,7 @@ async function loadAgents(): Promise<AgentsData> {
   } catch (err) {
     return { agents: [], apiError: (err as Error).message };
   }
-}
+});
 
 export default function AgentsPage() {
   return (
@@ -70,10 +72,33 @@ async function AgentStats() {
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <StatCard label="Total" value={agents.length} description="All workspace agents" icon={<Bot className="h-5 w-5" />} />
-      <StatCard label="Active" value={activeCount} description="Published agents" icon={<Radio className="h-5 w-5" />} tone="success" />
-      <StatCard label="Draft" value={draftCount} description="Still being configured" icon={<FileEdit className="h-5 w-5" />} tone="warning" />
-      <StatCard label="Paused" value={pausedCount} description="Temporarily disabled" icon={<PauseCircle className="h-5 w-5" />} tone="info" />
+      <StatCard
+        label="Total"
+        value={agents.length}
+        description="All workspace agents"
+        icon={<Bot className="h-5 w-5" />}
+      />
+      <StatCard
+        label="Active"
+        value={activeCount}
+        description="Published agents"
+        icon={<Radio className="h-5 w-5" />}
+        tone="success"
+      />
+      <StatCard
+        label="Draft"
+        value={draftCount}
+        description="Still being configured"
+        icon={<FileEdit className="h-5 w-5" />}
+        tone="warning"
+      />
+      <StatCard
+        label="Paused"
+        value={pausedCount}
+        description="Temporarily disabled"
+        icon={<PauseCircle className="h-5 w-5" />}
+        tone="info"
+      />
     </div>
   );
 }

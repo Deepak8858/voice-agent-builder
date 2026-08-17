@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { z } from 'zod';
 import type { Edge, Node } from '@xyflow/react';
-import type { ToolSummary } from '@voiceforge/shared';
+import { ToolSummarySchema } from '@voiceforge/shared';
 import { useApi } from '@/lib/use-api';
 import posthog from 'posthog-js';
 import { FlowBuilder } from './flow-builder';
@@ -16,6 +17,8 @@ interface FlowBuilderClientProps {
   agentName?: string;
   initialFlow?: { nodes: Node[]; edges: Edge[] };
 }
+
+const ToolsResponseSchema = z.object({ items: z.array(ToolSummarySchema) });
 
 export function FlowBuilderClient({
   workspaceId,
@@ -34,7 +37,8 @@ export function FlowBuilderClient({
 
   const toolsQuery = useQuery({
     queryKey: ['flow-builder-tools', workspaceId, agentId],
-    queryFn: () => call<{ items: ToolSummary[] }>(`/workspaces/${workspaceId}/tools`),
+    queryFn: async () =>
+      ToolsResponseSchema.parse(await call<unknown>(`/workspaces/${workspaceId}/tools`)),
   });
 
   const saveMutation = useMutation({
@@ -66,8 +70,7 @@ export function FlowBuilderClient({
 
   const confirmDiscard = useCallback(
     () =>
-      !isDirtyRef.current ||
-      window.confirm('You have unsaved flow changes. Leave without saving?'),
+      !isDirtyRef.current || window.confirm('You have unsaved flow changes. Leave without saving?'),
     [],
   );
 

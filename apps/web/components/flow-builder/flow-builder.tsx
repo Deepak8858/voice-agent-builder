@@ -94,8 +94,12 @@ function FlowBuilderCanvas({
   const { screenToFlowPosition, fitView } = useReactFlow();
   const nodesRef = useRef(nodes as Node[]);
   const edgesRef = useRef(edges as Edge[]);
+  const pastRef = useRef(past);
+  const futureRef = useRef(future);
   const pendingSaveRef = useRef<string | null>(null);
   const dragSnapshotRef = useRef<FlowSnapshot | null>(null);
+  const configEditKeyRef = useRef<string | null>(null);
+  const configEditTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     nodesRef.current = nodes as Node[];
@@ -103,10 +107,7 @@ function FlowBuilderCanvas({
   }, [nodes, edges]);
 
   const selectedNode = getSelectedNode(nodes as Node[], selectedNodeId);
-  const issues = useMemo(
-    () => collectFlowIssues(nodes as Node[], edges as Edge[]),
-    [nodes, edges],
-  );
+  const issues = useMemo(() => collectFlowIssues(nodes as Node[], edges as Edge[]), [nodes, edges]);
   const isDirty = serializeFlow(nodes as Node[], edges as Edge[]) !== baseline;
 
   useEffect(() => {
@@ -123,7 +124,10 @@ function FlowBuilderCanvas({
 
   const pushHistory = useCallback((snapshot?: FlowSnapshot) => {
     const previous = snapshot ?? { nodes: nodesRef.current, edges: edgesRef.current };
-    setPast((stack) => [...stack.slice(-49), previous]);
+    const nextPast = [...pastRef.current.slice(-49), previous];
+    pastRef.current = nextPast;
+    futureRef.current = [];
+    setPast(nextPast);
     setFuture([]);
   }, []);
 
@@ -147,31 +151,29 @@ function FlowBuilderCanvas({
   }, [fitView, pushHistory, setNodes]);
 
   const undo = useCallback(() => {
-    setPast((stack) => {
-      const previous = stack[stack.length - 1];
-      if (!previous) return stack;
-      setFuture((redoStack) => [
-        ...redoStack,
-        { nodes: nodesRef.current, edges: edgesRef.current },
-      ]);
-      setNodes(previous.nodes);
-      setEdges(previous.edges);
-      return stack.slice(0, -1);
-    });
+    const previous = pastRef.current[pastRef.current.length - 1];
+    if (!previous) return;
+    const nextPast = pastRef.current.slice(0, -1);
+    const nextFuture = [...futureRef.current, { nodes: nodesRef.current, edges: edgesRef.current }];
+    pastRef.current = nextPast;
+    futureRef.current = nextFuture;
+    setPast(nextPast);
+    setFuture(nextFuture);
+    setNodes(previous.nodes);
+    setEdges(previous.edges);
   }, [setEdges, setNodes]);
 
   const redo = useCallback(() => {
-    setFuture((stack) => {
-      const next = stack[stack.length - 1];
-      if (!next) return stack;
-      setPast((undoStack) => [
-        ...undoStack,
-        { nodes: nodesRef.current, edges: edgesRef.current },
-      ]);
-      setNodes(next.nodes);
-      setEdges(next.edges);
-      return stack.slice(0, -1);
-    });
+    const next = futureRef.current[futureRef.current.length - 1];
+    if (!next) return;
+    const nextPast = [...pastRef.current, { nodes: nodesRef.current, edges: edgesRef.current }];
+    const nextFuture = futureRef.current.slice(0, -1);
+    pastRef.current = nextPast;
+    futureRef.current = nextFuture;
+    setPast(nextPast);
+    setFuture(nextFuture);
+    setNodes(next.nodes);
+    setEdges(next.edges);
   }, [setEdges, setNodes]);
 
   const handleSave = useCallback(() => {
@@ -214,9 +216,7 @@ function FlowBuilderCanvas({
       pushHistory();
       const currentNodes = nodesRef.current;
       const anchor =
-        currentNodes.find((node) => node.id === selectedNodeId) ??
-        lowestNode(currentNodes) ??
-        null;
+        currentNodes.find((node) => node.id === selectedNodeId) ?? lowestNode(currentNodes) ?? null;
       const position = anchor
         ? {
             x: anchor.position.x,
@@ -225,7 +225,15 @@ function FlowBuilderCanvas({
         : { x: 240, y: 80 };
       const id = freshNodeId(type);
       setNodes((existing) => [...existing, createFlowNode(type, position, id)]);
-      if (anchor && anchor.type !== 'end' && anchor.type !== 'transfer') {
+      const anchorHasNext =
+        !!anchor &&
+        edgesRef.current.some(
+          (edge) =>
+            edge.source === anchor.id &&
+            edge.sourceHandle !== 'true' &&
+            edge.sourceHandle !== 'false',
+        );
+      if (anchor && anchor.type !== 'end' && anchor.type !== 'transfer' && !anchorHasNext) {
         setEdges((existing) =>
           addEdge(
             { id: `e-${anchor.id}-${id}`, source: anchor.id, target: id, animated: true },
@@ -290,10 +298,26 @@ function FlowBuilderCanvas({
 
   const handleConfigChange = useCallback(
     (nodeId: string, data: Record<string, unknown>) => {
-      pushHistory();
+      const editKey = `${nodeId}:${Object.keys(data).sort().join(',')}`;
+      if (configEditKeyRef.current !== editKey) {
+        pushHistory();
+        configEditKeyRef.current = editKey;
+      }
+      if (configEditTimerRef.current) clearTimeout(configEditTimerRef.current);
+      configEditTimerRef.current = setTimeout(() => {
+        configEditKeyRef.current = null;
+        configEditTimerRef.current = null;
+      }, 400);
       setNodes((existing) => updateNodeData(existing as Node[], nodeId, data));
     },
     [pushHistory, setNodes],
+  );
+
+  useEffect(
+    () => () => {
+      if (configEditTimerRef.current) clearTimeout(configEditTimerRef.current);
+    },
+    [],
   );
 
   useEffect(() => {
@@ -303,7 +327,7 @@ function FlowBuilderCanvas({
 
       if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        handleSave();
+        if (issues.length === 0) handleSave();
         return;
       }
       if (modifier && event.key.toLowerCase() === 'z') {
@@ -325,7 +349,7 @@ function FlowBuilderCanvas({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [deleteSelection, handleSave, redo, undo]);
+  }, [deleteSelection, handleSave, issues, redo, undo]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

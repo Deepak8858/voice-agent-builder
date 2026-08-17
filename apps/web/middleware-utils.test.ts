@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 import {
   PROTECTED_PREFIXES,
   PUBLIC_PREFIXES,
+  isPublicFastPath,
   updateSupabaseSession,
 } from './middleware-utils';
 
@@ -104,18 +105,18 @@ describe('updateSupabaseSession', () => {
         const shadowed =
           publicPrefix === '/'
             ? protectedPrefix === '/'
-            : protectedPrefix === publicPrefix ||
-              protectedPrefix.startsWith(`${publicPrefix}/`);
+            : protectedPrefix === publicPrefix || protectedPrefix.startsWith(`${publicPrefix}/`);
 
         expect(shadowed, `${publicPrefix} must not shadow ${protectedPrefix}`).toBe(false);
       }
     }
   });
 
-  it('still guards a protected route that shares a public prefix string', async () => {
-    const res = await updateSupabaseSession(request('/settings'));
+  it('does not fast-path a protected child of a public prefix', () => {
+    expect(isPublicFastPath('/settings/billing', ['/settings/billing'], ['/settings'])).toBe(false);
+  });
 
-    expect(res.status).toBe(307);
-    expect(res.headers.get('location')).toBe('http://localhost/sign-in?next=%2Fsettings');
+  it('does not fast-path a public child of a protected prefix', () => {
+    expect(isPublicFastPath('/settings/billing', ['/settings'], ['/settings/billing'])).toBe(false);
   });
 });

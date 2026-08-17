@@ -196,7 +196,12 @@ describe('convertReactFlowToAgentFlow', () => {
       [
         { id: 'e-start-ask', source: 'start', target: 'ask' },
         { id: 'e-ask-branch', source: 'ask', target: 'branch' },
-        { id: 'e-branch-true-transfer', source: 'branch', target: 'transfer', sourceHandle: 'true' },
+        {
+          id: 'e-branch-true-transfer',
+          source: 'branch',
+          target: 'transfer',
+          sourceHandle: 'true',
+        },
         { id: 'e-branch-false-end', source: 'branch', target: 'end', sourceHandle: 'false' },
       ],
     );
@@ -326,6 +331,18 @@ describe('autoLayoutNodes', () => {
 
     expect(laidOut).toHaveLength(3);
   });
+
+  it('lays out parallel condition edges that share a target', () => {
+    const laidOut = autoLayoutNodes(stackedNodes, [
+      { id: 'e-true', source: 'start', target: 'end', sourceHandle: 'true' },
+      { id: 'e-false', source: 'start', target: 'end', sourceHandle: 'false' },
+    ]);
+
+    expect(laidOut).toHaveLength(3);
+    expect(laidOut.find((node) => node.id === 'start')?.position.y).toBeLessThan(
+      laidOut.find((node) => node.id === 'end')?.position.y ?? 0,
+    );
+  });
 });
 
 describe('nodesOverlap', () => {
@@ -355,13 +372,15 @@ describe('validateNodeConfig', () => {
 
   it('requires text on speak nodes', () => {
     expect(validateNodeConfig(node('speak', { text: '   ' }))).toStrictEqual([
-      'Add the text the agent should speak.',
+      { field: 'text', message: 'Add the text the agent should speak.' },
     ]);
     expect(validateNodeConfig(node('speak', { text: 'Hello there' }))).toStrictEqual([]);
   });
 
   it('requires a question and capture field on ask_question nodes', () => {
-    expect(validateNodeConfig(node('ask_question', { question: '', capture_field: '' }))).toHaveLength(2);
+    expect(
+      validateNodeConfig(node('ask_question', { question: '', capture_field: '' })),
+    ).toHaveLength(2);
     expect(
       validateNodeConfig(node('ask_question', { question: 'Name?', capture_field: 'full_name' })),
     ).toStrictEqual([]);
@@ -369,21 +388,27 @@ describe('validateNodeConfig', () => {
 
   it('requires a tool name on tool_call nodes', () => {
     expect(validateNodeConfig(node('tool_call', { tool_name: '' }))).toStrictEqual([
-      'Choose the tool to call.',
+      { field: 'tool_name', message: 'Choose the tool to call.' },
     ]);
   });
 
   it('requires a supported channel and a body on send_message nodes', () => {
-    expect(validateNodeConfig(node('send_message', { channel: 'carrier-pigeon', body: '' }))).toStrictEqual([
-      'Channel must be sms or email.',
-      'Add the message body to send.',
+    expect(
+      validateNodeConfig(node('send_message', { channel: 'carrier-pigeon', body: '' })),
+    ).toStrictEqual([
+      { field: 'channel', message: 'Channel must be sms or email.' },
+      { field: 'body', message: 'Add the message body to send.' },
     ]);
-    expect(validateNodeConfig(node('send_message', { channel: 'email', body: 'Hi' }))).toStrictEqual([]);
+    expect(
+      validateNodeConfig(node('send_message', { channel: 'email', body: 'Hi' })),
+    ).toStrictEqual([]);
   });
 
   it('accepts an empty transfer number but rejects malformed ones', () => {
     expect(validateNodeConfig(node('transfer', { target_phone: '' }))).toStrictEqual([]);
-    expect(validateNodeConfig(node('transfer', { target_phone: '+14155551212' }))).toStrictEqual([]);
+    expect(validateNodeConfig(node('transfer', { target_phone: '+14155551212' }))).toStrictEqual(
+      [],
+    );
     expect(validateNodeConfig(node('transfer', { target_phone: 'call Bob' }))).toHaveLength(1);
   });
 

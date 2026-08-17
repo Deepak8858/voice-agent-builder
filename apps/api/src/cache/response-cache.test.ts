@@ -11,15 +11,13 @@ const SCOPE = { workspaceId: 'ws-1', userId: 'user-1' };
 
 describe('buildResponseCacheKey', () => {
   it('scopes the key by workspace, user, and route', () => {
-    expect(buildResponseCacheKey(SCOPE, 'agents')).toBe(
-      'resp:v1:ws:ws-1:user:user-1:agents',
-    );
+    expect(buildResponseCacheKey(SCOPE, 'agents')).toBe('resp:v1:ws:ws-1:user:user-1:agents');
   });
 
   it('appends variant and version segments', () => {
-    expect(
-      buildResponseCacheKey(SCOPE, 'agents', { variant: 'status=draft', version: 3 }),
-    ).toBe('resp:v1:ws:ws-1:user:user-1:agents:status=draft:v3');
+    expect(buildResponseCacheKey(SCOPE, 'agents', { variant: 'status=draft', version: 3 })).toBe(
+      'resp:v1:ws:ws-1:user:user-1:agents:status=draft:v3',
+    );
   });
 
   it('produces different keys for different workspaces', () => {
@@ -44,15 +42,15 @@ describe('buildResponseCacheKey', () => {
     ['blank userId', { workspaceId: 'ws', userId: '  ' }],
     ['null userId', { workspaceId: 'ws', userId: null }],
   ])('rejects %s', (_label, scope) => {
-    expect(() =>
-      buildResponseCacheKey(scope as unknown as typeof SCOPE, 'agents'),
-    ).toThrow(ResponseCacheScopeError);
+    expect(() => buildResponseCacheKey(scope as unknown as typeof SCOPE, 'agents')).toThrow(
+      ResponseCacheScopeError,
+    );
   });
 
   it('rejects a missing scope object entirely', () => {
-    expect(() =>
-      buildResponseCacheKey(undefined as unknown as typeof SCOPE, 'agents'),
-    ).toThrow(ResponseCacheScopeError);
+    expect(() => buildResponseCacheKey(undefined as unknown as typeof SCOPE, 'agents')).toThrow(
+      ResponseCacheScopeError,
+    );
   });
 
   it('rejects an empty route', () => {
@@ -60,12 +58,12 @@ describe('buildResponseCacheKey', () => {
   });
 
   it('rejects scope values containing the key separator', () => {
-    expect(() =>
-      buildResponseCacheKey({ workspaceId: 'ws:1', userId: 'u' }, 'agents'),
-    ).toThrow(ResponseCacheScopeError);
-    expect(() =>
-      buildResponseCacheKey({ workspaceId: 'ws', userId: 'u:2' }, 'agents'),
-    ).toThrow(ResponseCacheScopeError);
+    expect(() => buildResponseCacheKey({ workspaceId: 'ws:1', userId: 'u' }, 'agents')).toThrow(
+      ResponseCacheScopeError,
+    );
+    expect(() => buildResponseCacheKey({ workspaceId: 'ws', userId: 'u:2' }, 'agents')).toThrow(
+      ResponseCacheScopeError,
+    );
   });
 
   it('rejects a negative or fractional version', () => {
@@ -86,6 +84,7 @@ describe('buildResponseCacheKey', () => {
 function fakeCache() {
   return {
     get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue(undefined),
     incr: vi.fn().mockResolvedValue(1),
     readThrough: vi.fn(async (_key: string, _ttl: number, loader: () => Promise<unknown>) =>
       loader(),
@@ -167,5 +166,19 @@ describe('ResponseCacheService', () => {
 
     const keys = cache.readThrough.mock.calls.map((call) => call[0]);
     expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it('writes a loaded value to the generation resolved before invalidation', async () => {
+    const cache = fakeCache();
+    cache.get.mockResolvedValueOnce(0).mockResolvedValueOnce(null);
+    const service = new ResponseCacheService(cache as unknown as CacheService);
+
+    const result = await service.readThroughWithStatus(SCOPE, 'agents', 30, async () => {
+      await service.invalidateWorkspace('ws-1');
+      return 'fresh';
+    });
+
+    expect(result).toStrictEqual({ value: 'fresh', fromCache: false });
+    expect(cache.set).toHaveBeenCalledWith('resp:v1:ws:ws-1:user:user-1:agents:v0', 'fresh', 30);
   });
 });

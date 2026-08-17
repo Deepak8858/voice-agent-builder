@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { cache, Suspense } from 'react';
 import Link from 'next/link';
 import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -36,13 +36,20 @@ interface DashboardData {
 }
 
 /**
- * Resolved once per request: `requireSessionUser` reuses the request-scoped
- * `/auth/me`, so the agents and calls fetches start without a second session
- * round trip and run in parallel. Each section below awaits this same promise,
- * so the sections stream independently without refetching.
+ * React `cache()` resolves this loader once per server request. The suspended
+ * sections share its promise while the agents and calls requests run in
+ * parallel.
  */
-async function loadDashboard(): Promise<DashboardData> {
+const loadDashboard = cache(async (): Promise<DashboardData> => {
   const me = await requireSessionUser('/dashboard');
+  if (!me.active_workspace_id) {
+    return {
+      agents: [],
+      calls: [],
+      workspaceName: me.active_workspace_name,
+      apiError: 'No active workspace selected.',
+    };
+  }
   try {
     const [agentsRes, callsRes] = await Promise.all([
       apiFetch<{ items: AgentSummary[] }>(`/workspaces/${me.active_workspace_id}/agents`),
@@ -62,7 +69,7 @@ async function loadDashboard(): Promise<DashboardData> {
       apiError: (err as Error).message,
     };
   }
-}
+});
 
 /**
  * The static shell (header, actions, badges) renders and streams immediately;
@@ -284,7 +291,11 @@ async function GettingStarted() {
   const testCallCount = calls.filter((call) => call.direction === 'browser_test').length;
 
   const steps = [
-    { text: 'Create your first voice agent', done: agents.length > 0, href: '/dashboard/agents/new' },
+    {
+      text: 'Create your first voice agent',
+      done: agents.length > 0,
+      href: '/dashboard/agents/new',
+    },
     {
       text: 'Add clear instructions and business context',
       done: agents.some((agent) => agent.description),
@@ -299,7 +310,9 @@ async function GettingStarted() {
     <Card className="overflow-hidden bg-card/90">
       <CardHeader>
         <CardTitle>Getting started</CardTitle>
-        <CardDescription>Follow the shortest path to a production-ready voice agent.</CardDescription>
+        <CardDescription>
+          Follow the shortest path to a production-ready voice agent.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <ul className="space-y-4">

@@ -107,7 +107,7 @@ export function createFlowNode(
 export function autoLayoutNodes(nodes: Node[], edges: Edge[]): Node[] {
   if (nodes.length === 0) return nodes;
 
-  const graph = new dagre.graphlib.Graph();
+  const graph = new dagre.graphlib.Graph({ multigraph: true });
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({
     rankdir: 'TB',
@@ -123,7 +123,7 @@ export function autoLayoutNodes(nodes: Node[], edges: Edge[]): Node[] {
   }
   for (const edge of edges) {
     if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
-      graph.setEdge(edge.source, edge.target);
+      graph.setEdge(edge.source, edge.target, {}, edge.id);
     }
   }
 
@@ -173,39 +173,60 @@ export function nodesOverlap(nodes: Node[]): boolean {
  * Client-side per-node configuration checks (UX only — the server-side flow
  * validation remains the authority via the PUT /flow endpoint).
  */
-export function validateNodeConfig(node: Node): string[] {
+export interface NodeConfigIssue {
+  field: string;
+  message: string;
+}
+
+export function validateNodeConfig(node: Node): NodeConfigIssue[] {
   const data = asRecord(node.data);
-  const issues: string[] = [];
+  const issues: NodeConfigIssue[] = [];
   const type = normalizeVisualNodeType(node.type ?? '');
 
   switch (type) {
     case 'speak':
-      if (!hasText(data['text'])) issues.push('Add the text the agent should speak.');
+      if (!hasText(data['text'])) {
+        issues.push({ field: 'text', message: 'Add the text the agent should speak.' });
+      }
       break;
     case 'ask_question':
-      if (!hasText(data['question'])) issues.push('Add the question the agent should ask.');
+      if (!hasText(data['question'])) {
+        issues.push({ field: 'question', message: 'Add the question the agent should ask.' });
+      }
       if (!hasText(data['capture_field'])) {
-        issues.push('Set a capture field so the answer is stored.');
+        issues.push({
+          field: 'capture_field',
+          message: 'Set a capture field so the answer is stored.',
+        });
       }
       break;
     case 'condition':
-      if (!hasText(data['expression'])) issues.push('Add a condition expression.');
+      if (!hasText(data['expression'])) {
+        issues.push({ field: 'expression', message: 'Add a condition expression.' });
+      }
       break;
     case 'tool_call':
-      if (!hasText(data['tool_name'])) issues.push('Choose the tool to call.');
+      if (!hasText(data['tool_name'])) {
+        issues.push({ field: 'tool_name', message: 'Choose the tool to call.' });
+      }
       break;
     case 'send_message': {
       const channel = data['channel'];
       if (channel !== 'sms' && channel !== 'email') {
-        issues.push('Channel must be sms or email.');
+        issues.push({ field: 'channel', message: 'Channel must be sms or email.' });
       }
-      if (!hasText(data['body'])) issues.push('Add the message body to send.');
+      if (!hasText(data['body'])) {
+        issues.push({ field: 'body', message: 'Add the message body to send.' });
+      }
       break;
     }
     case 'transfer': {
       const phone = data['target_phone'];
       if (typeof phone === 'string' && phone.trim().length > 0 && !isPhoneLike(phone)) {
-        issues.push('Transfer number should look like a phone number, e.g. +14155551212.');
+        issues.push({
+          field: 'target_phone',
+          message: 'Transfer number should look like a phone number, e.g. +14155551212.',
+        });
       }
       break;
     }
@@ -222,7 +243,7 @@ export function collectFlowIssues(nodes: Node[], edges: Edge[]): string[] {
   const issues = [...validateAgentFlow(flow)];
   for (const node of nodes) {
     for (const issue of validateNodeConfig(node)) {
-      issues.push(`${nodeDisplayName(node)}: ${issue}`);
+      issues.push(`${nodeDisplayName(node)}: ${issue.message}`);
     }
   }
   return issues;
@@ -366,10 +387,7 @@ export function validateAgentFlow(flow: AgentFlow): string[] {
   return issues;
 }
 
-function toAgentFlowNode(
-  node: Node,
-  outgoing: Map<string, Edge[]>,
-): AgentFlow['nodes'][number] {
+function toAgentFlowNode(node: Node, outgoing: Map<string, Edge[]>): AgentFlow['nodes'][number] {
   const data = asRecord(node.data);
   const label = optionalString(data['label']);
   const next = nextTarget(node.id, outgoing);
@@ -514,10 +532,11 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function uniqueNodeId(raw: string, used: Set<string>): string {
-  const base = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '-')
-    .replace(/^-+|-+$/g, '') || 'node';
+  const base =
+    raw
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'node';
   let candidate = base;
   let index = 2;
   while (used.has(candidate)) {

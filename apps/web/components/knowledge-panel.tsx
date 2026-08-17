@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ChangeEvent } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
   KnowledgeSearchHit,
@@ -9,12 +9,7 @@ import type {
   KnowledgeSourceSummary,
 } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-} from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -54,12 +49,15 @@ export function KnowledgePanel({
     ? `/workspaces/${workspaceId}/agents/${agentId}/knowledge-sources`
     : `/workspaces/${workspaceId}/knowledge-sources?scope=workspace`;
 
-  // Switching between the workspace and an agent scope keeps the current list
-  // visible while the new one loads, rather than emptying the card.
   const listQuery = useQuery({
     queryKey: listKey,
     queryFn: () => call<{ items: KnowledgeSourceSummary[] }>(listUrl),
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      return previousKey?.[1] === workspaceId && previousKey?.[2] === (agentId ?? 'workspace')
+        ? previousData
+        : undefined;
+    },
   });
 
   const createMutation = useMutation({
@@ -70,19 +68,19 @@ export function KnowledgePanel({
         fd.append('file', file);
         fd.append('title', title);
         if (agentId) fd.append('agent_id', agentId);
-        return call<KnowledgeSourceSummary>(
-          `/workspaces/${workspaceId}/knowledge-sources/upload`,
-          { method: 'POST', body: fd },
-        );
+        return call<KnowledgeSourceSummary>(`/workspaces/${workspaceId}/knowledge-sources/upload`, {
+          method: 'POST',
+          body: fd,
+        });
       }
       const body: Record<string, unknown> = { title, source_type: sourceType };
       if (agentId) body.agent_id = agentId;
       if (sourceType === 'text') body.content = content;
       else body.file_url = fileUrl;
-      return call<KnowledgeSourceSummary>(
-        `/workspaces/${workspaceId}/knowledge-sources`,
-        { method: 'POST', body: JSON.stringify(body) },
-      );
+      return call<KnowledgeSourceSummary>(`/workspaces/${workspaceId}/knowledge-sources`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
     onSuccess: () => {
       posthog.capture('knowledge_source_added', {
@@ -118,10 +116,10 @@ export function KnowledgePanel({
     mutationFn: async () => {
       const body: Record<string, unknown> = { query: searchInput, k: 5 };
       if (agentId) body.agent_id = agentId;
-      return call<KnowledgeSearchResult>(
-        `/workspaces/${workspaceId}/knowledge-sources/search`,
-        { method: 'POST', body: JSON.stringify(body) },
-      );
+      return call<KnowledgeSearchResult>(`/workspaces/${workspaceId}/knowledge-sources/search`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
     onSuccess: (data) => setSearchResult(data),
     onError: (err: Error) => toast.error(err.message),
@@ -195,14 +193,17 @@ export function KnowledgePanel({
             <li className="rounded-2xl border border-dashed border-border bg-muted/30 px-5 py-8 text-center">
               <p className="text-sm font-medium text-foreground">No knowledge attached yet.</p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Add source material below so the agent can answer account, pricing, policy, and scheduling questions accurately.
+                Add source material below so the agent can answer account, pricing, policy, and
+                scheduling questions accurately.
               </p>
             </li>
           ) : null}
         </ul>
 
         <div className="rounded-lg border border-dashed border-border bg-accent/30 p-5">
-          <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">Add new</p>
+          <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">
+            Add new
+          </p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <Label>Title</Label>
@@ -270,21 +271,32 @@ export function KnowledgePanel({
               disabled={!canSubmit || createMutation.isPending}
               className="gap-2"
             >
-              {sourceType === 'file' ? <Upload className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+              {sourceType === 'file' ? (
+                <Upload className="h-4 w-4" />
+              ) : (
+                <FileText className="h-4 w-4" />
+              )}
               {createMutation.isPending ? 'Adding…' : 'Add knowledge'}
             </Button>
           </div>
         </div>
 
         <div className="rounded-lg border border-border bg-background p-5">
-          <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">Test retrieval</p>
+          <p className="mb-3 text-xs font-medium text-foreground uppercase tracking-wider">
+            Test retrieval
+          </p>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Ask a question your agent might receive..."
             />
-            <Button type="button" onClick={() => searchMutation.mutate()} disabled={!canSearch} className="gap-2">
+            <Button
+              type="button"
+              onClick={() => searchMutation.mutate()}
+              disabled={!canSearch}
+              className="gap-2"
+            >
               <Search className="h-4 w-4" />
               {searchMutation.isPending ? 'Searching…' : 'Search'}
             </Button>
@@ -303,7 +315,9 @@ export function KnowledgePanel({
                       <span>
                         {h.source_title} · chunk #{h.chunk_index}
                       </span>
-                      <Badge variant="secondary" className="font-mono">{h.score.toFixed(3)}</Badge>
+                      <Badge variant="secondary" className="font-mono">
+                        {h.score.toFixed(3)}
+                      </Badge>
                     </div>
                     <p className="whitespace-pre-wrap text-foreground">
                       {h.content.length > 400 ? `${h.content.slice(0, 400)}…` : h.content}
