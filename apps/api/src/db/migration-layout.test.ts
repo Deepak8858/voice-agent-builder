@@ -66,9 +66,7 @@ describe('prisma migration layout', () => {
     const sql = migrationSql();
 
     expect(sql).toMatch(/create table (if not exists )?"?agent_gen_sessions"?/i);
-    expect(sql).toMatch(
-      /alter table "?(public\.)?agent_gen_sessions"? enable row level security/i,
-    );
+    expect(sql).toMatch(/alter table "?(public\.)?agent_gen_sessions"? enable row level security/i);
   });
 });
 
@@ -80,4 +78,3 @@ describe('Data API exposure policy coverage', () => {
     expect(unclassified).toEqual([]);
   });
 });
-
