@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -15,7 +15,7 @@ import { AgentSpecSchema } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
-import { AgentNotFoundError, AgentSpecInvalidError } from '../common/errors';
+import { AgentNotFoundError, AgentSpecInvalidError, AppError } from '../common/errors';
 import { CacheInvalidator } from '../common/cache-invalidator';
 import { CacheService } from '../cache/cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
@@ -74,14 +74,20 @@ export class AgentsService {
       requested.length > 0
         ? await this.knowledge.resolveReferencedSourceIds(workspaceId, null, requested)
         : [];
-    return this.generator.generate({ ...dto, knowledge_source_ids: validIds });
-  }
-
-  getStreamingGenerator(): ((input: GenerateAgentDto) => AsyncGenerator<string>) | null {
-    if (typeof this.generator.generateStream === 'function') {
-      return this.generator.generateStream as (input: GenerateAgentDto) => AsyncGenerator<string>;
+    try {
+      return await this.generator.generate({ ...dto, knowledge_source_ids: validIds });
+    } catch (err) {
+      // Adapters abort via AbortSignal.timeout, which throws a DOMException
+      // named TimeoutError. Surface it as a 504 envelope instead of a 500.
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new AppError(
+          'LLM_PROVIDER_ERROR',
+          'Agent generation timed out. Please try again.',
+          HttpStatus.GATEWAY_TIMEOUT,
+        );
+      }
+      throw err;
     }
-    return null;
   }
 
   async list(workspaceId: string): Promise<ListAgentsResult> {

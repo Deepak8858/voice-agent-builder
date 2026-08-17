@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Logger, Param, Patch, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Param, Patch, Post, Put, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { z } from 'zod';
 import {
@@ -13,6 +13,7 @@ import {
   type SessionUser,
 } from '@voiceforge/shared';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { GenerationRateLimitGuard } from '../common/generation-rate-limit.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CurrentUser } from '../common/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
@@ -58,7 +59,6 @@ const DEFAULT_DEMO_AUDIO_URL = '/demo/dental-receptionist-30s.wav';
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/agents')
 export class AgentsController {
-  private readonly logger = new Logger(AgentsController.name);
   constructor(
     private readonly agents: AgentsService,
     private readonly prisma: PrismaService,
@@ -84,54 +84,12 @@ export class AgentsController {
   }
 
   @Post('generate')
+  @UseGuards(GenerationRateLimitGuard)
   async generate(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(GenerateAgentDtoSchema)) dto: GenerateAgentDto,
   ) {
     return this.agents.generate(workspaceId, dto);
-  }
-
-  @Get('generate/stream')
-  async generateStream(
-    @Param('workspaceId') workspaceId: string,
-    @Query('prompt') prompt: string,
-    @Query('template_slug') templateSlug?: string,
-  ) {
-    if (!prompt) {
-      return { error: 'prompt query param required' };
-    }
-    const dto: GenerateAgentDto = { prompt, template_slug: templateSlug };
-    const generator = this.agents.getStreamingGenerator();
-    if (!generator) {
-      return { error: 'Streaming not supported by current LLM provider' };
-    }
-    const logger = this.logger;
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          for await (const token of generator(dto)) {
-            controller.enqueue(`data: ${JSON.stringify({ token })}\n\n`);
-          }
-          controller.enqueue(`data: ${JSON.stringify({ done: true })}\n\n`);
-        } catch (err) {
-          logger.error(
-            `Agent generation stream failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          controller.enqueue(`data: ${JSON.stringify({ error: 'Agent generation failed. Please retry.' })}\n\n`);
-        } finally {
-          controller.close();
-        }
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
   }
 
   @Get(':agentId')

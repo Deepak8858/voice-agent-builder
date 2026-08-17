@@ -8,6 +8,11 @@ const BooleanEnvSchema = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const OptionalUrlEnvSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().url().optional(),
+);
+
 /**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
@@ -28,7 +33,10 @@ const EnvSchema = z.object({
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
   VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
-  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
+  // Azure AI Foundry (gpt-5.4-mini) is the production default. The LLM module
+  // factory still fails fast at boot when the selected provider's key is
+  // missing, so this default does not change credential-less-boot behavior.
+  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('azure-aifoundry'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
   VAPI_API_KEY: z.string().optional(),
@@ -110,7 +118,7 @@ const EnvSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
   LLM_MODEL: z.string().optional(),
-  LLM_BASE_URL: z.string().optional(),
+  LLM_BASE_URL: OptionalUrlEnvSchema,
   OPENAI_API_KEY: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),
@@ -171,6 +179,15 @@ const EnvSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
 
+  // Chat-to-agent generation. LLM calls are expensive, so generation gets its
+  // own (stricter) per-user rate limit on top of the global request limiter.
+  AGENT_GEN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
+  AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(300),
+  AGENT_GEN_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(4),
+  // A session stuck in 'generating' longer than this is failed by the lazy
+  // sweep on the next read, so the UI can offer a retry.
+  AGENT_GEN_STALE_AFTER_SECONDS: z.coerce.number().int().min(60).default(180),
+
   METRICS_SCRAPE_TOKEN: z.string().optional(),
   VOICE_WEBHOOK_SECRET: z.string().optional(),
   WORKERS_ENABLED: BooleanEnvSchema.default(false),
@@ -225,6 +242,19 @@ const EnvSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['VOICE_PROVIDER'],
       message: 'VOICE_PROVIDER=mock is not allowed in production',
+    });
+  }
+  // The Azure adapter has no safe default endpoint; require it explicitly in
+  // production so a misconfigured deployment fails at boot, not per-request.
+  if (
+    value.NODE_ENV === 'production' &&
+    value.LLM_PROVIDER === 'azure-aifoundry' &&
+    !value.LLM_BASE_URL
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LLM_BASE_URL'],
+      message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
     });
   }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after

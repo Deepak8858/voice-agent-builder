@@ -48,10 +48,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
         typeof ((resp as unknown) as Record<string, unknown>).code === 'string'
       ) {
         const obj = resp as { code: ApiErrorCode; message?: string; details?: Record<string, unknown> };
+        // Details are stripped in production to avoid leaking internals, with
+        // one exception: rate-limit responses carry retryAfterSeconds, which
+        // clients need to show the wait time.
+        const keepDetails = !isProduction() || obj.code === 'RATE_LIMITED';
         error = {
           code: obj.code,
           message: obj.message ?? exception.message,
-          details: isProduction() ? undefined : obj.details,
+          details: keepDetails ? obj.details : undefined,
         };
       } else if (resp && typeof resp === 'object' && 'message' in resp) {
         error = {
