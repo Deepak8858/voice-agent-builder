@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type ChangeEvent } from 'react';
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type {
   KnowledgeSearchHit,
@@ -54,12 +54,17 @@ export function KnowledgePanel({
     ? `/workspaces/${workspaceId}/agents/${agentId}/knowledge-sources`
     : `/workspaces/${workspaceId}/knowledge-sources?scope=workspace`;
 
-  // Switching between the workspace and an agent scope keeps the current list
-  // visible while the new one loads, rather than emptying the card.
+  // Retain placeholder data only while refetching the exact same tenant and
+  // agent scope. A scope change must never display the previous scope's rows.
   const listQuery = useQuery({
     queryKey: listKey,
     queryFn: () => call<{ items: KnowledgeSourceSummary[] }>(listUrl),
-    placeholderData: keepPreviousData,
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      return previousKey?.[1] === workspaceId && previousKey?.[2] === (agentId ?? 'workspace')
+        ? previousData
+        : undefined;
+    },
   });
 
   const createMutation = useMutation({

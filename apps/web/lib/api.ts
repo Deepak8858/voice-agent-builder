@@ -2,7 +2,7 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import type { ApiEnvelope, SessionUser } from '@voiceforge/shared';
+import { SessionUserSchema, type ApiEnvelope, type SessionUser } from '@voiceforge/shared';
 import { buildApiContextHeaders } from './api-context-headers';
 import { extractSupabaseAccessToken } from './supabase/access-token';
 
@@ -102,8 +102,8 @@ async function rawApiFetch<T>(
  * Kept as a named helper so pages express the intent ("reuse the request's
  * session") rather than relying on an implementation detail of `apiFetch`.
  */
-export function getSessionUser(): Promise<SessionUser> {
-  return apiFetch<SessionUser>('/auth/me');
+export async function getSessionUser(): Promise<SessionUser> {
+  return SessionUserSchema.parse(await apiFetch<unknown>('/auth/me'));
 }
 
 /**

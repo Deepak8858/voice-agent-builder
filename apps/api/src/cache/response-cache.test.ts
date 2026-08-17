@@ -90,6 +90,7 @@ function fakeCache() {
     readThrough: vi.fn(async (_key: string, _ttl: number, loader: () => Promise<unknown>) =>
       loader(),
     ),
+    set: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -137,6 +138,48 @@ describe('ResponseCacheService', () => {
     expect(value).toBe('fresh');
     expect(loader).toHaveBeenCalledOnce();
     expect(cache.readThrough).not.toHaveBeenCalled();
+  });
+
+  it('pins one generation when invalidation occurs between a miss and write', async () => {
+    const cache = fakeCache();
+    cache.get
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(null);
+    const service = new ResponseCacheService(cache as unknown as CacheService);
+
+    const first = await service.readThroughWithStatus(SCOPE, 'agents', 30, async () => {
+      await service.invalidateWorkspace('ws-1');
+      return 'stale-snapshot';
+    });
+    const second = await service.readThroughWithStatus(SCOPE, 'agents', 30, async () => 'fresh');
+
+    expect(first).toStrictEqual({ value: 'stale-snapshot', fromCache: false });
+    expect(second).toStrictEqual({ value: 'fresh', fromCache: false });
+    expect(cache.set).toHaveBeenNthCalledWith(
+      1,
+      'resp:v1:ws:ws-1:user:user-1:agents:v0',
+      'stale-snapshot',
+      30,
+    );
+    expect(cache.set).toHaveBeenNthCalledWith(
+      2,
+      'resp:v1:ws:ws-1:user:user-1:agents:v1',
+      'fresh',
+      30,
+    );
+  });
+
+  it('reports cache hits accurately', async () => {
+    const cache = fakeCache();
+    cache.get.mockResolvedValueOnce(2).mockResolvedValueOnce('cached');
+    const service = new ResponseCacheService(cache as unknown as CacheService);
+
+    await expect(
+      service.readThroughWithStatus(SCOPE, 'agents', 30, async () => 'fresh'),
+    ).resolves.toStrictEqual({ value: 'cached', fromCache: true });
+    expect(cache.set).not.toHaveBeenCalled();
   });
 
   it('invalidates a workspace by bumping its version counter', async () => {

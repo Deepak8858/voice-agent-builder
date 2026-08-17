@@ -40,7 +40,7 @@ export function AgentFlowTab({ agentId, initialFlow, jsonContent }: AgentFlowTab
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >
-            JSON Editor
+            JSON preview
           </button>
         </div>
 

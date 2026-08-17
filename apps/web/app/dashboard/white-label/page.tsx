@@ -32,6 +32,9 @@ async function WhiteLabelSection() {
   }
 
   if (!me) return <SessionErrorCard title="Could not load settings" message={apiError} />;
+  if (!me.active_workspace_id) {
+    return <SessionErrorCard title="Could not load settings" message="No active workspace selected." />;
+  }
 
-  return <WhiteLabelPanel workspaceId={me.active_workspace_id ?? ''} />;
+  return <WhiteLabelPanel workspaceId={me.active_workspace_id} />;
 }

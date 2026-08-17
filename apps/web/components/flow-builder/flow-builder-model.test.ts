@@ -204,23 +204,30 @@ describe('convertReactFlowToAgentFlow', () => {
     expect(canonical).toStrictEqual({
       start_node_id: 'start',
       nodes: [
-        { id: 'start', type: 'start', label: 'Start', next: 'ask' },
+        { id: 'start', type: 'start', label: 'Start', position: { x: 0, y: 0 }, next: 'ask' },
         {
           id: 'ask',
           type: 'ask_question',
           question: 'What do you need?',
           capture_field: 'intent',
+          position: { x: 0, y: 140 },
           next: 'branch',
         },
         {
           id: 'branch',
           type: 'condition',
           expression: "intent === 'urgent'",
+          position: { x: 0, y: 280 },
           on_true: 'transfer',
           on_false: 'end',
         },
-        { id: 'transfer', type: 'transfer', target_phone: '+14155550123' },
-        { id: 'end', type: 'end', label: 'End' },
+        {
+          id: 'transfer',
+          type: 'transfer',
+          target_phone: '+14155550123',
+          position: { x: -160, y: 420 },
+        },
+        { id: 'end', type: 'end', label: 'End', position: { x: 160, y: 420 } },
       ],
     });
   });
@@ -250,12 +257,14 @@ describe('convertReactFlowToAgentFlow', () => {
     expect(staleVisualConnection.nodes[0]).toStrictEqual({
       id: 'start',
       type: 'start',
+      position: { x: 0, y: 0 },
       next: 'branch',
     });
     expect(staleVisualConnection.nodes[1]).toStrictEqual({
       id: 'branch',
       type: 'condition',
       expression: 'needs_handoff',
+      position: { x: 0, y: 140 },
       on_true: 'end',
       on_false: '',
     });
@@ -318,6 +327,20 @@ describe('autoLayoutNodes', () => {
     expect(autoLayoutNodes([], [])).toStrictEqual([]);
   });
 
+  it('lays out parallel condition edges without collapsing either edge', () => {
+    const branchNodes: Node[] = [
+      { id: 'branch', type: 'condition', position: { x: 0, y: 0 }, data: { expression: 'x' } },
+      { id: 'end', type: 'end', position: { x: 0, y: 0 }, data: {} },
+    ];
+    const parallelEdges: Edge[] = [
+      { id: 'true-edge', source: 'branch', target: 'end', sourceHandle: 'true' },
+      { id: 'false-edge', source: 'branch', target: 'end', sourceHandle: 'false' },
+    ];
+
+    expect(autoLayoutNodes(branchNodes, parallelEdges)).toHaveLength(2);
+    expect(parallelEdges.map((edge) => edge.id)).toStrictEqual(['true-edge', 'false-edge']);
+  });
+
   it('ignores edges that reference missing nodes', () => {
     const laidOut = autoLayoutNodes(stackedNodes, [
       ...chainEdges,
@@ -355,7 +378,7 @@ describe('validateNodeConfig', () => {
 
   it('requires text on speak nodes', () => {
     expect(validateNodeConfig(node('speak', { text: '   ' }))).toStrictEqual([
-      'Add the text the agent should speak.',
+      { field: 'text', message: 'Add the text the agent should speak.' },
     ]);
     expect(validateNodeConfig(node('speak', { text: 'Hello there' }))).toStrictEqual([]);
   });
@@ -369,14 +392,14 @@ describe('validateNodeConfig', () => {
 
   it('requires a tool name on tool_call nodes', () => {
     expect(validateNodeConfig(node('tool_call', { tool_name: '' }))).toStrictEqual([
-      'Choose the tool to call.',
+      { field: 'tool_name', message: 'Choose the tool to call.' },
     ]);
   });
 
   it('requires a supported channel and a body on send_message nodes', () => {
     expect(validateNodeConfig(node('send_message', { channel: 'carrier-pigeon', body: '' }))).toStrictEqual([
-      'Channel must be sms or email.',
-      'Add the message body to send.',
+      { field: 'channel', message: 'Channel must be sms or email.' },
+      { field: 'body', message: 'Add the message body to send.' },
     ]);
     expect(validateNodeConfig(node('send_message', { channel: 'email', body: 'Hi' }))).toStrictEqual([]);
   });

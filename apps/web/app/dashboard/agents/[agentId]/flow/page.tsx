@@ -1,11 +1,11 @@
 import { notFound } from 'next/navigation';
-import { apiFetch, ApiCallError } from '@/lib/api';
+import { apiFetch, ApiCallError, requireSessionUser } from '@/lib/api';
 import { FlowBuilderClient } from '@/components/flow-builder/flow-builder-client';
 import {
   buildDefaultAgentFlow,
   convertAgentFlowToReactFlow,
 } from '@/components/flow-builder/flow-builder-model';
-import type { AgentDetail, SessionUser } from '@voiceforge/shared';
+import type { AgentDetail } from '@voiceforge/shared';
 
 interface PageProps {
   params: Promise<{ agentId: string }>;
@@ -13,7 +13,8 @@ interface PageProps {
 
 export default async function AgentFlowPage({ params }: PageProps) {
   const { agentId } = await params;
-  const me = await apiFetch<SessionUser>('/auth/me');
+  const me = await requireSessionUser(`/dashboard/agents/${agentId}/flow`);
+  if (!me.active_workspace_id) notFound();
 
   let agent: AgentDetail;
   try {
@@ -31,7 +32,7 @@ export default async function AgentFlowPage({ params }: PageProps) {
     /* Breaks out of the dashboard container so the canvas fills the viewport. */
     <div className="fixed inset-0 z-40 flex flex-col bg-background">
       <FlowBuilderClient
-        workspaceId={me.active_workspace_id ?? ''}
+        workspaceId={me.active_workspace_id}
         agentId={agent.id}
         agentName={agent.name}
         initialFlow={initialFlow}

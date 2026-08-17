@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { cache, Suspense } from 'react';
 import Link from 'next/link';
 import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -13,9 +13,12 @@ interface CallsData {
   apiError: string | null;
 }
 
-/** Deduped per request: both suspended sections below await the same promise. */
-async function loadCalls(): Promise<CallsData> {
+/** React `cache()` deduplicates this loader across both suspended sections. */
+const loadCalls = cache(async (): Promise<CallsData> => {
   const me = await requireSessionUser('/dashboard/calls');
+  if (!me.active_workspace_id) {
+    return { items: [], apiError: 'No active workspace selected.' };
+  }
   try {
     const res = await apiFetch<{ items: CallSummary[] }>(
       `/workspaces/${me.active_workspace_id}/calls`,
@@ -24,7 +27,7 @@ async function loadCalls(): Promise<CallsData> {
   } catch (err) {
     return { items: [], apiError: (err as Error).message };
   }
-}
+});
 
 export default function CallsPage() {
   return (

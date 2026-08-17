@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { Edge, Node } from '@xyflow/react';
-import type { ToolSummary } from '@voiceforge/shared';
+import { ToolSummarySchema } from '@voiceforge/shared';
+import { z } from 'zod';
 import { useApi } from '@/lib/use-api';
 import posthog from 'posthog-js';
 import { FlowBuilder } from './flow-builder';
@@ -27,6 +28,7 @@ export function FlowBuilderClient({
   const router = useRouter();
   const [savedSignal, setSavedSignal] = useState(0);
   const isDirtyRef = useRef(false);
+  const saveLockRef = useRef(false);
 
   const handleDirtyChange = useCallback((dirty: boolean) => {
     isDirtyRef.current = dirty;
@@ -34,7 +36,10 @@ export function FlowBuilderClient({
 
   const toolsQuery = useQuery({
     queryKey: ['flow-builder-tools', workspaceId, agentId],
-    queryFn: () => call<{ items: ToolSummary[] }>(`/workspaces/${workspaceId}/tools`),
+    queryFn: async () =>
+      z.object({ items: z.array(ToolSummarySchema) }).parse(
+        await call<unknown>(`/workspaces/${workspaceId}/tools`),
+      ),
   });
 
   const saveMutation = useMutation({
@@ -51,17 +56,34 @@ export function FlowBuilderClient({
       setSavedSignal((signal) => signal + 1);
     },
     onError: (err: Error) => toast.error(err.message),
+    onSettled: () => {
+      saveLockRef.current = false;
+    },
   });
 
-  /** Warn before losing unsaved edits on reload or tab close. */
+  /** Warn before losing unsaved edits on reload, tab close, or browser Back. */
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!isDirtyRef.current) return;
       event.preventDefault();
       event.returnValue = '';
     };
+    const guardState = { voiceforgeFlowGuard: true };
+    window.history.pushState(guardState, '', window.location.href);
+    const onPopState = () => {
+      if (!isDirtyRef.current || window.confirm('You have unsaved flow changes. Leave without saving?')) {
+        window.removeEventListener('popstate', onPopState);
+        window.history.back();
+        return;
+      }
+      window.history.pushState(guardState, '', window.location.href);
+    };
     window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('popstate', onPopState);
+    };
   }, []);
 
   const confirmDiscard = useCallback(
@@ -86,6 +108,8 @@ export function FlowBuilderClient({
 
   const handleSave = useCallback(
     (nodes: Node[], edges: Edge[]) => {
+      if (saveLockRef.current) return;
+      saveLockRef.current = true;
       saveMutation.mutate({ nodes, edges });
     },
     [saveMutation],

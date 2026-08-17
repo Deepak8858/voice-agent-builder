@@ -22,12 +22,9 @@ export const PROTECTED_PREFIXES = [
 
 /**
  * Marketing and auth routes that are public by definition. Matching one skips
- * the cookie scan entirely.
- *
- * This is a performance shortcut, not an authorization decision: a path here
- * would fall through to `NextResponse.next()` anyway because it is not in
- * `PROTECTED_PREFIXES`. `middleware-utils.test.ts` asserts the two lists never
- * overlap, so adding a protected route to this list cannot silently open it.
+ * the cookie scan only after protected-route matching has run. Protected status
+ * always wins if these prefixes overlap, so future route-list changes cannot
+ * silently bypass the auth-cookie check.
  */
 export const PUBLIC_PREFIXES = [
   '/',
@@ -49,9 +46,8 @@ export async function updateSupabaseSession(
   const path = req.nextUrl.pathname;
   const pass = () => NextResponse.next({ request: { headers: requestHeaders } });
 
-  if (matchesPrefix(path, PUBLIC_PREFIXES)) return pass();
-
   const needsAuth = matchesPrefix(path, PROTECTED_PREFIXES);
+  if (!needsAuth && matchesPrefix(path, PUBLIC_PREFIXES)) return pass();
 
   if (needsAuth && !hasSupabaseAuthCookie(req)) {
     const redirect = req.nextUrl.clone();

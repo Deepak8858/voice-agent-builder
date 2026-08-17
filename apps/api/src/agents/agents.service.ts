@@ -38,6 +38,7 @@ export type FlowSaveNode = {
   id: string;
   type: string;
   data: unknown;
+  position?: { x: number; y: number };
 };
 
 export type FlowSaveEdge = {
@@ -115,13 +116,13 @@ export class AgentsService {
     };
 
     if (this.responseCache && userId) {
-      const scope = { workspaceId, userId };
-      const cached = await this.responseCache.get<AgentSummary[]>(scope, 'agents');
-      if (cached !== null) return { agents: cached, fromCache: true };
-
-      const summaries = await load();
-      await this.responseCache.set(scope, 'agents', summaries, AGENTS_LIST_TTL_SECONDS);
-      return { agents: summaries, fromCache: false };
+      const result = await this.responseCache.readThroughWithStatus(
+        { workspaceId, userId },
+        'agents',
+        AGENTS_LIST_TTL_SECONDS,
+        load,
+      );
+      return { agents: result.value, fromCache: result.fromCache };
     }
 
     const key = `agents:list:${workspaceId}`;
@@ -628,6 +629,7 @@ function toAgentFlowNode(
   const base = {
     id: node.id,
     ...(label ? { label } : {}),
+    ...(node.position ? { position: node.position } : {}),
   };
 
   switch (normalizeFlowType(node.type)) {

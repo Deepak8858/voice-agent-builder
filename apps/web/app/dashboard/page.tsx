@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { cache, Suspense } from 'react';
 import Link from 'next/link';
 import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -36,13 +36,20 @@ interface DashboardData {
 }
 
 /**
- * Resolved once per request: `requireSessionUser` reuses the request-scoped
- * `/auth/me`, so the agents and calls fetches start without a second session
- * round trip and run in parallel. Each section below awaits this same promise,
- * so the sections stream independently without refetching.
+ * React `cache()` deduplicates this loader per server render. The session is
+ * resolved once and the agents and calls requests then run in parallel while
+ * the independent sections stream.
  */
-async function loadDashboard(): Promise<DashboardData> {
+const loadDashboard = cache(async (): Promise<DashboardData> => {
   const me = await requireSessionUser('/dashboard');
+  if (!me.active_workspace_id) {
+    return {
+      agents: [],
+      calls: [],
+      workspaceName: me.active_workspace_name,
+      apiError: 'No active workspace selected.',
+    };
+  }
   try {
     const [agentsRes, callsRes] = await Promise.all([
       apiFetch<{ items: AgentSummary[] }>(`/workspaces/${me.active_workspace_id}/agents`),
@@ -62,7 +69,7 @@ async function loadDashboard(): Promise<DashboardData> {
       apiError: (err as Error).message,
     };
   }
-}
+});
 
 /**
  * The static shell (header, actions, badges) renders and streams immediately;

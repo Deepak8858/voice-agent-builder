@@ -1,6 +1,6 @@
 'use client';
 
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import dynamic from 'next/dynamic';
 import type {
   AgentMetricsResponse,
@@ -99,35 +99,30 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
 
   const queryRange = buildRangeDays(RANGE_DAYS[range]);
 
-  // `keepPreviousData`: switching the range keeps the current charts on screen
-  // while the new window loads, instead of flashing every panel back to
-  // "Loading…" and collapsing the layout.
+  // Range changes clear the old result so data is never presented under the
+  // newly selected range label before that range's request succeeds.
   const overview = useQuery({
     queryKey: ['analytics', 'workspace', workspaceId, range],
     queryFn: () =>
       call<WorkspaceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/workspace`, queryRange)),
-    placeholderData: keepPreviousData,
   });
 
   const agents = useQuery({
     queryKey: ['analytics', 'agents', workspaceId, range],
     queryFn: () =>
       call<AgentMetricsResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/agents`, queryRange)),
-    placeholderData: keepPreviousData,
   });
 
   const compliance = useQuery({
     queryKey: ['analytics', 'compliance', workspaceId, range],
     queryFn: () =>
       call<ComplianceMetrics>(appendQuery(`/workspaces/${workspaceId}/analytics/compliance`, queryRange)),
-    placeholderData: keepPreviousData,
   });
 
   const timeseries = useQuery({
     queryKey: ['analytics', 'timeseries', workspaceId, range],
     queryFn: () =>
       call<TimeseriesResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange)),
-    placeholderData: keepPreviousData,
   });
 
   // derive chart data

@@ -66,7 +66,7 @@ export function NodeConfigPanel({
 
   const issues = validateNodeConfig(node);
   const meta = getNodeMeta(node.type);
-  const commonError = (prefix: string) => issues.find((issue) => issue.toLowerCase().includes(prefix));
+  const fieldError = (field: string) => issues.find((issue) => issue.field === field)?.message;
 
   return (
     /* ph-no-capture: this panel can contain spoken scripts, phone numbers,
@@ -97,7 +97,7 @@ export function NodeConfigPanel({
             <Field
               label="Text to speak"
               helper="The exact words the agent says at this step."
-              error={commonError('text')}
+              error={fieldError('text')}
             >
               <Textarea
                 rows={5}
@@ -113,7 +113,7 @@ export function NodeConfigPanel({
               <Field
                 label="Question"
                 helper="Ask one clear question at a time."
-                error={commonError('question')}
+                error={fieldError('question')}
               >
                 <Textarea
                   rows={4}
@@ -125,7 +125,7 @@ export function NodeConfigPanel({
               <Field
                 label="Capture field"
                 helper="Variable name used to store the caller's answer, such as full_name."
-                error={commonError('capture')}
+                error={fieldError('capture_field')}
               >
                 <Input
                   value={typeof node.data?.capture_field === 'string' ? node.data.capture_field : ''}
@@ -141,7 +141,7 @@ export function NodeConfigPanel({
             <Field
               label="Expression"
               helper="Routes the call through the true or false connection."
-              error={commonError('expression')}
+              error={fieldError('expression')}
             >
               <Input
                 value={typeof node.data?.expression === 'string' ? node.data.expression : ''}
@@ -156,7 +156,7 @@ export function NodeConfigPanel({
             <Field
               label="Tool"
               helper="Choose an enabled workspace tool to run at this step."
-              error={commonError('tool')}
+              error={fieldError('tool_name')}
             >
               <select
                 className={selectClassName}
@@ -191,7 +191,7 @@ export function NodeConfigPanel({
             <Field
               label="Transfer phone number"
               helper="Use E.164 format. Leave empty to use the default human handoff destination."
-              error={commonError('number')}
+              error={fieldError('target_phone')}
             >
               <Input
                 value={typeof node.data?.target_phone === 'string' ? node.data.target_phone : ''}
@@ -207,13 +207,14 @@ export function NodeConfigPanel({
               <Field
                 label="Channel"
                 helper="Choose how this message is delivered."
-                error={commonError('channel')}
+                error={fieldError('channel')}
               >
                 <select
                   className={selectClassName}
-                  value={node.data?.channel === 'email' ? 'email' : 'sms'}
+                  value={node.data?.channel === 'email' || node.data?.channel === 'sms' ? node.data.channel : ''}
                   onChange={(event) => handleChange('channel', event.target.value)}
                 >
+                  <option value="" disabled>Select a channel</option>
                   <option value="sms">SMS</option>
                   <option value="email">Email</option>
                 </select>
@@ -221,7 +222,7 @@ export function NodeConfigPanel({
               <Field
                 label="Message body"
                 helper="The plain-text message sent to the contact."
-                error={commonError('body')}
+                error={fieldError('body')}
               >
                 <Textarea
                   rows={5}
@@ -256,7 +257,14 @@ export function NodeConfigPanel({
       </div>
 
       <div className="grid grid-cols-2 gap-2 border-t border-border p-4">
-        <Button type="button" variant="outline" size="sm" onClick={() => onDuplicate(node.id)}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={node.type === 'start'}
+          title={node.type === 'start' ? 'The start node cannot be duplicated' : 'Duplicate node'}
+          onClick={() => onDuplicate(node.id)}
+        >
           <Copy className="mr-1.5 h-3.5 w-3.5" />
           Duplicate
         </Button>

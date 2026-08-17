@@ -1,4 +1,4 @@
-import { Suspense } from 'react';
+import { cache, Suspense } from 'react';
 import Link from 'next/link';
 import { apiFetch, requireSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -16,12 +16,14 @@ interface AgentsData {
 }
 
 /**
- * One fetch per request, shared by both suspended sections below.
- * `requireSessionUser` reuses the request-scoped `/auth/me` rather than adding
- * a second session round trip in front of the agent list.
+ * React `cache()` deduplicates this loader across both suspended sections in
+ * one server render, including the request-scoped session lookup.
  */
-async function loadAgents(): Promise<AgentsData> {
+const loadAgents = cache(async (): Promise<AgentsData> => {
   const me = await requireSessionUser('/dashboard/agents');
+  if (!me.active_workspace_id) {
+    return { agents: [], apiError: 'No active workspace selected.' };
+  }
   try {
     const res = await apiFetch<{ items: AgentSummary[] }>(
       `/workspaces/${me.active_workspace_id}/agents`,
@@ -30,7 +32,7 @@ async function loadAgents(): Promise<AgentsData> {
   } catch (err) {
     return { agents: [], apiError: (err as Error).message };
   }
-}
+});
 
 export default function AgentsPage() {
   return (

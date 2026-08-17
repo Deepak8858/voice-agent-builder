@@ -41,7 +41,11 @@ async function BillingSection() {
 
   if (!me) return <SessionErrorCard title="Could not load billing" message={apiError} />;
 
-  const workspaceId = me.active_workspace_id ?? '';
+  if (!me.active_workspace_id) {
+    return <SessionErrorCard title="Could not load billing" message="No active workspace selected." />;
+  }
+
+  const workspaceId = me.active_workspace_id;
   return (
     <>
       <BillingPanel workspaceId={workspaceId} />

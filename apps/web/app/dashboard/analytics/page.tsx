@@ -1,5 +1,6 @@
 import { Suspense } from 'react';
-import { getSessionUser } from '@/lib/api';
+import { ApiCallError, getSessionUser } from '@/lib/api';
+import { redirect } from 'next/navigation';
 import { AnalyticsPanel } from '@/components/analytics-panel';
 import { PageHeader } from '@/components/dashboard';
 import { ChartSkeleton } from '@/components/dashboard/page-skeleton';
@@ -38,10 +39,16 @@ async function AnalyticsSection() {
   try {
     me = await getSessionUser();
   } catch (err) {
+    if (err instanceof ApiCallError && err.status === 401) {
+      redirect('/sign-in?next=%2Fdashboard%2Fanalytics');
+    }
     apiError = (err as Error).message;
   }
 
   if (!me) return <SessionErrorCard title="Could not load analytics" message={apiError} />;
+  if (!me.active_workspace_id) {
+    return <SessionErrorCard title="Could not load analytics" message="No active workspace selected." />;
+  }
 
-  return <AnalyticsPanel workspaceId={me.active_workspace_id ?? ''} />;
+  return <AnalyticsPanel workspaceId={me.active_workspace_id} />;
 }

@@ -17,7 +17,7 @@ import {
 } from '@xyflow/react';
 import type { ToolSummary } from '@voiceforge/shared';
 import '@xyflow/react/dist/style.css';
-import { Redo2, Undo2, Wand2 } from 'lucide-react';
+import { PanelLeft, PanelRight, Redo2, Undo2, Wand2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { NODE_TYPES, NodePalette } from './node-palette';
 import { NodeConfigPanel } from './node-config-panel';
@@ -85,6 +85,7 @@ function FlowBuilderCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes ?? INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState((initialEdges ?? []) as Edge[]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<'palette' | 'config' | null>(null);
   const [past, setPast] = useState<FlowSnapshot[]>([]);
   const [future, setFuture] = useState<FlowSnapshot[]>([]);
   const [baseline, setBaseline] = useState(() =>
@@ -94,13 +95,22 @@ function FlowBuilderCanvas({
   const { screenToFlowPosition, fitView } = useReactFlow();
   const nodesRef = useRef(nodes as Node[]);
   const edgesRef = useRef(edges as Edge[]);
+  const pastRef = useRef(past);
+  const futureRef = useRef(future);
   const pendingSaveRef = useRef<string | null>(null);
   const dragSnapshotRef = useRef<FlowSnapshot | null>(null);
+  const configEditRef = useRef<{ key: string; timeout: ReturnType<typeof setTimeout> } | null>(null);
 
   useEffect(() => {
     nodesRef.current = nodes as Node[];
     edgesRef.current = edges as Edge[];
-  }, [nodes, edges]);
+    pastRef.current = past;
+    futureRef.current = future;
+  }, [nodes, edges, past, future]);
+
+  useEffect(() => () => {
+    if (configEditRef.current) clearTimeout(configEditRef.current.timeout);
+  }, []);
 
   const selectedNode = getSelectedNode(nodes as Node[], selectedNodeId);
   const issues = useMemo(
@@ -147,39 +157,32 @@ function FlowBuilderCanvas({
   }, [fitView, pushHistory, setNodes]);
 
   const undo = useCallback(() => {
-    setPast((stack) => {
-      const previous = stack[stack.length - 1];
-      if (!previous) return stack;
-      setFuture((redoStack) => [
-        ...redoStack,
-        { nodes: nodesRef.current, edges: edgesRef.current },
-      ]);
-      setNodes(previous.nodes);
-      setEdges(previous.edges);
-      return stack.slice(0, -1);
-    });
+    const stack = pastRef.current;
+    const previous = stack[stack.length - 1];
+    if (!previous) return;
+    setFuture([...futureRef.current, { nodes: nodesRef.current, edges: edgesRef.current }]);
+    setPast(stack.slice(0, -1));
+    setNodes(previous.nodes);
+    setEdges(previous.edges);
   }, [setEdges, setNodes]);
 
   const redo = useCallback(() => {
-    setFuture((stack) => {
-      const next = stack[stack.length - 1];
-      if (!next) return stack;
-      setPast((undoStack) => [
-        ...undoStack,
-        { nodes: nodesRef.current, edges: edgesRef.current },
-      ]);
-      setNodes(next.nodes);
-      setEdges(next.edges);
-      return stack.slice(0, -1);
-    });
+    const stack = futureRef.current;
+    const next = stack[stack.length - 1];
+    if (!next) return;
+    setPast([...pastRef.current, { nodes: nodesRef.current, edges: edgesRef.current }]);
+    setFuture(stack.slice(0, -1));
+    setNodes(next.nodes);
+    setEdges(next.edges);
   }, [setEdges, setNodes]);
 
   const handleSave = useCallback(() => {
+    if (isSaving) return;
     const currentNodes = nodesRef.current;
     const currentEdges = edgesRef.current;
     pendingSaveRef.current = serializeFlow(currentNodes, currentEdges);
     onSave?.(currentNodes, currentEdges);
-  }, [onSave]);
+  }, [isSaving, onSave]);
 
   const onConnect: OnConnect = useCallback(
     (params) => {
@@ -225,7 +228,15 @@ function FlowBuilderCanvas({
         : { x: 240, y: 80 };
       const id = freshNodeId(type);
       setNodes((existing) => [...existing, createFlowNode(type, position, id)]);
-      if (anchor && anchor.type !== 'end' && anchor.type !== 'transfer') {
+      const hasNonConditionOutgoing = anchor
+        ? edgesRef.current.some(
+            (edge) =>
+              edge.source === anchor.id &&
+              edge.sourceHandle !== 'true' &&
+              edge.sourceHandle !== 'false',
+          )
+        : false;
+      if (anchor && anchor.type !== 'end' && anchor.type !== 'transfer' && !hasNonConditionOutgoing) {
         setEdges((existing) =>
           addEdge(
             { id: `e-${anchor.id}-${id}`, source: anchor.id, target: id, animated: true },
@@ -255,7 +266,7 @@ function FlowBuilderCanvas({
   const handleDuplicateNode = useCallback(
     (nodeId: string) => {
       const target = nodesRef.current.find((node) => node.id === nodeId);
-      if (!target) return;
+      if (!target || target.type === 'start') return;
       pushHistory();
       const copy = duplicateFlowNode(target);
       setNodes((existing) => [...existing, copy]);
@@ -290,7 +301,18 @@ function FlowBuilderCanvas({
 
   const handleConfigChange = useCallback(
     (nodeId: string, data: Record<string, unknown>) => {
-      pushHistory();
+      const field = Object.keys(data)[0] ?? '';
+      const key = `${nodeId}:${field}`;
+      if (configEditRef.current?.key !== key) {
+        if (configEditRef.current) clearTimeout(configEditRef.current.timeout);
+        pushHistory();
+      } else {
+        clearTimeout(configEditRef.current.timeout);
+      }
+      const timeout = setTimeout(() => {
+        if (configEditRef.current?.key === key) configEditRef.current = null;
+      }, 500);
+      configEditRef.current = { key, timeout };
       setNodes((existing) => updateNodeData(existing as Node[], nodeId, data));
     },
     [pushHistory, setNodes],
@@ -303,7 +325,7 @@ function FlowBuilderCanvas({
 
       if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault();
-        handleSave();
+        if (issues.length === 0) handleSave();
         return;
       }
       if (modifier && event.key.toLowerCase() === 'z') {
@@ -325,7 +347,7 @@ function FlowBuilderCanvas({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [deleteSelection, handleSave, redo, undo]);
+  }, [deleteSelection, handleSave, issues, redo, undo]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -383,11 +405,32 @@ function FlowBuilderCanvas({
               type="button"
               size="sm"
               variant="outline"
+              className="pointer-events-auto bg-background/95 backdrop-blur md:hidden"
+              onClick={() => setMobilePanel('palette')}
+              aria-label="Open node palette"
+            >
+              <PanelLeft className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
               className="pointer-events-auto bg-background/95 backdrop-blur"
               onClick={tidyUp}
             >
               <Wand2 className="mr-1.5 h-3.5 w-3.5" />
               Tidy up
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="pointer-events-auto bg-background/95 backdrop-blur lg:hidden"
+              onClick={() => setMobilePanel('config')}
+              disabled={!selectedNode}
+              aria-label="Open node settings"
+            >
+              <PanelRight className="h-3.5 w-3.5" />
             </Button>
             <Button
               type="button"
@@ -425,6 +468,42 @@ function FlowBuilderCanvas({
             onDuplicate={handleDuplicateNode}
           />
         </div>
+
+        {mobilePanel ? (
+          <div className="fixed inset-0 z-[60] flex justify-end bg-black/40 lg:hidden" onClick={() => setMobilePanel(null)}>
+            <aside
+              className="h-full w-[min(22rem,90vw)] overflow-y-auto bg-sidebar shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                <h2 className="text-sm font-semibold">
+                  {mobilePanel === 'palette' ? 'Add a node' : 'Node settings'}
+                </h2>
+                <Button type="button" size="icon" variant="ghost" onClick={() => setMobilePanel(null)} aria-label="Close panel">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              {mobilePanel === 'palette' ? (
+                <NodePalette
+                  onDragStart={onPaletteDragStart}
+                  onAddNode={(type) => {
+                    handleAddNode(type);
+                    setMobilePanel(null);
+                  }}
+                  compact
+                />
+              ) : (
+                <NodeConfigPanel
+                  node={selectedNode}
+                  availableTools={availableTools}
+                  onChange={handleConfigChange}
+                  onDelete={handleDeleteNode}
+                  onDuplicate={handleDuplicateNode}
+                />
+              )}
+            </aside>
+          </div>
+        ) : null}
       </div>
     </div>
   );
