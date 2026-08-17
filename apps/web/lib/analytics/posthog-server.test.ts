@@ -309,5 +309,41 @@ describe('captureServerException', () => {
 
       await expect(captureServerException(new Error('boom'))).resolves.toBeUndefined();
     });
+
+    it('drops a cleared stream-controller error from an aborted render', async () => {
+      const { captureServerException } = await load();
+      const err = new TypeError(
+        'controller[kState].transformAlgorithm is not a function',
+      );
+      err.stack = [
+        'TypeError: controller[kState].transformAlgorithm is not a function',
+        '    at node:internal/webstreams/transformstream:1:2',
+        '    at node:internal/process/task_queues:3:4',
+      ].join('\n');
+
+      await captureServerException(err, { routeType: 'render' });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('drops a DOMException AbortError', async () => {
+      const { captureServerException } = await load();
+
+      await captureServerException(new DOMException('aborted', 'AbortError'));
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('still reports the same message when it is not a stream teardown', async () => {
+      const { captureServerException } = await load();
+
+      // The message pattern alone must not suppress a real bug: without the
+      // Node stream frame this is an ordinary application error.
+      await captureServerException(
+        new TypeError('transformAlgorithm is not a function'),
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
