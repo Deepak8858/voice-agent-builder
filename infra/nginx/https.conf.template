@@ -17,6 +17,13 @@ server {
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
+    # Replaced by the container entrypoint with an origin-verification guard
+    # when ORIGIN_VERIFY_SECRET is set: requests that do not carry the secret
+    # X-Origin-Verify header injected by CloudFront are rejected with 403.
+    # Left as a comment (no enforcement) when the variable is unset, so the
+    # stack keeps working before and without CloudFront.
+    #ORIGIN_VERIFY_MARKER
+
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
         default_type text/plain;
@@ -32,7 +39,12 @@ server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name incfrog.ai;
+    # origin.incfrog.ai is the CloudFront origin hostname. CloudFront forwards
+    # the viewer Host header (incfrog.ai), so this block matches those requests
+    # too; listing the origin name keeps direct origin-domain probes and any
+    # future certificate-SAN expansion routed here rather than to the first
+    # (www redirect) block.
+    server_name incfrog.ai origin.incfrog.ai;
 
     ssl_certificate /etc/letsencrypt/live/incfrog.ai/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/incfrog.ai/privkey.pem;
@@ -50,6 +62,9 @@ server {
     # add_header wins for what the client actually sees, so an omission here
     # silently drops a restriction the application believes it is sending.
     add_header Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()" always;
+
+    # See the comment on the same marker in the www block above.
+    #ORIGIN_VERIFY_MARKER
 
     location = /nginx-health {
         access_log off;
