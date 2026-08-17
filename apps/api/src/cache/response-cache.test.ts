@@ -89,7 +89,6 @@ function fakeCache() {
     readThrough: vi.fn(async (_key: string, _ttl: number, loader: () => Promise<unknown>) =>
       loader(),
     ),
-    set: vi.fn().mockResolvedValue(undefined),
   };
 }
 
