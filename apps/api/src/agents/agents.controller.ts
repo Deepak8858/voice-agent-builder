@@ -15,6 +15,8 @@ import {
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { GenerationRateLimitGuard } from '../common/generation-rate-limit.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import { UuidParamPipe } from '../common/uuid-param.pipe';
+import { AgentNotFoundError } from '../common/errors';
 import { CurrentUser } from '../common/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { AgentsService, type UpdateFlowBody } from './agents.service';
@@ -55,6 +57,8 @@ const UpdateFlowDtoSchema = z.object({
 const PublicAgentSlugSchema = z.string().trim().min(1).max(180).regex(/^[a-zA-Z0-9-]+$/);
 const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 const DEFAULT_DEMO_AUDIO_URL = '/demo/dental-receptionist-30s.wav';
+
+const agentIdPipe = new UuidParamPipe((id) => new AgentNotFoundError(id));
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/agents')
@@ -98,7 +102,7 @@ export class AgentsController {
   @Get(':agentId')
   async get(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
   ) {
     return this.agents.get(workspaceId, agentId);
   }
@@ -106,7 +110,7 @@ export class AgentsController {
   @Patch(':agentId')
   async update(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @Body(new ZodValidationPipe(UpdateAgentDtoSchema)) dto: UpdateAgentDto,
     @CurrentUser() user: SessionUser,
   ) {
@@ -116,7 +120,7 @@ export class AgentsController {
   @Post(':agentId/versions')
   async createVersion(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @Body(new ZodValidationPipe(CreateAgentVersionDtoSchema)) dto: CreateAgentVersionDto,
     @CurrentUser() user: SessionUser,
   ) {
@@ -126,7 +130,7 @@ export class AgentsController {
   @Post(':agentId/publish')
   async publish(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.publish(workspaceId, agentId, user.id);
@@ -135,7 +139,7 @@ export class AgentsController {
   @Post(':agentId/pause')
   async pause(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @CurrentUser() user: SessionUser,
   ) {
     return this.agents.pause(workspaceId, agentId, user.id);
@@ -144,7 +148,7 @@ export class AgentsController {
   @Put(':agentId/flow')
   async updateFlow(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @Body(new ZodValidationPipe(UpdateFlowDtoSchema)) body: UpdateFlowBody,
     @CurrentUser() user: SessionUser,
   ) {

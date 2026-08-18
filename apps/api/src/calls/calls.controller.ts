@@ -19,8 +19,13 @@ import {
 import { CurrentUser } from '../common/current-user.decorator';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import { UuidParamPipe } from '../common/uuid-param.pipe';
+import { AgentNotFoundError, CallNotFoundError } from '../common/errors';
 import { CacheService } from '../cache/cache.service';
 import { CallsService } from './calls.service';
+
+const callIdPipe = new UuidParamPipe((id) => new CallNotFoundError(id));
+const agentIdPipe = new UuidParamPipe((id) => new AgentNotFoundError(id));
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId')
@@ -33,7 +38,7 @@ export class CallsController {
   @Post('agents/:agentId/test-session')
   async startTestSession(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @Body(new ZodValidationPipe(StartTestSessionDtoSchema)) dto: StartTestSessionDto,
     @CurrentUser() user: SessionUser,
   ) {
@@ -43,7 +48,7 @@ export class CallsController {
   @Post('agents/:agentId/calls/outbound')
   async startOutbound(
     @Param('workspaceId') workspaceId: string,
-    @Param('agentId') agentId: string,
+    @Param('agentId', agentIdPipe) agentId: string,
     @Body(new ZodValidationPipe(StartOutboundCallDtoSchema)) dto: StartOutboundCallDto,
     @CurrentUser() user: SessionUser,
   ) {
@@ -61,7 +66,7 @@ export class CallsController {
   @Get('calls/:callId')
   async get(
     @Param('workspaceId') workspaceId: string,
-    @Param('callId') callId: string,
+    @Param('callId', callIdPipe) callId: string,
   ) {
     return this.calls.get(workspaceId, callId);
   }
@@ -69,7 +74,7 @@ export class CallsController {
   @Post('calls/:callId/end')
   async end(
     @Param('workspaceId') workspaceId: string,
-    @Param('callId') callId: string,
+    @Param('callId', callIdPipe) callId: string,
     @CurrentUser() user: SessionUser,
   ) {
     return this.calls.end(workspaceId, callId, user.id);
@@ -83,7 +88,7 @@ export class CallsController {
   @Get('calls/:callId/live')
   async live(
     @Param('workspaceId') workspaceId: string,
-    @Param('callId') callId: string,
+    @Param('callId', callIdPipe) callId: string,
     @Res() res: Response,
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
