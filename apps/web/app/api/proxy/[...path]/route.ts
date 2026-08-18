@@ -31,6 +31,25 @@ function apiTarget(req: NextRequest, pathString: string): string {
   return `${API_BASE}${pathString}${req.nextUrl.search}`;
 }
 
+/** Statuses for which the Response constructor forbids a body. */
+export function isNullBodyStatus(status: number): boolean {
+  return status === 101 || status === 204 || status === 205 || status === 304;
+}
+
+/**
+ * Relay a non-streaming upstream reply to the browser. A null-body status such
+ * as 204 must carry no body, so return a body-free Response for it. Passing a
+ * body to those statuses makes the Response constructor throw and turns a
+ * successful upstream reply into an unhandled 500. Exported for tests.
+ */
+export async function relayJsonResponse(apiRes: Response): Promise<Response> {
+  if (isNullBodyStatus(apiRes.status)) {
+    return new Response(null, { status: apiRes.status });
+  }
+  const data = await apiRes.json().catch(() => null);
+  return NextResponse.json(data ?? {}, { status: apiRes.status });
+}
+
 /**
  * API proxy route. Receives browser fetches, validates Supabase session,
  * then forwards to NestJS with the internal key and Supabase bearer token.
@@ -112,8 +131,7 @@ export async function GET(
     });
   }
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -140,8 +158,7 @@ export async function PATCH(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -168,8 +185,7 @@ export async function PUT(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -193,6 +209,5 @@ export async function DELETE(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
