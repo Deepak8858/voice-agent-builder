@@ -6,6 +6,7 @@ import {
   type AgentSpec,
   type AgentTemplateSeed,
   type ChatGenerateResult,
+  type GenerateAgentDto,
 } from '@voiceforge/shared';
 import type { ChatGenerateInput } from './llm.provider.interface';
 
@@ -45,6 +46,21 @@ export function pickTemplate(templateSlug?: string): AgentTemplateSeed {
   return MVP_TEMPLATES[0]!;
 }
 
+/**
+ * Agent Spec v1.0 contract lines shared by every prompt (chat and one-shot
+ * generate). Kept in one place so a fix reaches all providers at once. The
+ * allowed_call_window line names all three required subfields and their types,
+ * because a partial window is what the model emits when the fields are unnamed.
+ */
+export const SPEC_CONTRACT_INSTRUCTIONS = [
+  'Required top-level keys: schema_version="1.0", name, industry, agent_type, language, voice, identity, goals, required_fields, conversation_rules, knowledge, tools, handoff, compliance, analytics.',
+  'agent_type \u2208 inbound_receptionist | outbound_reminder | outbound_qualifier | outbound_confirmation | outbound_survey.',
+  'For outbound_* types, set compliance.consent_required_for_outbound=true. Either omit compliance.allowed_call_window entirely, or include it complete with all three fields: timezone (IANA name string, e.g. "America/Los_Angeles"), start_hour (integer 0-23), and end_hour (integer 0-23). Never send a partial allowed_call_window.',
+  'handoff.enabled=true requires handoff.conditions[]>=1.',
+  'voice.tone is required. identity.business_name and identity.agent_name are required.',
+  'goals must be a non-empty string array. tools[] each need {name, description, requires_confirmation, input_schema:{type:"object",properties,required}}.',
+];
+
 export function buildChatSystemPrompt(): string {
   return [
     'You are VoiceForge AI, a conversational voice-agent designer.',
@@ -52,15 +68,38 @@ export function buildChatSystemPrompt(): string {
     'Every reply MUST be a single JSON object: {"assistant_message": string, "spec": object}.',
     '"assistant_message" is a short, friendly reply for the chat thread: acknowledge what you changed or ask ONE clarifying question if truly necessary. Never include JSON in it.',
     '"spec" is the complete, updated Agent Spec v1.0 object (never a partial diff).',
-    'Agent Spec v1.0 required top-level keys: schema_version="1.0", name, industry, agent_type, language, voice, identity, goals, required_fields, conversation_rules, knowledge, tools, handoff, compliance, analytics.',
-    'agent_type \u2208 inbound_receptionist | outbound_reminder | outbound_qualifier | outbound_confirmation | outbound_survey.',
-    'For outbound_* types, set compliance.consent_required_for_outbound=true and include a sensible allowed_call_window.',
-    'handoff.enabled=true requires handoff.conditions[]>=1.',
-    'voice.tone is required. identity.business_name and identity.agent_name are required.',
-    'goals must be a non-empty string array. tools[] each need {name, description, requires_confirmation, input_schema:{type:"object",properties,required}}.',
+    ...SPEC_CONTRACT_INSTRUCTIONS,
     'When the user asks for changes, modify ONLY what they asked for and keep everything else stable.',
     'Do NOT invent fields outside the schema. Do NOT include markdown fences. Output JSON only.',
   ].join('\n');
+}
+
+/** System prompt for the one-shot `generate()` path (returns a bare Agent Spec). */
+export function buildGenerateSystemPrompt(): string {
+  return [
+    'You are VoiceForge AI, a generator of provider-neutral voice agent specifications.',
+    'Return ONLY a JSON object that satisfies the Agent Spec v1.0 contract.',
+    ...SPEC_CONTRACT_INSTRUCTIONS,
+    'Do NOT invent fields outside the schema. Do NOT include markdown fences. Output JSON only.',
+  ].join('\n');
+}
+
+/** User prompt for the one-shot `generate()` path, seeded with a template. */
+export function buildGenerateUserPrompt(input: GenerateAgentDto, baseSpec: AgentSpec): string {
+  const ctx = input.business_context ?? {};
+  return [
+    `User prompt: ${input.prompt}`,
+    ctx.business_name ? `Business name: ${ctx.business_name}` : '',
+    ctx.industry_hint ? `Industry hint: ${ctx.industry_hint}` : '',
+    ctx.timezone ? `Timezone: ${ctx.timezone}` : '',
+    input.knowledge_source_ids?.length
+      ? `Attach these knowledge_source_ids on knowledge.source_ids: ${JSON.stringify(input.knowledge_source_ids)}`
+      : '',
+    `Use the following template as the starting point and tailor it to the prompt:`,
+    JSON.stringify(baseSpec, null, 2),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
@@ -133,6 +172,11 @@ async function callOpenAiCompat(
   const content = json.choices?.[0]?.message?.content;
   if (!content) throw new Error('Empty model response (no choices[0].message.content).');
   return parseModelJson(content);
+}
+
+/** Builds a `ChatModelCaller` for an OpenAI-compatible chat-completions target. */
+export function openAiCompatCaller(target: OpenAiCompatTarget): ChatModelCaller {
+  return (messages) => callOpenAiCompat(target, messages);
 }
 
 function validateChatResult(
@@ -210,9 +254,71 @@ export async function runChatGeneration(
   target: OpenAiCompatTarget,
   input: ChatGenerateInput,
 ): Promise<ChatGenerateResult> {
-  return runChatGenerationWith(
-    target.providerName,
-    (messages) => callOpenAiCompat(target, messages),
-    input,
+  return runChatGenerationWith(target.providerName, openAiCompatCaller(target), input);
+}
+
+export interface AgentGenerationResult {
+  spec: AgentSpec;
+  /** True when validation still failed after self-repair and the seed template was used. */
+  usedFallback: boolean;
+}
+
+/**
+ * Runs the one-shot `generate()` path with a provider-specific transport, one
+ * self-repair retry, and a final fall back to the seed template. This keeps a
+ * non-deterministic model response from reaching the user as a 500: a bad first
+ * response is fed its own Zod issues for a second try, and if that still fails
+ * the already-selected seed template (a known-valid spec) is returned.
+ *
+ * Transport errors (HTTP, non-JSON) are NOT caught — they propagate so the
+ * caller learns the real provider failed.
+ */
+export async function runAgentGenerationWith(
+  providerName: string,
+  call: ChatModelCaller,
+  input: GenerateAgentDto,
+  base: AgentTemplateSeed,
+): Promise<AgentGenerationResult> {
+  const baseSpec = base.spec as AgentSpec;
+  const messages: ChatMessage[] = [
+    { role: 'system', content: buildGenerateSystemPrompt() },
+    { role: 'user', content: buildGenerateUserPrompt(input, baseSpec) },
+  ];
+
+  const first = await call(messages);
+  const firstParse = AgentSpecSchema.safeParse(first);
+  if (firstParse.success) return { spec: firstParse.data, usedFallback: false };
+
+  logger.warn(
+    `[${providerName}] invalid Agent Spec, attempting self-repair: ${firstParse.error.message.slice(0, 300)}`,
   );
+
+  const repairMessages: ChatMessage[] = [
+    ...messages,
+    { role: 'assistant', content: JSON.stringify(first).slice(0, 12_000) },
+    {
+      role: 'user',
+      content: [
+        'Your previous response failed Agent Spec v1.0 validation with these issues:',
+        firstParse.error.message.slice(0, 1500),
+        'Return the corrected full Agent Spec JSON object that fixes ALL issues. JSON only.',
+      ].join('\n'),
+    },
+  ];
+
+  const second = await call(repairMessages);
+  const secondParse = AgentSpecSchema.safeParse(second);
+  if (secondParse.success) return { spec: secondParse.data, usedFallback: false };
+
+  logger.warn(
+    `[${providerName}] Agent Spec still invalid after self-repair; falling back to seed template "${base.slug}": ${secondParse.error.message.slice(0, 300)}`,
+  );
+  const fallbackParse = AgentSpecSchema.safeParse(baseSpec);
+  if (!fallbackParse.success) {
+    // Seed templates are validated in tests, so this is unreachable in practice.
+    throw new Error(
+      `${providerName} returned an invalid Agent Spec and the seed template "${base.slug}" is itself invalid: ${fallbackParse.error.message.slice(0, 300)}`,
+    );
+  }
+  return { spec: fallbackParse.data, usedFallback: true };
 }

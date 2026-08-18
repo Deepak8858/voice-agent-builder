@@ -6,7 +6,7 @@
  *   2. Cache hit -> cached result returned, no API call
  *   3. Missing API key -> throws
  *   4. HTTP error -> throws
- *   5. Invalid schema -> throws
+ *   5. Invalid schema after self-repair -> falls back to the seed template
  *
  * Uses dynamic imports with vi.doMock to avoid module-cache pollution.
  */
@@ -169,15 +169,22 @@ describe('AzureAiFoundryAdapter (integration)', () => {
     await expect(adapter.generate(BASE_DTO)).rejects.toThrow('Unauthorized');
   });
 
-  it('throws when model returns valid JSON but invalid AgentSpec', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
-      }), { status: 200 }),
+  it('falls back to the seed template when the model spec stays invalid after self-repair', async () => {
+    // A fresh Response per call: the self-repair retry reads the body twice.
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({
+          choices: [{ message: { content: JSON.stringify({ foo: 'bar' }) } }],
+        }), { status: 200 }),
     );
+    globalThis.fetch = fetchMock;
 
     const { adapter } = await buildAdapter({ apiKey: 'mock-api-key-for-tests' });
-    await expect(adapter.generate(BASE_DTO)).rejects.toThrow('invalid Agent Spec');
+    const result = await adapter.generate(BASE_DTO);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.rationale).toContain('fell back to template');
+    expect(result.spec.name).toBeTruthy();
   });
 });
 

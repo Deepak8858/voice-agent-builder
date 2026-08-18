@@ -3,11 +3,14 @@ import { AgentSpecSchema, MVP_TEMPLATES, type AgentGenMessage, type AgentSpec } 
 import {
   CHAT_GEN_MAX_HISTORY,
   buildChatMessages,
+  buildGenerateSystemPrompt,
   pickTemplate,
   parseModelJson,
+  runAgentGenerationWith,
   runChatGenerationWith,
   type ChatMessage,
 } from './chat-generation';
+import type { GenerateAgentDto } from '@voiceforge/shared';
 
 /** A spec that actually satisfies AgentSpecSchema, built from the shipped template seed. */
 const VALID_SPEC: AgentSpec = AgentSpecSchema.parse(MVP_TEMPLATES[0]!.spec);
@@ -148,6 +151,65 @@ describe('runChatGenerationWith', () => {
     const call = vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable'));
 
     await expect(runChatGenerationWith('openai', call, input)).rejects.toThrow('HTTP 503');
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('buildGenerateSystemPrompt', () => {
+  it('names the three required allowed_call_window subfields', () => {
+    const prompt = buildGenerateSystemPrompt();
+    expect(prompt).toContain('timezone');
+    expect(prompt).toContain('start_hour');
+    expect(prompt).toContain('end_hour');
+    expect(prompt).toContain('Never send a partial allowed_call_window');
+  });
+});
+
+describe('runAgentGenerationWith', () => {
+  const base = MVP_TEMPLATES[0]!;
+  const input: GenerateAgentDto = {
+    prompt: 'Create a receptionist for a dental clinic',
+    knowledge_source_ids: [],
+  };
+
+  it('returns the parsed spec when the first response is valid', async () => {
+    const call = vi.fn().mockResolvedValue(VALID_SPEC);
+
+    const result = await runAgentGenerationWith('test-provider', call, input, base);
+
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(result.usedFallback).toBe(false);
+    expect(result.spec.name).toBe(VALID_SPEC.name);
+  });
+
+  it('self-repairs once and returns the corrected spec', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({ foo: 'bar' })
+      .mockResolvedValueOnce(VALID_SPEC);
+
+    const result = await runAgentGenerationWith('test-provider', call, input, base);
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(result.usedFallback).toBe(false);
+    const repairPrompt = (call.mock.calls[1]![0] as ChatMessage[]).at(-1)!;
+    expect(repairPrompt.content).toContain('failed Agent Spec v1.0 validation');
+  });
+
+  it('falls back to the seed template when the spec stays invalid', async () => {
+    const call = vi.fn().mockResolvedValue({ foo: 'bar' });
+
+    const result = await runAgentGenerationWith('test-provider', call, input, base);
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(result.usedFallback).toBe(true);
+    expect(result.spec.name).toBe(AgentSpecSchema.parse(base.spec).name);
+  });
+
+  it('does not swallow transport errors from the caller', async () => {
+    const call = vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable'));
+
+    await expect(runAgentGenerationWith('openai', call, input, base)).rejects.toThrow('HTTP 503');
     expect(call).toHaveBeenCalledTimes(1);
   });
 });

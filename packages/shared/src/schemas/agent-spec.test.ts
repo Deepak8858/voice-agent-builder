@@ -134,4 +134,38 @@ describe('AgentSpecSchema', () => {
     const parsed = AgentSpecSchema.safeParse({ ...minimal, agent_type: 'cold_sales' });
     expect(parsed.success).toBe(false);
   });
+
+  it('drops a partial allowed_call_window instead of rejecting the spec', () => {
+    // The model sometimes emits the key with the hour fields missing. A partial
+    // window must degrade to "no window" rather than fail the whole spec.
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      compliance: {
+        ...minimal.compliance,
+        allowed_call_window: { timezone: 'America/New_York' },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.compliance.allowed_call_window).toBeUndefined();
+    }
+  });
+
+  it('keeps a complete allowed_call_window', () => {
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      compliance: {
+        ...minimal.compliance,
+        allowed_call_window: { timezone: 'America/New_York', start_hour: 9, end_hour: 20 },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.compliance.allowed_call_window).toEqual({
+        timezone: 'America/New_York',
+        start_hour: 9,
+        end_hour: 20,
+      });
+    }
+  });
 });
