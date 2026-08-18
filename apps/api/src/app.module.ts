@@ -6,6 +6,7 @@ otel.start();
 import { logger } from './logging';
 import { RateLimitGuard } from './common/rate-limit.guard';
 import { MetricsModule } from './common/metrics.module';
+import { AgentGenModule } from './agent-gen/agent-gen.module';
 import { AgentsModule } from './agents/agents.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditModule } from './audit/audit.module';
@@ -63,6 +64,7 @@ import { env } from './config/env';
     KnowledgeModule,
     LlmModule,
     AgentsModule,
+    AgentGenModule,
     VoiceModule,
     LiveKitModule,
     TelephonyModule,

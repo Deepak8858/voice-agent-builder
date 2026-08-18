@@ -28,7 +28,7 @@
 | `Standard_D2s_v3` VM in `eastus2` | single `t3.large` in `us-east-1`, account `543777713748` |
 | Images built on the VM with `docker build` | built by Depot, pushed to ECR, tagged with the full commit SHA |
 | `docker-compose.prod.yml` | `infra/docker/docker-compose.aws.yml` |
-| `vocal.devdeepak.me` | `deep-ak.dev` |
+| `vocal.devdeepak.me` | `incfrog.ai` |
 | Azure Key Vault + VM managed identity | `/opt/voiceforge/.env` on the host + EC2 instance profile for S3 |
 | `certbot --nginx` on the host | containerised nginx with a two-state TLS entrypoint and a certbot renewal systemd timer |
 | Application Insights, Log Analytics | PostHog, CloudWatch, and capped `json-file` container logs |

@@ -10,8 +10,8 @@ let env = fs.readFileSync('.env', 'utf8');
 env = env.replace(/^NODE_ENV=.*/m, 'NODE_ENV=production');
 
 // Frontend public URLs (baked into web image — also set in .env for reference)
-env = env.replace(/^NEXT_PUBLIC_API_URL=.*/m, 'NEXT_PUBLIC_API_URL=https://vocal.devdeepak.me/api/v1');
-env = env.replace(/^NEXT_PUBLIC_APP_URL=.*/m, 'NEXT_PUBLIC_APP_URL=https://vocal.devdeepak.me');
+env = env.replace(/^NEXT_PUBLIC_API_URL=.*/m, 'NEXT_PUBLIC_API_URL=https://incfrog.ai/api/v1');
+env = env.replace(/^NEXT_PUBLIC_APP_URL=.*/m, 'NEXT_PUBLIC_APP_URL=https://incfrog.ai');
 
 // Internal API port overrides for VM networking
 env = env.replace(/^API_PORT=.*/m, 'API_PORT=4000');

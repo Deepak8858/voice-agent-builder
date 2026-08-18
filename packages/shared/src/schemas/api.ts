@@ -35,6 +35,9 @@ export const API_ERROR_CODES = [
   'PROVIDER_CREDENTIALS_INVALID',
   'PHONE_NUMBER_ALREADY_CONNECTED',
   'TELEPHONY_NOT_FOUND',
+  // A provider call identifier resolved to a call owned by another tenant,
+  // number, or agent. Billing must refuse rather than attribute the call.
+  'CALL_IDENTITY_COLLISION',
   'INTERNAL_ERROR',
   'PLAN_LIMIT_EXCEEDED',
   'INVALID_PHONE',

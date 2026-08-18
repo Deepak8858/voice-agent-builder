@@ -146,6 +146,18 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     return response.toString();
   }
 
+  /**
+   * Refusal for a caller the billing gate would not admit. Deliberately says
+   * nothing about the account's billing state: the caller is a third party who
+   * is not entitled to know why the business cannot take the call.
+   */
+  buildBillingRefusalTwiml(): string {
+    const response = new twilio.twiml.VoiceResponse();
+    response.say('Sorry, this number cannot take calls right now. Please try again later.');
+    response.hangup();
+    return response.toString();
+  }
+
   private assertCredentials(credentials: ProviderCredentials) {
     if (credentials.provider !== 'twilio') {
       throw new AppError('PROVIDER_CREDENTIALS_INVALID', 'Expected Twilio credentials.', 400);

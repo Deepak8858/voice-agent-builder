@@ -11,6 +11,15 @@ import { Counter, Histogram, Gauge, Registry, collectDefaultMetrics } from 'prom
  *   - http_active_requests{method, route}             — currently-in-flight requests (gauge)
  *   - http_errors_total{method, route, status_code}  — error-only counter
  *
+ * Billing/runtime metrics (see docs/operations/billing-runbook.md):
+ *   - voiceforge_billing_available_seconds        — sellable credit not yet reserved
+ *   - voiceforge_billing_reserved_seconds         — credit held by in-flight calls
+ *   - voiceforge_calls_active_global              — concurrent calls platform-wide
+ *   - voiceforge_calls_admission_denied_total{reason}
+ *   - voiceforge_provider_cost_usd{provider, category, estimate} (process-local gauge)
+ *   - voiceforge_plan_contribution_margin_ratio{plan}
+ *   - voiceforge_billing_reconciliation_corrections_total{type}
+ *
  * Histogram buckets tuned for API latency (ms):
  *   5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000
  */
@@ -44,6 +53,68 @@ export class MetricsService implements OnModuleInit {
     name: 'http_errors_total',
     help: 'Total number of HTTP requests that resulted in 4xx/5xx',
     labelNames: ['method', 'route', 'status_code'],
+    registers: [MetricsService.REGISTRY],
+  });
+
+  /**
+   * Sellable credit across all organizations. Paired with reserved seconds so
+   * an operator can distinguish "we are out of credit" from "credit is held by
+   * calls that never released their reservation".
+   */
+  readonly billingAvailableSeconds = new Gauge({
+    name: 'voiceforge_billing_available_seconds',
+    help: 'Total credit seconds available across organizations',
+    registers: [MetricsService.REGISTRY],
+  });
+
+  readonly billingReservedSeconds = new Gauge({
+    name: 'voiceforge_billing_reserved_seconds',
+    help: 'Total credit seconds currently reserved by in-flight calls',
+    registers: [MetricsService.REGISTRY],
+  });
+
+  readonly callsActiveGlobal = new Gauge({
+    name: 'voiceforge_calls_active_global',
+    help: 'Number of active concurrency leases across the platform',
+    registers: [MetricsService.REGISTRY],
+  });
+
+  /** Labelled by entitlement reason so denials are attributable to a cause. */
+  readonly callsAdmissionDeniedTotal = new Counter({
+    name: 'voiceforge_calls_admission_denied_total',
+    help: 'Calls refused admission, by reason',
+    labelNames: ['reason'],
+    registers: [MetricsService.REGISTRY],
+  });
+
+  /**
+   * Provider spend observed by *this process* since it started.
+   *
+   * Deliberately a Gauge with no `_total` suffix. An estimate can be replaced
+   * by a smaller actual, and a replacement moves spend between the `estimate`
+   * labels, so the series is not monotonic and must not be read as a counter.
+   * It also resets on restart, so it answers "what has this replica recorded",
+   * not "what has the platform spent". Cumulative spend comes from
+   * `provider_cost_events` in PostgreSQL, which is the authoritative record.
+   */
+  readonly providerCostUsd = new Gauge({
+    name: 'voiceforge_provider_cost_usd',
+    help: 'Provider cost in USD recorded by this process since start (process-local, not cumulative), by provider, service category, and estimate flag',
+    labelNames: ['provider', 'category', 'estimate'],
+    registers: [MetricsService.REGISTRY],
+  });
+
+  readonly planContributionMarginRatio = new Gauge({
+    name: 'voiceforge_plan_contribution_margin_ratio',
+    help: 'Revenue minus provider cost, divided by revenue, per plan',
+    labelNames: ['plan'],
+    registers: [MetricsService.REGISTRY],
+  });
+
+  readonly billingReconciliationCorrectionsTotal = new Counter({
+    name: 'voiceforge_billing_reconciliation_corrections_total',
+    help: 'Corrections applied by billing reconciliation, by type',
+    labelNames: ['type'],
     registers: [MetricsService.REGISTRY],
   });
 

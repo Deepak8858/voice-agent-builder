@@ -145,6 +145,37 @@ export interface ServerExceptionContext {
   routerKind?: string | undefined;
 }
 
+/**
+ * True when an error is a client-disconnect artifact rather than an application
+ * bug.
+ *
+ * A reader that navigates away mid-render aborts the streaming render. Node then
+ * tears down the render's `TransformStream` controller and clears its
+ * algorithms; a later frame that still calls into that controller throws
+ * `controller[kState].transformAlgorithm is not a function`, with a stack that
+ * lives entirely in `node:internal/webstreams`. The same disconnect also
+ * surfaces as a DOMException `AbortError` or a Next.js `ResponseAborted`. None
+ * of these is fixable in application code, so reporting them only adds triage
+ * noise to the issue list.
+ */
+function isAbortError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+
+  const name = String((error as { name?: unknown }).name ?? '');
+  if (name === 'AbortError' || name === 'ResponseAborted') return true;
+
+  const message = String((error as { message?: unknown }).message ?? '');
+  const stack = String((error as { stack?: unknown }).stack ?? '');
+
+  // A stream controller algorithm called after the controller was cleared on
+  // abort. The message alone is broad, so it must also come from Node's stream
+  // internals to count as a disconnect artifact.
+  const clearedAlgorithm =
+    /\b(transform|flush|write|close|pull|cancel)Algorithm is not a function\b/.test(message);
+
+  return clearedAlgorithm && stack.includes('node:internal/webstreams');
+}
+
 /** A single frame in PostHog's manual-capture `raw` stacktrace format. */
 interface RawStackFrame {
   /** Must be the literal `custom` for manually constructed frames. */
@@ -221,6 +252,9 @@ export async function captureServerException(
 ): Promise<void> {
   const config = serverConfig();
   if (!config) return;
+
+  // A client disconnect during a streaming render is not an application bug.
+  if (isAbortError(error)) return;
 
   const err = error instanceof Error ? error : new Error(String(error));
   const frames = parseStackFrames(err.stack);

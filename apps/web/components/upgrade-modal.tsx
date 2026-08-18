@@ -11,7 +11,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import type { WebBillingMode } from '@/lib/billing-mode';
+import {
+  getPlanById,
+  getPlanEntitlements,
+  type PlanType,
+} from '@voiceforge/shared';
 import { TrendingUp, X, Sparkles, Zap, Building2 } from 'lucide-react';
 
 interface UpgradeModalProps {
@@ -25,39 +29,52 @@ interface UpgradeModalProps {
   currentPlan?: string;
   /** Called when user clicks upgrade */
   onUpgrade?: () => void;
-  /** Demo mode keeps users away from paused Stripe checkout */
-  billingMode?: WebBillingMode;
 }
-
-const SALES_EMAIL =
-  process.env.NEXT_PUBLIC_SALES_EMAIL ?? 'sales@voiceforge.ai';
 
 const LIMIT_LABELS: Record<string, string> = {
   calls: 'outbound calls',
   minutes: 'voice minutes',
   agents: 'agents',
-  tools: 'tools',
+  tools: 'integration connections',
   workspaces: 'workspaces',
   contacts: 'contacts',
 };
 
-const PLAN_RECOMMENDATIONS: Record<string, { plan: string; label: string; reason: string }> = {
-  free: {
-    plan: 'starter',
-    label: 'Starter — $49/mo',
-    reason: 'Get 300 minutes/month and up to 5 agents.',
-  },
-  starter: {
-    plan: 'growth',
-    label: 'Growth — $149/mo',
-    reason: 'Unlimited call campaigns and advanced compliance.',
-  },
-  growth: {
-    plan: 'enterprise',
-    label: 'Enterprise — $499/mo',
-    reason: 'Unlimited everything with dedicated support.',
-  },
+const NEXT_PLAN: Record<string, PlanType> = {
+  free: 'starter',
+  starter: 'growth',
+  growth: 'enterprise',
 };
+
+/**
+ * Recommendation copy is derived from the shared catalog so the modal can
+ * never drift away from the prices and quotas that billing enforces.
+ */
+function buildRecommendation(currentPlan: string): {
+  plan: PlanType;
+  label: string;
+  reason: string;
+} {
+  const target = NEXT_PLAN[currentPlan] ?? 'starter';
+  const entry = getPlanById(target);
+  const entitlements = getPlanEntitlements(target);
+  const priceLabel = entry?.priceLabel ?? '';
+  const label =
+    target === 'enterprise'
+      ? `${entry?.name ?? 'Enterprise'} — sales-assisted`
+      : `${entry?.name ?? target} — ${priceLabel}/mo`;
+  const reason =
+    target === 'enterprise'
+      ? `Contracted capacity up to ${entitlements.maximumContractConcurrentCalls} concurrent calls and ${entitlements.includedMinutes.toLocaleString('en-US')} included minutes.`
+      : `${entitlements.includedMinutes.toLocaleString('en-US')} included minutes per month, ${entitlements.agents} agents, and ${entitlements.concurrentCalls} concurrent calls.`;
+  return { plan: target, label, reason };
+}
+
+function PlanIcon({ plan }: { plan: PlanType }) {
+  if (plan === 'growth') return <Zap className="h-3.5 w-3.5 text-amber-500" />;
+  if (plan === 'enterprise') return <Building2 className="h-3.5 w-3.5 text-emerald-500" />;
+  return <Sparkles className="h-3.5 w-3.5 text-primary" />;
+}
 
 export function UpgradeModal({
   open,
@@ -65,12 +82,10 @@ export function UpgradeModal({
   limitType,
   currentPlan = 'free',
   onUpgrade,
-  billingMode = 'live',
 }: UpgradeModalProps) {
-  const recommendation = PLAN_RECOMMENDATIONS[currentPlan] ?? PLAN_RECOMMENDATIONS['free'];
+  const recommendation = buildRecommendation(currentPlan);
+  const recommendedEntitlements = getPlanEntitlements(recommendation.plan);
   const limitLabel = limitType ? LIMIT_LABELS[limitType] ?? limitType : null;
-  const isDemoBilling = billingMode === 'demo';
-  const salesHref = `mailto:${SALES_EMAIL}?subject=VoiceForge%20paid%20plan%20activation`;
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
@@ -82,16 +97,10 @@ export function UpgradeModal({
                 <TrendingUp className="h-5 w-5 text-chart-2" />
               </div>
               <div>
-                <DialogTitle>
-                  {isDemoBilling ? 'Checkout is paused' : "You've hit your limit"}
-                </DialogTitle>
-                {isDemoBilling ? (
+                <DialogTitle>You&apos;ve hit your plan limit</DialogTitle>
+                {limitLabel ? (
                   <DialogDescription className="mt-0.5">
-                    Stripe checkout is paused during account review. Free trial and demo workspaces remain available.
-                  </DialogDescription>
-                ) : limitLabel ? (
-                  <DialogDescription className="mt-0.5">
-                    Upgrade to continue making {limitLabel}.
+                    Your organization has used its {limitLabel} allowance on this plan.
                   </DialogDescription>
                 ) : null}
               </div>
@@ -125,58 +134,36 @@ export function UpgradeModal({
 
           {/* What's included */}
           <div className="space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">What you get with {recommendation.plan}:</p>
+            <p className="text-sm font-medium text-muted-foreground">
+              What you get with {recommendation.plan}:
+            </p>
             <div className="grid grid-cols-2 gap-2 text-sm">
-              {recommendation.plan === 'starter' && (
-                <>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> 300 min/mo</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> 5 agents</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> White-label</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /> API access</div>
-                </>
-              )}
-              {recommendation.plan === 'growth' && (
-                <>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Zap className="h-3.5 w-3.5 text-amber-500" /> 2,000 min/mo</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Zap className="h-3.5 w-3.5 text-amber-500" /> Unlimited campaigns</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Zap className="h-3.5 w-3.5 text-amber-500" /> Custom domain</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Zap className="h-3.5 w-3.5 text-amber-500" /> Advanced compliance</div>
-                </>
-              )}
-              {recommendation.plan === 'enterprise' && (
-                <>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Building2 className="h-3.5 w-3.5 text-emerald-500" /> Unlimited all</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Building2 className="h-3.5 w-3.5 text-emerald-500" /> Dedicated support</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Building2 className="h-3.5 w-3.5 text-emerald-500" /> HIPAA-ready</div>
-                  <div className="flex items-center gap-1.5 text-muted-foreground"><Building2 className="h-3.5 w-3.5 text-emerald-500" /> SSO / SAML</div>
-                </>
-              )}
+              {[
+                `${recommendedEntitlements.includedMinutes.toLocaleString('en-US')} min/mo`,
+                `${recommendedEntitlements.agents} agents`,
+                `${recommendedEntitlements.concurrentCalls} concurrent calls`,
+                `${recommendedEntitlements.nangoConnections} integrations`,
+                `${recommendedEntitlements.workspaces} workspaces`,
+                `${recommendedEntitlements.contacts.toLocaleString('en-US')} contacts`,
+              ].map((item) => (
+                <div key={item} className="flex items-center gap-1.5 text-muted-foreground">
+                  <PlanIcon plan={recommendation.plan} />
+                  {item}
+                </div>
+              ))}
             </div>
           </div>
-          {isDemoBilling ? (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
-              Paid plan activation is temporarily unavailable through Stripe. Contact sales for assisted setup,
-              or continue using the free trial/demo limits.
-            </p>
-          ) : null}
         </div>
 
         <div className="flex flex-col gap-2">
-          {isDemoBilling ? (
-            <Button asChild className="w-full gap-2">
-              <a href={salesHref}>
-                Contact sales
-                <TrendingUp className="h-4 w-4" />
-              </a>
-            </Button>
-          ) : (
-            <Button onClick={onUpgrade} className="w-full gap-2">
-              Upgrade to {recommendation.plan}
-              <TrendingUp className="h-4 w-4" />
-            </Button>
-          )}
+          <Button onClick={onUpgrade} className="w-full gap-2">
+            {recommendation.plan === 'enterprise'
+              ? 'Talk to sales'
+              : `Upgrade to ${recommendation.plan}`}
+            <TrendingUp className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" onClick={onClose} className="w-full">
-            {isDemoBilling ? 'Continue in demo' : 'Maybe later'}
+            Maybe later
           </Button>
         </div>
       </DialogContent>

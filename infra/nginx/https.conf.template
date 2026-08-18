@@ -1,12 +1,54 @@
+# Canonical-host redirect: www is served from the same certificate (the
+# incfrog.ai lineage includes www.incfrog.ai as a SAN) but all traffic is
+# redirected to the apex so the application sees one origin.
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
     http2 on;
-    server_name deep-ak.dev;
+    server_name www.incfrog.ai;
 
-    ssl_certificate /etc/letsencrypt/live/deep-ak.dev/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/deep-ak.dev/privkey.pem;
-    ssl_trusted_certificate /etc/letsencrypt/live/deep-ak.dev/chain.pem;
+    ssl_certificate /etc/letsencrypt/live/incfrog.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/incfrog.ai/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/incfrog.ai/chain.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Replaced by the container entrypoint with an origin-verification guard
+    # when ORIGIN_VERIFY_SECRET is set: requests that do not carry the secret
+    # X-Origin-Verify header injected by CloudFront are rejected with 403.
+    # Left as a comment (no enforcement) when the variable is unset, so the
+    # stack keeps working before and without CloudFront.
+    #ORIGIN_VERIFY_MARKER
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://incfrog.ai$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    # origin.incfrog.ai is the CloudFront origin hostname. CloudFront forwards
+    # the viewer Host header (incfrog.ai), so this block matches those requests
+    # too; listing the origin name keeps direct origin-domain probes and any
+    # future certificate-SAN expansion routed here rather than to the first
+    # (www redirect) block.
+    server_name incfrog.ai origin.incfrog.ai;
+
+    ssl_certificate /etc/letsencrypt/live/incfrog.ai/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/incfrog.ai/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/incfrog.ai/chain.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -16,7 +58,13 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=()" always;
+    # Kept in sync with the same header in apps/web/next.config.ts. nginx's
+    # add_header wins for what the client actually sees, so an omission here
+    # silently drops a restriction the application believes it is sending.
+    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=()" always;
+
+    # See the comment on the same marker in the www block above.
+    #ORIGIN_VERIFY_MARKER
 
     location = /nginx-health {
         access_log off;
@@ -30,7 +78,10 @@ server {
         try_files $uri =404;
     }
 
-    location ^~ /api/ {
+    # Only the NestJS global prefix goes to the API container. Next.js owns
+    # every other /api/* route handler (/api/proxy, /api/auth, /api/health,
+    # /api/billing, /api/onboarding) - routing all of /api/ here 404s them.
+    location ^~ /api/v1/ {
         proxy_pass http://api_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -46,6 +97,11 @@ server {
         proxy_buffering off;
     }
 
+    # Caching for `public/` assets is deliberately set by the application
+    # (apps/web/next.config.ts) rather than here. A `location` block with its
+    # own `add_header` cancels inheritance of the server-level security headers
+    # above, so caching those paths at this layer would silently strip HSTS and
+    # the framing/-content-type protections from every static asset response.
     location / {
         proxy_pass http://web_upstream;
         proxy_http_version 1.1;

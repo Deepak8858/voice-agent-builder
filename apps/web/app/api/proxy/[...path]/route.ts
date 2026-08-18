@@ -2,13 +2,34 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { buildApiContextHeaders } from '@/lib/api-context-headers';
 import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
+import { relayJsonResponse } from '@/lib/proxy-response';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
-const INTERNAL_API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+// Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
+// network) so proxied traffic never loops out through nginx; fall back to the
+// public URL. The resolved base must include the NestJS global prefix /api/v1.
+const API_BASE = resolveApiBase(
+  process.env.INTERNAL_API_URL,
+  process.env.NEXT_PUBLIC_API_URL,
+);
+
+function resolveApiBase(
+  internalApiUrl: string | undefined,
+  publicApiUrl: string | undefined,
+): string {
+  if (internalApiUrl) {
+    const parsed = new URL(internalApiUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.pathname !== '/') {
+      throw new Error('INTERNAL_API_URL must be an HTTP(S) origin without a path');
+    }
+    return `${parsed.origin}/api/v1`;
+  }
+  return publicApiUrl ?? 'http://localhost:4000/api/v1';
+}
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 function apiTarget(req: NextRequest, pathString: string): string {
-  return `${INTERNAL_API_URL}${pathString}${req.nextUrl.search}`;
+  return `${API_BASE}${pathString}${req.nextUrl.search}`;
 }
 
 /**
@@ -76,6 +97,9 @@ export async function GET(
     method: 'GET',
     headers,
     cache: 'no-store',
+    // Forward the client abort so an SSE pass-through tears down the upstream
+    // pull when the browser disconnects, matching what POST already does.
+    ...(req.signal ? { signal: req.signal } : {}),
   });
 
   // SSE stream: pass raw body through as streaming response
@@ -92,8 +116,7 @@ export async function GET(
     });
   }
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -120,8 +143,7 @@ export async function PATCH(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -148,8 +170,7 @@ export async function PUT(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -173,6 +194,5 @@ export async function DELETE(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }

@@ -1,1 +1,1 @@
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@voiceforge/ui'
+export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@voiceforge/ui/tooltip'

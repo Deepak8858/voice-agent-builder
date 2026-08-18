@@ -115,6 +115,12 @@ services:
     image: nginx:1.27.5-alpine
     container_name: vf-nginx
     restart: always
+    environment:
+      # Interpolated from the compose --env-file (/opt/voiceforge/.env). When
+      # set, the TLS entrypoint hook rejects HTTPS requests that do not carry
+      # the same value in X-Origin-Verify (injected by CloudFront). Empty
+      # default keeps the stack functional without CloudFront.
+      ORIGIN_VERIFY_SECRET: ${ORIGIN_VERIFY_SECRET:-}
     ports:
       - "80:80"
       - "443:443"

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
-import { updateSupabaseSession } from './middleware-utils';
+import {
+  PROTECTED_PREFIXES,
+  PUBLIC_PREFIXES,
+  updateSupabaseSession,
+} from './middleware-utils';
 
 const SUPABASE_URL = 'https://projref.supabase.co';
 
@@ -85,5 +89,42 @@ describe('updateSupabaseSession', () => {
     );
 
     expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('takes the public fast path without a session', async () => {
+    const res = await updateSupabaseSession(request('/pricing'));
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('protected status wins when a public prefix is an ancestor', async () => {
+    PUBLIC_PREFIXES.push('/settings');
+    try {
+      const res = await updateSupabaseSession(request('/settings/billing'));
+      expect(res.status).toBe(307);
+      expect(res.headers.get('location')).toBe(
+        'http://localhost/sign-in?next=%2Fsettings%2Fbilling',
+      );
+    } finally {
+      PUBLIC_PREFIXES.pop();
+    }
+  });
+
+  it('protected status wins when a protected prefix is an ancestor', async () => {
+    PUBLIC_PREFIXES.push('/settings/billing');
+    try {
+      const res = await updateSupabaseSession(request('/settings/billing'));
+      expect(res.status).toBe(307);
+      expect(res.headers.get('location')).toBe(
+        'http://localhost/sign-in?next=%2Fsettings%2Fbilling',
+      );
+    } finally {
+      PUBLIC_PREFIXES.pop();
+    }
+  });
+
+  it('keeps the configured prefix lists free from exact duplicates', () => {
+    expect(PUBLIC_PREFIXES.filter((prefix) => PROTECTED_PREFIXES.includes(prefix))).toStrictEqual([]);
   });
 });

@@ -2,13 +2,29 @@
 
 import { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
+import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import { AgentSpecSchema, type AgentDetail, type AgentSpec } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
-import { FormModeEditor, type AgentSpecValidationState } from '@/components/form-mode-editor';
+import { Skeleton } from '@/components/ui/skeleton';
+import type { AgentSpecValidationState } from '@/components/form-mode-editor';
 import { useApi } from '@/lib/use-api';
 import { Save } from 'lucide-react';
 import posthog from 'posthog-js';
+
+/**
+ * The spec editor is a large form component that only matters once the user
+ * actually scrolls to the Spec card, so it is split out of the builder route's
+ * first-load JS. It is client-only state anyway, so skipping SSR avoids paying
+ * for markup that hydration would immediately replace.
+ */
+const FormModeEditor = dynamic(
+  () => import('@/components/form-mode-editor').then((m) => m.FormModeEditor),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-64 w-full rounded-lg" />,
+  },
+);
 
 interface AgentSpecVersionEditorProps {
   workspaceId: string;

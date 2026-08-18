@@ -14,6 +14,7 @@ import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/e
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
+import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { EncryptionService } from '../security/encryption.service';
 import { LiveKitService } from '../livekit/livekit.service';
@@ -29,6 +30,11 @@ type WebhookRequestContext = {
 };
 
 const BILLING_UPGRADE_PATH = '/dashboard/billing';
+
+/** Prisma reports a unique-index rejection as `P2002`. */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002';
+}
 
 const BYO_TELEPHONY_PLAN_LIMIT_DETAILS = {
   limitType: 'byo_telephony',
@@ -47,6 +53,7 @@ export class TelephonyService {
     private readonly billing: BillingService,
     private readonly compliance: ComplianceService,
     private readonly twilioFallback: TwilioProviderAdapter,
+    private readonly admission: CallAdmissionService,
   ) {}
 
   providers() {
@@ -364,6 +371,10 @@ export class TelephonyService {
       roomPrefix,
       agentName: env.LIVEKIT_AGENT_NAME,
       metadata: {
+        // The dispatch rule is created once per number, so it cannot carry a
+        // call id. It carries the organization instead, which is what lets the
+        // runtime resolve the admitted call for this room and meter it.
+        organizationId: number.organizationId,
         provider: number.provider,
         direction: 'inbound',
         model: env.OPENAI_REALTIME_MODEL,
@@ -478,14 +489,6 @@ export class TelephonyService {
     if (!featureAllowed) {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
     }
-    const outbound = await this.billing.canStartOutboundCall(workspaceId);
-    if (!outbound.allowed) {
-      throw new ForbiddenPlanError(
-        outbound.limit === -1
-          ? 'Outbound calls are not available on your plan.'
-          : `Monthly outbound call limit reached (${outbound.limit}). Please upgrade or wait until next billing cycle.`,
-      );
-    }
 
     const purpose = typeof dto.metadata?.purpose === 'string' ? dto.metadata.purpose : null;
     const checkResult = await this.compliance.check({
@@ -526,23 +529,10 @@ export class TelephonyService {
     }
 
     const roomName = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-outbound-${Date.now()}`;
-    const result = await this.livekit.createOutboundCall({
-      phoneNumberId: number.id,
-      agentId: number.assignedAgentId,
-      agentName: env.LIVEKIT_AGENT_NAME,
-      outboundTrunkId: number.livekitConfig.outboundTrunkId,
-      toNumber: dto.to_number,
-      fromNumber: number.phoneNumberE164,
-      roomName,
-      metadata: {
-        workspaceId,
-        phoneNumberId: number.id,
-        provider: number.provider,
-        model: env.OPENAI_REALTIME_MODEL,
-        purpose,
-      },
-    });
     const expiresAt = new Date(new Date().getTime() + workspace.retentionDays * 24 * 60 * 60 * 1000);
+
+    // Persisted before dispatch so the concurrency lease, credit reservation,
+    // and usage record have a call to attach to.
     const call = await this.prisma.call.create({
       data: {
         workspaceId,
@@ -550,11 +540,10 @@ export class TelephonyService {
         agentId: number.assignedAgentId,
         contactId: checkResult.contact_id,
         direction: 'outbound',
-        status: result.status,
+        status: 'queued',
         provider: 'livekit',
-        providerCallId: result.providerCallId,
         phoneNumberId: number.id,
-        livekitRoomName: result.roomName,
+        livekitRoomName: roomName,
         fromNumber: number.phoneNumberE164,
         toNumber: dto.to_number,
         contactName: dto.contact_name ?? null,
@@ -563,6 +552,63 @@ export class TelephonyService {
         retentionDays: workspace.retentionDays,
         metadata: (dto.metadata as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
       },
+    });
+
+    const admission = await this.admission.admitCall({
+      organizationId: number.organizationId,
+      workspaceId,
+      callId: call.id,
+      provider: 'livekit',
+      direction: 'outbound',
+    });
+    if (isCallDenied(admission)) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
+      });
+      throw this.admission.toError(admission);
+    }
+
+    let result: Awaited<ReturnType<LiveKitService['createOutboundCall']>>;
+    try {
+      result = await this.livekit.createOutboundCall({
+        phoneNumberId: number.id,
+        agentId: number.assignedAgentId,
+        agentName: env.LIVEKIT_AGENT_NAME,
+        outboundTrunkId: number.livekitConfig.outboundTrunkId,
+        toNumber: dto.to_number,
+        fromNumber: number.phoneNumberE164,
+        roomName,
+        metadata: {
+          workspaceId,
+          organizationId: number.organizationId,
+          callId: call.id,
+          phoneNumberId: number.id,
+          provider: number.provider,
+          model: env.OPENAI_REALTIME_MODEL,
+          purpose,
+        },
+      });
+    } catch (err) {
+      await this.admission.compensate(number.organizationId, call.id, 'provider_dispatch_failed');
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
+      });
+      throw err;
+    }
+
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: {
+        status: result.status,
+        providerCallId: result.providerCallId,
+        livekitRoomName: result.roomName,
+      },
+    });
+    await this.prisma.callUsage.updateMany({
+      where: { callId: call.id },
+      data: { providerCallId: result.providerCallId },
     });
     await this.compliance.attachCheckToCall(checkResult.id, call.id);
     await this.audit.log({
@@ -600,7 +646,7 @@ export class TelephonyService {
     const callSid = String(payload.CallSid ?? '');
     if (callSid) {
       await this.recordWebhookEvent('twilio', `${callSid}:voice`, 'call.voice', number.id, payload, true);
-      await this.ensureInboundCall({
+      const call = await this.ensureInboundCall({
         workspaceId: number.workspaceId,
         organizationId: number.organizationId,
         agentId: number.assignedAgentId!,
@@ -610,8 +656,56 @@ export class TelephonyService {
         fromNumber: typeof payload.From === 'string' ? payload.From : null,
         toNumber: typeof payload.To === 'string' ? payload.To : null,
       });
+      // An answered inbound call costs the same as an outbound one, so it is
+      // gated before the caller is bridged into LiveKit rather than after.
+      const admitted = await this.admitInboundCall({
+        organizationId: number.organizationId,
+        workspaceId: number.workspaceId,
+        callId: call.id,
+        provider: 'livekit',
+        providerCallId: callSid,
+      });
+      if (!admitted) {
+        await this.prisma.call.update({
+          where: { id: call.id },
+          data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
+        });
+        return this.twilioFallback.buildBillingRefusalTwiml();
+      }
     }
     return this.twilioFallback.buildLiveKitDialTwiml(`sip:${number.livekitConfig.livekitSipHost}`);
+  }
+
+  /**
+   * Admits an inbound call exactly once.
+   *
+   * Providers retry voice webhooks, and a retry must not consume a second
+   * concurrency slot or reserve a second minute. The usage record written by a
+   * successful admission is the marker that the call is already paid for, so a
+   * repeat delivery is bridged straight through.
+   */
+  private async admitInboundCall(input: {
+    organizationId: string;
+    workspaceId: string;
+    callId: string;
+    provider: string;
+    providerCallId: string;
+  }): Promise<boolean> {
+    const existingUsage = await this.prisma.callUsage.findUnique({
+      where: { callId: input.callId },
+      select: { finalizationState: true },
+    });
+    if (existingUsage && existingUsage.finalizationState !== 'finalized') return true;
+
+    const admission = await this.admission.admitCall({
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: input.callId,
+      provider: input.provider,
+      direction: 'inbound',
+      providerCallId: input.providerCallId,
+    });
+    return admission.admitted;
   }
 
   async handleStatusWebhook(
@@ -640,7 +734,13 @@ export class TelephonyService {
     }
     const normalized = this.normalizeStatus(provider, payload);
     await this.recordWebhookEvent(provider, normalized.eventId ?? normalized.providerCallId, 'call.status', phoneNumberId, payload, true);
-    const call = await this.prisma.call.findFirst({ where: { providerCallId: normalized.providerCallId } });
+    const call = await this.prisma.call.findFirst({
+      where: {
+        provider,
+        providerCallId: normalized.providerCallId,
+        phoneNumberId,
+      },
+    });
     if (call) {
       await this.prisma.call.update({
         where: { id: call.id },
@@ -798,6 +898,18 @@ export class TelephonyService {
     })).catch(() => undefined);
   }
 
+  /**
+   * Resolves the call row for an inbound provider call, creating it once.
+   *
+   * Providers retry voice webhooks, so two deliveries can race. The compound
+   * `(provider, providerCallId)` key makes the winner unambiguous, and the
+   * loser is reconciled by re-reading rather than by creating a second row.
+   *
+   * `update: {}` is deliberate — a retry must not reset call state — but Prisma
+   * does not lower an empty update to a native `INSERT ... ON CONFLICT`, so a
+   * concurrent insert surfaces as `P2002` instead of being absorbed. That is
+   * caught here and resolved by reading the row the winner created.
+   */
   private async ensureInboundCall(params: {
     workspaceId: string;
     organizationId: string;
@@ -808,23 +920,56 @@ export class TelephonyService {
     fromNumber: string | null;
     toNumber: string | null;
   }) {
-    const existing = await this.prisma.call.findFirst({ where: { providerCallId: params.providerCallId } });
-    if (existing) return existing;
-    return this.prisma.call.create({
-      data: {
-        workspaceId: params.workspaceId,
-        organizationId: params.organizationId,
-        agentId: params.agentId,
-        phoneNumberId: params.phoneNumberId,
-        direction: 'inbound',
-        status: 'queued',
-        provider: params.provider,
-        providerCallId: params.providerCallId,
-        fromNumber: params.fromNumber,
-        toNumber: params.toNumber,
-        startedAt: new Date(),
-      },
-    });
+    const identity = {
+      provider: params.provider,
+      providerCallId: params.providerCallId,
+    };
+
+    let call;
+    try {
+      call = await this.prisma.call.upsert({
+        where: { provider_providerCallId: identity },
+        create: {
+          workspaceId: params.workspaceId,
+          organizationId: params.organizationId,
+          agentId: params.agentId,
+          phoneNumberId: params.phoneNumberId,
+          direction: 'inbound',
+          status: 'queued',
+          provider: params.provider,
+          providerCallId: params.providerCallId,
+          fromNumber: params.fromNumber,
+          toNumber: params.toNumber,
+          startedAt: new Date(),
+        },
+        update: {},
+      });
+    } catch (err) {
+      if (!isUniqueConstraintViolation(err)) throw err;
+      call = await this.prisma.call.findUnique({
+        where: { provider_providerCallId: identity },
+      });
+      // The unique index just rejected the insert, so the row exists. If it is
+      // gone by the time we read, state is not what the constraint reported and
+      // we refuse rather than create a duplicate.
+      if (!call) {
+        throw new AppError(
+          'CALL_IDENTITY_COLLISION',
+          'Provider call identity could not be resolved.',
+          409,
+        );
+      }
+    }
+
+    if (
+      call.workspaceId !== params.workspaceId ||
+      call.organizationId !== params.organizationId ||
+      call.agentId !== params.agentId ||
+      call.phoneNumberId !== params.phoneNumberId
+    ) {
+      throw new AppError('CALL_IDENTITY_COLLISION', 'Provider call identity belongs to another tenant.', 409);
+    }
+    return call;
   }
 
   private normalizeStatus(provider: 'twilio' | 'vobiz', payload: Record<string, unknown>): NormalizedCallStatus {

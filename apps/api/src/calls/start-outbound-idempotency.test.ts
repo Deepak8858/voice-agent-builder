@@ -97,6 +97,16 @@ function makeService() {
     publish: vi.fn(async () => undefined),
     del: vi.fn(async () => undefined),
   };
+  const admission = {
+    admitCall: vi.fn(async () => ({
+      admitted: true as const,
+      leaseToken: 'lease-1',
+      leaseExpiresAt: new Date().toISOString(),
+      reservedSeconds: 60,
+    })),
+    compensate: vi.fn(async () => undefined),
+    toError: vi.fn(() => new Error('denied')),
+  };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -108,9 +118,11 @@ function makeService() {
     queue as never,
     {} as never,
     cache as never,
+    admission as never,
+    {} as never,
   );
 
-  return { service, prisma, voice, cache };
+  return { service, prisma, voice, cache, admission };
 }
 
 describe('CallsService.startOutboundCall idempotency', () => {
@@ -124,5 +136,21 @@ describe('CallsService.startOutboundCall idempotency', () => {
     expect(cache.acquireLock).toHaveBeenCalled();
     expect(voice.startOutboundCall).not.toHaveBeenCalled();
     expect(result.id).toBe('call-existing');
+  });
+
+  /**
+   * Admission reserves a minute of credit and takes a concurrency lease. A
+   * request that short-circuits on the existing call must not do either, or a
+   * double-click would charge the customer twice and hold a slot nothing ever
+   * releases.
+   */
+  it('neither reserves credit nor takes a lease when it returns the duplicate call', async () => {
+    const { service, admission, prisma } = makeService();
+
+    await service.startOutboundCall('ws-1', 'agent-1', 'user-1', { to_number: '+15551234567' });
+
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(admission.compensate).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
   });
 });

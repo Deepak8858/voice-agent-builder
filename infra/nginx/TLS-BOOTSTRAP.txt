@@ -1,11 +1,15 @@
-VoiceForge TLS bootstrap for deep-ak.dev
+VoiceForge TLS bootstrap for incfrog.ai
 
 1. Install nginx.conf, http.conf, http-redirect.conf, https.conf.template, and docker-entrypoint.d/ under /opt/voiceforge/nginx using the paths mounted by docker-compose.aws.yml.
 2. Create /opt/voiceforge/data/certbot/conf and /opt/voiceforge/data/certbot/www.
 3. Start the core compose stack. Without a certificate, nginx intentionally serves the app and /.well-known/acme-challenge/ over HTTP and does not load a port-443 server.
-4. After deep-ak.dev points to this host, issue the first certificate:
+4. After incfrog.ai and www.incfrog.ai point to this host, issue the first certificate:
 
-   docker run --rm -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt -v /opt/voiceforge/data/certbot/www:/var/www/certbot certbot/certbot:v3.2.0 certonly --webroot --webroot-path /var/www/certbot --domain deep-ak.dev --email YOUR_EMAIL --agree-tos --no-eff-email
+   docker run --rm -v /opt/voiceforge/data/certbot/conf:/etc/letsencrypt -v /opt/voiceforge/data/certbot/www:/var/www/certbot certbot/certbot:v3.2.0 certonly --webroot --webroot-path /var/www/certbot --cert-name incfrog.ai --domain incfrog.ai --domain www.incfrog.ai --email YOUR_EMAIL --agree-tos --no-eff-email
+
+   To add a domain to an existing certificate (e.g. adding www to a cert that
+   only covers the apex), run the same command with --expand appended. Both
+   DNS names must already resolve to this host for HTTP-01 to succeed.
 
 5. Recreate nginx. Its entrypoint detects the certificate, enables the TLS server, and changes non-ACME HTTP requests to HTTPS redirects:
 
@@ -18,3 +22,24 @@ VoiceForge TLS bootstrap for deep-ak.dev
    systemctl list-timers voiceforge-certbot-renew.timer
 
 The renewal service uses the same webroot and sends SIGHUP to vf-nginx after a successful renewal. No root crontab is used.
+
+Origin verification (CloudFront)
+
+When the environment variable ORIGIN_VERIFY_SECRET is set on the nginx
+container (docker-compose.aws.yml passes it through from /opt/voiceforge/.env),
+the entrypoint script docker-entrypoint.d/40-enable-tls-if-present.sh replaces
+the #ORIGIN_VERIFY_MARKER comment in both 443 server blocks of
+https.conf.template with a check that returns 403 unless the request carries
+the matching X-Origin-Verify header. CloudFront injects that header on every
+origin request, so only traffic that came through the CDN reaches the app over
+HTTPS. The value is restricted to [A-Za-z0-9_-]; anything else is rejected at
+container start rather than silently written into nginx config. When the
+variable is unset, the marker stays a comment and nginx behaves exactly as
+before.
+
+Port 80 is deliberately exempt: it serves only /.well-known/acme-challenge/
+and the HTTPS redirect. Certificate issuance and renewal are therefore
+unaffected by CloudFront or by the origin-verify check — the ACME exchange
+never needs the header. After changing ORIGIN_VERIFY_SECRET in
+/opt/voiceforge/.env, force-recreate nginx (step 5's command) so the
+entrypoint re-renders the config.

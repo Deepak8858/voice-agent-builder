@@ -1,0 +1,2 @@
+# Intentional non-secret Stripe-shaped sentinel used by env validation tests.
+57d15813eac46f6b7d032089225801b2fa122d65:apps/api/src/config/env.test.ts:stripe-access-token:112

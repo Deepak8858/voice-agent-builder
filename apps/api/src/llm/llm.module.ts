@@ -38,6 +38,7 @@ import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from './llm.provider.inter
             return anthropic;
           case 'azure-aifoundry':
             if (!env.LLM_API_KEY) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_API_KEY not set.');
+            if (!env.LLM_BASE_URL) throw new Error('LLM_PROVIDER=azure-aifoundry but LLM_BASE_URL not set.');
             return azure;
           default:
             throw new Error(`Unsupported LLM_PROVIDER: ${env.LLM_PROVIDER}. Choose one of: github, openai, anthropic, azure-aifoundry.`);

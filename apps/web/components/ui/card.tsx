@@ -1,1 +1,1 @@
-export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@voiceforge/ui'
+export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@voiceforge/ui/card'

@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { estimatePlan, formatEstimateReason } from './pricing-estimator';
 
 describe('pricing estimator', () => {
-  it('keeps a workspace on Free when usage fits the free trial limits', () => {
+  it('keeps a workspace on Free when it only needs the browser-test entitlement', () => {
     const estimate = estimatePlan({
       agents: 1,
-      minutes: 10,
-      outboundCalls: 5,
+      minutes: 0,
+      concurrentCalls: 0,
       tools: 0,
       workspaces: 1,
       contacts: 50,
@@ -19,43 +19,56 @@ describe('pricing estimator', () => {
   it('recommends Starter for paid usage that fits Starter limits', () => {
     const estimate = estimatePlan({
       agents: 2,
-      minutes: 250,
-      outboundCalls: 80,
-      tools: 3,
+      minutes: 200,
+      concurrentCalls: 2,
+      tools: 2,
       workspaces: 1,
       contacts: 400,
     });
 
     expect(estimate.planId).toBe('starter');
-    expect(estimate.monthlyPriceUsd).toBe(49);
+    expect(estimate.monthlyPriceUsd).toBe(99);
   });
 
   it('recommends Growth when Starter limits are exceeded', () => {
     const estimate = estimatePlan({
       agents: 5,
-      minutes: 1200,
-      outboundCalls: 300,
+      minutes: 1000,
+      concurrentCalls: 10,
       tools: 10,
       workspaces: 3,
       contacts: 2000,
     });
 
     expect(estimate.planId).toBe('growth');
-    expect(estimate.monthlyPriceUsd).toBe(149);
+    expect(estimate.monthlyPriceUsd).toBe(299);
   });
 
-  it('falls back to Enterprise for unlimited usage needs', () => {
+  it('uses concurrent-call capacity rather than a billing-period call count', () => {
     const estimate = estimatePlan({
-      agents: 12,
-      minutes: 3000,
-      outboundCalls: 700,
+      agents: 3,
+      minutes: 200,
+      concurrentCalls: 3,
+      tools: 2,
+      workspaces: 1,
+      contacts: 400,
+    });
+
+    expect(estimate.planId).toBe('growth');
+  });
+
+  it('falls back to sales-assisted Enterprise beyond Growth quotas', () => {
+    const estimate = estimatePlan({
+      agents: 31,
+      minutes: 3001,
+      concurrentCalls: 26,
       tools: 25,
-      workspaces: 6,
-      contacts: 8000,
+      workspaces: 16,
+      contacts: 25_001,
     });
 
     expect(estimate.planId).toBe('enterprise');
-    expect(estimate.monthlyPriceUsd).toBe(null);
-    expect(formatEstimateReason(estimate)).toContain('custom Enterprise');
+    expect(estimate.monthlyPriceUsd).toBe(999);
+    expect(formatEstimateReason(estimate)).toContain('sales-assisted Enterprise');
   });
 });

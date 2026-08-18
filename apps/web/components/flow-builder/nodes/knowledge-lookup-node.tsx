@@ -2,15 +2,24 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const KnowledgeLookupNode = memo(function KnowledgeLookupNode({ data }: NodeProps) {
-  const queryField = (data?.query_field as string) || 'latest caller question';
+export const KnowledgeLookupNode = memo(function KnowledgeLookupNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('knowledge_lookup');
+  const queryField =
+    typeof data?.query_field === 'string' && data.query_field.trim() ? data.query_field : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-cyan-400 bg-cyan-50 px-4 py-3 shadow-sm dark:bg-cyan-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-600">Knowledge</p>
-      <p className="font-mono text-sm text-cyan-900 dark:text-cyan-100">{queryField}</p>
-      <Handle type="target" position={Position.Top} className="!bg-cyan-400" />
-      <Handle type="source" position={Position.Bottom} className="!bg-cyan-400" />
-    </div>
+    <NodeCard
+      icon={meta.icon}
+      title="Knowledge"
+      theme={meta.theme}
+      preview={queryField || 'Latest caller question'}
+      previewMono={Boolean(queryField)}
+      selected={selected}
+    >
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+      <Handle type="source" position={Position.Bottom} className={meta.theme.handle} />
+    </NodeCard>
   );
 });

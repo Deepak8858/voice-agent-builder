@@ -8,6 +8,16 @@ import {
 
 const EXPECTED_TABLES = [...REQUIRED_PUBLIC_TABLES];
 
+const REQUIRED_BILLING_CHECK_CONSTRAINTS = [
+  'billing_credit_buckets_seconds_nonnegative_check',
+  'billing_credit_buckets_remaining_lte_original_check',
+  'organization_credit_balances_seconds_nonnegative_check',
+  'call_usages_seconds_nonnegative_check',
+  'provider_cost_events_quantity_nonnegative_check',
+  'provider_cost_events_amount_nonnegative_check',
+  'provider_cost_events_estimate_version_nonnegative_check',
+] as const;
+
 async function main() {
   console.log('[db-verify] DATABASE_URL host:', new URL(process.env.DATABASE_URL!).host);
   console.log('[db-verify] DIRECT_URL  host:', new URL(process.env.DIRECT_URL!).host);
@@ -71,15 +81,15 @@ async function main() {
   console.log(`[db-verify] call_evaluations foreign keys: ${fks.length}`);
   for (const fk of fks) console.log(`  ${fk.column_name} -> ${fk.foreign_table}`);
 
-  // 5. Row counts (sanity).
-  const counts = await Promise.all(
-    EXPECTED_TABLES.filter((t) => have.has(t)).map(async (t) => {
-      const r = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
-        `SELECT COUNT(*)::bigint AS n FROM "${t}"`,
-      );
-      return { table: t, n: Number(r[0]?.n ?? 0) };
-    }),
-  );
+  // 5. Row counts (sanity). Run sequentially: the runtime pool allows only a
+  // few connections, and firing every COUNT concurrently exhausts it (P2024).
+  const counts: Array<{ table: string; n: number }> = [];
+  for (const t of EXPECTED_TABLES.filter((t) => have.has(t))) {
+    const r = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*)::bigint AS n FROM "${t}"`,
+    );
+    counts.push({ table: t, n: Number(r[0]?.n ?? 0) });
+  }
   console.log('[db-verify] row counts:');
   for (const c of counts) console.log(`  ${c.n.toString().padStart(6, ' ')}  ${c.table}`);
 
@@ -130,7 +140,43 @@ async function main() {
     process.exit(1);
   }
 
-  // 8. Connection pool sanity.
+  // 8. Billing invariants live in migrations because Prisma cannot model CHECK
+  // constraints. Fail release verification if db push or an incomplete migration
+  // left the deployed database without those guards.
+  const billingConstraints = await prisma.$queryRaw<Array<{ constraintName: string }>>`
+    SELECT conname AS "constraintName"
+    FROM pg_constraint
+    WHERE contype = 'c'
+      AND connamespace = 'public'::regnamespace
+      AND conname IN (
+        'billing_credit_buckets_seconds_nonnegative_check',
+        'billing_credit_buckets_remaining_lte_original_check',
+        'organization_credit_balances_seconds_nonnegative_check',
+        'call_usages_seconds_nonnegative_check',
+        'provider_cost_events_quantity_nonnegative_check',
+        'provider_cost_events_amount_nonnegative_check',
+        'provider_cost_events_estimate_version_nonnegative_check'
+      )
+  `;
+  const installedBillingConstraints = new Set(
+    billingConstraints.map((constraint) => constraint.constraintName),
+  );
+  const missingBillingConstraints = REQUIRED_BILLING_CHECK_CONSTRAINTS.filter(
+    (constraint) => !installedBillingConstraints.has(constraint),
+  );
+  console.log('[db-verify] billing CHECK constraints:');
+  for (const constraint of REQUIRED_BILLING_CHECK_CONSTRAINTS) {
+    console.log(`  ${installedBillingConstraints.has(constraint) ? '✓' : '✗'} ${constraint}`);
+  }
+  if (missingBillingConstraints.length) {
+    console.error(
+      '[db-verify] FAIL — missing billing CHECK constraints:',
+      missingBillingConstraints,
+    );
+    process.exit(1);
+  }
+
+  // 9. Connection pool sanity.
   const dbUrl = new URL(process.env.DATABASE_URL!);
   console.log('[db-verify] runtime pool:');
   console.log(`  host = ${dbUrl.host}`);

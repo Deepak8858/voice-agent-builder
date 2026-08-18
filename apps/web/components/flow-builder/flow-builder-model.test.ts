@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import type { Node } from '@xyflow/react';
+import type { Edge, Node } from '@xyflow/react';
 import type { AgentSpec } from '@voiceforge/shared';
 import {
+  LAYOUT_NODE_HEIGHT,
+  autoLayoutNodes,
   buildNodeData,
   buildDefaultAgentFlow,
+  collectFlowIssues,
   convertReactFlowToAgentFlow,
   convertAgentFlowToReactFlow,
   createFlowNode,
+  duplicateFlowNode,
   getSelectedNode,
+  nodesOverlap,
   updateNodeData,
   validateAgentFlow,
+  validateNodeConfig,
 } from './flow-builder-model';
 
 const nodes: Node[] = [
@@ -198,23 +204,30 @@ describe('convertReactFlowToAgentFlow', () => {
     expect(canonical).toStrictEqual({
       start_node_id: 'start',
       nodes: [
-        { id: 'start', type: 'start', label: 'Start', next: 'ask' },
+        { id: 'start', type: 'start', label: 'Start', position: { x: 0, y: 0 }, next: 'ask' },
         {
           id: 'ask',
           type: 'ask_question',
           question: 'What do you need?',
           capture_field: 'intent',
+          position: { x: 0, y: 140 },
           next: 'branch',
         },
         {
           id: 'branch',
           type: 'condition',
           expression: "intent === 'urgent'",
+          position: { x: 0, y: 280 },
           on_true: 'transfer',
           on_false: 'end',
         },
-        { id: 'transfer', type: 'transfer', target_phone: '+14155550123' },
-        { id: 'end', type: 'end', label: 'End' },
+        {
+          id: 'transfer',
+          type: 'transfer',
+          target_phone: '+14155550123',
+          position: { x: -160, y: 420 },
+        },
+        { id: 'end', type: 'end', label: 'End', position: { x: 160, y: 420 } },
       ],
     });
   });
@@ -244,12 +257,14 @@ describe('convertReactFlowToAgentFlow', () => {
     expect(staleVisualConnection.nodes[0]).toStrictEqual({
       id: 'start',
       type: 'start',
+      position: { x: 0, y: 0 },
       next: 'branch',
     });
     expect(staleVisualConnection.nodes[1]).toStrictEqual({
       id: 'branch',
       type: 'condition',
       expression: 'needs_handoff',
+      position: { x: 0, y: 140 },
       on_true: 'end',
       on_false: '',
     });
@@ -274,5 +289,200 @@ describe('validateAgentFlow', () => {
         ],
       }),
     ).toStrictEqual(['Condition node "branch" false branch points to missing node "missing".']);
+  });
+});
+
+describe('autoLayoutNodes', () => {
+  const stackedNodes: Node[] = [
+    { id: 'start', type: 'start', position: { x: 120, y: 40 }, data: {} },
+    { id: 'speak', type: 'speak', position: { x: 120, y: 60 }, data: { text: 'Hello' } },
+    { id: 'end', type: 'end', position: { x: 120, y: 80 }, data: {} },
+  ];
+  const chainEdges: Edge[] = [
+    { id: 'e1', source: 'start', target: 'speak' },
+    { id: 'e2', source: 'speak', target: 'end' },
+  ];
+
+  it('orders connected nodes top to bottom', () => {
+    const laidOut = autoLayoutNodes(stackedNodes, chainEdges);
+    const y = (id: string) => laidOut.find((node) => node.id === id)?.position.y ?? 0;
+
+    expect(y('start')).toBeLessThan(y('speak'));
+    expect(y('speak')).toBeLessThan(y('end'));
+  });
+
+  it('separates nodes that previously overlapped', () => {
+    expect(nodesOverlap(stackedNodes)).toBe(true);
+    expect(nodesOverlap(autoLayoutNodes(stackedNodes, chainEdges))).toBe(false);
+  });
+
+  it('keeps every node and preserves ids and data', () => {
+    const laidOut = autoLayoutNodes(stackedNodes, chainEdges);
+
+    expect(laidOut.map((node) => node.id)).toStrictEqual(['start', 'speak', 'end']);
+    expect(laidOut[1]?.data).toStrictEqual({ text: 'Hello' });
+  });
+
+  it('returns an empty graph unchanged', () => {
+    expect(autoLayoutNodes([], [])).toStrictEqual([]);
+  });
+
+  it('lays out parallel condition edges without collapsing either edge', () => {
+    const branchNodes: Node[] = [
+      { id: 'branch', type: 'condition', position: { x: 0, y: 0 }, data: { expression: 'x' } },
+      { id: 'end', type: 'end', position: { x: 0, y: 0 }, data: {} },
+    ];
+    const parallelEdges: Edge[] = [
+      { id: 'true-edge', source: 'branch', target: 'end', sourceHandle: 'true' },
+      { id: 'false-edge', source: 'branch', target: 'end', sourceHandle: 'false' },
+    ];
+
+    expect(autoLayoutNodes(branchNodes, parallelEdges)).toHaveLength(2);
+    expect(parallelEdges.map((edge) => edge.id)).toStrictEqual(['true-edge', 'false-edge']);
+  });
+
+  it('ignores edges that reference missing nodes', () => {
+    const laidOut = autoLayoutNodes(stackedNodes, [
+      ...chainEdges,
+      { id: 'e-ghost', source: 'speak', target: 'ghost' },
+    ]);
+
+    expect(laidOut).toHaveLength(3);
+  });
+});
+
+describe('nodesOverlap', () => {
+  it('is false when nodes are spaced further apart than their height', () => {
+    expect(
+      nodesOverlap([
+        { id: 'a', type: 'speak', position: { x: 0, y: 0 }, data: {} },
+        { id: 'b', type: 'speak', position: { x: 0, y: LAYOUT_NODE_HEIGHT + 40 }, data: {} },
+      ]),
+    ).toBe(false);
+  });
+
+  it('is false for a single node', () => {
+    expect(nodesOverlap([{ id: 'a', type: 'speak', position: { x: 0, y: 0 }, data: {} }])).toBe(
+      false,
+    );
+  });
+});
+
+describe('validateNodeConfig', () => {
+  const node = (type: string, data: Record<string, unknown>): Node => ({
+    id: `${type}-1`,
+    type,
+    position: { x: 0, y: 0 },
+    data,
+  });
+
+  it('requires text on speak nodes', () => {
+    expect(validateNodeConfig(node('speak', { text: '   ' }))).toStrictEqual([
+      { field: 'text', message: 'Add the text the agent should speak.' },
+    ]);
+    expect(validateNodeConfig(node('speak', { text: 'Hello there' }))).toStrictEqual([]);
+  });
+
+  it('requires a question and capture field on ask_question nodes', () => {
+    expect(validateNodeConfig(node('ask_question', { question: '', capture_field: '' }))).toHaveLength(2);
+    expect(
+      validateNodeConfig(node('ask_question', { question: 'Name?', capture_field: 'full_name' })),
+    ).toStrictEqual([]);
+  });
+
+  it('requires a tool name on tool_call nodes', () => {
+    expect(validateNodeConfig(node('tool_call', { tool_name: '' }))).toStrictEqual([
+      { field: 'tool_name', message: 'Choose the tool to call.' },
+    ]);
+  });
+
+  it('requires a supported channel and a body on send_message nodes', () => {
+    expect(validateNodeConfig(node('send_message', { channel: 'carrier-pigeon', body: '' }))).toStrictEqual([
+      { field: 'channel', message: 'Channel must be sms or email.' },
+      { field: 'body', message: 'Add the message body to send.' },
+    ]);
+    expect(validateNodeConfig(node('send_message', { channel: 'email', body: 'Hi' }))).toStrictEqual([]);
+  });
+
+  it('accepts an empty transfer number but rejects malformed ones', () => {
+    expect(validateNodeConfig(node('transfer', { target_phone: '' }))).toStrictEqual([]);
+    expect(validateNodeConfig(node('transfer', { target_phone: '+14155551212' }))).toStrictEqual([]);
+    expect(validateNodeConfig(node('transfer', { target_phone: 'call Bob' }))).toHaveLength(1);
+  });
+
+  it('has no requirements for start and end nodes', () => {
+    expect(validateNodeConfig(node('start', {}))).toStrictEqual([]);
+    expect(validateNodeConfig(node('end', {}))).toStrictEqual([]);
+  });
+});
+
+describe('collectFlowIssues', () => {
+  it('combines graph-level and per-node issues', () => {
+    const issues = collectFlowIssues(
+      [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+        { id: 'speak', type: 'speak', position: { x: 0, y: 120 }, data: { text: '' } },
+        { id: 'end', type: 'end', position: { x: 0, y: 240 }, data: {} },
+      ],
+      [
+        { id: 'e1', source: 'start', target: 'speak' },
+        { id: 'e2', source: 'speak', target: 'end' },
+      ],
+    );
+
+    expect(issues).toStrictEqual(['speak "speak": Add the text the agent should speak.']);
+  });
+
+  it('prefixes issues with the node label when one exists', () => {
+    const issues = collectFlowIssues(
+      [
+        { id: 'start', type: 'start', position: { x: 0, y: 0 }, data: {} },
+        {
+          id: 'ask',
+          type: 'ask_question',
+          position: { x: 0, y: 120 },
+          data: { label: 'Collect name', question: 'Name?', capture_field: '' },
+        },
+        { id: 'end', type: 'end', position: { x: 0, y: 240 }, data: {} },
+      ],
+      [
+        { id: 'e1', source: 'start', target: 'ask' },
+        { id: 'e2', source: 'ask', target: 'end' },
+      ],
+    );
+
+    expect(issues).toStrictEqual([
+      'Collect name (ask question): Set a capture field so the answer is stored.',
+    ]);
+  });
+});
+
+describe('duplicateFlowNode', () => {
+  const original: Node = {
+    id: 'speak-1',
+    type: 'speak',
+    position: { x: 100, y: 200 },
+    data: { text: 'Hello' },
+    selected: true,
+  };
+
+  it('creates a detached copy with a new id and offset position', () => {
+    const copy = duplicateFlowNode(original, 'speak-2');
+
+    expect(copy.id).toBe('speak-2');
+    expect(copy.position).toStrictEqual({ x: 148, y: 248 });
+    expect(copy.selected).toBe(false);
+    expect(copy.data).toStrictEqual({ text: 'Hello' });
+  });
+
+  it('does not share the data object with the original node', () => {
+    const copy = duplicateFlowNode(original, 'speak-3');
+    copy.data.text = 'Changed';
+
+    expect(original.data.text).toBe('Hello');
+  });
+
+  it('generates a unique id when none is provided', () => {
+    expect(duplicateFlowNode(original).id).not.toBe(duplicateFlowNode(original).id);
   });
 });

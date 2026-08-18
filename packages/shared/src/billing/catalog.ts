@@ -1,39 +1,149 @@
 import type { CheckoutPlan, PlanType } from '../schemas/billing';
-import { PLAN_LIMITS } from '../schemas/billing';
+
+/** The versioned commercial contract used by pricing, checkout, and runtime admission. */
+export const BILLING_CATALOG_VERSION = '2026-07-24' as const;
+
+export const MINUTE_PACK = {
+  minutes: 100,
+  priceUsd: 39,
+  expiresAfterDays: 365,
+} as const;
+
+export interface PlanEntitlements {
+  includedMinutes: number;
+  lifetimeBrowserTestSeconds: number;
+  agents: number;
+  workspaces: number;
+  nangoConnections: number;
+  concurrentCalls: number;
+  maximumContractConcurrentCalls: number;
+  contacts: number;
+  outboundPstn: boolean;
+  campaigns: boolean;
+  /**
+   * Compliance blocking (DNC, quiet hours, consent) is a mandatory safety
+   * control, not a commercial feature. It is declared per plan so that it can
+   * never be weakened as a side effect of repricing campaigns, and it is `true`
+   * on every plan including Free.
+   */
+  complianceBlocks: boolean;
+  whiteLabel: boolean;
+}
+
+const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
+  free: {
+    includedMinutes: 0,
+    lifetimeBrowserTestSeconds: 180,
+    agents: 1,
+    workspaces: 1,
+    nangoConnections: 0,
+    concurrentCalls: 0,
+    maximumContractConcurrentCalls: 0,
+    contacts: 50,
+    outboundPstn: false,
+    campaigns: false,
+    complianceBlocks: true,
+    whiteLabel: false,
+  },
+  starter: {
+    includedMinutes: 200,
+    lifetimeBrowserTestSeconds: 0,
+    agents: 3,
+    workspaces: 1,
+    nangoConnections: 2,
+    concurrentCalls: 2,
+    maximumContractConcurrentCalls: 2,
+    contacts: 500,
+    outboundPstn: true,
+    campaigns: true,
+    complianceBlocks: true,
+    whiteLabel: false,
+  },
+  growth: {
+    includedMinutes: 1000,
+    lifetimeBrowserTestSeconds: 0,
+    agents: 10,
+    workspaces: 5,
+    nangoConnections: 10,
+    concurrentCalls: 10,
+    maximumContractConcurrentCalls: 10,
+    contacts: 5_000,
+    outboundPstn: true,
+    campaigns: true,
+    complianceBlocks: true,
+    whiteLabel: true,
+  },
+  enterprise: {
+    includedMinutes: 3000,
+    lifetimeBrowserTestSeconds: 0,
+    agents: 30,
+    workspaces: 15,
+    nangoConnections: 25,
+    concurrentCalls: 25,
+    maximumContractConcurrentCalls: 50,
+    contacts: 25_000,
+    outboundPstn: true,
+    campaigns: true,
+    complianceBlocks: true,
+    whiteLabel: true,
+  },
+};
+
+export function getPlanEntitlements(plan: PlanType): PlanEntitlements {
+  return PLAN_ENTITLEMENTS[plan];
+}
 
 /**
- * Centralized plan catalog. The frontend pricing page and dashboard billing
- * panel both consume this so that display copy, prices, and limits stay in a
- * single source of truth. Price IDs themselves stay server-side (env vars).
+ * Compatibility limits for callers that have not yet moved to explicit
+ * entitlements. These aliases are derived from the commercial contract and
+ * must not be used to introduce separate quota rules.
  */
+interface CompatibilityPlanLimits {
+  agents: number;
+  concurrentCalls: number;
+  minutes: number;
+  tools: number;
+  workspaces: number;
+  contacts: number;
+  complianceBlocks: boolean;
+}
+
+function compatibilityLimits(entitlements: PlanEntitlements): CompatibilityPlanLimits {
+  return {
+    agents: entitlements.agents,
+    concurrentCalls: entitlements.concurrentCalls,
+    minutes: entitlements.includedMinutes,
+    tools: entitlements.nangoConnections,
+    workspaces: entitlements.workspaces,
+    contacts: entitlements.contacts,
+    complianceBlocks: entitlements.complianceBlocks,
+  };
+}
+
+export const PLAN_LIMITS: Readonly<Record<PlanType, CompatibilityPlanLimits>> = {
+  free: compatibilityLimits(PLAN_ENTITLEMENTS.free),
+  starter: compatibilityLimits(PLAN_ENTITLEMENTS.starter),
+  growth: compatibilityLimits(PLAN_ENTITLEMENTS.growth),
+  enterprise: compatibilityLimits(PLAN_ENTITLEMENTS.enterprise),
+};
 
 export type BillingInterval = 'month' | 'year';
 
 export interface PlanCatalogEntry {
   id: PlanType;
-  /** Pretty display name (e.g. "Starter"). */
   name: string;
-  /** Short one-line tagline that appears under the plan name. */
   tagline: string;
-  /** Human-readable price string, e.g. "$49". `null` for free. */
   priceLabel: string;
-  /** Monthly USD price (integer dollars) used for any math we need. `null` for free, undefined for custom. */
-  monthlyPriceUsd: number | null;
-  /** Billing interval that the headline price refers to. */
-  interval: BillingInterval | null;
-  /** Whether this plan is the highlighted "most popular" tier on the pricing page. */
+  monthlyPriceUsd: number;
+  interval: BillingInterval;
   highlight?: boolean;
-  /** Headline call-to-action shown on the pricing card for new visitors. */
   cta: string;
-  /** Headline CTA shown on the dashboard for upgrade/downgrade behavior. */
   dashboardCta?: string;
-  /** Feature bullet list used in pricing cards. */
   features: string[];
-  /** Plan-level marketing limits / quotas. */
   marketingLimits: {
     agents: string;
     minutes: string;
-    outboundCalls: string;
+    concurrentCalls: string;
     tools: string;
     workspaces: string;
     contacts: string;
@@ -45,24 +155,18 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
   {
     id: 'free',
     name: 'Free',
-    tagline: 'Explore VoiceForge with a free trial, no card required.',
+    tagline: 'One browser test before choosing a production plan.',
     priceLabel: '$0',
     monthlyPriceUsd: 0,
     interval: 'month',
-    cta: 'Start free',
+    cta: 'Try in browser',
     dashboardCta: 'Current plan',
-    features: [
-      'AI agent generation from a plain-language brief',
-      'Browser test calls against a sandbox runtime',
-      'Compliance gating (consent, DNC, opt-outs)',
-      'Workspace knowledge base',
-      'Email support',
-    ],
+    features: ['One 180-second lifetime browser test', 'Compliance-safe sandbox runtime'],
     marketingLimits: {
       agents: '1 agent',
-      minutes: '10 trial minutes',
-      outboundCalls: '5 trial calls',
-      tools: '0 tools',
+      minutes: '0 PSTN min',
+      concurrentCalls: '0 concurrent calls',
+      tools: '0 integrations',
       workspaces: '1 workspace',
       contacts: '50 contacts',
       advancedCompliance: false,
@@ -71,54 +175,39 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
   {
     id: 'starter',
     name: 'Starter',
-    tagline: 'For solo operators and small teams running real outbound calls.',
-    priceLabel: '$49',
-    monthlyPriceUsd: 49,
+    tagline: 'For teams launching their first production voice agents.',
+    priceLabel: '$99',
+    monthlyPriceUsd: 99,
     interval: 'month',
     highlight: true,
     cta: 'Upgrade to Starter',
     dashboardCta: 'Upgrade to Starter',
-    features: [
-      'Everything in Free',
-      '300 outbound voice minutes / month',
-      'Up to 3 published agents',
-      'White-label subdomain',
-      'API access',
-      'Priority email support',
-    ],
+    features: ['200 included minutes / month', '3 agents', '2 Nango connections', '2 concurrent calls'],
     marketingLimits: {
       agents: '3 agents',
-      minutes: '300 min/mo',
-      outboundCalls: '100 calls/mo',
-      tools: '5 tools per agent',
-      workspaces: '2 workspaces',
+      minutes: '200 min/mo',
+      concurrentCalls: '2 concurrent calls',
+      tools: '2 integrations',
+      workspaces: '1 workspace',
       contacts: '500 contacts',
-      advancedCompliance: false,
+      advancedCompliance: true,
     },
   },
   {
     id: 'growth',
     name: 'Growth',
-    tagline: 'For agencies and growing teams scaling voice operations.',
-    priceLabel: '$149',
-    monthlyPriceUsd: 149,
+    tagline: 'For growing operations that need scale and white-label delivery.',
+    priceLabel: '$299',
+    monthlyPriceUsd: 299,
     interval: 'month',
     cta: 'Upgrade to Growth',
     dashboardCta: 'Upgrade to Growth',
-    features: [
-      'Everything in Starter',
-      '2,000 outbound voice minutes / month',
-      'Up to 10 published agents',
-      'Custom-domain white label',
-      'Bulk CSV contact import',
-      'Advanced compliance blocks',
-      'Calendar integrations (Google, Cal.com)',
-    ],
+    features: ['1,000 included minutes / month', '10 agents', '10 concurrent calls', 'White-label branding'],
     marketingLimits: {
       agents: '10 agents',
-      minutes: '2,000 min/mo',
-      outboundCalls: '500 calls/mo',
-      tools: '20 tools per agent',
+      minutes: '1,000 min/mo',
+      concurrentCalls: '10 concurrent calls',
+      tools: '10 integrations',
       workspaces: '5 workspaces',
       contacts: '5,000 contacts',
       advancedCompliance: true,
@@ -127,28 +216,20 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
   {
     id: 'enterprise',
     name: 'Enterprise',
-    tagline: 'For organizations with advanced needs and dedicated rollout.',
-    priceLabel: 'Custom',
-    monthlyPriceUsd: null,
-    interval: null,
+    tagline: 'Sales-assisted rollout for larger organizations and contract needs.',
+    priceLabel: 'From $999/month',
+    monthlyPriceUsd: 999,
+    interval: 'month',
     cta: 'Contact sales',
     dashboardCta: 'Talk to sales',
-    features: [
-      'Everything in Growth',
-      'Unlimited everything',
-      'Dedicated account manager and SLA',
-      'HIPAA-ready infrastructure',
-      'SSO / SAML',
-      'Audit log + compliance exports',
-      'Multi-region deployment',
-    ],
+    features: ['3,000 included minutes / month', '30 agents', 'Up to 50 contracted concurrent calls'],
     marketingLimits: {
-      agents: 'Unlimited',
-      minutes: 'Unlimited',
-      outboundCalls: 'Unlimited',
-      tools: 'Unlimited',
-      workspaces: 'Unlimited',
-      contacts: 'Unlimited',
+      agents: '30 agents',
+      minutes: '3,000 min/mo',
+      concurrentCalls: '25 concurrent calls (50 by contract)',
+      tools: '25 integrations',
+      workspaces: '15 workspaces',
+      contacts: '25,000 contacts',
       advancedCompliance: true,
     },
   },
@@ -165,13 +246,10 @@ export function isPaidPlan(plan: PlanType): boolean {
 }
 
 export function isCheckoutPlan(plan: PlanType): plan is CheckoutPlan {
-  return plan === 'starter' || plan === 'growth' || plan === 'enterprise';
+  return plan === 'starter' || plan === 'growth';
 }
 
-/**
- * Returns the next plan a customer is most likely to upgrade to. Returns
- * `null` when the customer is already on the top tier.
- */
+/** Returns the next self-service upgrade tier, if one is available. */
 export function getUpgradeTarget(current: PlanType): CheckoutPlan | null {
   const idx = PLAN_ORDER.indexOf(current);
   for (let i = idx + 1; i < PLAN_ORDER.length; i += 1) {
@@ -181,18 +259,10 @@ export function getUpgradeTarget(current: PlanType): CheckoutPlan | null {
   return null;
 }
 
-/**
- * Returns plan-level marketing limits for display purposes. Use `PLAN_LIMITS`
- * directly when enforcing limits server-side.
- */
-export function getPlanLimits(plan: PlanType): typeof PLAN_LIMITS[PlanType] {
+export function getPlanLimits(plan: PlanType): CompatibilityPlanLimits {
   return PLAN_LIMITS[plan];
 }
 
-/**
- * Compares two plans by tier order. Returns a negative number if `a` is below
- * `b`, positive if `a` is above `b`, and zero if equal.
- */
 export function comparePlans(a: PlanType, b: PlanType): number {
   return PLAN_ORDER.indexOf(a) - PLAN_ORDER.indexOf(b);
 }

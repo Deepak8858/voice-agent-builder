@@ -1,6 +1,5 @@
 import { PricingPage } from '@/components/pricing-page';
 import { apiFetch, ApiCallError } from '@/lib/api';
-import { getBillingMode } from '@/lib/billing-mode';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import type { PlanType, SubscriptionDto } from '@voiceforge/shared';
 
@@ -30,11 +29,5 @@ export default async function Pricing() {
     }
   }
 
-  return (
-    <PricingPage
-      isAuthenticated={Boolean(user)}
-      currentPlan={currentPlan}
-      billingMode={getBillingMode()}
-    />
-  );
+  return <PricingPage isAuthenticated={Boolean(user)} currentPlan={currentPlan} />;
 }
