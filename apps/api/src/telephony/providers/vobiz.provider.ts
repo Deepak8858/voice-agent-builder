@@ -15,7 +15,16 @@ interface FetchLike {
 }
 
 interface VobizNumber {
-  number: string;
+  /** Documented account/partner inventory shape. */
+  id?: string;
+  e164?: string;
+  account_id?: string;
+  application_id?: string;
+  capabilities?: Record<string, unknown>;
+  voice_enabled?: boolean;
+  trunk_group_id?: string;
+  /** Legacy/alternate keys kept for backwards compatibility. */
+  number?: string;
   trunk_id?: string;
   status?: string;
   application_name?: string;
@@ -23,6 +32,15 @@ interface VobizNumber {
   country?: string;
   region?: string;
 }
+
+interface VobizNumberListResponse {
+  items?: VobizNumber[];
+  data?: VobizNumber[];
+}
+
+type NumberFetchOutcome =
+  | { ok: true; numbers: ProviderPhoneNumber[] }
+  | { ok: false; message: string };
 
 interface VobizTrunk {
   trunk_id: string;
@@ -54,36 +72,41 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
 
   async listPhoneNumbers(credentials: ProviderCredentials): Promise<ProviderPhoneNumber[]> {
     const vobizCredentials = this.assertCredentials(credentials);
-    if (vobizCredentials.customerAuthId) {
-      const url = `https://api.vobiz.ai/api/v1/partner/accounts/${vobizCredentials.customerAuthId}/numbers?page=1&per_page=100`;
-      const response = await this.fetchImpl(url, { headers: { ...this.headers(vobizCredentials), Accept: 'application/json' } });
-      if (!response.ok) {
-        throw new AppError('PROVIDER_CREDENTIALS_INVALID', `Vobiz number sync failed with HTTP ${response.status}`, 400);
-      }
-      const data = (await response.json()) as { data?: VobizNumber[] };
-      return (data.data ?? []).map((number) => this.mapNumber(number));
+    const failures: string[] = [];
+
+    // Partner credentials can read a specific customer's inventory. This is only
+    // available to accounts with Partner API access, so it is attempted first and
+    // then falls back to the account-scoped endpoint instead of failing the sync.
+    if (vobizCredentials.customerAuthId && vobizCredentials.customerAuthId !== vobizCredentials.authId) {
+      const partner = await this.fetchNumbers(
+        `https://api.vobiz.ai/api/v1/partner/accounts/${vobizCredentials.customerAuthId}/numbers?page=1&per_page=100`,
+        vobizCredentials,
+      );
+      if (partner.ok && partner.numbers.length) return partner.numbers;
+      if (!partner.ok) failures.push(`partner inventory (${partner.message})`);
     }
 
-    const response = await this.fetchImpl(
-      `https://api.vobiz.ai/api/v1/Account/${vobizCredentials.authId}/trunks?limit=100`,
-      { headers: this.headers(vobizCredentials) },
+    // Master accounts (MA_) already include sub-account numbers here, so this is
+    // the correct path for both standalone and master accounts.
+    const accountAuthId = vobizCredentials.customerAuthId ?? vobizCredentials.authId;
+    const owned = await this.fetchNumbers(
+      `https://api.vobiz.ai/api/v1/Account/${accountAuthId}/numbers?page=1&per_page=100`,
+      vobizCredentials,
     );
-    if (!response.ok) {
-      throw new AppError('PROVIDER_CREDENTIALS_INVALID', `Vobiz trunk sync failed with HTTP ${response.status}`, 400);
-    }
-    const data = (await response.json()) as { objects?: VobizTrunk[] };
-    return (data.objects ?? []).map((trunk) => ({
-      providerNumberId: trunk.trunk_id,
-      phoneNumberE164: null,
-      friendlyName: trunk.name ?? trunk.trunk_id,
-      capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
-      metadata: {
-        sipTrunkId: trunk.trunk_id,
-        sipTrunkDomain: trunk.trunk_domain,
-        status: trunk.trunk_status,
-        requiresPhoneNumber: true,
-      },
-    }));
+    if (owned.ok && owned.numbers.length) return owned.numbers;
+    if (!owned.ok) failures.push(`account numbers (${owned.message})`);
+
+    // No DIDs are exposed to the API: fall back to trunks so trunk-only Vobiz
+    // setups can still be imported with a manually supplied phone number.
+    const trunks = await this.fetchTrunks(vobizCredentials);
+    if (trunks.ok) return trunks.numbers;
+    failures.push(`account trunks (${trunks.message})`);
+
+    throw new AppError(
+      'PROVIDER_CREDENTIALS_INVALID',
+      `Vobiz number sync failed. ${failures.join('; ')}`,
+      400,
+    );
   }
 
   async getPhoneNumber(credentials: ProviderCredentials, providerNumberId: string): Promise<ProviderPhoneNumber> {
@@ -154,15 +177,75 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     return safeHexEqual(provided, hmacSha256(params.secret, rawBody));
   }
 
-  private mapNumber(number: VobizNumber): ProviderPhoneNumber {
-    const phoneNumberE164 = toE164OrNull(number.number);
+  private async fetchNumbers(
+    url: string,
+    credentials: { authId: string; authToken: string },
+  ): Promise<NumberFetchOutcome> {
+    const response = await this.fetchImpl(url, {
+      headers: { ...this.headers(credentials), Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      return { ok: false, message: await this.describeFailure(response) };
+    }
+    const payload = (await response.json()) as VobizNumberListResponse;
+    const items = payload.items ?? payload.data ?? [];
+    return { ok: true, numbers: items.map((number) => this.mapNumber(number)) };
+  }
+
+  private async fetchTrunks(credentials: { authId: string; authToken: string }): Promise<NumberFetchOutcome> {
+    const response = await this.fetchImpl(
+      `https://api.vobiz.ai/api/v1/Account/${credentials.authId}/trunks?limit=100`,
+      { headers: this.headers(credentials) },
+    );
+    if (!response.ok) {
+      return { ok: false, message: await this.describeFailure(response) };
+    }
+    const data = (await response.json()) as { objects?: VobizTrunk[] };
     return {
-      providerNumberId: number.trunk_id ?? number.number,
+      ok: true,
+      numbers: (data.objects ?? []).map((trunk) => ({
+        providerNumberId: trunk.trunk_id,
+        phoneNumberE164: null,
+        friendlyName: trunk.name ?? trunk.trunk_id,
+        capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
+        metadata: {
+          sipTrunkId: trunk.trunk_id,
+          sipTrunkDomain: trunk.trunk_domain,
+          status: trunk.trunk_status,
+          requiresPhoneNumber: true,
+        },
+      })),
+    };
+  }
+
+  private async describeFailure(response: Response): Promise<string> {
+    const readText = (response as { text?: () => Promise<string> }).text;
+    if (typeof readText !== 'function') return `HTTP ${response.status}`;
+    try {
+      const body = (await readText.call(response)).trim();
+      return body ? `HTTP ${response.status}: ${body.slice(0, 300)}` : `HTTP ${response.status}`;
+    } catch {
+      return `HTTP ${response.status}`;
+    }
+  }
+
+  private mapNumber(number: VobizNumber): ProviderPhoneNumber {
+    const rawNumber = number.e164 ?? number.number ?? null;
+    const phoneNumberE164 = toE164OrNull(rawNumber);
+    const sipTrunkId = number.trunk_group_id ?? number.trunk_id ?? null;
+    const voice = typeof number.capabilities?.voice === 'boolean'
+      ? number.capabilities.voice
+      : (number.voice_enabled ?? true);
+    return {
+      providerNumberId: sipTrunkId ?? rawNumber ?? number.id ?? '',
       phoneNumberE164,
-      friendlyName: number.application_name ?? number.number,
-      capabilities: { voice: true, inbound: true, outbound: true },
+      friendlyName: number.application_name ?? rawNumber ?? number.id ?? null,
+      capabilities: { voice, inbound: true, outbound: true },
       metadata: {
-        sipTrunkId: number.trunk_id,
+        ...(sipTrunkId ? { sipTrunkId } : {}),
+        ...(number.id ? { providerNumberUuid: number.id } : {}),
+        ...(number.account_id ? { accountId: number.account_id } : {}),
+        ...(number.application_id ? { applicationId: number.application_id } : {}),
         status: number.status,
         type: number.number_type,
         country: number.country,

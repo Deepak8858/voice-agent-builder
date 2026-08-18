@@ -502,7 +502,7 @@ export default function PhoneNumbersPage() {
                   </div>
                   <div className="space-y-2 md:col-span-3">
                     <Label>Customer auth ID</Label>
-                    <Input value={connectForm.vobizCustomerAuthId} onChange={(e) => setConnectForm((prev) => ({ ...prev, vobizCustomerAuthId: e.target.value }))} placeholder="Optional for partner number inventory" />
+                    <Input value={connectForm.vobizCustomerAuthId} onChange={(e) => setConnectForm((prev) => ({ ...prev, vobizCustomerAuthId: e.target.value }))} placeholder="Leave blank unless you have Partner API access" />
                   </div>
                 </>
               )}
