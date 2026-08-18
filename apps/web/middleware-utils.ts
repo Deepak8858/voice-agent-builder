@@ -4,7 +4,7 @@ import { NextResponse, type NextRequest } from 'next/server';
  * Performs a cheap auth-cookie presence check in middleware.
  * Full session validation happens in the dashboard layout and API.
  */
-const PROTECTED_PREFIXES = [
+export const PROTECTED_PREFIXES = [
   '/dashboard',
   '/agents',
   '/calls',
@@ -20,12 +20,34 @@ const PROTECTED_PREFIXES = [
   '/billing',
 ];
 
+/**
+ * Marketing and auth routes that are public by definition. Matching one skips
+ * the cookie scan only after protected-route matching has run. Protected status
+ * always wins if these prefixes overlap, so future route-list changes cannot
+ * silently bypass the auth-cookie check.
+ */
+export const PUBLIC_PREFIXES = [
+  '/',
+  '/sign-in',
+  '/sign-up',
+  '/pricing',
+  '/auth',
+  '/legal',
+];
+
+function matchesPrefix(path: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => (p === '/' ? path === '/' : path === p || path.startsWith(`${p}/`)));
+}
+
 export async function updateSupabaseSession(
   req: NextRequest,
   requestHeaders = new Headers(req.headers),
 ): Promise<NextResponse> {
   const path = req.nextUrl.pathname;
-  const needsAuth = PROTECTED_PREFIXES.some((p) => path === p || path.startsWith(`${p}/`));
+  const pass = () => NextResponse.next({ request: { headers: requestHeaders } });
+
+  const needsAuth = matchesPrefix(path, PROTECTED_PREFIXES);
+  if (!needsAuth && matchesPrefix(path, PUBLIC_PREFIXES)) return pass();
 
   if (needsAuth && !hasSupabaseAuthCookie(req)) {
     const redirect = req.nextUrl.clone();
@@ -34,7 +56,7 @@ export async function updateSupabaseSession(
     return NextResponse.redirect(redirect);
   }
 
-  return NextResponse.next({ request: { headers: requestHeaders } });
+  return pass();
 }
 
 function hasSupabaseAuthCookie(req: NextRequest): boolean {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { buildApiContextHeaders } from '@/lib/api-context-headers';
 import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
+import { relayJsonResponse } from '@/lib/proxy-response';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 // Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
@@ -115,8 +116,7 @@ export async function GET(
     });
   }
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -143,8 +143,7 @@ export async function PATCH(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -171,8 +170,7 @@ export async function PUT(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -196,6 +194,5 @@ export async function DELETE(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }

@@ -22,3 +22,24 @@ VoiceForge TLS bootstrap for incfrog.ai
    systemctl list-timers voiceforge-certbot-renew.timer
 
 The renewal service uses the same webroot and sends SIGHUP to vf-nginx after a successful renewal. No root crontab is used.
+
+Origin verification (CloudFront)
+
+When the environment variable ORIGIN_VERIFY_SECRET is set on the nginx
+container (docker-compose.aws.yml passes it through from /opt/voiceforge/.env),
+the entrypoint script docker-entrypoint.d/40-enable-tls-if-present.sh replaces
+the #ORIGIN_VERIFY_MARKER comment in both 443 server blocks of
+https.conf.template with a check that returns 403 unless the request carries
+the matching X-Origin-Verify header. CloudFront injects that header on every
+origin request, so only traffic that came through the CDN reaches the app over
+HTTPS. The value is restricted to [A-Za-z0-9_-]; anything else is rejected at
+container start rather than silently written into nginx config. When the
+variable is unset, the marker stays a comment and nginx behaves exactly as
+before.
+
+Port 80 is deliberately exempt: it serves only /.well-known/acme-challenge/
+and the HTTPS redirect. Certificate issuance and renewal are therefore
+unaffected by CloudFront or by the origin-verify check — the ACME exchange
+never needs the header. After changing ORIGIN_VERIFY_SECRET in
+/opt/voiceforge/.env, force-recreate nginx (step 5's command) so the
+entrypoint re-renders the config.

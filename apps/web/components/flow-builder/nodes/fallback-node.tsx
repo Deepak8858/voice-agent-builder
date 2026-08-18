@@ -2,15 +2,22 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const FallbackNode = memo(function FallbackNode({ data }: NodeProps) {
-  const message = (data?.message as string) || 'Fallback to a safer response...';
+export const FallbackNode = memo(function FallbackNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('fallback');
+  const message = typeof data?.message === 'string' && data.message.trim() ? data.message : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-slate-400 bg-slate-50 px-4 py-3 shadow-sm dark:bg-slate-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Fallback</p>
-      <p className="line-clamp-3 text-sm text-slate-900 dark:text-slate-100">{message}</p>
-      <Handle type="target" position={Position.Top} className="!bg-slate-400" />
-      <Handle type="source" position={Position.Bottom} className="!bg-slate-400" />
-    </div>
+    <NodeCard
+      icon={meta.icon}
+      title="Fallback"
+      theme={meta.theme}
+      preview={message || 'Fallback to a safer response'}
+      selected={selected}
+    >
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+      <Handle type="source" position={Position.Bottom} className={meta.theme.handle} />
+    </NodeCard>
   );
 });
