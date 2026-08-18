@@ -101,6 +101,9 @@ export const SERVICE_ROLE_ONLY_TABLES = [
   'dnc_entries',
   'compliance_checks',
   'audit_reports',
+  // Chat-to-agent generation sessions. User-owned data, but the NestJS API is
+  // the only reader/writer, so the Data API roles get nothing.
+  'agent_gen_sessions',
   'subscriptions',
   'usage_records',
   'stripe_events',

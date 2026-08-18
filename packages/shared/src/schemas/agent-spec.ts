@@ -133,6 +133,7 @@ const BaseNode = z.object({
   id: z.string().min(1),
   label: z.string().optional(),
   next: z.string().optional(),
+  position: z.object({ x: z.number(), y: z.number() }).optional(),
 });
 
 export const FlowNodeSchema = z.discriminatedUnion('type', [
@@ -224,6 +225,14 @@ export const AgentSpecSchema = z
     }
     if (spec.flow) {
       const ids = new Set(spec.flow.nodes.map((n) => n.id));
+      const startCount = spec.flow.nodes.filter((node) => node.type === 'start').length;
+      if (startCount !== 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['flow', 'nodes'],
+          message: 'Flow must contain exactly one `start` node.',
+        });
+      }
       if (!ids.has(spec.flow.start_node_id)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

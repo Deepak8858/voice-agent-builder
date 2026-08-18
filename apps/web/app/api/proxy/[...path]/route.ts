@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { buildApiContextHeaders } from '@/lib/api-context-headers';
 import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
+import { relayJsonResponse } from '@/lib/proxy-response';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 // Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
@@ -96,6 +97,9 @@ export async function GET(
     method: 'GET',
     headers,
     cache: 'no-store',
+    // Forward the client abort so an SSE pass-through tears down the upstream
+    // pull when the browser disconnects, matching what POST already does.
+    ...(req.signal ? { signal: req.signal } : {}),
   });
 
   // SSE stream: pass raw body through as streaming response
@@ -112,8 +116,7 @@ export async function GET(
     });
   }
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -140,8 +143,7 @@ export async function PATCH(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -168,8 +170,7 @@ export async function PUT(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
 
 /**
@@ -193,6 +194,5 @@ export async function DELETE(
     cache: 'no-store',
   });
 
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
+  return relayJsonResponse(apiRes);
 }
