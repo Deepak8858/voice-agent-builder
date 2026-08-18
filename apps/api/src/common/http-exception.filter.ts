@@ -68,11 +68,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error.message = isProduction()
         ? 'Unexpected server error.'
         : exception.message;
-      // The production message is a constant, so keep the correlation id and
-      // error class on the response. They trace a masked 500 back to its log
-      // line and give error tracking a real fingerprint per fault.
+      // The production message is a constant, so keep the correlation id on the
+      // response: it traces a masked 500 back to its log line and is already
+      // public in the `X-Request-ID` header. The error class is withheld in
+      // production — it names internal machinery (`PrismaClientKnownRequestError`
+      // and friends) and is exactly what the masked message exists to hide.
+      // Error tracking still receives the real exception, so the per-fault
+      // fingerprint is not lost.
       error.details = {
-        errorClass: exception.name,
+        ...(isProduction() ? {} : { errorClass: exception.name }),
         ...(correlationId ? { correlationId } : {}),
       };
     } else {

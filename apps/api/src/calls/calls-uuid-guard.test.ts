@@ -8,20 +8,19 @@ import { CallNotFoundError } from '../common/errors';
  * lookup so a bad id is a clean 404, never a 500.
  */
 describe('CallsService id guard', () => {
-  function makeService(findFirst: ReturnType<typeof vi.fn>) {
-    const prisma = { call: { findFirst } };
-    return new CallsService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+  /**
+   * Both guards return before touching any collaborator, so only `prisma` needs
+   * to be real. The instance is built without invoking the constructor: a
+   * positional argument list would have to grow every time a dependency is
+   * added to `CallsService`, which is unrelated to what these cases assert.
+   */
+  function makeService(findFirst: ReturnType<typeof vi.fn>): CallsService {
+    const service = Object.create(CallsService.prototype) as CallsService;
+    Object.defineProperty(service, 'prisma', {
+      value: { call: { findFirst } },
+      configurable: true,
+    });
+    return service;
   }
 
   it('get() throws CallNotFoundError for a non-UUID id without querying', async () => {

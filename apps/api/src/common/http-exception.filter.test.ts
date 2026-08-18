@@ -219,6 +219,53 @@ describe('HttpExceptionFilter capture properties', () => {
   });
 });
 
+describe('HttpExceptionFilter error details', () => {
+  it('withholds the error class in production but keeps the correlation id', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    vi.stubEnv('NODE_ENV', 'production');
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, body } = makeHost();
+
+    // The masked message exists to keep internals off the wire; the error class
+    // names the same internals (`PrismaClientKnownRequestError` and friends), so
+    // it must not travel with the response.
+    filter.catch(Object.assign(new Error('boom'), { name: 'PrismaClientKnownRequestError' }), host);
+
+    const details = (body() as { error: { details?: Record<string, unknown> } }).error.details;
+    expect(details).not.toHaveProperty('errorClass');
+    expect(details).toMatchObject({ correlationId: CORRELATION_ID });
+    expect(JSON.stringify(body())).not.toContain('Prisma');
+  });
+
+  it('includes the error class outside production for local debugging', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    vi.stubEnv('NODE_ENV', 'development');
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, body } = makeHost();
+
+    filter.catch(new TypeError('boom'), host);
+
+    expect((body() as { error: { details?: Record<string, unknown> } }).error.details).toMatchObject({
+      errorClass: 'TypeError',
+      correlationId: CORRELATION_ID,
+    });
+  });
+
+  it('still reports the real exception to error tracking in production', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    vi.stubEnv('NODE_ENV', 'production');
+    const posthog = makePosthog();
+    const filter = new HttpExceptionFilter(posthog as never);
+
+    // Withholding the class from the response must not cost the per-fault
+    // fingerprint: error tracking receives the untouched exception.
+    const err = Object.assign(new Error('boom'), { name: 'PrismaClientKnownRequestError' });
+    filter.catch(err, makeHost().host);
+
+    expect(posthog.exceptions[0]!.error).toBe(err);
+  });
+});
+
 describe('HttpExceptionFilter without analytics', () => {
   it('still responds normally when no PostHog service is injected', async () => {
     const HttpExceptionFilter = await loadFilter(false);
