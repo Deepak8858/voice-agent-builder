@@ -97,6 +97,9 @@ export async function GET(
     method: 'GET',
     headers,
     cache: 'no-store',
+    // Forward the client abort so an SSE pass-through tears down the upstream
+    // pull when the browser disconnects, matching what POST already does.
+    ...(req.signal ? { signal: req.signal } : {}),
   });
 
   // SSE stream: pass raw body through as streaming response
