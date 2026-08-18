@@ -29,6 +29,9 @@ function makeService(overrides?: {
         retentionDays: 30,
       })),
     },
+    trialRedemption: {
+      create: vi.fn(async () => ({ id: 'trial-1' })),
+    },
     call: {
       create: vi.fn(async (args) => ({
         id: 'call-1',
@@ -67,6 +70,14 @@ function makeService(overrides?: {
     ...(overrides?.voice ?? {}),
   };
 
+  const entitlements = {
+    assertAllowed: vi.fn(async () => ({
+      allowed: true as const,
+      reason: 'allowed' as const,
+      limit: 180,
+    })),
+  };
+
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -78,9 +89,11 @@ function makeService(overrides?: {
     {} as never,
     {} as never,
     { del: vi.fn(async () => undefined) } as never,
+    {} as never,
+    entitlements as never,
   );
 
-  return { service, prisma, audit, voice };
+  return { service, prisma, audit, voice, entitlements };
 }
 
 describe('CallsService.startTestSession', () => {
@@ -118,5 +131,42 @@ describe('CallsService.startTestSession', () => {
         }),
       }),
     );
+  });
+
+  it('claims the lifetime trial before the provider session is created', async () => {
+    const { service, prisma, entitlements, voice } = makeService();
+
+    await service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+      contact_name: 'Browser tester',
+    });
+
+    expect(entitlements.assertAllowed).toHaveBeenCalledWith('org-1', { kind: 'browser_test' });
+    expect(entitlements.assertAllowed.mock.invocationCallOrder[0]).toBeLessThan(
+      voice.createBrowserTestSession.mock.invocationCallOrder[0]!,
+    );
+    expect(prisma.trialRedemption.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          organizationId: 'org-1',
+          callId: 'call-1',
+          maxDurationSeconds: 180,
+          disposition: 'claimed',
+        }),
+      }),
+    );
+  });
+
+  it('does not reach the voice provider when the trial is already spent', async () => {
+    const { service, entitlements, voice, prisma } = makeService();
+    entitlements.assertAllowed.mockRejectedValue(new Error('trial already used'));
+
+    await expect(
+      service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+        contact_name: 'Browser tester',
+      }),
+    ).rejects.toThrow(/trial already used/);
+
+    expect(voice.createBrowserTestSession).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
   });
 });

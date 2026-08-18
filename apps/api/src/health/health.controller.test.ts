@@ -17,6 +17,7 @@ describe('HealthController', () => {
     const llm = {
       name: 'test-llm',
       generate: vi.fn(),
+      chatGenerate: vi.fn(),
       healthCheck: vi.fn().mockResolvedValue('ok'),
     } as unknown as LlmAgentGenerator;
 
@@ -51,6 +52,7 @@ describe('HealthController', () => {
     const llm = {
       name: 'test-llm',
       generate: vi.fn(),
+      chatGenerate: vi.fn(),
       healthCheck: vi.fn(() => new Promise(() => undefined)),
     } as unknown as LlmAgentGenerator;
 

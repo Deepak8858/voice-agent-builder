@@ -43,6 +43,8 @@ function makeService(cacheOverrides?: Record<string, unknown>) {
     {} as never,
     {} as never,
     cache as never,
+    {} as never,
+    {} as never,
   );
 
   return { service, prisma, cache };

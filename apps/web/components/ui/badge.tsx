@@ -1,1 +1,1 @@
-export { Badge, badgeVariants } from '@voiceforge/ui'
+export { Badge, badgeVariants } from '@voiceforge/ui/badge'

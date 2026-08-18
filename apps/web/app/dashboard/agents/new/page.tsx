@@ -34,6 +34,12 @@ interface TemplateSummary {
   agent_type: string;
 }
 
+interface TemplateDetail extends TemplateSummary {
+  template_spec?: unknown;
+}
+
+const PROMPT_MAX_LENGTH = 4000;
+
 export default function NewAgentPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -64,6 +70,21 @@ export default function NewAgentPage() {
     queryKey: ['templates'],
     queryFn: () => call<{ items: TemplateSummary[] }>('/templates'),
   });
+
+  // When a template is selected (dropdown or ?template= link), pre-fill the
+  // builder with the template's Agent Spec so the form is not left blank.
+  const templateDetailQuery = useQuery({
+    queryKey: ['template', draft.templateSlug],
+    enabled: Boolean(draft.templateSlug),
+    queryFn: () => call<TemplateDetail>(`/templates/${draft.templateSlug}`),
+  });
+
+  useEffect(() => {
+    const spec = templateDetailQuery.data?.template_spec;
+    if (!spec || draft.draftSpec) return;
+    const parsed = AgentSpecSchema.safeParse(spec);
+    draft.setDraftSpec(parsed.success ? parsed.data : spec);
+  }, [templateDetailQuery.data, draft]);
 
   const knowledgeQuery = useQuery({
     queryKey: ['knowledge-sources', 'workspace', workspaceId],
@@ -176,13 +197,18 @@ export default function NewAgentPage() {
                   id="prompt"
                   rows={6}
                   value={draft.prompt}
-                  onChange={(e) => draft.setPrompt(e.target.value)}
+                  maxLength={PROMPT_MAX_LENGTH}
+                  onChange={(e) => draft.setPrompt(e.target.value.slice(0, PROMPT_MAX_LENGTH))}
                   placeholder="You are a friendly customer support voice agent for {{business_name}}. Your goal is to answer questions, collect customer details, and schedule appointments. Keep responses short and natural for phone conversations."
                   className="mt-1.5 min-h-40"
                 />
                 <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted-foreground">
                   <span>Write instructions like you are training a human phone agent.</span>
-                  <span className="shrink-0 font-mono">{draft.prompt.length}/4000</span>
+                  <span
+                    className={`shrink-0 font-mono ${draft.prompt.length >= PROMPT_MAX_LENGTH ? 'text-destructive' : ''}`}
+                  >
+                    {draft.prompt.length}/{PROMPT_MAX_LENGTH}
+                  </span>
                 </div>
               </div>
               <PromptQualityChecklist prompt={draft.prompt} />
@@ -263,7 +289,11 @@ export default function NewAgentPage() {
               <div className="flex items-center gap-2 pt-2">
                 <Button
                   onClick={() => generateMutation.mutate()}
-                  disabled={draft.prompt.length < 10 || generateMutation.isPending}
+                  disabled={
+                    draft.prompt.length < 10 ||
+                    draft.prompt.length > PROMPT_MAX_LENGTH ||
+                    generateMutation.isPending
+                  }
                   className="gap-2"
                 >
                   <Sparkles className="h-4 w-4" />

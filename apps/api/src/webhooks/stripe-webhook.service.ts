@@ -1,16 +1,29 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Stripe from 'stripe';
 import { Prisma } from '@prisma/client';
+import type { PlanType } from '@voiceforge/shared';
+import { BILLING_CATALOG_VERSION, getPlanEntitlements } from '@voiceforge/shared';
+import { CacheInvalidator } from '../common/cache-invalidator';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 import { BillingService } from '../billing/billing.service';
+import { CreditLedgerService } from '../billing/credit-ledger.service';
 
 interface StripeWebhookResult {
   handled: boolean;
   message: string;
   statusCode: 200 | 400 | 500;
 }
+
+/**
+ * How long a claimed-but-unfinished event is considered owned by the process
+ * that claimed it. After this, a crashed handler's claim is reclaimable so the
+ * event is not stranded unprocessed forever.
+ */
+const PROCESSING_LEASE_MS = 5 * 60 * 1000;
+
+const PACK_GRANT_ACTION = 'billing.pack_credit_granted';
 
 interface StripeWebhookEvent {
   id: string;
@@ -28,6 +41,12 @@ interface StripeSubscriptionItem {
   price?: { id?: string };
   current_period_start?: number;
   current_period_end?: number;
+}
+
+interface StripeInvoiceLine {
+  price?: { id?: string } | null;
+  pricing?: { price_details?: { price?: string } } | null;
+  period?: { start?: number; end?: number } | null;
 }
 
 /**
@@ -61,9 +80,14 @@ export class StripeWebhookService {
     private readonly prisma: PrismaService,
     private readonly billing: BillingService,
     private readonly queueService: QueueService,
+    private readonly creditLedger: CreditLedgerService,
+    private readonly cacheInvalidator?: CacheInvalidator,
   ) {
     this.stripe = env.STRIPE_SECRET_KEY
-      ? (new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2026-04-22.dahlia' }) as unknown as StripeWebhookClient)
+      ? (new Stripe(env.STRIPE_SECRET_KEY, {
+          apiVersion: Stripe.API_VERSION,
+          maxNetworkRetries: 2,
+        }) as unknown as StripeWebhookClient)
       : null;
   }
 
@@ -108,14 +132,23 @@ export class StripeWebhookService {
   private async markProcessed(event: StripeWebhookEvent): Promise<void> {
     await this.prisma.stripeEvent.update({
       where: { stripeEventId: event.id },
-      data: { processedAt: new Date(), errorMessage: null },
+      data: { processedAt: new Date(), processingStartedAt: null, errorMessage: null },
     });
   }
 
+  /**
+   * Ownership is decided by an explicit processing lease rather than by
+   * inferring it from `errorMessage`. A handler that crashes mid-dispatch never
+   * gets the chance to record an error, so an error-based heuristic would leave
+   * the event claimed forever and silently drop a paid grant. A claim older than
+   * {@link PROCESSING_LEASE_MS} is therefore reclaimable, and the reclaim bumps
+   * `attemptCount` so repeated failures are visible.
+   */
   private async claimEvent(event: StripeWebhookEvent): Promise<StripeEventClaim> {
+    const now = new Date();
     try {
       await this.prisma.stripeEvent.create({
-        data: this.stripeEventData(event),
+        data: this.stripeEventData(event, now),
       });
       return 'claimed';
     } catch (err) {
@@ -126,20 +159,30 @@ export class StripeWebhookService {
       where: { stripeEventId: event.id },
     });
     if (existing?.processedAt) return 'processed';
-    if (!existing?.errorMessage) return 'processing';
 
-    const claimed = await this.prisma.stripeEvent.updateMany({
+    const leaseExpiry = new Date(now.getTime() - PROCESSING_LEASE_MS);
+    const reclaimed = await this.prisma.stripeEvent.updateMany({
       where: {
         stripeEventId: event.id,
         processedAt: null,
-        errorMessage: { not: null },
+        OR: [
+          { processingStartedAt: null },
+          { processingStartedAt: { lte: leaseExpiry } },
+        ],
       },
-      data: { errorMessage: null },
+      data: {
+        processingStartedAt: now,
+        attemptCount: { increment: 1 },
+        errorMessage: null,
+      },
     });
-    return claimed.count === 1 ? 'claimed' : 'processing';
+    return reclaimed.count === 1 ? 'claimed' : 'processing';
   }
 
-  private stripeEventData(event: StripeWebhookEvent): Prisma.StripeEventCreateInput {
+  private stripeEventData(
+    event: StripeWebhookEvent,
+    claimedAt: Date,
+  ): Prisma.StripeEventCreateInput {
     return {
       stripeEventId: event.id,
       type: event.type,
@@ -148,6 +191,8 @@ export class StripeWebhookService {
       data: event.data.object as unknown as Prisma.InputJsonValue,
       livemode: event.livemode,
       pendingWebhooks: event.pending_webhooks,
+      processingStartedAt: claimedAt,
+      attemptCount: 1,
     };
   }
 
@@ -177,7 +222,7 @@ export class StripeWebhookService {
         pendingWebhooks: event.pending_webhooks,
         errorMessage,
       },
-      update: { errorMessage },
+      update: { errorMessage, processingStartedAt: null },
     });
   }
 
@@ -189,7 +234,7 @@ export class StripeWebhookService {
       case 'checkout.session.completed': {
         const customerId = data['customer'] as string;
         if (orgId && customerId) {
-          await this.handleCheckoutCompleted(orgId, customerId, data);
+          await this.handleCheckoutCompleted(orgId, customerId, data, this.eventCreatedAt(event));
         }
         break;
       }
@@ -212,7 +257,7 @@ export class StripeWebhookService {
       case 'invoice.paid': {
         const customerId = data['customer'] as string;
         if (customerId) {
-          await this.handleInvoicePaid(customerId);
+          await this.handleInvoicePaid(customerId, data);
         }
         break;
       }
@@ -223,16 +268,34 @@ export class StripeWebhookService {
         }
         break;
       }
+      case 'charge.refunded':
+      case 'charge.dispute.closed': {
+        await this.handleChargeReversal(event.type, data);
+        break;
+      }
       default:
         this.logger.debug(`Unhandled Stripe event type: ${event.type}`);
     }
   }
 
+  /**
+   * Checkout completion never grants subscription credit — that is driven by
+   * `invoice.paid`, which is the only event that proves money was collected for
+   * a billing period. A completed one-time pack Checkout does grant, because
+   * there is no invoice behind it.
+   */
   private async handleCheckoutCompleted(
     orgId: string,
     customerId: string,
     data: Record<string, unknown>,
+    eventCreatedAt: Date,
   ): Promise<void> {
+    const metadata = (data['metadata'] as Record<string, string> | undefined) ?? {};
+    if (metadata['purchaseType'] === 'minute_pack') {
+      await this.handleMinutePackPurchase(orgId, customerId, data, eventCreatedAt);
+      return;
+    }
+
     this.logger.log(`Checkout completed for org ${orgId}, customer ${customerId}`);
     const subscriptionId = typeof data['subscription'] === 'string'
       ? data['subscription']
@@ -256,10 +319,58 @@ export class StripeWebhookService {
       stripeSubscriptionId: subscriptionId,
       status: 'incomplete',
     });
+    await this.invalidateSubscriptionCache(orgId);
+  }
+
+  /**
+   * Grants the prepaid pack only when Stripe reports the money as collected and
+   * the organization named in metadata actually owns the Stripe customer that
+   * paid. Metadata is client-influenced at Checkout creation time, so trusting
+   * it alone would let one organization fund another's balance.
+   */
+  private async handleMinutePackPurchase(
+    orgId: string,
+    customerId: string,
+    data: Record<string, unknown>,
+    purchasedAt: Date,
+  ): Promise<void> {
+    if (data['payment_status'] !== 'paid') {
+      this.logger.warn(
+        `Ignoring unpaid minute-pack checkout ${String(data['id'])} for org ${orgId}`,
+      );
+      return;
+    }
+
+    const owner = await this.prisma.subscription.findFirst({
+      where: { organizationId: orgId, stripeCustomerId: customerId },
+      select: { organizationId: true },
+    });
+    if (!owner) {
+      this.logger.error(
+        `Minute-pack checkout ${String(data['id'])} claims org ${orgId} but customer ` +
+          `${customerId} is not owned by it; refusing to grant credit`,
+      );
+      return;
+    }
+
+    const checkoutSessionId = String(data['id']);
+    await this.creditLedger.grantPurchasedCredits({
+      organizationId: orgId,
+      checkoutSessionId,
+      // Stripe's immutable event timestamp keeps retries byte-for-byte
+      // idempotent and prevents a delayed delivery from extending expiry.
+      purchasedAt,
+    });
+    await this.logBillingAudit(orgId, PACK_GRANT_ACTION, {
+      checkoutSessionId,
+      stripeCustomerId: customerId,
+      paymentIntentId: typeof data['payment_intent'] === 'string' ? data['payment_intent'] : null,
+      catalogVersion: BILLING_CATALOG_VERSION,
+    });
   }
 
   private async handleSubscriptionUpdated(
-    _stripeSubId: string,
+    stripeSubId: string,
     customerId: string,
     data: Record<string, unknown>,
   ): Promise<void> {
@@ -270,62 +381,221 @@ export class StripeWebhookService {
     const cancelAtPeriodEnd = data['cancel_at_period_end'] as boolean;
     const trialEnd = toDateFromUnixSeconds(data['trial_end']);
 
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
+    const subscription = await this.resolveSubscription(customerId, stripeSubId);
+    await this.prisma.subscription.update({
+      where: { organizationId: subscription.organizationId },
       data: {
         stripeSubscriptionId: data['id'] as string,
         stripePriceId: priceId,
         status: status ?? 'active',
         plan,
+        catalogVersion: BILLING_CATALOG_VERSION,
         currentPeriodStart: periodStart,
         currentPeriodEnd: periodEnd,
         cancelAtPeriodEnd: cancelAtPeriodEnd ?? false,
         trialEnd,
+        webhookUpdatedAt: new Date(),
       },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+    await this.logBillingAudit(subscription.organizationId, 'billing.subscription_synced', {
       stripeSubscriptionId: data['id'],
       stripePriceId: priceId,
       plan,
       status,
     });
+    await this.invalidateSubscriptionCache(subscription.organizationId);
   }
 
   private async handleSubscriptionDeleted(stripeSubId: string): Promise<void> {
     await this.prisma.subscription.updateMany({
       where: { stripeSubscriptionId: stripeSubId },
-      data: { status: 'canceled' },
+      data: { status: 'canceled', webhookUpdatedAt: new Date() },
     });
     await this.logBillingAuditForSubscription(stripeSubId, 'billing.subscription_synced', {
       stripeSubscriptionId: stripeSubId,
       status: 'canceled',
     });
+    const sub = await this.prisma.subscription.findFirst({
+      where: { stripeSubscriptionId: stripeSubId },
+      select: { organizationId: true },
+    });
+    if (sub) await this.invalidateSubscriptionCache(sub.organizationId);
   }
 
-  private async handleInvoicePaid(customerId: string): Promise<void> {
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
-      data: { status: 'active' },
+  /**
+   * A paid invoice is the only proof that a billing period was funded, so it is
+   * where included minutes are granted. The plan comes from the server-owned
+   * price map on the invoice line rather than from any client-supplied value,
+   * and the grant is keyed by invoice ID so a redelivered event cannot grant
+   * twice.
+   */
+  private async handleInvoicePaid(
+    customerId: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const invoicePriceId = this.extractInvoicePriceId(data);
+    const plan = this.inferPlanFromPriceId(invoicePriceId);
+    if (!invoicePriceId || plan === 'free') {
+      throw new Error(`Invoice ${String(data['id'])} uses an unrecognized Stripe price`);
+    }
+    const periodEnd = this.extractInvoicePeriodEnd(data);
+    const stripeSubscriptionId = typeof data['subscription'] === 'string' ? data['subscription'] : null;
+    const sub = await this.resolveSubscription(customerId, stripeSubscriptionId);
+
+    await this.prisma.subscription.update({
+      where: { organizationId: sub.organizationId },
+      data: {
+        status: 'active',
+        plan,
+        stripePriceId: invoicePriceId,
+        catalogVersion: BILLING_CATALOG_VERSION,
+        ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}),
+        webhookUpdatedAt: new Date(),
+      },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.subscription_synced', {
+    await this.logBillingAudit(sub.organizationId, 'billing.subscription_synced', {
       stripeCustomerId: customerId,
       status: 'active',
+      plan,
     });
+    const invoiceId = typeof data['id'] === 'string' ? data['id'] : null;
+    const includedMinutes = getPlanEntitlements(plan).includedMinutes;
+    if (invoiceId && periodEnd && includedMinutes > 0) {
+      await this.creditLedger.grantSubscriptionCredits({
+        organizationId: sub.organizationId,
+        invoiceId,
+        includedMinutes,
+        periodEnd,
+      });
+      await this.logBillingAudit(sub.organizationId, 'billing.included_credit_granted', {
+        invoiceId,
+        plan,
+        includedMinutes,
+        periodEnd: periodEnd.toISOString(),
+        catalogVersion: BILLING_CATALOG_VERSION,
+      });
+    }
+
+    await this.invalidateSubscriptionCache(sub.organizationId);
+  }
+
+  /**
+   * A refund or a lost dispute removes the credit the payment bought. The
+   * ledger decides whether the unused remainder can simply be withdrawn or
+   * whether consumed credit forces manual review; this handler only maps the
+   * Stripe charge back to the pack Checkout that granted it.
+   */
+  private async handleChargeReversal(
+    eventType: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    if (eventType === 'charge.dispute.closed' && data['status'] !== 'lost') {
+      this.logger.log(`Dispute ${String(data['id'])} closed as ${String(data['status'])}; no reversal`);
+      return;
+    }
+
+    const paymentIntentId =
+      typeof data['payment_intent'] === 'string' ? data['payment_intent'] : null;
+    if (!paymentIntentId) {
+      this.logger.warn(`${eventType} without a payment intent; cannot map to a credit grant`);
+      return;
+    }
+
+    // Dispute payloads do not contain a customer. The server-authored grant is
+    // the durable mapping from Stripe's payment intent to our organization.
+    const grants = await this.prisma.auditLog.findMany({
+      where: {
+        action: PACK_GRANT_ACTION,
+        metadata: { path: ['paymentIntentId'], equals: paymentIntentId },
+      },
+      distinct: ['organizationId'],
+      orderBy: { createdAt: 'desc' },
+      take: 2,
+      select: { organizationId: true, metadata: true },
+    });
+    if (grants.length !== 1 || !grants[0]) {
+      throw new Error(
+        `${eventType} for payment intent ${paymentIntentId} did not resolve to exactly one organization`,
+      );
+    }
+    const grant = grants[0];
+    const organizationId = grant.organizationId;
+    if (!organizationId) {
+      throw new Error(
+        `${eventType} for payment intent ${paymentIntentId} has no organization owner`,
+      );
+    }
+    const metadata = (grant.metadata ?? null) as { checkoutSessionId?: unknown } | null;
+    const checkoutSessionId =
+      typeof metadata?.checkoutSessionId === 'string' ? metadata.checkoutSessionId : null;
+    if (!checkoutSessionId) {
+      throw new Error(
+        `${eventType} for payment intent ${paymentIntentId} has no recorded minute-pack grant`,
+      );
+    }
+
+    const refundId = typeof data['id'] === 'string' ? data['id'] : null;
+    if (!refundId) throw new Error(`${eventType} for ${paymentIntentId} has no reversal id`);
+
+    const amount = typeof data['amount'] === 'number' ? data['amount'] : null;
+    const amountRefunded = typeof data['amount_refunded'] === 'number' ? data['amount_refunded'] : amount;
+    if (amount && amountRefunded !== amount) {
+      await this.logBillingAudit(organizationId, 'billing.pack_partial_refund_review', {
+        eventType,
+        checkoutSessionId,
+        refundId,
+        paymentIntentId,
+        amount,
+        amountRefunded,
+      });
+      this.logger.warn(`Partial refund ${refundId} recorded for manual review`);
+      return;
+    }
+
+    await this.creditLedger.reversePurchasedCredits({
+      organizationId,
+      checkoutSessionId,
+      refundId,
+    });
+    await this.logBillingAudit(organizationId, 'billing.pack_credit_reversed', {
+      eventType,
+      checkoutSessionId,
+      refundId,
+      paymentIntentId,
+    });
+  }
+
+  private async invalidateSubscriptionCacheForCustomer(customerId: string): Promise<void> {
+    const sub = await this.prisma.subscription.findFirst({
+      where: { stripeCustomerId: customerId },
+      select: { organizationId: true },
+    });
+    if (sub) await this.invalidateSubscriptionCache(sub.organizationId);
+  }
+
+  /**
+   * Subscription reads are cached for a minute. Without this, a customer who
+   * just paid keeps seeing their old plan (and old limits) until the TTL
+   * expires.
+   */
+  private async invalidateSubscriptionCache(organizationId: string): Promise<void> {
+    await this.cacheInvalidator?.invalidateBillingSubscription(organizationId);
   }
 
   private async handleInvoicePaymentFailed(customerId: string): Promise<void> {
-    await this.prisma.subscription.updateMany({
-      where: { stripeCustomerId: customerId },
+    const resolved = await this.resolveSubscription(customerId, null);
+    await this.prisma.subscription.update({
+      where: { organizationId: resolved.organizationId },
       data: { status: 'past_due' },
     });
-    await this.logBillingAuditForCustomer(customerId, 'billing.payment_failed', {
+    await this.logBillingAudit(resolved.organizationId, 'billing.payment_failed', {
       stripeCustomerId: customerId,
       status: 'past_due',
     });
     // Queue dunning email notification (best-effort)
     try {
-      const sub = await this.prisma.subscription.findFirst({
-        where: { stripeCustomerId: customerId },
+      const sub = await this.prisma.subscription.findUnique({
+        where: { organizationId: resolved.organizationId },
         include: { organization: { select: { id: true, name: true } } },
       });
       if (sub?.organization) {
@@ -392,11 +662,64 @@ export class StripeWebhookService {
     return { periodStart, periodEnd };
   }
 
-  private inferPlanFromPriceId(priceId: string | null): string {
-    if (priceId === env.STRIPE_STARTER_PRICE_ID) return 'starter';
-    if (priceId === env.STRIPE_GROWTH_PRICE_ID) return 'growth';
-    if (priceId === env.STRIPE_ENTERPRISE_PRICE_ID) return 'enterprise';
+  /**
+   * Only server-owned Price IDs may name a plan. Anything else resolves to Free
+   * so a price created outside our configuration cannot grant paid entitlements.
+   */
+  private inferPlanFromPriceId(priceId: string | null): PlanType {
+    if (priceId && priceId === env.STRIPE_STARTER_PRICE_ID) return 'starter';
+    if (priceId && priceId === env.STRIPE_GROWTH_PRICE_ID) return 'growth';
+    if (priceId && priceId === env.STRIPE_ENTERPRISE_PRICE_ID) return 'enterprise';
     return 'free';
+  }
+
+  private extractInvoiceLines(data: Record<string, unknown>): StripeInvoiceLine[] {
+    const lines = (data['lines'] as { data?: StripeInvoiceLine[] } | undefined)?.data;
+    return Array.isArray(lines) ? lines : [];
+  }
+
+  private extractInvoicePriceId(data: Record<string, unknown>): string | null {
+    for (const line of this.extractInvoiceLines(data)) {
+      const priceId = line.price?.id ?? line.pricing?.price_details?.price ?? null;
+      if (priceId) return priceId;
+    }
+    return null;
+  }
+
+  /**
+   * Included credit expires at the end of the period it was billed for, so the
+   * grant needs that boundary. Newer API versions moved the period onto the
+   * invoice line, and the top-level field is read as a fallback for endpoints
+   * pinned to older versions.
+   */
+  private extractInvoicePeriodEnd(data: Record<string, unknown>): Date | null {
+    const ends = this.extractInvoiceLines(data)
+      .map((line) => toDateFromUnixSeconds(line.period?.end))
+      .filter((date): date is Date => date !== null);
+    if (ends.length) {
+      return new Date(Math.max(...ends.map((date) => date.getTime())));
+    }
+    return toDateFromUnixSeconds(data['period_end']);
+  }
+
+  private async resolveSubscription(
+    stripeCustomerId: string,
+    stripeSubscriptionId: string | null,
+  ): Promise<{ organizationId: string }> {
+    const matches = await this.prisma.subscription.findMany({
+      where: {
+        stripeCustomerId,
+        ...(stripeSubscriptionId ? { stripeSubscriptionId } : {}),
+      },
+      select: { organizationId: true },
+      take: 2,
+    });
+    if (matches.length !== 1 || !matches[0]) {
+      throw new Error(
+        `Stripe customer ${stripeCustomerId} did not resolve to exactly one organization`,
+      );
+    }
+    return matches[0];
   }
 
   private async logBillingAuditForCustomer(

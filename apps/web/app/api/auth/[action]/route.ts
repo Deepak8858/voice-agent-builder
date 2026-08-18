@@ -3,6 +3,8 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? 'http://localhost:4000';
+// NestJS mounts every controller under this global prefix (see apps/api/src/main.ts).
+const API_PREFIX = '/api/v1';
 
 export async function POST(
   req: NextRequest,
@@ -29,7 +31,7 @@ export async function POST(
     authorization: `Bearer ${session.access_token}`,
   };
 
-  let targetPath = '/api/v1';
+  let targetPath = '';
   let method = 'GET';
   const apiBody: unknown = undefined;
 
@@ -39,7 +41,7 @@ export async function POST(
       return NextResponse.json({ success: true });
 
     case 'me':
-      targetPath = '/auth/me';
+      targetPath = `${API_PREFIX}/auth/me`;
       method = 'GET';
       break;
 

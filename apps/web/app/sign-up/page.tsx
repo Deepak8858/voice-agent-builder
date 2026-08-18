@@ -54,6 +54,14 @@ function SignUpInner() {
     });
 
     if (error) {
+      // Show the same confirmation for duplicate emails as for new signups to
+      // avoid confirming which addresses have accounts (enumeration).
+      const code = (error as { code?: string }).code;
+      if (code === 'user_already_exists' || code === 'email_exists') {
+        setMessage('Check your email to confirm your account.');
+        setLoading(false);
+        return;
+      }
       setError(error.message);
       setLoading(false);
       return;

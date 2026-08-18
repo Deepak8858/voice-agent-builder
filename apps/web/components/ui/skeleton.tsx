@@ -1,1 +1,1 @@
-export { Skeleton } from '@voiceforge/ui'
+export { Skeleton } from '@voiceforge/ui/skeleton'

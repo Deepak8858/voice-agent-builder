@@ -16,7 +16,7 @@ not part of this stack.
 ## 1. On-Call Playbook
 
 ### P0 — API completely down
-1. SSH to the host: `ssh <deploy-user>@deep-ak.dev`
+1. SSH to the host: `ssh <deploy-user>@incfrog.ai`
 2. Check containers: `docker compose --env-file /opt/voiceforge/.env -f /opt/voiceforge/docker-compose.aws.yml ps`
    → `vf-api`, `vf-web`, `vf-api-worker`, `vf-redis`, `vf-nginx` should be `Up`
 3. Check logs: `docker logs --tail 200 vf-api`
@@ -46,7 +46,7 @@ not part of this stack.
    (`maxmemory` is 384 MB with `noeviction` — a full Redis fails writes rather
    than silently dropping queued jobs)
 5. Run a load baseline from a workstation, not from the host:
-   `k6 run k6/baseline.js -e BASE_URL=https://deep-ak.dev/api/v1`
+   `k6 run k6/baseline.js -e BASE_URL=https://incfrog.ai/api/v1`
 6. `t3.large` is a burstable instance. Sustained high CPU drains CPU credits and
    degrades gradually; check CloudWatch `CPUCreditBalance` before concluding the
    application is at fault.
@@ -117,7 +117,7 @@ aborts the deploy. See `.env.production.example`.
 **3. TLS bootstraps itself, in two states.** nginx serves HTTP only until a
 certificate exists, so the first deploy to a fresh host succeeds without one.
 The entrypoint hook enables the port-443 server and HTTP→HTTPS redirects as soon
-as `/opt/voiceforge/data/certbot/conf/live/deep-ak.dev/` holds a full key pair.
+as `/opt/voiceforge/data/certbot/conf/live/incfrog.ai/` holds a full key pair.
 Issue the first certificate with the procedure in `infra/nginx/TLS-BOOTSTRAP.txt`,
 then recreate nginx. Renewal runs from the `voiceforge-certbot-renew.timer`
 systemd unit, which the deploy installs and enables; verify with
@@ -196,10 +196,11 @@ node scripts/backup-validation.js --verbose
 
 | Endpoint | Expected | Check |
 |----------|----------|-------|
-| `GET /api/v1/health` (public) | 200 `{ status, db, redis }` | `curl -f https://deep-ak.dev/api/v1/health` |
-| `GET /api/health` (public, web) | 200 | `curl -f https://deep-ak.dev/api/health` |
+| `GET /api/v1/health` (public) | 200 `{ status, db, redis }` | `curl -f https://incfrog.ai/api/v1/health` |
+| `GET /api/health` (public, web) | 200 | `curl -f https://incfrog.ai/api/health` |
 | nginx liveness (host-local) | 200 | `curl -f http://127.0.0.1/nginx-health` |
-| API metrics | 401 without token | `curl -f -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" https://deep-ak.dev/api/v1/metrics` |
+| API metrics (unauthenticated) | 401 | `curl -s -o /dev/null -w "%{http_code}" https://incfrog.ai/api/v1/metrics` |
+| API metrics (with token) | 200 | `curl -f -H "Authorization: Bearer $METRICS_SCRAPE_TOKEN" https://incfrog.ai/api/v1/metrics` |
 
 Every service also carries a Compose healthcheck; `docker compose ps` reports the
 aggregate state, and `vf-api-worker` is verified as running rather than by HTTP
@@ -208,13 +209,13 @@ because it serves no traffic.
 ### k6 Load Tests
 ```bash
 # Smoke (CI gate)
-k6 run k6/smoke.js -e BASE_URL=https://deep-ak.dev/api/v1
+k6 run k6/smoke.js -e BASE_URL=https://incfrog.ai/api/v1
 
 # Baseline (2min steady-state)
-k6 run k6/baseline.js -e BASE_URL=https://deep-ak.dev/api/v1
+k6 run k6/baseline.js -e BASE_URL=https://incfrog.ai/api/v1
 
 # Stress (find breaking point)
-k6 run k6/stress.js -e BASE_URL=https://deep-ak.dev/api/v1
+k6 run k6/stress.js -e BASE_URL=https://incfrog.ai/api/v1
 ```
 
 ---

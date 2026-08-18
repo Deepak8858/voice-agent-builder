@@ -27,6 +27,9 @@ interface ClientsPanelProps {
   workspaceId: string;
 }
 
+const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
   const { call } = useApi();
   const qc = useQueryClient();
@@ -169,11 +172,23 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
                 onChange={(e) => setSlug(e.target.value.toLowerCase())}
                 placeholder="acme-plumbing"
               />
+              {slug && !SLUG_PATTERN.test(slug) ? (
+                <p className="mt-1 text-xs text-destructive">
+                  Use lowercase letters, numbers, and hyphens only (e.g. acme-plumbing).
+                </p>
+              ) : null}
             </div>
+            {!name.trim() || !slug.trim() ? (
+              <p className="text-xs text-muted-foreground">
+                Enter a workspace name and slug to create the client.
+              </p>
+            ) : null}
             <Button
               type="button"
               onClick={() => createClient.mutate()}
-              disabled={!name.trim() || !slug.trim() || createClient.isPending}
+              disabled={
+                !name.trim() || !slug.trim() || !SLUG_PATTERN.test(slug) || createClient.isPending
+              }
             >
               {createClient.isPending ? 'Creating…' : 'Create client workspace'}
             </Button>
@@ -191,11 +206,15 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
             <div>
               <Label>Email</Label>
               <Input
+                type="email"
                 className="mt-1.5"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="owner@acme.com"
               />
+              {email && !EMAIL_PATTERN.test(email) ? (
+                <p className="mt-1 text-xs text-destructive">Enter a valid email address.</p>
+              ) : null}
             </div>
             <div>
               <Label>Role</Label>
@@ -212,10 +231,17 @@ export function ClientsPanel({ workspaceId }: ClientsPanelProps) {
               Invite is bound to the selected client workspace
               {selected ? ` (${clients.data?.items.find((c) => c.id === selected)?.name ?? ''})` : ' (select one above)'}.
             </p>
+            {!selected ? (
+              <p className="text-xs text-destructive">
+                Select a client workspace above before sending an invite.
+              </p>
+            ) : null}
             <Button
               type="button"
               onClick={() => createInvite.mutate()}
-              disabled={!email.trim() || !selected || createInvite.isPending}
+              disabled={
+                !email.trim() || !EMAIL_PATTERN.test(email) || !selected || createInvite.isPending
+              }
             >
               {createInvite.isPending ? 'Sending…' : 'Send invite'}
             </Button>

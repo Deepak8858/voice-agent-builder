@@ -9,10 +9,11 @@ external Supabase and is not part of this stack.
 ```
 infra/
 ├── aws/
-│   ├── provision.sh          # Creates the AWS foundation (run by an admin)
-│   ├── bootstrap-ubuntu.sh   # EC2 user data: Docker Engine + Compose
-│   ├── teardown.sh           # Destroys the foundation
-│   └── README.md             # Provisioning runbook — read before running
+│   ├── provision.sh              # Creates the AWS foundation (run by an admin)
+│   ├── provision-cloudfront.sh   # CloudFront CDN: ACM cert, distribution, cutover
+│   ├── bootstrap-ubuntu.sh       # EC2 user data: Docker Engine + Compose
+│   ├── teardown.sh               # Destroys the foundation
+│   └── README.md                 # Provisioning runbook — read before running
 ├── docker/
 │   ├── Dockerfile.api            # NestJS image
 │   ├── Dockerfile.web            # Next.js image
@@ -56,6 +57,17 @@ procedure and rollback behavior.
 knowledge S3 bucket, security group, Elastic IP, and a cost budget. It creates
 billable resources, so it is run deliberately by an administrator and never by
 CI. Read `infra/aws/README.md` first.
+
+## CDN
+
+CloudFront fronts the production site. Static assets — `/_next/static/*`,
+`/fonts/*`, `/images/*`, and `/favicon.ico` — are served from edge caches;
+every other request passes through uncached with the viewer `Host` header,
+cookies, and query strings intact, because nginx routes by `Host` and the app
+validates request origins. CloudFront authenticates itself to the origin with
+an `X-Origin-Verify` header that nginx enforces on port 443, so direct requests
+that bypass the CDN are rejected. Setup and operation are covered by
+`infra/aws/provision-cloudfront.sh` and its section in `infra/aws/README.md`.
 
 ## GitHub configuration
 

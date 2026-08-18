@@ -3,6 +3,8 @@ import { createHmac } from 'crypto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { CallsService } from './calls.service';
 import { VoiceWebhookController } from './voice-webhook.controller';
+import type { CallAdmissionService } from '../billing/call-admission.service';
+import type { EntitlementService } from '../billing/entitlement.service';
 import { env } from '../config/env';
 
 interface CallRow {
@@ -78,6 +80,31 @@ function makeService(opts: {
     publish: vi.fn(async () => undefined),
     del: vi.fn(async () => undefined),
   };
+  // `ingestEvent` does not admit calls or read entitlements, but both are
+  // required constructor dependencies. Typed mocks keep this factory honest if
+  // that ever changes, instead of hiding a new call behind `{} as never`.
+  const admission: Pick<CallAdmissionService, 'admitCall' | 'compensate' | 'toError'> = {
+    admitCall: vi.fn(async () => {
+      throw new Error('ingestEvent must not admit calls');
+    }),
+    compensate: vi.fn(async () => {
+      throw new Error('ingestEvent must not compensate admissions');
+    }),
+    toError: vi.fn(() => {
+      throw new Error('ingestEvent must not deny calls');
+    }),
+  };
+  const entitlements: Pick<EntitlementService, 'check' | 'assertAllowed' | 'getEffectivePlan'> = {
+    check: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+    assertAllowed: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+    getEffectivePlan: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+  };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -89,6 +116,8 @@ function makeService(opts: {
     queue as never,
     retention as never,
     cache as never,
+    admission as never,
+    entitlements as never,
   );
   return { service, prisma, created, updates, events, evals, queue };
 }

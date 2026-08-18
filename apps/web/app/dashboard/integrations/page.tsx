@@ -1,49 +1,14 @@
+import { Suspense } from 'react';
 import Link from 'next/link';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, getSessionUser } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { EmptyState, PageHeader, StatusBadge } from '@/components/dashboard';
-import type { SessionUser, ToolSummary } from '@voiceforge/shared';
+import { CardGridSkeleton } from '@/components/dashboard/page-skeleton';
+import { SessionErrorCard } from '@/components/dashboard/session-error-card';
+import type { ToolSummary } from '@voiceforge/shared';
 import { Plus, Plug, ArrowRight } from 'lucide-react';
 
-export default async function IntegrationsPage() {
-  let items: ToolSummary[] = [];
-  let apiError: string | null = null;
-
-  try {
-    const me = await apiFetch<SessionUser>('/auth/me');
-    const res = await apiFetch<{ items: ToolSummary[] }>(
-      `/workspaces/${me.active_workspace_id}/tools`,
-    );
-    items = res.items;
-  } catch (err) {
-    apiError = (err as Error).message;
-  }
-
-  if (apiError) {
-    return (
-      <div className="flex flex-col gap-8">
-        <PageHeader
-          eyebrow="Tool calling"
-          title="Integrations"
-          description={
-            <>
-              Could not load integrations:{' '}
-              <code className="rounded bg-muted px-1 py-0.5 text-xs">{apiError}</code>
-            </>
-          }
-          actions={
-            <Button asChild className="gap-2">
-              <Link href="/dashboard/integrations/new">
-                <Plus className="h-4 w-4" />
-                New tool
-              </Link>
-            </Button>
-          }
-        />
-      </div>
-    );
-  }
-
+export default function IntegrationsPage() {
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
@@ -60,6 +25,33 @@ export default async function IntegrationsPage() {
         }
       />
 
+      <Suspense fallback={<CardGridSkeleton cards={6} />}>
+        <IntegrationsSection />
+      </Suspense>
+    </div>
+  );
+}
+
+async function IntegrationsSection() {
+  let items: ToolSummary[] = [];
+  let apiError: string | null = null;
+
+  try {
+    const me = await getSessionUser();
+    const res = await apiFetch<{ items: ToolSummary[] }>(
+      `/workspaces/${me.active_workspace_id}/tools`,
+    );
+    items = res.items;
+  } catch (err) {
+    apiError = (err as Error).message;
+  }
+
+  if (apiError) {
+    return <SessionErrorCard title="Could not load integrations" message={apiError} />;
+  }
+
+  return (
+    <>
       {items.length === 0 ? (
         <EmptyState
           icon={<Plug className="h-7 w-7" />}
@@ -98,6 +90,6 @@ export default async function IntegrationsPage() {
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }

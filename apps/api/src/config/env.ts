@@ -8,6 +8,11 @@ const BooleanEnvSchema = z.preprocess((value) => {
   return value;
 }, z.boolean());
 
+const OptionalUrlEnvSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string().url().optional(),
+);
+
 /**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
@@ -28,7 +33,10 @@ const EnvSchema = z.object({
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
   VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
-  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('anthropic'),
+  // Azure AI Foundry (gpt-5.4-mini) is the production default. The LLM module
+  // factory still fails fast at boot when the selected provider's key is
+  // missing, so this default does not change credential-less-boot behavior.
+  LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('azure-aifoundry'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
 
   VAPI_API_KEY: z.string().optional(),
@@ -110,7 +118,7 @@ const EnvSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
   LLM_MODEL: z.string().optional(),
-  LLM_BASE_URL: z.string().optional(),
+  LLM_BASE_URL: OptionalUrlEnvSchema,
   OPENAI_API_KEY: z.string().optional(),
   LLM_API_KEY: z.string().optional(),
   LLM_API_VERSION: z.string().optional(),
@@ -126,17 +134,59 @@ const EnvSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
 
+  // Stripe is either fully configured with server-owned prices or Checkout is
+  // temporarily unavailable. There is no "demo" billing mode: partial
+  // configuration must never hand out a recurring free allowance.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_STARTER_PRICE_ID: z.string().optional(),
   STRIPE_GROWTH_PRICE_ID: z.string().optional(),
   STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
-  BILLING_MODE: z.enum(['demo', 'live']).default('demo'),
+  STRIPE_MINUTE_PACK_PRICE_ID: z.string().optional(),
+  // Tax collection stays off until the tax registrations are confirmed.
+  STRIPE_TAX_ENABLED: BooleanEnvSchema.default(false),
+  BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
+  BILLING_LEASE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(90),
+
+  // Assumed variable cost per connected minute, used to record a provider cost
+  // estimate before the provider reports actual usage. Bounded above zero so a
+  // misconfigured deployment cannot silently report infinite margin.
+  BILLING_VARIABLE_COST_RESERVE_USD_PER_MINUTE: z.coerce
+    .number()
+    .positive()
+    .max(10)
+    .default(0.12),
+  // Reconciliation cadence. Defaults to every 15 minutes; each run is bounded
+  // by BILLING_RECONCILIATION_BATCH_SIZE so a backlog is drained over several
+  // runs instead of one long transaction.
+  BILLING_RECONCILIATION_CRON: z
+    .string()
+    .default('*/15 * * * *')
+    .refine(
+      (v) => {
+        const fields = v.trim().split(/\s+/).length;
+        return fields === 5 || fields === 6;
+      },
+      'BILLING_RECONCILIATION_CRON must be a 5- or 6-field cron expression',
+    ),
+  BILLING_RECONCILIATION_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+  // A call that never reported connection is finalized and its reservation
+  // released after this many minutes, so credit is not held indefinitely.
+  BILLING_STALE_CALL_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
 
   LLM_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(60),
+
+  // Chat-to-agent generation. LLM calls are expensive, so generation gets its
+  // own (stricter) per-user rate limit on top of the global request limiter.
+  AGENT_GEN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(10),
+  AGENT_GEN_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).default(300),
+  AGENT_GEN_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(4),
+  // A session stuck in 'generating' longer than this is failed by the lazy
+  // sweep on the next read, so the UI can offer a retry.
+  AGENT_GEN_STALE_AFTER_SECONDS: z.coerce.number().int().min(60).default(180),
 
   METRICS_SCRAPE_TOKEN: z.string().optional(),
   VOICE_WEBHOOK_SECRET: z.string().optional(),
@@ -194,11 +244,25 @@ const EnvSchema = z.object({
       message: 'VOICE_PROVIDER=mock is not allowed in production',
     });
   }
+  // The Azure adapter has no safe default endpoint; require it explicitly in
+  // production so a misconfigured deployment fails at boot, not per-request.
+  if (
+    value.NODE_ENV === 'production' &&
+    value.LLM_PROVIDER === 'azure-aifoundry' &&
+    !value.LLM_BASE_URL
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LLM_BASE_URL'],
+      message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
+    });
+  }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after
-  // checkout and from the billing portal. It defaults to localhost, so a live
-  // deployment that omits it takes payments and then bounces the customer to a
-  // dead address. That failure is invisible to a boot check, hence this guard.
-  if (value.BILLING_MODE === 'live') {
+  // checkout and from the billing portal. It defaults to localhost, so a
+  // deployment with working Stripe credentials that omits it takes payments and
+  // then bounces the customer to a dead address. That failure is invisible to a
+  // boot check, hence this guard.
+  if (isStripeCheckoutConfigured(value)) {
     let parsed: URL | null = null;
     try {
       parsed = new URL(value.WEB_BASE_URL);
@@ -210,12 +274,33 @@ const EnvSchema = z.object({
         code: z.ZodIssueCode.custom,
         path: ['WEB_BASE_URL'],
         message:
-          'WEB_BASE_URL must be an absolute non-local HTTPS URL when BILLING_MODE=live, ' +
-          'because Stripe redirects customers back to it',
+          'WEB_BASE_URL must be an absolute non-local HTTPS URL when Stripe Checkout is ' +
+          'configured, because Stripe redirects customers back to it',
       });
     }
   }
 });
+
+/**
+ * Checkout is only usable when every server-owned identifier is present. A
+ * partially configured deployment fails closed rather than sending a customer
+ * to Stripe and then being unable to grant what they paid for.
+ */
+function isStripeCheckoutConfigured(value: {
+  STRIPE_SECRET_KEY?: string | undefined;
+  STRIPE_WEBHOOK_SECRET?: string | undefined;
+  STRIPE_STARTER_PRICE_ID?: string | undefined;
+  STRIPE_GROWTH_PRICE_ID?: string | undefined;
+  STRIPE_MINUTE_PACK_PRICE_ID?: string | undefined;
+}): boolean {
+  return Boolean(
+    value.STRIPE_SECRET_KEY &&
+      value.STRIPE_WEBHOOK_SECRET &&
+      value.STRIPE_STARTER_PRICE_ID &&
+      value.STRIPE_GROWTH_PRICE_ID &&
+      value.STRIPE_MINUTE_PACK_PRICE_ID,
+  );
+}
 
 function isLocalHostname(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
