@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { buildApiContextHeaders } from '@/lib/api-context-headers';
 import { extractSupabaseAccessToken } from '@/lib/supabase/access-token';
+import { relayJsonResponse } from '@/lib/proxy-response';
 
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
 // Prefer the private service-to-service URL (e.g. http://api:4000 on the Docker
@@ -29,25 +30,6 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 
 function apiTarget(req: NextRequest, pathString: string): string {
   return `${API_BASE}${pathString}${req.nextUrl.search}`;
-}
-
-/** Statuses for which the Response constructor forbids a body. */
-export function isNullBodyStatus(status: number): boolean {
-  return status === 101 || status === 204 || status === 205 || status === 304;
-}
-
-/**
- * Relay a non-streaming upstream reply to the browser. A null-body status such
- * as 204 must carry no body, so return a body-free Response for it. Passing a
- * body to those statuses makes the Response constructor throw and turns a
- * successful upstream reply into an unhandled 500. Exported for tests.
- */
-export async function relayJsonResponse(apiRes: Response): Promise<Response> {
-  if (isNullBodyStatus(apiRes.status)) {
-    return new Response(null, { status: apiRes.status });
-  }
-  const data = await apiRes.json().catch(() => null);
-  return NextResponse.json(data ?? {}, { status: apiRes.status });
 }
 
 /**

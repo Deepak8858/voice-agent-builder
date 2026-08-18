@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNullBodyStatus, relayJsonResponse } from './route';
+import { isNullBodyStatus, relayJsonResponse } from './proxy-response';
 
 describe('isNullBodyStatus', () => {
   it.each([101, 204, 205, 304])('treats %i as a null-body status', (status) => {
