@@ -38,9 +38,15 @@ interface VobizNumberListResponse {
   data?: VobizNumber[];
 }
 
-type NumberFetchOutcome =
-  | { ok: true; numbers: ProviderPhoneNumber[] }
-  | { ok: false; message: string };
+/**
+ * Deliberately not a discriminated union: the API build tsconfig does not narrow
+ * boolean-literal discriminants, so `numbers` and `failure` are both always present.
+ * `failure` is null on success.
+ */
+interface NumberFetchOutcome {
+  numbers: ProviderPhoneNumber[];
+  failure: string | null;
+}
 
 interface VobizTrunk {
   trunk_id: string;
@@ -82,8 +88,8 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
         `https://api.vobiz.ai/api/v1/partner/accounts/${vobizCredentials.customerAuthId}/numbers?page=1&per_page=100`,
         vobizCredentials,
       );
-      if (partner.ok && partner.numbers.length) return partner.numbers;
-      if (!partner.ok) failures.push(`partner inventory (${partner.message})`);
+      if (partner.numbers.length) return partner.numbers;
+      if (partner.failure) failures.push(`partner inventory (${partner.failure})`);
     }
 
     // Master accounts (MA_) already include sub-account numbers here, so this is
@@ -93,14 +99,14 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
       `https://api.vobiz.ai/api/v1/Account/${accountAuthId}/numbers?page=1&per_page=100`,
       vobizCredentials,
     );
-    if (owned.ok && owned.numbers.length) return owned.numbers;
-    if (!owned.ok) failures.push(`account numbers (${owned.message})`);
+    if (owned.numbers.length) return owned.numbers;
+    if (owned.failure) failures.push(`account numbers (${owned.failure})`);
 
     // No DIDs are exposed to the API: fall back to trunks so trunk-only Vobiz
     // setups can still be imported with a manually supplied phone number.
     const trunks = await this.fetchTrunks(vobizCredentials);
-    if (trunks.ok) return trunks.numbers;
-    failures.push(`account trunks (${trunks.message})`);
+    if (!trunks.failure) return trunks.numbers;
+    failures.push(`account trunks (${trunks.failure})`);
 
     throw new AppError(
       'PROVIDER_CREDENTIALS_INVALID',
@@ -185,11 +191,11 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
       headers: { ...this.headers(credentials), Accept: 'application/json' },
     });
     if (!response.ok) {
-      return { ok: false, message: await this.describeFailure(response) };
+      return { numbers: [], failure: await this.describeFailure(response) };
     }
     const payload = (await response.json()) as VobizNumberListResponse;
     const items = payload.items ?? payload.data ?? [];
-    return { ok: true, numbers: items.map((number) => this.mapNumber(number)) };
+    return { numbers: items.map((number) => this.mapNumber(number)), failure: null };
   }
 
   private async fetchTrunks(credentials: { authId: string; authToken: string }): Promise<NumberFetchOutcome> {
@@ -198,11 +204,11 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
       { headers: this.headers(credentials) },
     );
     if (!response.ok) {
-      return { ok: false, message: await this.describeFailure(response) };
+      return { numbers: [], failure: await this.describeFailure(response) };
     }
     const data = (await response.json()) as { objects?: VobizTrunk[] };
     return {
-      ok: true,
+      failure: null,
       numbers: (data.objects ?? []).map((trunk) => ({
         providerNumberId: trunk.trunk_id,
         phoneNumberE164: null,
