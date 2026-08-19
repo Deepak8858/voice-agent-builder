@@ -33,6 +33,10 @@ export const PUBLIC_PREFIXES = [
   '/pricing',
   '/auth',
   '/legal',
+  '/services',
+  '/support',
+  '/refund',
+  '/privacypolicy',
 ];
 
 function matchesPrefix(path: string, prefixes: readonly string[]): boolean {
