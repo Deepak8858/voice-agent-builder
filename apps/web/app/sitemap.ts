@@ -11,8 +11,13 @@ import { siteUrl } from '@/lib/site-url';
 const publicRoutes = [
   { path: '/', changeFrequency: 'weekly', priority: 1 },
   { path: '/pricing', changeFrequency: 'weekly', priority: 0.8 },
+  { path: '/services', changeFrequency: 'monthly', priority: 0.6 },
   { path: '/sign-up', changeFrequency: 'monthly', priority: 0.5 },
+  { path: '/support', changeFrequency: 'monthly', priority: 0.4 },
   { path: '/sign-in', changeFrequency: 'monthly', priority: 0.3 },
+  { path: '/refund', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/privacypolicy', changeFrequency: 'yearly', priority: 0.3 },
+  { path: '/legal/dpa', changeFrequency: 'yearly', priority: 0.2 },
 ] as const;
 
 export default function sitemap(): MetadataRoute.Sitemap {

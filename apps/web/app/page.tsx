@@ -538,6 +538,18 @@ export default function Home() {
             <Link href="/sign-in" className="transition hover:text-[#23594f]">
               Sign in
             </Link>
+            <Link href="/services" className="transition hover:text-[#23594f]">
+              Services
+            </Link>
+            <Link href="/support" className="transition hover:text-[#23594f]">
+              Support
+            </Link>
+            <Link href="/refund" className="transition hover:text-[#23594f]">
+              Refunds
+            </Link>
+            <Link href="/privacypolicy" className="transition hover:text-[#23594f]">
+              Privacy
+            </Link>
           </nav>
           <p className="text-sm text-[#66736c]">&copy; 2026 VoiceForge AI</p>
         </div>
