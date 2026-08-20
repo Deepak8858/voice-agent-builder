@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { HttpStatus } from '@nestjs/common';
 import { z } from 'zod';
+import { AgentsService } from './agents.service';
+import { AppError } from '../common/errors';
 
 const FlowNodeSchema = z.object({
   id: z.string().min(1),
@@ -192,5 +195,99 @@ describe('Workspace isolation', () => {
     expect(visibleAgents).toHaveLength(2);
     expect(visibleAgents.every(a => a.workspaceId === 'w1')).toBe(true);
     expect(visibleAgents.find(a => a.workspaceId === 'w2')).toBeUndefined();
+  });
+});
+
+describe('AgentsService.generate', () => {
+  const GENERATE_RESULT = {
+    spec: { name: 'Generated Agent' },
+    suggested_name: 'Generated Agent',
+    rationale: 'test',
+    matched_template_slug: 'ai-receptionist',
+  };
+
+  function makeService(overrides: { generate?: ReturnType<typeof vi.fn>; resolveReferencedSourceIds?: ReturnType<typeof vi.fn> } = {}) {
+    const generator = {
+      name: 'mock',
+      generate: overrides.generate ?? vi.fn().mockResolvedValue(GENERATE_RESULT),
+    };
+    const knowledge = {
+      resolveReferencedSourceIds:
+        overrides.resolveReferencedSourceIds ?? vi.fn().mockResolvedValue([]),
+    };
+    const service = new AgentsService(
+      {} as never, // prisma
+      {} as never, // audit
+      generator as never,
+      knowledge as never,
+      {} as never, // voice
+      {} as never, // cache
+      {} as never, // cacheInvalidator
+      {} as never, // billing
+    );
+    return { service, generator, knowledge };
+  }
+
+  const DTO = {
+    prompt: 'Create a receptionist for a dental clinic',
+    template_slug: undefined,
+    business_context: undefined,
+    knowledge_source_ids: [] as string[],
+  };
+
+  it('does not resolve knowledge sources when none are requested', async () => {
+    const { service, generator, knowledge } = makeService();
+
+    const result = await service.generate('ws-1', DTO);
+
+    expect(knowledge.resolveReferencedSourceIds).not.toHaveBeenCalled();
+    expect(generator.generate).toHaveBeenCalledWith({ ...DTO, knowledge_source_ids: [] });
+    expect(result).toEqual(GENERATE_RESULT);
+  });
+
+  it('resolves and forwards validated knowledge_source_ids when requested', async () => {
+    const requested = ['11111111-1111-1111-1111-111111111111'];
+    const resolveReferencedSourceIds = vi.fn().mockResolvedValue(requested);
+    const { service, generator, knowledge } = makeService({ resolveReferencedSourceIds });
+
+    await service.generate('ws-1', { ...DTO, knowledge_source_ids: requested });
+
+    expect(knowledge.resolveReferencedSourceIds).toHaveBeenCalledWith('ws-1', null, requested);
+    expect(generator.generate).toHaveBeenCalledWith({
+      ...DTO,
+      knowledge_source_ids: requested,
+    });
+  });
+
+  it('converts a TimeoutError from the adapter into a 504 AppError', async () => {
+    const timeoutError = new Error('The operation timed out.');
+    timeoutError.name = 'TimeoutError';
+    const { service } = makeService({ generate: vi.fn().mockRejectedValue(timeoutError) });
+
+    const promise = service.generate('ws-1', DTO);
+
+    await expect(promise).rejects.toBeInstanceOf(AppError);
+    await expect(promise).rejects.toMatchObject({
+      errorCode: 'LLM_PROVIDER_ERROR',
+      status: HttpStatus.GATEWAY_TIMEOUT,
+    });
+  });
+
+  it('converts an AbortError from the adapter into a 504 AppError', async () => {
+    const abortError = new Error('The operation was aborted.');
+    abortError.name = 'AbortError';
+    const { service } = makeService({ generate: vi.fn().mockRejectedValue(abortError) });
+
+    await expect(service.generate('ws-1', DTO)).rejects.toMatchObject({
+      errorCode: 'LLM_PROVIDER_ERROR',
+      status: HttpStatus.GATEWAY_TIMEOUT,
+    });
+  });
+
+  it('rethrows other adapter errors unchanged', async () => {
+    const providerError = new Error('Anthropic returned invalid Agent Spec: bad data');
+    const { service } = makeService({ generate: vi.fn().mockRejectedValue(providerError) });
+
+    await expect(service.generate('ws-1', DTO)).rejects.toBe(providerError);
   });
 });
