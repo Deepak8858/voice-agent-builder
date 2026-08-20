@@ -137,6 +137,126 @@ describe('VobizProviderAdapter', () => {
     ]);
   });
 
+  it('reads trunks from the customer account when Partner credentials select one', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Partner access disabled'))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'customer-trunk' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'PA_partner',
+      authToken: 'partner-token',
+      customerAuthId: 'MA_customer',
+    });
+
+    // The partner account authenticates the request, but the trunks of interest
+    // belong to the customer sub-account being synced.
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'https://api.vobiz.ai/api/v1/Account/MA_customer/trunks?limit=100',
+      expect.anything(),
+    );
+    expect(numbers).toEqual([expect.objectContaining({ providerNumberId: 'customer-trunk' })]);
+  });
+
+  it('falls through to the next source when a request rejects outright', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-network-error' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-network-error' }),
+    ]);
+  });
+
+  it('falls through to the next source when a response is not valid JSON', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0');
+        },
+        text: async () => '<html>gateway</html>',
+      })
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-json' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-json' }),
+    ]);
+  });
+
+  it('treats a non-list numbers payload as a failed source instead of throwing', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: { e164: '+912271264217' } }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-shape' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-shape' }),
+    ]);
+  });
+
+  it('reports every failure, including malformed payloads, when no source yields numbers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce(jsonResponse({ objects: 'not-a-list' }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).rejects.toThrow(/socket hang up[\s\S]*trunks were not a list/);
+  });
+
+  it('skips trunks that have no usable trunk ID', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ objects: [{ name: 'no id' }, { trunk_id: 'trunk-usable' }] }),
+      );
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([expect.objectContaining({ providerNumberId: 'trunk-usable' })]);
+  });
+
   it('surfaces the upstream Vobiz error body when every number source fails', async () => {
     const fetchMock = vi.fn(async () => errorResponse(401, '{"error":{"code":401,"message":"Invalid authentication credentials"}}'));
     const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });

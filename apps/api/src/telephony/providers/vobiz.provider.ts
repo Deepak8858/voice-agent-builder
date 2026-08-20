@@ -33,10 +33,12 @@ interface VobizNumber {
   region?: string;
 }
 
-interface VobizNumberListResponse {
-  items?: VobizNumber[];
-  data?: VobizNumber[];
-}
+/**
+ * Vobiz returns number lists under `items`, but older/alternate responses use
+ * `data`. Trunks come back under `objects`. The first key present wins.
+ */
+const NUMBER_LIST_KEYS = ['items', 'data'] as const;
+const TRUNK_LIST_KEYS = ['objects'] as const;
 
 /**
  * Deliberately not a discriminated union: the API build tsconfig does not narrow
@@ -103,8 +105,11 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     if (owned.failure) failures.push(`account numbers (${owned.failure})`);
 
     // No DIDs are exposed to the API: fall back to trunks so trunk-only Vobiz
-    // setups can still be imported with a manually supplied phone number.
-    const trunks = await this.fetchTrunks(vobizCredentials);
+    // setups can still be imported with a manually supplied phone number. This
+    // reads the same account as the number lookup above: with Partner
+    // credentials the trunks of interest belong to the customer sub-account,
+    // not to the partner account that authenticates the request.
+    const trunks = await this.fetchTrunks(vobizCredentials, accountAuthId);
     if (!trunks.failure) return trunks.numbers;
     failures.push(`account trunks (${trunks.failure})`);
 
@@ -183,44 +188,84 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     return safeHexEqual(provided, hmacSha256(params.secret, rawBody));
   }
 
+  /**
+   * Performs a Vobiz GET, converting every failure mode into a `failure` string.
+   *
+   * Transport rejections and malformed JSON must not throw: an exception here
+   * would abort `listPhoneNumbers` before the remaining fallback sources ran,
+   * which is precisely the single-point-of-failure this adapter exists to avoid.
+   */
+  private async requestJson(
+    url: string,
+    credentials: { authId: string; authToken: string },
+  ): Promise<{ payload: unknown; failure: string | null }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: { ...this.headers(credentials), Accept: 'application/json' },
+      });
+    } catch (error) {
+      return { payload: null, failure: `request failed: ${describeError(error)}` };
+    }
+    if (!response.ok) {
+      return { payload: null, failure: await this.describeFailure(response) };
+    }
+    try {
+      return { payload: await response.json(), failure: null };
+    } catch (error) {
+      return { payload: null, failure: `invalid JSON response: ${describeError(error)}` };
+    }
+  }
+
   private async fetchNumbers(
     url: string,
     credentials: { authId: string; authToken: string },
   ): Promise<NumberFetchOutcome> {
-    const response = await this.fetchImpl(url, {
-      headers: { ...this.headers(credentials), Accept: 'application/json' },
-    });
-    if (!response.ok) {
-      return { numbers: [], failure: await this.describeFailure(response) };
+    const { payload, failure } = await this.requestJson(url, credentials);
+    if (failure) return { numbers: [], failure };
+
+    const items = readArrayField<VobizNumber>(payload, NUMBER_LIST_KEYS);
+    if (!items) {
+      return { numbers: [], failure: 'unexpected response shape: numbers were not a list' };
     }
-    const payload = (await response.json()) as VobizNumberListResponse;
-    const items = payload.items ?? payload.data ?? [];
-    return { numbers: items.map((number) => this.mapNumber(number)), failure: null };
+    return {
+      numbers: items.filter(isRecord).map((number) => this.mapNumber(number)),
+      failure: null,
+    };
   }
 
-  private async fetchTrunks(credentials: { authId: string; authToken: string }): Promise<NumberFetchOutcome> {
-    const response = await this.fetchImpl(
-      `https://api.vobiz.ai/api/v1/Account/${credentials.authId}/trunks?limit=100`,
-      { headers: this.headers(credentials) },
+  private async fetchTrunks(
+    credentials: { authId: string; authToken: string },
+    accountAuthId: string,
+  ): Promise<NumberFetchOutcome> {
+    const { payload, failure } = await this.requestJson(
+      `https://api.vobiz.ai/api/v1/Account/${accountAuthId}/trunks?limit=100`,
+      credentials,
     );
-    if (!response.ok) {
-      return { numbers: [], failure: await this.describeFailure(response) };
+    if (failure) return { numbers: [], failure };
+
+    const objects = readArrayField<VobizTrunk>(payload, TRUNK_LIST_KEYS);
+    if (!objects) {
+      return { numbers: [], failure: 'unexpected response shape: trunks were not a list' };
     }
-    const data = (await response.json()) as { objects?: VobizTrunk[] };
     return {
       failure: null,
-      numbers: (data.objects ?? []).map((trunk) => ({
-        providerNumberId: trunk.trunk_id,
-        phoneNumberE164: null,
-        friendlyName: trunk.name ?? trunk.trunk_id,
-        capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
-        metadata: {
-          sipTrunkId: trunk.trunk_id,
-          sipTrunkDomain: trunk.trunk_domain,
-          status: trunk.trunk_status,
-          requiresPhoneNumber: true,
-        },
-      })),
+      // A trunk without an ID cannot be routed or re-identified on a later sync,
+      // so it is dropped rather than imported as a blank entry.
+      numbers: objects
+        .filter((trunk): trunk is VobizTrunk => isRecord(trunk) && typeof trunk.trunk_id === 'string')
+        .map((trunk) => ({
+          providerNumberId: trunk.trunk_id,
+          phoneNumberE164: null,
+          friendlyName: trunk.name ?? trunk.trunk_id,
+          capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
+          metadata: {
+            sipTrunkId: trunk.trunk_id,
+            sipTrunkDomain: trunk.trunk_domain,
+            status: trunk.trunk_status,
+            requiresPhoneNumber: true,
+          },
+        })),
     };
   }
 
@@ -318,4 +363,29 @@ function toE164OrNull(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   return /^\+[1-9]\d{6,14}$/.test(trimmed) ? trimmed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Returns the first key that holds an array, `[]` when the payload is a
+ * well-formed envelope carrying no list, or `null` when the shape is wrong
+ * enough that the caller should treat it as a failed source and fall through.
+ */
+function readArrayField<T>(payload: unknown, keys: readonly string[]): T[] | null {
+  if (Array.isArray(payload)) return payload as T[];
+  if (!isRecord(payload)) return null;
+  for (const key of keys) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value as T[];
+    // Present but not a list: the endpoint answered in a shape we cannot read.
+    if (value !== undefined && value !== null) return null;
+  }
+  return [];
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
