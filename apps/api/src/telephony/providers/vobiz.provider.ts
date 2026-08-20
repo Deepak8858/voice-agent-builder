@@ -14,22 +14,26 @@ interface FetchLike {
   (url: string, init?: RequestInit): Promise<Response>;
 }
 
-interface VobizNumber {
-  number: string;
-  trunk_id?: string;
-  status?: string;
-  application_name?: string;
-  number_type?: string;
-  country?: string;
-  region?: string;
-}
+/**
+ * Vobiz returns number lists under `items`, but older/alternate responses use
+ * `data`. Trunks come back under `objects`. The first key present wins.
+ *
+ * Entries are intentionally read as `Record<string, unknown>` and narrowed field
+ * by field rather than cast to an interface: the upstream shape varies between
+ * documented and legacy keys, and a cast would only assert types the response
+ * has not been checked to have.
+ */
+const NUMBER_LIST_KEYS = ['items', 'data'] as const;
+const TRUNK_LIST_KEYS = ['objects'] as const;
 
-interface VobizTrunk {
-  trunk_id: string;
-  name?: string;
-  trunk_domain?: string;
-  trunk_status?: string;
-  trunk_direction?: string;
+/**
+ * Deliberately not a discriminated union: the API build tsconfig does not narrow
+ * boolean-literal discriminants, so `numbers` and `failure` are both always present.
+ * `failure` is null on success.
+ */
+interface NumberFetchOutcome {
+  numbers: ProviderPhoneNumber[];
+  failure: string | null;
 }
 
 export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
@@ -54,36 +58,44 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
 
   async listPhoneNumbers(credentials: ProviderCredentials): Promise<ProviderPhoneNumber[]> {
     const vobizCredentials = this.assertCredentials(credentials);
-    if (vobizCredentials.customerAuthId) {
-      const url = `https://api.vobiz.ai/api/v1/partner/accounts/${vobizCredentials.customerAuthId}/numbers?page=1&per_page=100`;
-      const response = await this.fetchImpl(url, { headers: { ...this.headers(vobizCredentials), Accept: 'application/json' } });
-      if (!response.ok) {
-        throw new AppError('PROVIDER_CREDENTIALS_INVALID', `Vobiz number sync failed with HTTP ${response.status}`, 400);
-      }
-      const data = (await response.json()) as { data?: VobizNumber[] };
-      return (data.data ?? []).map((number) => this.mapNumber(number));
+    const failures: string[] = [];
+
+    // Partner credentials can read a specific customer's inventory. This is only
+    // available to accounts with Partner API access, so it is attempted first and
+    // then falls back to the account-scoped endpoint instead of failing the sync.
+    if (vobizCredentials.customerAuthId && vobizCredentials.customerAuthId !== vobizCredentials.authId) {
+      const partner = await this.fetchNumbers(
+        `https://api.vobiz.ai/api/v1/partner/accounts/${vobizCredentials.customerAuthId}/numbers?page=1&per_page=100`,
+        vobizCredentials,
+      );
+      if (partner.numbers.length) return partner.numbers;
+      if (partner.failure) failures.push(`partner inventory (${partner.failure})`);
     }
 
-    const response = await this.fetchImpl(
-      `https://api.vobiz.ai/api/v1/Account/${vobizCredentials.authId}/trunks?limit=100`,
-      { headers: this.headers(vobizCredentials) },
+    // Master accounts (MA_) already include sub-account numbers here, so this is
+    // the correct path for both standalone and master accounts.
+    const accountAuthId = vobizCredentials.customerAuthId ?? vobizCredentials.authId;
+    const owned = await this.fetchNumbers(
+      `https://api.vobiz.ai/api/v1/Account/${accountAuthId}/numbers?page=1&per_page=100`,
+      vobizCredentials,
     );
-    if (!response.ok) {
-      throw new AppError('PROVIDER_CREDENTIALS_INVALID', `Vobiz trunk sync failed with HTTP ${response.status}`, 400);
-    }
-    const data = (await response.json()) as { objects?: VobizTrunk[] };
-    return (data.objects ?? []).map((trunk) => ({
-      providerNumberId: trunk.trunk_id,
-      phoneNumberE164: null,
-      friendlyName: trunk.name ?? trunk.trunk_id,
-      capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
-      metadata: {
-        sipTrunkId: trunk.trunk_id,
-        sipTrunkDomain: trunk.trunk_domain,
-        status: trunk.trunk_status,
-        requiresPhoneNumber: true,
-      },
-    }));
+    if (owned.numbers.length) return owned.numbers;
+    if (owned.failure) failures.push(`account numbers (${owned.failure})`);
+
+    // No DIDs are exposed to the API: fall back to trunks so trunk-only Vobiz
+    // setups can still be imported with a manually supplied phone number. This
+    // reads the same account as the number lookup above: with Partner
+    // credentials the trunks of interest belong to the customer sub-account,
+    // not to the partner account that authenticates the request.
+    const trunks = await this.fetchTrunks(vobizCredentials, accountAuthId);
+    if (!trunks.failure) return trunks.numbers;
+    failures.push(`account trunks (${trunks.failure})`);
+
+    throw new AppError(
+      'PROVIDER_CREDENTIALS_INVALID',
+      `Vobiz number sync failed. ${failures.join('; ')}`,
+      400,
+    );
   }
 
   async getPhoneNumber(credentials: ProviderCredentials, providerNumberId: string): Promise<ProviderPhoneNumber> {
@@ -154,19 +166,141 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     return safeHexEqual(provided, hmacSha256(params.secret, rawBody));
   }
 
-  private mapNumber(number: VobizNumber): ProviderPhoneNumber {
-    const phoneNumberE164 = toE164OrNull(number.number);
+  /**
+   * Performs a Vobiz GET, converting every failure mode into a `failure` string.
+   *
+   * Transport rejections and malformed JSON must not throw: an exception here
+   * would abort `listPhoneNumbers` before the remaining fallback sources ran,
+   * which is precisely the single-point-of-failure this adapter exists to avoid.
+   */
+  private async requestJson(
+    url: string,
+    credentials: { authId: string; authToken: string },
+  ): Promise<{ payload: unknown; failure: string | null }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: { ...this.headers(credentials), Accept: 'application/json' },
+      });
+    } catch (error) {
+      return { payload: null, failure: `request failed: ${describeError(error)}` };
+    }
+    if (!response.ok) {
+      return { payload: null, failure: await this.describeFailure(response) };
+    }
+    try {
+      return { payload: await response.json(), failure: null };
+    } catch (error) {
+      return { payload: null, failure: `invalid JSON response: ${describeError(error)}` };
+    }
+  }
+
+  private async fetchNumbers(
+    url: string,
+    credentials: { authId: string; authToken: string },
+  ): Promise<NumberFetchOutcome> {
+    const { payload, failure } = await this.requestJson(url, credentials);
+    if (failure) return { numbers: [], failure };
+
+    const items = readArrayField(payload, NUMBER_LIST_KEYS);
+    if (!items) {
+      return { numbers: [], failure: 'unexpected response shape: numbers were not a list' };
+    }
+    // Entries are mapped defensively rather than trusted: a single entry with an
+    // unexpected field type must not throw, because that would abort the
+    // remaining fallback sources in `listPhoneNumbers`.
     return {
-      providerNumberId: number.trunk_id ?? number.number,
+      numbers: items.filter(isRecord).map((number) => this.mapNumber(number)).filter(hasProviderId),
+      failure: null,
+    };
+  }
+
+  private async fetchTrunks(
+    credentials: { authId: string; authToken: string },
+    accountAuthId: string,
+  ): Promise<NumberFetchOutcome> {
+    const { payload, failure } = await this.requestJson(
+      `https://api.vobiz.ai/api/v1/Account/${accountAuthId}/trunks?limit=100`,
+      credentials,
+    );
+    if (failure) return { numbers: [], failure };
+
+    const objects = readArrayField(payload, TRUNK_LIST_KEYS);
+    if (!objects) {
+      return { numbers: [], failure: 'unexpected response shape: trunks were not a list' };
+    }
+    return {
+      failure: null,
+      numbers: objects.filter(isRecord).flatMap((raw) => {
+        // A trunk with no usable ID cannot be routed or re-identified on a later
+        // sync, so it is dropped rather than imported as a blank entry.
+        const trunkId = readString(raw.trunk_id);
+        if (!trunkId) return [];
+        const direction = readString(raw.trunk_direction);
+        return [
+          {
+            providerNumberId: trunkId,
+            phoneNumberE164: null,
+            friendlyName: readString(raw.name) ?? trunkId,
+            capabilities: {
+              voice: true,
+              inbound: direction !== 'outbound',
+              outbound: direction !== 'inbound',
+            },
+            metadata: {
+              sipTrunkId: trunkId,
+              sipTrunkDomain: readString(raw.trunk_domain),
+              status: readString(raw.trunk_status),
+              requiresPhoneNumber: true,
+            },
+          },
+        ];
+      }),
+    };
+  }
+
+  private async describeFailure(response: Response): Promise<string> {
+    const readText = (response as { text?: () => Promise<string> }).text;
+    if (typeof readText !== 'function') return `HTTP ${response.status}`;
+    try {
+      const body = (await readText.call(response)).trim();
+      return body ? `HTTP ${response.status}: ${body.slice(0, 300)}` : `HTTP ${response.status}`;
+    } catch {
+      return `HTTP ${response.status}`;
+    }
+  }
+
+  /**
+   * Maps one entry from an unvalidated Vobiz payload. Every field is read
+   * through a type guard: Vobiz has returned both documented and legacy key
+   * shapes, and an unexpected type on a single entry must not throw, since that
+   * would abort the caller's remaining fallback sources.
+   */
+  private mapNumber(number: Record<string, unknown>): ProviderPhoneNumber {
+    const rawNumber = readString(number.e164) ?? readString(number.number);
+    const phoneNumberE164 = toE164OrNull(rawNumber);
+    const sipTrunkId = readString(number.trunk_group_id) ?? readString(number.trunk_id);
+    const id = readString(number.id);
+    const accountId = readString(number.account_id);
+    const applicationId = readString(number.application_id);
+    const capabilities = isRecord(number.capabilities) ? number.capabilities : undefined;
+    const voice = typeof capabilities?.voice === 'boolean'
+      ? capabilities.voice
+      : (typeof number.voice_enabled === 'boolean' ? number.voice_enabled : true);
+    return {
+      providerNumberId: sipTrunkId ?? rawNumber ?? id ?? '',
       phoneNumberE164,
-      friendlyName: number.application_name ?? number.number,
-      capabilities: { voice: true, inbound: true, outbound: true },
+      friendlyName: readString(number.application_name) ?? rawNumber ?? id ?? null,
+      capabilities: { voice, inbound: true, outbound: true },
       metadata: {
-        sipTrunkId: number.trunk_id,
-        status: number.status,
-        type: number.number_type,
-        country: number.country,
-        region: number.region,
+        ...(sipTrunkId ? { sipTrunkId } : {}),
+        ...(id ? { providerNumberUuid: id } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(applicationId ? { applicationId } : {}),
+        status: readString(number.status),
+        type: readString(number.number_type),
+        country: readString(number.country),
+        region: readString(number.region),
         requiresPhoneNumber: !phoneNumberE164,
       },
     };
@@ -229,4 +363,47 @@ function toE164OrNull(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   return /^\+[1-9]\d{6,14}$/.test(trimmed) ? trimmed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Extracts the list from a Vobiz response envelope.
+ *
+ * Returns the array under the first supported key that is present, or `null`
+ * when no supported key exists or a present key does not hold an array. A
+ * response carrying none of the expected keys is a shape we cannot read, not an
+ * empty inventory, so it is reported as a failed source rather than silently
+ * treated as "this account has nothing".
+ */
+function readArrayField(payload: unknown, keys: readonly string[]): unknown[] | null {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload)) return null;
+  for (const key of keys) {
+    if (!(key in payload)) continue;
+    const value = payload[key];
+    return Array.isArray(value) ? value : null;
+  }
+  return null;
+}
+
+/** Reads a string field, ignoring empty strings and every non-string type. */
+function readString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+/**
+ * Drops entries that carry no identifier. Such a record cannot be routed or
+ * matched against on a later sync, so importing it would create an unusable row.
+ */
+function hasProviderId(number: ProviderPhoneNumber): boolean {
+  return number.providerNumberId.length > 0;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
