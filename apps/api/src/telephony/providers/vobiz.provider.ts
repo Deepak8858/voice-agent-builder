@@ -14,28 +14,14 @@ interface FetchLike {
   (url: string, init?: RequestInit): Promise<Response>;
 }
 
-interface VobizNumber {
-  /** Documented account/partner inventory shape. */
-  id?: string;
-  e164?: string;
-  account_id?: string;
-  application_id?: string;
-  capabilities?: Record<string, unknown>;
-  voice_enabled?: boolean;
-  trunk_group_id?: string;
-  /** Legacy/alternate keys kept for backwards compatibility. */
-  number?: string;
-  trunk_id?: string;
-  status?: string;
-  application_name?: string;
-  number_type?: string;
-  country?: string;
-  region?: string;
-}
-
 /**
  * Vobiz returns number lists under `items`, but older/alternate responses use
  * `data`. Trunks come back under `objects`. The first key present wins.
+ *
+ * Entries are intentionally read as `Record<string, unknown>` and narrowed field
+ * by field rather than cast to an interface: the upstream shape varies between
+ * documented and legacy keys, and a cast would only assert types the response
+ * has not been checked to have.
  */
 const NUMBER_LIST_KEYS = ['items', 'data'] as const;
 const TRUNK_LIST_KEYS = ['objects'] as const;
@@ -48,14 +34,6 @@ const TRUNK_LIST_KEYS = ['objects'] as const;
 interface NumberFetchOutcome {
   numbers: ProviderPhoneNumber[];
   failure: string | null;
-}
-
-interface VobizTrunk {
-  trunk_id: string;
-  name?: string;
-  trunk_domain?: string;
-  trunk_status?: string;
-  trunk_direction?: string;
 }
 
 export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
@@ -224,12 +202,15 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     const { payload, failure } = await this.requestJson(url, credentials);
     if (failure) return { numbers: [], failure };
 
-    const items = readArrayField<VobizNumber>(payload, NUMBER_LIST_KEYS);
+    const items = readArrayField(payload, NUMBER_LIST_KEYS);
     if (!items) {
       return { numbers: [], failure: 'unexpected response shape: numbers were not a list' };
     }
+    // Entries are mapped defensively rather than trusted: a single entry with an
+    // unexpected field type must not throw, because that would abort the
+    // remaining fallback sources in `listPhoneNumbers`.
     return {
-      numbers: items.filter(isRecord).map((number) => this.mapNumber(number)),
+      numbers: items.filter(isRecord).map((number) => this.mapNumber(number)).filter(hasProviderId),
       failure: null,
     };
   }
@@ -244,28 +225,37 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     );
     if (failure) return { numbers: [], failure };
 
-    const objects = readArrayField<VobizTrunk>(payload, TRUNK_LIST_KEYS);
+    const objects = readArrayField(payload, TRUNK_LIST_KEYS);
     if (!objects) {
       return { numbers: [], failure: 'unexpected response shape: trunks were not a list' };
     }
     return {
       failure: null,
-      // A trunk without an ID cannot be routed or re-identified on a later sync,
-      // so it is dropped rather than imported as a blank entry.
-      numbers: objects
-        .filter((trunk): trunk is VobizTrunk => isRecord(trunk) && typeof trunk.trunk_id === 'string')
-        .map((trunk) => ({
-          providerNumberId: trunk.trunk_id,
-          phoneNumberE164: null,
-          friendlyName: trunk.name ?? trunk.trunk_id,
-          capabilities: { voice: true, inbound: trunk.trunk_direction !== 'outbound', outbound: trunk.trunk_direction !== 'inbound' },
-          metadata: {
-            sipTrunkId: trunk.trunk_id,
-            sipTrunkDomain: trunk.trunk_domain,
-            status: trunk.trunk_status,
-            requiresPhoneNumber: true,
+      numbers: objects.filter(isRecord).flatMap((raw) => {
+        // A trunk with no usable ID cannot be routed or re-identified on a later
+        // sync, so it is dropped rather than imported as a blank entry.
+        const trunkId = readString(raw.trunk_id);
+        if (!trunkId) return [];
+        const direction = readString(raw.trunk_direction);
+        return [
+          {
+            providerNumberId: trunkId,
+            phoneNumberE164: null,
+            friendlyName: readString(raw.name) ?? trunkId,
+            capabilities: {
+              voice: true,
+              inbound: direction !== 'outbound',
+              outbound: direction !== 'inbound',
+            },
+            metadata: {
+              sipTrunkId: trunkId,
+              sipTrunkDomain: readString(raw.trunk_domain),
+              status: readString(raw.trunk_status),
+              requiresPhoneNumber: true,
+            },
           },
-        })),
+        ];
+      }),
     };
   }
 
@@ -280,27 +270,37 @@ export class VobizProviderAdapter implements PhoneNumberProviderAdapter {
     }
   }
 
-  private mapNumber(number: VobizNumber): ProviderPhoneNumber {
-    const rawNumber = number.e164 ?? number.number ?? null;
+  /**
+   * Maps one entry from an unvalidated Vobiz payload. Every field is read
+   * through a type guard: Vobiz has returned both documented and legacy key
+   * shapes, and an unexpected type on a single entry must not throw, since that
+   * would abort the caller's remaining fallback sources.
+   */
+  private mapNumber(number: Record<string, unknown>): ProviderPhoneNumber {
+    const rawNumber = readString(number.e164) ?? readString(number.number);
     const phoneNumberE164 = toE164OrNull(rawNumber);
-    const sipTrunkId = number.trunk_group_id ?? number.trunk_id ?? null;
-    const voice = typeof number.capabilities?.voice === 'boolean'
-      ? number.capabilities.voice
-      : (number.voice_enabled ?? true);
+    const sipTrunkId = readString(number.trunk_group_id) ?? readString(number.trunk_id);
+    const id = readString(number.id);
+    const accountId = readString(number.account_id);
+    const applicationId = readString(number.application_id);
+    const capabilities = isRecord(number.capabilities) ? number.capabilities : undefined;
+    const voice = typeof capabilities?.voice === 'boolean'
+      ? capabilities.voice
+      : (typeof number.voice_enabled === 'boolean' ? number.voice_enabled : true);
     return {
-      providerNumberId: sipTrunkId ?? rawNumber ?? number.id ?? '',
+      providerNumberId: sipTrunkId ?? rawNumber ?? id ?? '',
       phoneNumberE164,
-      friendlyName: number.application_name ?? rawNumber ?? number.id ?? null,
+      friendlyName: readString(number.application_name) ?? rawNumber ?? id ?? null,
       capabilities: { voice, inbound: true, outbound: true },
       metadata: {
         ...(sipTrunkId ? { sipTrunkId } : {}),
-        ...(number.id ? { providerNumberUuid: number.id } : {}),
-        ...(number.account_id ? { accountId: number.account_id } : {}),
-        ...(number.application_id ? { applicationId: number.application_id } : {}),
-        status: number.status,
-        type: number.number_type,
-        country: number.country,
-        region: number.region,
+        ...(id ? { providerNumberUuid: id } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(applicationId ? { applicationId } : {}),
+        status: readString(number.status),
+        type: readString(number.number_type),
+        country: readString(number.country),
+        region: readString(number.region),
         requiresPhoneNumber: !phoneNumberE164,
       },
     };
@@ -370,20 +370,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Returns the first key that holds an array, `[]` when the payload is a
- * well-formed envelope carrying no list, or `null` when the shape is wrong
- * enough that the caller should treat it as a failed source and fall through.
+ * Extracts the list from a Vobiz response envelope.
+ *
+ * Returns the array under the first supported key that is present, or `null`
+ * when no supported key exists or a present key does not hold an array. A
+ * response carrying none of the expected keys is a shape we cannot read, not an
+ * empty inventory, so it is reported as a failed source rather than silently
+ * treated as "this account has nothing".
  */
-function readArrayField<T>(payload: unknown, keys: readonly string[]): T[] | null {
-  if (Array.isArray(payload)) return payload as T[];
+function readArrayField(payload: unknown, keys: readonly string[]): unknown[] | null {
+  if (Array.isArray(payload)) return payload;
   if (!isRecord(payload)) return null;
   for (const key of keys) {
+    if (!(key in payload)) continue;
     const value = payload[key];
-    if (Array.isArray(value)) return value as T[];
-    // Present but not a list: the endpoint answered in a shape we cannot read.
-    if (value !== undefined && value !== null) return null;
+    return Array.isArray(value) ? value : null;
   }
-  return [];
+  return null;
+}
+
+/** Reads a string field, ignoring empty strings and every non-string type. */
+function readString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+/**
+ * Drops entries that carry no identifier. Such a record cannot be routed or
+ * matched against on a later sync, so importing it would create an unusable row.
+ */
+function hasProviderId(number: ProviderPhoneNumber): boolean {
+  return number.providerNumberId.length > 0;
 }
 
 function describeError(error: unknown): string {

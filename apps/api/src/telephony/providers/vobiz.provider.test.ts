@@ -257,6 +257,81 @@ describe('VobizProviderAdapter', () => {
     expect(numbers).toEqual([expect.objectContaining({ providerNumberId: 'trunk-usable' })]);
   });
 
+  it('falls back to trunks when a number entry has an unexpected field type', async () => {
+    const fetchMock = vi
+      .fn()
+      // `e164` as a number would throw inside the E.164 check if entries were
+      // trusted, aborting the sync before the trunk fallback ran.
+      .mockResolvedValueOnce(jsonResponse({ items: [{ e164: 42, capabilities: 'nope' }] }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-entry' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-entry' }),
+    ]);
+  });
+
+  it('skips number entries that carry no usable identifier', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [
+          { id: '   ', e164: '' },
+          { e164: '+912271264217' },
+        ],
+      }),
+    );
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: '+912271264217' }),
+    ]);
+  });
+
+  it('treats a response with no recognised list field as a failed source', async () => {
+    // `{}` is not an empty inventory: it is a shape we cannot read, so it must be
+    // reported rather than reported as "this account has no numbers".
+    const fetchMock = vi.fn(async () => jsonResponse({}));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).rejects.toThrow(/numbers were not a list[\s\S]*trunks were not a list/);
+  });
+
+  it('accepts a documented empty inventory and moves on to trunks', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [], total: 0 }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    // An explicit empty list is a valid answer, so the sync succeeds with nothing
+    // to import rather than raising a provider error.
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it('surfaces the upstream Vobiz error body when every number source fails', async () => {
     const fetchMock = vi.fn(async () => errorResponse(401, '{"error":{"code":401,"message":"Invalid authentication credentials"}}'));
     const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
