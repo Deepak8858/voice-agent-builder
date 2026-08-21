@@ -24,10 +24,10 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": "^20.20.0 || >=22.22.0"
