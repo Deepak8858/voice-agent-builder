@@ -14,12 +14,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@livekit/agents": "1.5.5",
-    "@livekit/agents-plugin-openai": "1.5.5",
-    "@livekit/rtc-node": "0.13.31",
-    "@prisma/client": "^5.22.0",
+    "@livekit/agents": "1.6.4",
+    "@livekit/agents-plugin-openai": "1.6.4",
+    "@livekit/rtc-node": "0.13.33",
+    "@prisma/client": "^7.9.1",
     "@voiceforge/shared": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
