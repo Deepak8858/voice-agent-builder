@@ -74,6 +74,7 @@ model Organization {
   telephonyProviderConnections TelephonyProviderConnection[]
   telephonyPhoneNumbers        TelephonyPhoneNumber[]
   liveKitTelephonyConfigs      LiveKitTelephonyConfig[]
+  googleConnections            GoogleOAuthConnection[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -120,6 +121,7 @@ model Workspace {
   invitesAccepted              ClientInvite[]                @relation("InviteClient")
   usageRecords                 UsageRecord[]
   googleCalendarConfig         GoogleCalendarConfig?
+  googleConnection             GoogleOAuthConnection?
   crmCredentials               WorkspaceCrmCredential[]
   crmRoutingRules              CrmRoutingRule[]
   twilioPhoneNumbers           TwilioPhoneNumber[]
@@ -1076,6 +1078,30 @@ model GoogleCalendarConfig {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("google_calendar_configs")
+}
+
+// Unified Google Workspace OAuth connection (Calendar + Gmail send + Sheets).
+// One token set with granted scopes per workspace; tokens are stored as
+// JSON-serialized AES-256-GCM envelopes (same convention as GoogleCalendarConfig).
+model GoogleOAuthConnection {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  accessToken    String    @map("access_token")
+  refreshToken   String    @map("refresh_token")
+  tokenExpiry    DateTime  @map("token_expiry")
+  scopes         Json      @default("[]") // granted OAuth scopes, string array
+  status         String    @default("connected") // connected | needs_reauth | invalid
+  lastVerifiedAt DateTime? @map("last_verified_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId])
+  @@index([organizationId])
+  @@map("google_oauth_connections")
 }
 
 // CRM Connections (workspace-level, encrypted credentials)

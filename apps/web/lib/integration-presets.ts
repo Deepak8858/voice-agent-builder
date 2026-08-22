@@ -1,5 +1,9 @@
+import { GOOGLE_WORKSPACE_SCOPES as SHARED_GOOGLE_WORKSPACE_SCOPES } from '@voiceforge/shared';
+
 export type ConnectionProviderId =
   | 'google_calendar'
+  | 'gmail'
+  | 'google_sheets'
   | 'hubspot'
   | 'salesforce'
   | 'pipedrive'
@@ -10,7 +14,7 @@ export type RecommendedAuth = 'oauth' | 'private_app_token' | 'api_token' | 'web
 export interface ConnectionPreset {
   id: ConnectionProviderId;
   name: string;
-  category: 'calendar' | 'crm';
+  category: 'crm' | 'google';
   description: string;
   docsUrl: string;
   scopes: string[];
@@ -26,11 +30,55 @@ export interface ConnectionPreset {
   };
 }
 
+/**
+ * The single scope set requested by the unified "Connect Google Workspace"
+ * flow. One consent covers Calendar booking, Gmail send, and Sheets append,
+ * so connecting is a genuine one-click experience. The list lives in
+ * @voiceforge/shared so it can never drift from what the API requests.
+ */
+export const GOOGLE_WORKSPACE_SCOPES: string[] = [...SHARED_GOOGLE_WORKSPACE_SCOPES];
+
 const CONNECTION_PRESETS: ConnectionPreset[] = [
+  {
+    id: 'gmail',
+    name: 'Gmail',
+    category: 'google',
+    description: 'Send confirmation and follow-up emails during calls.',
+    docsUrl: 'https://developers.google.com/gmail/api/guides/sending',
+    scopes: GOOGLE_WORKSPACE_SCOPES,
+    auth: {
+      recommended: 'oauth',
+      label: 'Connect Google Workspace',
+      summary: 'One Google sign-in connects Calendar, Gmail, and Sheets together.',
+    },
+    manualFallback: {
+      label: 'Connect with Google',
+      summary: 'Gmail is connected through the unified Google Workspace OAuth flow — there is no manual token option.',
+      fields: [],
+    },
+  },
+  {
+    id: 'google_sheets',
+    name: 'Google Sheets',
+    category: 'google',
+    description: 'Append captured lead and call data rows to a spreadsheet.',
+    docsUrl: 'https://developers.google.com/sheets/api/guides/values#append_values',
+    scopes: GOOGLE_WORKSPACE_SCOPES,
+    auth: {
+      recommended: 'oauth',
+      label: 'Connect Google Workspace',
+      summary: 'One Google sign-in connects Calendar, Gmail, and Sheets together.',
+    },
+    manualFallback: {
+      label: 'Connect with Google',
+      summary: 'Sheets is connected through the unified Google Workspace OAuth flow — there is no manual token option.',
+      fields: [],
+    },
+  },
   {
     id: 'google_calendar',
     name: 'Google Calendar',
-    category: 'calendar',
+    category: 'google',
     description: 'Check availability and create booked appointments during calls.',
     docsUrl: 'https://developers.google.com/workspace/calendar/api/auth',
     scopes: [
@@ -127,7 +175,8 @@ export function getConnectionPresets(): ConnectionPreset[] {
 }
 
 export function getConnectionPreset(id: ConnectionProviderId): ConnectionPreset {
-  return CONNECTION_PRESETS.find((preset) => preset.id === id) ?? CONNECTION_PRESETS[0];
+  const fallback = CONNECTION_PRESETS.find((preset) => preset.id === 'google_calendar')!;
+  return CONNECTION_PRESETS.find((preset) => preset.id === id) ?? fallback;
 }
 
 export function recommendedOauthProviders(): ConnectionProviderId[] {

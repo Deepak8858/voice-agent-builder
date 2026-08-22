@@ -2,7 +2,17 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import { SessionUserSchema, type ApiEnvelope, type SessionUser } from '@voiceforge/shared';
+import {
+  GoogleAuthorizeResponseSchema,
+  GoogleConnectionStatusResponseSchema,
+  GoogleDisconnectResponseSchema,
+  SessionUserSchema,
+  type ApiEnvelope,
+  type GoogleAuthorizeResponse,
+  type GoogleConnectionStatusResponse,
+  type GoogleDisconnectResponse,
+  type SessionUser,
+} from '@voiceforge/shared';
 import { buildApiContextHeaders } from './api-context-headers';
 import { extractSupabaseAccessToken } from './supabase/access-token';
 
@@ -115,6 +125,43 @@ export async function requireSessionUser(nextPath = '/dashboard'): Promise<Sessi
     throw err;
   }
 }
+
+/**
+ * Server-side client for the unified Google Workspace connection.
+ * `authorize` returns the consent URL, `status` powers the settings page
+ * state, and `disconnect` removes the stored token set.
+ */
+export const googleConnectionApi = {
+  async authorize(workspaceId: string): Promise<GoogleAuthorizeResponse> {
+    return GoogleAuthorizeResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/authorize`),
+    );
+  },
+  async status(workspaceId: string): Promise<GoogleConnectionStatusResponse> {
+    return GoogleConnectionStatusResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/status`),
+    );
+  },
+  async callback(
+    workspaceId: string,
+    code: string,
+    state: string,
+  ): Promise<GoogleConnectionStatusResponse> {
+    return GoogleConnectionStatusResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/callback`, {
+        method: 'POST',
+        body: JSON.stringify({ code, state }),
+      }),
+    );
+  },
+  async disconnect(workspaceId: string): Promise<GoogleDisconnectResponse> {
+    return GoogleDisconnectResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/disconnect`, {
+        method: 'DELETE',
+      }),
+    );
+  },
+};
 
 export class ApiCallError extends Error {
   constructor(

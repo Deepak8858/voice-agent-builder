@@ -133,6 +133,9 @@ const EnvSchema = z.object({
 
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Where Google sends the browser back after consent. Must exactly match an
+  // authorized redirect URI on the OAuth client in Google Cloud Console.
+  GOOGLE_OAUTH_REDIRECT_URI: OptionalUrlEnvSchema,
 
   // Stripe is either fully configured with server-owned prices or Checkout is
   // temporarily unavailable. There is no "demo" billing mode: partial
@@ -257,6 +260,42 @@ const EnvSchema = z.object({
       message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
     });
   }
+  // A Google OAuth client without a redirect URI can mint consent URLs that
+  // Google will always reject; fail at boot instead of per-request. In
+  // production the URI must be a non-local HTTPS URL; outside production,
+  // plain HTTP is allowed for local development loopback addresses only.
+  if (value.GOOGLE_CLIENT_ID && value.GOOGLE_CLIENT_SECRET) {
+    if (!value.GOOGLE_OAUTH_REDIRECT_URI) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['GOOGLE_OAUTH_REDIRECT_URI'],
+        message:
+          'GOOGLE_OAUTH_REDIRECT_URI is required when GOOGLE_CLIENT_ID and ' +
+          'GOOGLE_CLIENT_SECRET are configured',
+      });
+    } else {
+      let parsed: URL | null = null;
+      try {
+        parsed = new URL(value.GOOGLE_OAUTH_REDIRECT_URI);
+      } catch {
+        parsed = null;
+      }
+      const isProduction = value.NODE_ENV === 'production';
+      const valid = isProduction
+        ? parsed !== null && parsed.protocol === 'https:' && !isLocalHostname(parsed.hostname)
+        : parsed !== null &&
+          (parsed.protocol === 'https:' || isLocalHostname(parsed.hostname));
+      if (!valid) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['GOOGLE_OAUTH_REDIRECT_URI'],
+          message:
+            'GOOGLE_OAUTH_REDIRECT_URI must be a non-local HTTPS URL in production ' +
+            '(plain HTTP on localhost is allowed only outside production)',
+        });
+      }
+    }
+  }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after
   // checkout and from the billing portal. It defaults to localhost, so a
   // deployment with working Stripe credentials that omits it takes payments and
@@ -307,6 +346,9 @@ function isLocalHostname(hostname: string): boolean {
   return (
     host === 'localhost' ||
     host === '::1' ||
+    // Unspecified bind addresses are not reachable public origins either.
+    host === '0.0.0.0' ||
+    host === '::' ||
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     /^127\./.test(host)
