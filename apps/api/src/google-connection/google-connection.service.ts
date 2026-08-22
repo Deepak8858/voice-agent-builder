@@ -159,7 +159,7 @@ export class GoogleConnectionService {
     };
   }
 
-  /** Best-effort disconnect: revoke the token, remove the connection, disable tools. */
+  /** Best-effort disconnect: remove the connection, revoke the token, disable tools. */
   async disconnect(workspaceId: string, actorUserId?: string): Promise<void> {
     this.inFlightRefreshes.delete(workspaceId);
 
@@ -170,10 +170,10 @@ export class GoogleConnectionService {
       .catch(() => null);
     const grantedScopes = existing ? readScopes(existing.scopes) : [];
 
-    if (existing) {
-      await this.revokeTokenBestEffort(workspaceId, existing.refreshToken);
-    }
-
+    // Delete first, revoke after: if the delete fails the connection stays
+    // fully intact (tokens still valid), and if revocation fails afterwards
+    // the grant merely lingers at Google while our system is already clean —
+    // never a "connected" row pointing at a dead grant.
     try {
       await this.prisma.googleOAuthConnection.delete({ where: { workspaceId } });
     } catch (err) {
@@ -183,6 +183,10 @@ export class GoogleConnectionService {
       if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025')) {
         throw err;
       }
+    }
+
+    if (existing) {
+      await this.revokeTokenBestEffort(workspaceId, existing.refreshToken);
     }
 
     await this.prisma.integrationTool

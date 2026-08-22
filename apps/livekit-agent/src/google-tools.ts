@@ -36,7 +36,11 @@ const InvokeResponseSchema = z.object({
 });
 
 export interface ToolInvoker {
-  (toolName: string, params: Record<string, unknown>): Promise<{
+  (
+    toolName: string,
+    params: Record<string, unknown>,
+    toolType?: string,
+  ): Promise<{
     status: 'pending' | 'success' | 'failed';
     result: unknown;
     errorMessage: string | null;
@@ -53,7 +57,7 @@ export function createToolInvokeClient(config: {
   const baseUrl = config.apiBaseUrl.replace(/\/$/, '');
   const fetchImpl = config.fetchImpl ?? fetch;
 
-  return async (toolName, params) => {
+  return async (toolName, params, toolType) => {
     const response = await fetchImpl(
       `${baseUrl}/api/v1/internal/livekit/agents/${encodeURIComponent(config.agentId)}/tools/invoke`,
       {
@@ -66,6 +70,9 @@ export function createToolInvokeClient(config: {
           tool_name: toolName,
           params,
           ...(config.callId ? { call_id: config.callId } : {}),
+          // Declared tool type from the Agent Spec, so the API can refuse a
+          // same-named tool of a different type.
+          ...(toolType ? { tool_type: toolType } : {}),
         }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
@@ -154,7 +161,7 @@ export function createGoogleTools(config: {
         parameters: parameters as never,
         execute: async (params: Record<string, unknown>) => {
           try {
-            const outcome = await config.invoke(specTool.name, params);
+            const outcome = await config.invoke(specTool.name, params, toolType);
             if (outcome.status === 'success') {
               return { ok: true, result: outcome.result };
             }

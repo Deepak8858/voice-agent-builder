@@ -220,14 +220,23 @@ export class GoogleOAuthClient {
 
     if (!response.ok) {
       // Google returns 400 `invalid_grant` when the refresh token was revoked
-      // or expired; that is unrecoverable and requires a re-connect. Callers
-      // detect this via the structured details flag, not the message text.
+      // or expired; only that code is unrecoverable and requires a re-connect.
+      // Anything else (429 rate limit, 5xx outage) is transient and must not
+      // flip the connection into needs_reauth. Callers detect the reauth
+      // condition via the structured details flag, not the message text.
       const errorCode = await readGoogleErrorCode(response);
       this.logger.error(
         `Google token refresh rejected with status ${response.status}${
           errorCode ? ` (${errorCode})` : ''
         }`,
       );
+      if (errorCode !== 'invalid_grant') {
+        throw new AppError(
+          'CRM_NOT_CONFIGURED',
+          'Google could not refresh the token — please try again shortly.',
+          400,
+        );
+      }
       throw new AppError(
         'CRM_NOT_CONFIGURED',
         'Google authorization is no longer valid — re-connect required.',

@@ -42,6 +42,7 @@ function makeService(opts: {
   tool?: ToolRow | null;
   toolsAllowed?: boolean;
   emailAllowed?: boolean;
+  exportAllowed?: boolean;
 }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
@@ -105,6 +106,16 @@ function makeService(opts: {
   const compliance = {
     checkOutboundEmail: vi.fn(async () =>
       (opts.emailAllowed ?? true)
+        ? { allowed: true, reasons: [] }
+        : {
+            allowed: false,
+            reasons: [
+              { code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' },
+            ],
+          },
+    ),
+    checkDataExport: vi.fn(async () =>
+      (opts.exportAllowed ?? true)
         ? { allowed: true, reasons: [] }
         : {
             allowed: false,
@@ -278,6 +289,43 @@ describe('ToolsService.invoke', () => {
     expect(gmail.execute).not.toHaveBeenCalled();
   });
 
+  it('audits a tool.invoke.blocked event with reason codes only when compliance blocks', async () => {
+    const gmailTool: ToolRow = {
+      ...baseTool,
+      toolType: 'gmail',
+      config: { operation: 'send_message' },
+      inputSchema: {
+        type: 'object',
+        properties: { to: { type: 'string' } },
+        required: ['to'],
+      },
+    };
+    const { service, audit, prisma } = makeService({ tool: gmailTool, emailAllowed: false });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { to: 'optout@example.test', subject: 's', body: 'b' },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    // No invocation row is created for a blocked call.
+    expect(prisma.toolInvocation.create).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'w1',
+        actorUserId: 'u1',
+        action: 'tool.invoke.blocked',
+        resourceType: 'integration_tool',
+        resourceId: 'tool_1',
+        metadata: expect.objectContaining({
+          tool_type: 'gmail',
+          reason_codes: ['opted_out'],
+        }),
+      }),
+    );
+    // The audit payload must never contain the recipient or message content.
+    const payload = JSON.stringify(audit.log.mock.calls);
+    expect(payload).not.toContain('optout@example.test');
+  });
+
   it('allows gmail sends when the compliance gate passes', async () => {
     const gmailTool: ToolRow = {
       ...baseTool,
@@ -296,6 +344,53 @@ describe('ToolsService.invoke', () => {
     });
     expect(result.status).toBe('success');
     expect(gmail.execute).toHaveBeenCalled();
+  });
+
+  it('blocks sheets appends that export opted-out contact data', async () => {
+    const sheetsTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_sheets',
+      config: { operation: 'append_row' },
+      inputSchema: {
+        type: 'object',
+        properties: { values: { type: 'array' } },
+        required: ['values'],
+      },
+    };
+    const { service, sheets, compliance, audit } = makeService({
+      tool: sheetsTool,
+      exportAllowed: false,
+    });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { values: ['Ada Lovelace', 'optout@example.test', 42] },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    expect(compliance.checkDataExport).toHaveBeenCalledWith('w1', ['optout@example.test']);
+    expect(sheets.execute).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'tool.invoke.blocked' }),
+    );
+  });
+
+  it('allows sheets appends when the compliance gate passes', async () => {
+    const sheetsTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_sheets',
+      config: { operation: 'append_row' },
+      inputSchema: {
+        type: 'object',
+        properties: { values: { type: 'array' } },
+        required: ['values'],
+      },
+    };
+    const { service, sheets } = makeService({ tool: sheetsTool, exportAllowed: true });
+    sheets.execute.mockResolvedValue({ success: true, result: { updated_range: 'A1:C1' } });
+    const result = await service.invoke('w1', 'tool_1', 'u1', {
+      arguments: { values: ['Ada Lovelace', 'ok@example.test', 42] },
+    });
+    expect(result.status).toBe('success');
+    expect(sheets.execute).toHaveBeenCalled();
   });
 
   it('invokes the CRM executor when configured', async () => {
@@ -373,6 +468,42 @@ describe('ToolsService.invokeByName', () => {
         where: expect.objectContaining({
           OR: [{ agentId: null }, { agentId: 'agent-1' }],
         }),
+      }),
+    );
+  });
+
+  it('scopes the lookup to the declared tool type when provided', async () => {
+    const { service, executor, prisma } = makeService({ tool: baseTool });
+    executor.execute.mockResolvedValue({ success: true, result: { ok: true } });
+    await service.invokeByName(
+      'w1',
+      'create_booking',
+      null,
+      { arguments: { name: 'Ada' } },
+      'webhook',
+    );
+    expect(prisma.integrationTool.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: 'w1',
+          name: 'create_booking',
+          toolType: 'webhook',
+        }),
+      }),
+    );
+  });
+
+  it('rejects a same-named tool of a different type than the spec declared', async () => {
+    // The mock returns null when the where clause filters out the stored
+    // webhook tool, simulating a gmail-declared spec tool matching nothing.
+    const { service, prisma } = makeService({ tool: baseTool });
+    prisma.integrationTool.findFirst.mockResolvedValueOnce(null);
+    await expect(
+      service.invokeByName('w1', 'create_booking', null, { arguments: {} }, 'gmail'),
+    ).rejects.toBeInstanceOf(ToolNotFoundError);
+    expect(prisma.integrationTool.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ toolType: 'gmail' }),
       }),
     );
   });

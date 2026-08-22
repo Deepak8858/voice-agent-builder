@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import {
+  GoogleConnectionStatusResponseSchema,
+  type GoogleConnectionStatusResponse,
+} from '@voiceforge/shared';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,12 +15,6 @@ import { CheckCircle, AlertTriangle, Trash2 } from 'lucide-react';
 
 interface SessionUser { active_workspace_id: string; }
 
-interface GoogleStatus {
-  connected: boolean;
-  status: string | null;
-  scopes: string[];
-}
-
 const SCOPE_LABELS: Record<string, string> = {
   'https://www.googleapis.com/auth/calendar.events': 'Calendar booking',
   'https://www.googleapis.com/auth/calendar.events.freebusy': 'Calendar availability',
@@ -24,12 +22,15 @@ const SCOPE_LABELS: Record<string, string> = {
   'https://www.googleapis.com/auth/spreadsheets': 'Sheets append',
 };
 
+const STATUS_ERROR_MESSAGE =
+  'Could not load the Google connection status — refresh to try again.';
+
 export default function GoogleSettingsPage() {
   const { call } = useApi();
   const searchParams = useSearchParams();
   const callbackError = searchParams.get('error');
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [status, setStatus] = useState<GoogleConnectionStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(
@@ -49,12 +50,17 @@ export default function GoogleSettingsPage() {
   const refreshStatus = useCallback(() => {
     if (!workspaceId) return;
     setLoading(true);
-    setErrorMessage(null);
-    call<GoogleStatus>(`/workspaces/${workspaceId}/google/status`)
-      .then(setStatus)
+    // Deliberately do not clear errorMessage here: the OAuth callback error
+    // banner must survive the automatic status fetch that follows the
+    // redirect. Only a stale status-fetch error is cleared, on success.
+    call<unknown>(`/workspaces/${workspaceId}/google/status`)
+      .then((data) => {
+        setStatus(GoogleConnectionStatusResponseSchema.parse(data));
+        setErrorMessage((current) => (current === STATUS_ERROR_MESSAGE ? null : current));
+      })
       .catch((err) => {
         console.error(err);
-        setErrorMessage('Could not load the Google connection status — refresh to try again.');
+        setErrorMessage(STATUS_ERROR_MESSAGE);
       })
       .finally(() => setLoading(false));
   }, [workspaceId, call]);

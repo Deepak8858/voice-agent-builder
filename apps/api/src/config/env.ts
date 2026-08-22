@@ -261,8 +261,9 @@ const EnvSchema = z.object({
     });
   }
   // A Google OAuth client without a redirect URI can mint consent URLs that
-  // Google will always reject; fail at boot instead of per-request. The URI
-  // must be HTTPS except for local development loopback addresses.
+  // Google will always reject; fail at boot instead of per-request. In
+  // production the URI must be a non-local HTTPS URL; outside production,
+  // plain HTTP is allowed for local development loopback addresses only.
   if (value.GOOGLE_CLIENT_ID && value.GOOGLE_CLIENT_SECRET) {
     if (!value.GOOGLE_OAUTH_REDIRECT_URI) {
       ctx.addIssue({
@@ -279,11 +280,18 @@ const EnvSchema = z.object({
       } catch {
         parsed = null;
       }
-      if (!parsed || (parsed.protocol !== 'https:' && !isLocalHostname(parsed.hostname))) {
+      const isProduction = value.NODE_ENV === 'production';
+      const valid = isProduction
+        ? parsed !== null && parsed.protocol === 'https:' && !isLocalHostname(parsed.hostname)
+        : parsed !== null &&
+          (parsed.protocol === 'https:' || isLocalHostname(parsed.hostname));
+      if (!valid) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['GOOGLE_OAUTH_REDIRECT_URI'],
-          message: 'GOOGLE_OAUTH_REDIRECT_URI must use HTTPS (plain HTTP is allowed only for localhost)',
+          message:
+            'GOOGLE_OAUTH_REDIRECT_URI must be a non-local HTTPS URL in production ' +
+            '(plain HTTP on localhost is allowed only outside production)',
         });
       }
     }

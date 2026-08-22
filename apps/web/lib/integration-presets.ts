@@ -14,7 +14,7 @@ export type RecommendedAuth = 'oauth' | 'private_app_token' | 'api_token' | 'web
 export interface ConnectionPreset {
   id: ConnectionProviderId;
   name: string;
-  category: 'calendar' | 'crm' | 'google';
+  category: 'crm' | 'google';
   description: string;
   docsUrl: string;
   scopes: string[];
@@ -78,7 +78,7 @@ const CONNECTION_PRESETS: ConnectionPreset[] = [
   {
     id: 'google_calendar',
     name: 'Google Calendar',
-    category: 'calendar',
+    category: 'google',
     description: 'Check availability and create booked appointments during calls.',
     docsUrl: 'https://developers.google.com/workspace/calendar/api/auth',
     scopes: [

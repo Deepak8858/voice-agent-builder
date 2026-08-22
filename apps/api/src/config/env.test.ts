@@ -170,6 +170,64 @@ describe('env validation', () => {
     });
   });
 
+  describe('Google OAuth redirect URI', () => {
+    const googleBase = {
+      REDIS_URL: 'redis://localhost:6379',
+      GOOGLE_CLIENT_ID: 'google-client-id',
+      GOOGLE_CLIENT_SECRET: 'google-client-secret',
+    };
+    const productionBase = {
+      ...googleBase,
+      NODE_ENV: 'production',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'vapi',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    };
+
+    it.each([
+      ['a localhost HTTP URL', 'http://localhost:3000/integrations/google/callback'],
+      ['a localhost HTTPS URL', 'https://localhost:3000/integrations/google/callback'],
+      ['a loopback IP', 'https://127.0.0.1/integrations/google/callback'],
+      ['plain HTTP on a real domain', 'http://app.voiceforge.example/callback'],
+    ])('rejects %s in production', async (_label, uri) => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, { GOOGLE_OAUTH_REDIRECT_URI: uri });
+
+      await expect(import('./env')).rejects.toThrow(/GOOGLE_OAUTH_REDIRECT_URI/);
+    });
+
+    it('accepts a non-local HTTPS URL in production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, {
+        GOOGLE_OAUTH_REDIRECT_URI: 'https://app.voiceforge.example/integrations/google/callback',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.GOOGLE_OAUTH_REDIRECT_URI).toBe(
+        'https://app.voiceforge.example/integrations/google/callback',
+      );
+    });
+
+    it('accepts a localhost HTTP URL outside production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, googleBase, {
+        NODE_ENV: 'development',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        GOOGLE_OAUTH_REDIRECT_URI: 'http://localhost:3000/integrations/google/callback',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.GOOGLE_OAUTH_REDIRECT_URI).toBe(
+        'http://localhost:3000/integrations/google/callback',
+      );
+    });
+  });
+
   describe('weekly digest schedule', () => {
     it('defaults to Monday 09:00 UTC', async () => {
       vi.resetModules();

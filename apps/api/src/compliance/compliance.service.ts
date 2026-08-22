@@ -552,6 +552,41 @@ export class ComplianceService {
   }
 
   /**
+   * Compliance gate for data-export tools (Sheets append). A row that
+   * references an opted-out contact by email must not be exported: opting
+   * out means the business must stop processing that person for outreach,
+   * and copying their details into a spreadsheet defeats that. Rows that do
+   * not reference any known opted-out contact are allowed.
+   */
+  async checkDataExport(
+    workspaceId: string,
+    emails: string[],
+  ): Promise<{ allowed: boolean; reasons: ComplianceReason[] }> {
+    const reasons: ComplianceReason[] = [];
+    const candidates = [...new Set(emails.map((email) => email.trim()).filter(Boolean))];
+    if (candidates.length > 0) {
+      const contacts = await this.prisma.contact.findMany({
+        where: {
+          workspaceId,
+          optOut: true,
+          OR: candidates.map((email) => ({
+            email: { equals: email, mode: 'insensitive' as const },
+          })),
+        },
+        select: { id: true },
+      });
+      for (const contact of contacts) {
+        reasons.push({
+          code: 'opted_out',
+          message: `Contact ${contact.id} has opted out; their data cannot be exported.`,
+          severity: 'blocking',
+        });
+      }
+    }
+    return { allowed: reasons.length === 0, reasons };
+  }
+
+  /**
    * Convenience used by CallsService after the call row is created so the
    * compliance check is linked to the call audit-trail.
    */

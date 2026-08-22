@@ -31,6 +31,11 @@ import { CrmExecutor, type CrmContactArgs, type CrmProvider } from './crm-execut
 
 type ToolCrmProvider = Exclude<CrmProvider, 'generic_webhook'>;
 
+/** Loose “looks like an email address” shape used to find contact references
+ * inside exported row values. Deliberately permissive: false positives only
+ * cost one indexed contact lookup. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * Tenant scope for an execution. Executors that resolve credentials at call
  * time (Gmail, Sheets) need the workspace id; config never carries tokens.
@@ -226,10 +231,21 @@ export class ToolsService {
       throw new ToolInputInvalidError({ errors: validation.errors });
     }
 
-    // Compliance gate: outbound communications are checked centrally, before
-    // any token resolution or provider call, and block on failure.
-    if (tool.toolType === 'gmail') {
-      await this.assertOutboundEmailAllowed(workspaceId, dto.arguments ?? {});
+    // Compliance gate: outbound communications and data exports are checked
+    // centrally, before the invocation row is created and before any token
+    // resolution or provider call, and block on failure. Blocks are audited
+    // with reason codes only — never the recipient or message content.
+    try {
+      if (tool.toolType === 'gmail') {
+        await this.assertOutboundEmailAllowed(workspaceId, dto.arguments ?? {});
+      } else if (tool.toolType === 'google_sheets') {
+        await this.assertDataExportAllowed(workspaceId, dto.arguments ?? {});
+      }
+    } catch (err) {
+      if (err instanceof ComplianceBlockedError) {
+        await this.logBlockedInvocation(workspaceId, actorUserId, tool.id, tool.toolType, err);
+      }
+      throw err;
     }
 
     const invocation = await this.prisma.toolInvocation.create({
@@ -303,14 +319,19 @@ export class ToolsService {
     toolName: string,
     actorUserId: string | null,
     dto: InvokeToolDto,
+    expectedToolType?: ToolType,
   ): Promise<ToolInvocationDetail> {
     // Only workspace-wide tools (agentId null) or tools owned by the
     // requesting agent are eligible — an agent must not be able to invoke a
-    // sibling agent's private tool by name.
+    // sibling agent's private tool by name. When the caller declares the tool
+    // type it expects (from the Agent Spec), the lookup enforces it too, so a
+    // Gmail-declared spec tool can never resolve to a same-named webhook or
+    // CRM tool that happens to exist in the workspace.
     const tool = await this.prisma.integrationTool.findFirst({
       where: {
         workspaceId,
         name: toolName,
+        ...(expectedToolType ? { toolType: expectedToolType } : {}),
         OR: [{ agentId: null }, ...(dto.agent_id ? [{ agentId: dto.agent_id }] : [])],
       },
       select: { id: true },
@@ -374,6 +395,55 @@ export class ToolsService {
     if (!result.allowed) {
       throw new ComplianceBlockedError({ reasons: result.reasons });
     }
+  }
+
+  /**
+   * Blocks Sheets appends that would export data about opted-out contacts.
+   * Email-shaped values in the appended row identify the contacts involved;
+   * a row referencing an opted-out contact is refused.
+   */
+  private async assertDataExportAllowed(
+    workspaceId: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof this.compliance?.checkDataExport !== 'function') return;
+    const values = Array.isArray(args.values) ? args.values : [];
+    const emails = values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter((value) => EMAIL_SHAPE.test(value));
+    const result = await this.compliance.checkDataExport(workspaceId, emails);
+    if (!result.allowed) {
+      throw new ComplianceBlockedError({ reasons: result.reasons });
+    }
+  }
+
+  /**
+   * Records a compliance block in the audit trail. Only the tool identity
+   * and machine-readable reason codes are stored — never the recipient
+   * address, row values, or message content.
+   */
+  private async logBlockedInvocation(
+    workspaceId: string,
+    actorUserId: string | null,
+    toolId: string,
+    toolType: string,
+    err: ComplianceBlockedError,
+  ): Promise<void> {
+    const rawReasons = err.details?.reasons;
+    const reasonCodes = Array.isArray(rawReasons)
+      ? rawReasons
+          .map((reason) => (reason as { code?: unknown }).code)
+          .filter((code): code is string => typeof code === 'string')
+      : [];
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? undefined,
+      action: 'tool.invoke.blocked',
+      resourceType: 'integration_tool',
+      resourceId: toolId,
+      metadata: { tool_id: toolId, tool_type: toolType, reason_codes: reasonCodes },
+    });
   }
 
   private async assertToolsAllowed(workspaceId: string): Promise<void> {
