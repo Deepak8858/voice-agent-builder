@@ -16,33 +16,56 @@ CREATE TABLE IF NOT EXISTS "google_oauth_connections" (
   CONSTRAINT "google_oauth_connections_workspace_id_key" UNIQUE ("workspace_id")
 );
 
-CREATE INDEX IF NOT EXISTS "google_oauth_connections_workspace_id_idx" ON "google_oauth_connections"("workspace_id");
+-- The UNIQUE constraint on workspace_id already provides that index; only the
+-- organization lookup needs an explicit one.
 CREATE INDEX IF NOT EXISTS "google_oauth_connections_organization_id_idx" ON "google_oauth_connections"("organization_id");
 
 ALTER TABLE "google_oauth_connections" ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "google_oauth_connections_workspace_read"
-  ON public.google_oauth_connections FOR SELECT
-  USING (workspace_id IN (
-    SELECT w.id FROM public.workspaces w
-    JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
-    JOIN public.users u ON u.id = wm.user_id
-    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
-  ));
+-- Both policies are restricted to owner/admin/editor: this table stores
+-- encrypted OAuth token material, which viewers have no reason to read.
+-- Policy creation is guarded so the migration replays cleanly on databases
+-- where the policies were already created by hand or by an earlier run.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'google_oauth_connections'
+      AND policyname = 'google_oauth_connections_workspace_read'
+  ) THEN
+    CREATE POLICY "google_oauth_connections_workspace_read"
+      ON public.google_oauth_connections FOR SELECT
+      USING (workspace_id IN (
+        SELECT w.id FROM public.workspaces w
+        JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
+        JOIN public.users u ON u.id = wm.user_id
+        WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+        AND wm.role IN ('owner', 'admin', 'editor')
+      ));
+  END IF;
 
-CREATE POLICY "google_oauth_connections_workspace_write"
-  ON public.google_oauth_connections FOR ALL
-  USING (workspace_id IN (
-    SELECT w.id FROM public.workspaces w
-    JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
-    JOIN public.users u ON u.id = wm.user_id
-    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
-    AND wm.role IN ('owner', 'admin', 'editor')
-  ))
-  WITH CHECK (workspace_id IN (
-    SELECT w.id FROM public.workspaces w
-    JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
-    JOIN public.users u ON u.id = wm.user_id
-    WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
-    AND wm.role IN ('owner', 'admin', 'editor')
-  ));
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'google_oauth_connections'
+      AND policyname = 'google_oauth_connections_workspace_write'
+  ) THEN
+    CREATE POLICY "google_oauth_connections_workspace_write"
+      ON public.google_oauth_connections FOR ALL
+      USING (workspace_id IN (
+        SELECT w.id FROM public.workspaces w
+        JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
+        JOIN public.users u ON u.id = wm.user_id
+        WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+        AND wm.role IN ('owner', 'admin', 'editor')
+      ))
+      WITH CHECK (workspace_id IN (
+        SELECT w.id FROM public.workspaces w
+        JOIN public.workspace_memberships wm ON wm.workspace_id = w.id
+        JOIN public.users u ON u.id = wm.user_id
+        WHERE u.auth_user_id = (current_setting('request.jwt.claims', true)::json->>'sub')::uuid
+        AND wm.role IN ('owner', 'admin', 'editor')
+      ));
+  END IF;
+END $$;

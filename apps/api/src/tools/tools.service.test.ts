@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { ToolsService } from './tools.service';
 import {
+  ComplianceBlockedError,
   ToolExecutionFailedError,
   ToolInputInvalidError,
   ToolNotFoundError,
@@ -37,7 +38,11 @@ interface InvocationRow {
   requestPayload: Prisma.JsonValue;
 }
 
-function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
+function makeService(opts: {
+  tool?: ToolRow | null;
+  toolsAllowed?: boolean;
+  emailAllowed?: boolean;
+}) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
   const prisma = {
@@ -97,6 +102,18 @@ function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
   const billing = {
     checkFeatureGate: vi.fn(async () => opts.toolsAllowed ?? true),
   };
+  const compliance = {
+    checkOutboundEmail: vi.fn(async () =>
+      (opts.emailAllowed ?? true)
+        ? { allowed: true, reasons: [] }
+        : {
+            allowed: false,
+            reasons: [
+              { code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' },
+            ],
+          },
+    ),
+  };
   const service = new ToolsService(
     prisma as never,
     audit as never,
@@ -106,8 +123,21 @@ function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
     sheets as never,
     crm as never,
     billing as never,
+    compliance as never,
   );
-  return { service, prisma, audit, executor, calendar, gmail, sheets, crm, billing, invocations };
+  return {
+    service,
+    prisma,
+    audit,
+    executor,
+    calendar,
+    gmail,
+    sheets,
+    crm,
+    billing,
+    compliance,
+    invocations,
+  };
 }
 
 const baseTool: ToolRow = {
@@ -227,6 +257,47 @@ describe('ToolsService.invoke', () => {
     );
   });
 
+  it('blocks gmail sends to opted-out recipients before executing', async () => {
+    const gmailTool: ToolRow = {
+      ...baseTool,
+      toolType: 'gmail',
+      config: { operation: 'send_message' },
+      inputSchema: {
+        type: 'object',
+        properties: { to: { type: 'string' } },
+        required: ['to'],
+      },
+    };
+    const { service, gmail, compliance } = makeService({ tool: gmailTool, emailAllowed: false });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { to: 'optout@example.test', subject: 's', body: 'b' },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    expect(compliance.checkOutboundEmail).toHaveBeenCalledWith('w1', 'optout@example.test');
+    expect(gmail.execute).not.toHaveBeenCalled();
+  });
+
+  it('allows gmail sends when the compliance gate passes', async () => {
+    const gmailTool: ToolRow = {
+      ...baseTool,
+      toolType: 'gmail',
+      config: { operation: 'send_message' },
+      inputSchema: {
+        type: 'object',
+        properties: { to: { type: 'string' } },
+        required: ['to'],
+      },
+    };
+    const { service, gmail } = makeService({ tool: gmailTool, emailAllowed: true });
+    gmail.execute.mockResolvedValue({ success: true, result: { message_id: 'm1' } });
+    const result = await service.invoke('w1', 'tool_1', 'u1', {
+      arguments: { to: 'ok@example.test', subject: 's', body: 'b' },
+    });
+    expect(result.status).toBe('success');
+    expect(gmail.execute).toHaveBeenCalled();
+  });
+
   it('invokes the CRM executor when configured', async () => {
     const { service, executor, crm } = makeService({
       tool: {
@@ -256,6 +327,53 @@ describe('ToolsService.invoke', () => {
       'hubspot',
       { provider: 'hubspot', api_key: 'hs-key' },
       { full_name: 'Ada Lovelace', phone: '+15551234567' },
+    );
+  });
+});
+
+describe('ToolsService.invokeByName', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('resolves a workspace-wide tool by name and invokes it', async () => {
+    const { service, executor, prisma } = makeService({ tool: baseTool });
+    executor.execute.mockResolvedValue({ success: true, result: { ok: true } });
+    const result = await service.invokeByName('w1', 'create_booking', null, {
+      arguments: { name: 'Ada' },
+    });
+    expect(result.status).toBe('success');
+    // First lookup is the name-scoped query; agent-less calls only match
+    // workspace-wide (agentId null) tools.
+    expect(prisma.integrationTool.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          workspaceId: 'w1',
+          name: 'create_booking',
+          OR: [{ agentId: null }],
+        }),
+      }),
+    );
+  });
+
+  it('throws ToolNotFoundError for a missing name', async () => {
+    const { service } = makeService({ tool: null });
+    await expect(
+      service.invokeByName('w1', 'nope', null, { arguments: {} }),
+    ).rejects.toBeInstanceOf(ToolNotFoundError);
+  });
+
+  it('includes the requesting agent in the scope filter', async () => {
+    const { service, executor, prisma } = makeService({ tool: baseTool });
+    executor.execute.mockResolvedValue({ success: true, result: { ok: true } });
+    await service.invokeByName('w1', 'create_booking', null, {
+      arguments: { name: 'Ada' },
+      agent_id: 'agent-1',
+    });
+    expect(prisma.integrationTool.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ agentId: null }, { agentId: 'agent-1' }],
+        }),
+      }),
     );
   });
 });

@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SheetsAppendRowInputSchema } from '@voiceforge/shared';
 import { safeFetch } from '../../common/safe-fetch';
-import { fetchWithRetry } from '../../common/retry';
 import {
   GOOGLE_REAUTH_REQUIRED_MESSAGE,
   GoogleConnectionService,
@@ -56,18 +55,18 @@ export class SheetsExecutor implements ToolExecutor {
       `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}` +
       `/values/${range}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
+    // No retries: append is not idempotent — a timed-out request may still
+    // have landed, and retrying would write duplicate rows.
     let response: Response;
     try {
-      response = await fetchWithRetry(() =>
-        safeFetch(url, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ values: [parsed.data.values] }),
-        }),
-      );
+      response = await safeFetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [parsed.data.values] }),
+      });
     } catch (err) {
       this.logger.error(`Sheets append request failed: ${(err as Error).message}`);
       return { success: false, error: 'Google Sheets request failed — please try again shortly.' };

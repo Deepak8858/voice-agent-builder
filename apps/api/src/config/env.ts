@@ -260,6 +260,34 @@ const EnvSchema = z.object({
       message: 'LLM_BASE_URL is required in production when LLM_PROVIDER=azure-aifoundry',
     });
   }
+  // A Google OAuth client without a redirect URI can mint consent URLs that
+  // Google will always reject; fail at boot instead of per-request. The URI
+  // must be HTTPS except for local development loopback addresses.
+  if (value.GOOGLE_CLIENT_ID && value.GOOGLE_CLIENT_SECRET) {
+    if (!value.GOOGLE_OAUTH_REDIRECT_URI) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['GOOGLE_OAUTH_REDIRECT_URI'],
+        message:
+          'GOOGLE_OAUTH_REDIRECT_URI is required when GOOGLE_CLIENT_ID and ' +
+          'GOOGLE_CLIENT_SECRET are configured',
+      });
+    } else {
+      let parsed: URL | null = null;
+      try {
+        parsed = new URL(value.GOOGLE_OAUTH_REDIRECT_URI);
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || (parsed.protocol !== 'https:' && !isLocalHostname(parsed.hostname))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['GOOGLE_OAUTH_REDIRECT_URI'],
+          message: 'GOOGLE_OAUTH_REDIRECT_URI must use HTTPS (plain HTTP is allowed only for localhost)',
+        });
+      }
+    }
+  }
   // WEB_BASE_URL is the origin Stripe redirects customers back to after
   // checkout and from the billing portal. It defaults to localhost, so a
   // deployment with working Stripe credentials that omits it takes payments and

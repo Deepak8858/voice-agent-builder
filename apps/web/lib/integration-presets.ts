@@ -1,3 +1,5 @@
+import { GOOGLE_WORKSPACE_SCOPES as SHARED_GOOGLE_WORKSPACE_SCOPES } from '@voiceforge/shared';
+
 export type ConnectionProviderId =
   | 'google_calendar'
   | 'gmail'
@@ -31,14 +33,10 @@ export interface ConnectionPreset {
 /**
  * The single scope set requested by the unified "Connect Google Workspace"
  * flow. One consent covers Calendar booking, Gmail send, and Sheets append,
- * so connecting is a genuine one-click experience.
+ * so connecting is a genuine one-click experience. The list lives in
+ * @voiceforge/shared so it can never drift from what the API requests.
  */
-export const GOOGLE_WORKSPACE_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/calendar.events.freebusy',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/spreadsheets',
-];
+export const GOOGLE_WORKSPACE_SCOPES: string[] = [...SHARED_GOOGLE_WORKSPACE_SCOPES];
 
 const CONNECTION_PRESETS: ConnectionPreset[] = [
   {
@@ -177,7 +175,8 @@ export function getConnectionPresets(): ConnectionPreset[] {
 }
 
 export function getConnectionPreset(id: ConnectionProviderId): ConnectionPreset {
-  return CONNECTION_PRESETS.find((preset) => preset.id === id) ?? CONNECTION_PRESETS[0];
+  const fallback = CONNECTION_PRESETS.find((preset) => preset.id === 'google_calendar')!;
+  return CONNECTION_PRESETS.find((preset) => preset.id === id) ?? fallback;
 }
 
 export function recommendedOauthProviders(): ConnectionProviderId[] {

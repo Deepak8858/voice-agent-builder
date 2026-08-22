@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BillingModule } from '../billing/billing.module';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { ComplianceModule } from '../compliance/compliance.module';
 import { GoogleConnectionModule } from '../google-connection/google-connection.module';
 import { ToolsController } from './tools.controller';
 import { LiveKitToolsController } from './livekit-tools.controller';
@@ -12,7 +13,7 @@ import { GmailExecutor } from './executors/gmail.executor';
 import { SheetsExecutor } from './executors/sheets.executor';
 
 @Module({
-  imports: [BillingModule, GoogleConnectionModule],
+  imports: [BillingModule, ComplianceModule, GoogleConnectionModule],
   controllers: [ToolsController, LiveKitToolsController],
   providers: [
     ToolsService,

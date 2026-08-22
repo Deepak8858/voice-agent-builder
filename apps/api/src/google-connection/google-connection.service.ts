@@ -3,8 +3,10 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppError } from '../common/errors';
 import { env } from '../config/env';
+import { safeFetch } from '../common/safe-fetch';
+import { AuditService } from '../audit/audit.service';
 import { EncryptionService } from '../security/encryption.service';
-import { GoogleOAuthClient } from '../calendar/google-oauth.client';
+import { GOOGLE_REAUTH_DETAILS_KEY, GoogleOAuthClient } from '../calendar/google-oauth.client';
 import { GOOGLE_TOOL_PRESETS, GOOGLE_WORKSPACE_SCOPES } from './google-tool-presets';
 import { signOAuthState, verifyOAuthState } from './oauth-state';
 
@@ -14,6 +16,12 @@ import { signOAuthState, verifyOAuthState } from './oauth-state';
  * expires between our check and Google receiving the API call.
  */
 const EXPIRY_SKEW_MS = 60_000;
+
+/** Google's token revocation endpoint (accepts access or refresh tokens). */
+const GOOGLE_REVOKE_ENDPOINT = 'https://oauth2.googleapis.com/revoke';
+
+/** Ceiling on the best-effort revoke call so disconnect stays fast. */
+const GOOGLE_REVOKE_TIMEOUT_MS = 5_000;
 
 /** Connection lifecycle states persisted on GoogleOAuthConnection.status. */
 export const GOOGLE_CONNECTION_STATUS = {
@@ -53,6 +61,7 @@ export class GoogleConnectionService {
     private readonly prisma: PrismaService,
     private readonly encryption: EncryptionService,
     private readonly googleOAuth: GoogleOAuthClient,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -76,6 +85,7 @@ export class GoogleConnectionService {
     workspaceId: string;
     code: string;
     state: string;
+    actorUserId?: string;
   }): Promise<GoogleConnectionStatus> {
     if (!verifyOAuthState(args.state, args.workspaceId, env.JWT_SECRET)) {
       throw new AppError(
@@ -117,6 +127,18 @@ export class GoogleConnectionService {
 
     await this.provisionTools(args.workspaceId, organizationId, exchanged.scopes);
 
+    await this.auditBestEffort({
+      workspaceId: args.workspaceId,
+      organizationId,
+      actorUserId: args.actorUserId ?? null,
+      action: 'google.connection.connected',
+      resourceType: 'google_oauth_connection',
+      metadata: {
+        grantedScopes: exchanged.scopes,
+        status: GOOGLE_CONNECTION_STATUS.CONNECTED,
+      },
+    });
+
     return {
       connected: true,
       status: GOOGLE_CONNECTION_STATUS.CONNECTED,
@@ -137,14 +159,32 @@ export class GoogleConnectionService {
     };
   }
 
-  /** Best-effort disconnect: remove the connection and disable provisioned tools. */
-  async disconnect(workspaceId: string): Promise<void> {
+  /** Best-effort disconnect: revoke the token, remove the connection, disable tools. */
+  async disconnect(workspaceId: string, actorUserId?: string): Promise<void> {
     this.inFlightRefreshes.delete(workspaceId);
-    await this.prisma.googleOAuthConnection
-      .delete({ where: { workspaceId } })
-      .catch(() => {
-        // Best-effort: no connection to delete.
-      });
+
+    // Capture the granted scopes (for the audit trail) and the refresh token
+    // (for revocation) before the row is deleted.
+    const existing = await this.prisma.googleOAuthConnection
+      .findUnique({ where: { workspaceId }, select: { refreshToken: true, scopes: true } })
+      .catch(() => null);
+    const grantedScopes = existing ? readScopes(existing.scopes) : [];
+
+    if (existing) {
+      await this.revokeTokenBestEffort(workspaceId, existing.refreshToken);
+    }
+
+    try {
+      await this.prisma.googleOAuthConnection.delete({ where: { workspaceId } });
+    } catch (err) {
+      // Only "record not found" (P2025) is expected here — anything else is a
+      // real failure that must surface rather than silently leaving the
+      // connection (and its tokens) in place.
+      if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025')) {
+        throw err;
+      }
+    }
+
     await this.prisma.integrationTool
       .updateMany({
         where: {
@@ -161,6 +201,62 @@ export class GoogleConnectionService {
           }`,
         );
       });
+
+    await this.auditBestEffort({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'google.connection.disconnected',
+      resourceType: 'google_oauth_connection',
+      metadata: {
+        grantedScopes,
+        status: 'disconnected',
+      },
+    });
+  }
+
+  /**
+   * Ask Google to revoke the grant so the tokens are dead server-side, not
+   * just deleted locally. Failures are logged and swallowed: the local delete
+   * is authoritative for our system.
+   */
+  private async revokeTokenBestEffort(workspaceId: string, storedToken: string): Promise<void> {
+    let token: string;
+    try {
+      token = this.decryptToken(storedToken);
+    } catch (err) {
+      this.logger.warn(
+        `Skipping Google token revocation for workspace ${workspaceId}: ${(err as Error).message}`,
+      );
+      return;
+    }
+    try {
+      const response = await safeFetch(GOOGLE_REVOKE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ token }).toString(),
+        timeoutMs: GOOGLE_REVOKE_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        this.logger.warn(
+          `Google token revocation for workspace ${workspaceId} returned status ${response.status}`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Google token revocation failed for workspace ${workspaceId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /** Audit writes must never fail the user-facing operation they describe. */
+  private async auditBestEffort(payload: Parameters<AuditService['log']>[0]): Promise<void> {
+    try {
+      await this.audit.log(payload);
+    } catch (err) {
+      this.logger.error(
+        `Failed to write audit log for action ${payload.action}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -177,6 +273,15 @@ export class GoogleConnectionService {
     }
     if (connection.status === GOOGLE_CONNECTION_STATUS.NEEDS_REAUTH) {
       throw new AppError('INTEGRATION_NOT_CONNECTED', GOOGLE_REAUTH_REQUIRED_MESSAGE, 400);
+    }
+    if (connection.status !== GOOGLE_CONNECTION_STATUS.CONNECTED) {
+      // `invalid` or any future non-connected state: refuse rather than hand
+      // out credentials from a connection that is not known to be healthy.
+      throw new AppError(
+        'INTEGRATION_NOT_CONNECTED',
+        'Google connection is not in a connected state.',
+        400,
+      );
     }
 
     const credentials: GoogleCredentials = {
@@ -221,10 +326,10 @@ export class GoogleConnectionService {
     try {
       refreshed = await this.googleOAuth.refreshAccessToken(current.refreshToken);
     } catch (err) {
-      // The client surfaces revoked/expired refresh tokens (invalid_grant)
-      // with a distinct "re-connect required" message. That state is
-      // unrecoverable without user consent, so record it for the UI.
-      if (err instanceof AppError && err.message.includes('re-connect required')) {
+      // The client marks revoked/expired refresh tokens (invalid_grant) with
+      // a structured details flag. That state is unrecoverable without user
+      // consent, so record it for the UI.
+      if (err instanceof AppError && err.details?.[GOOGLE_REAUTH_DETAILS_KEY] === true) {
         await this.markNeedsReauth(workspaceId);
         throw new AppError('INTEGRATION_NOT_CONNECTED', GOOGLE_REAUTH_REQUIRED_MESSAGE, 400);
       }
@@ -291,6 +396,27 @@ export class GoogleConnectionService {
     grantedScopes: string[],
   ): Promise<void> {
     const granted = new Set(grantedScopes);
+
+    // A re-connect can narrow the grant. Tools provisioned under a previous,
+    // broader consent must not stay enabled once their scope is gone.
+    const ungranted = GOOGLE_TOOL_PRESETS.filter(
+      (preset) => !granted.has(preset.requiredScope),
+    ).map((preset) => preset.name);
+    if (ungranted.length > 0) {
+      try {
+        await this.prisma.integrationTool.updateMany({
+          where: { workspaceId, agentId: null, name: { in: ungranted } },
+          data: { enabled: false },
+        });
+      } catch (err) {
+        this.logger.error(
+          `Failed to disable Google tools without granted scopes for workspace ${workspaceId}: ${
+            (err as Error).message
+          }`,
+        );
+      }
+    }
+
     for (const preset of GOOGLE_TOOL_PRESETS) {
       if (!granted.has(preset.requiredScope)) continue;
       try {
@@ -353,14 +479,26 @@ export class GoogleConnectionService {
   }
 
   private decryptToken(value: string): string {
-    if (!value.startsWith('{')) return value;
+    // This table has only ever stored AES-256-GCM envelopes, so anything else
+    // is corruption — refuse rather than hand back the raw column value as if
+    // it were a token.
     let parsed: unknown;
     try {
       parsed = JSON.parse(value);
     } catch {
-      return value;
+      throw new AppError(
+        'INTEGRATION_NOT_CONNECTED',
+        'Stored Google credentials are unreadable — re-connect required.',
+        400,
+      );
     }
-    if (!isEncryptedEnvelope(parsed)) return value;
+    if (!isEncryptedEnvelope(parsed)) {
+      throw new AppError(
+        'INTEGRATION_NOT_CONNECTED',
+        'Stored Google credentials are unreadable — re-connect required.',
+        400,
+      );
+    }
     return this.encryption.decryptJson<string>(parsed);
   }
 }

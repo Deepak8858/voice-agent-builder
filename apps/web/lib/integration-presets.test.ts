@@ -6,8 +6,10 @@ import {
 } from './integration-presets';
 
 describe('integration presets', () => {
-  it('marks Google Calendar and multi-tenant CRMs as OAuth-first connections', () => {
+  it('marks Google Workspace tools and multi-tenant CRMs as OAuth-first connections', () => {
     expect(recommendedOauthProviders()).toEqual([
+      'gmail',
+      'google_sheets',
       'google_calendar',
       'hubspot',
       'salesforce',
@@ -38,11 +40,18 @@ describe('integration presets', () => {
 
   it('returns only supported providers', () => {
     expect(getConnectionPresets().map((p) => p.id)).toEqual([
+      'gmail',
+      'google_sheets',
       'google_calendar',
       'hubspot',
       'salesforce',
       'pipedrive',
       'generic_webhook',
     ]);
+  });
+
+  it('falls back to Google Calendar for unknown preset ids', () => {
+    const preset = getConnectionPreset('unknown' as never);
+    expect(preset.id).toBe('google_calendar');
   });
 });

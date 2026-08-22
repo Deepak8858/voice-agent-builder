@@ -146,14 +146,23 @@ async function runCall(
   // callable during live calls through the internal tool-invocation endpoint.
   // Each wrapper contains its own failures, so a broken integration degrades
   // to a fallback message instead of crashing the call.
-  if (apiBaseUrl && internalApiKey && spec.tools.length > 0) {
-    const invoke = createToolInvokeClient({
-      apiBaseUrl,
-      internalApiKey,
-      agentId: metadata.agentId,
-      ...(metadata.callId ? { callId: metadata.callId } : {}),
-    });
-    tools.push(...createGoogleTools({ spec, invoke }));
+  if (spec.tools.length > 0) {
+    if (apiBaseUrl && internalApiKey) {
+      const invoke = createToolInvokeClient({
+        apiBaseUrl,
+        internalApiKey,
+        agentId: metadata.agentId,
+        ...(metadata.callId ? { callId: metadata.callId } : {}),
+      });
+      tools.push(...createGoogleTools({ spec, invoke }));
+    } else {
+      // Silent tool loss is very hard to diagnose from a live call; make the
+      // misconfiguration visible in the worker logs.
+      console.warn(
+        `[google-tools] agent ${metadata.agentId} references ${spec.tools.length} tool(s) ` +
+          'but INTERNAL_API_BASE_URL / INTERNAL_API_KEY are not configured; tools disabled for this call.',
+      );
+    }
   }
 
   const session = new voice.AgentSession({

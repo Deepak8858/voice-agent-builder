@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GmailSendMessageInputSchema } from '@voiceforge/shared';
 import { safeFetch } from '../../common/safe-fetch';
-import { fetchWithRetry } from '../../common/retry';
 import {
   GOOGLE_REAUTH_REQUIRED_MESSAGE,
   GoogleConnectionService,
@@ -46,18 +45,19 @@ export class GmailExecutor implements ToolExecutor {
 
     const raw = buildRawMessage(parsed.data.to, parsed.data.subject, parsed.data.body);
 
+    // No retries: sending mail is not idempotent, and a request that timed
+    // out or returned 5xx may still have been delivered. A duplicate email
+    // to a customer is worse than surfacing the failure to the agent.
     let response: Response;
     try {
-      response = await fetchWithRetry(() =>
-        safeFetch(GMAIL_SEND_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ raw }),
-        }),
-      );
+      response = await safeFetch(GMAIL_SEND_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ raw }),
+      });
     } catch (err) {
       this.logger.error(`Gmail send request failed: ${(err as Error).message}`);
       return { success: false, error: 'Gmail request failed — please try again shortly.' };

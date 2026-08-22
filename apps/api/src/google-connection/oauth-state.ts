@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from 'crypto';
 
 /**
  * CSRF protection for the OAuth authorization-code flow.
@@ -10,6 +10,13 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
  * us for that workspace and has not been swapped or replayed after expiry.
  */
 const STATE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * HKDF info label. Deriving a purpose-specific key means these state
+ * signatures can never be confused with (or forged from) anything else signed
+ * with the raw JWT_SECRET elsewhere in the system.
+ */
+const STATE_KEY_INFO = 'google-oauth-state.v1';
 
 export function signOAuthState(workspaceId: string, secret: string): string {
   const expiresAt = Date.now() + STATE_TTL_MS;
@@ -43,5 +50,6 @@ export function verifyOAuthState(
 }
 
 function signPayload(payload: string, secret: string): string {
-  return createHmac('sha256', secret).update(payload).digest('base64url');
+  const key = Buffer.from(hkdfSync('sha256', secret, '', STATE_KEY_INFO, 32));
+  return createHmac('sha256', key).update(payload).digest('base64url');
 }

@@ -13,7 +13,13 @@ import { z } from 'zod';
  * the LLM turn, so a broken integration can never crash a live call.
  */
 
-const REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Must exceed the API's own outbound budget (safeFetch defaults to a 10s
+ * ceiling per Google call), otherwise this client aborts while the server
+ * is still working and every slow-but-successful invocation is reported to
+ * the caller as a failure.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 const GENERIC_FALLBACK =
   'The tool could not complete right now. Continue the conversation and offer to follow up.';
@@ -156,9 +162,15 @@ export function createGoogleTools(config: {
               return { ok: false, fallback_message: REAUTH_FALLBACK };
             }
             return { ok: false, fallback_message: GENERIC_FALLBACK };
-          } catch {
+          } catch (err) {
             // Timeout, network failure, non-2xx, or malformed response.
-            // Never throw into the LLM turn.
+            // Never throw into the LLM turn — but leave a trace for operators,
+            // since the caller only ever sees the generic fallback.
+            console.warn(
+              `[google-tools] tool "${specTool.name}" invocation failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
             return { ok: false, fallback_message: GENERIC_FALLBACK };
           }
         },

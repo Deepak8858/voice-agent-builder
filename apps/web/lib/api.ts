@@ -2,7 +2,17 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { cache } from 'react';
 import { redirect } from 'next/navigation';
-import { SessionUserSchema, type ApiEnvelope, type SessionUser } from '@voiceforge/shared';
+import {
+  GoogleAuthorizeResponseSchema,
+  GoogleConnectionStatusResponseSchema,
+  GoogleDisconnectResponseSchema,
+  SessionUserSchema,
+  type ApiEnvelope,
+  type GoogleAuthorizeResponse,
+  type GoogleConnectionStatusResponse,
+  type GoogleDisconnectResponse,
+  type SessionUser,
+} from '@voiceforge/shared';
 import { buildApiContextHeaders } from './api-context-headers';
 import { extractSupabaseAccessToken } from './supabase/access-token';
 
@@ -122,20 +132,34 @@ export async function requireSessionUser(nextPath = '/dashboard'): Promise<Sessi
  * state, and `disconnect` removes the stored token set.
  */
 export const googleConnectionApi = {
-  authorize(workspaceId: string): Promise<{ url: string; state: string }> {
-    return apiFetch(`/workspaces/${workspaceId}/google/authorize`);
+  async authorize(workspaceId: string): Promise<GoogleAuthorizeResponse> {
+    return GoogleAuthorizeResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/authorize`),
+    );
   },
-  status(workspaceId: string): Promise<{ connected: boolean; status: string | null; scopes: string[] }> {
-    return apiFetch(`/workspaces/${workspaceId}/google/status`);
+  async status(workspaceId: string): Promise<GoogleConnectionStatusResponse> {
+    return GoogleConnectionStatusResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/status`),
+    );
   },
-  callback(workspaceId: string, code: string, state: string): Promise<{ connected: boolean }> {
-    return apiFetch(`/workspaces/${workspaceId}/google/callback`, {
-      method: 'POST',
-      body: JSON.stringify({ code, state }),
-    });
+  async callback(
+    workspaceId: string,
+    code: string,
+    state: string,
+  ): Promise<GoogleConnectionStatusResponse> {
+    return GoogleConnectionStatusResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/callback`, {
+        method: 'POST',
+        body: JSON.stringify({ code, state }),
+      }),
+    );
   },
-  disconnect(workspaceId: string): Promise<{ success: boolean }> {
-    return apiFetch(`/workspaces/${workspaceId}/google/disconnect`, { method: 'DELETE' });
+  async disconnect(workspaceId: string): Promise<GoogleDisconnectResponse> {
+    return GoogleDisconnectResponseSchema.parse(
+      await apiFetch<unknown>(`/workspaces/${encodeURIComponent(workspaceId)}/google/disconnect`, {
+        method: 'DELETE',
+      }),
+    );
   },
 };
 

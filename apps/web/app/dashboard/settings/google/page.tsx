@@ -39,15 +39,23 @@ export default function GoogleSettingsPage() {
   useEffect(() => {
     call<SessionUser>('/auth/me')
       .then((me) => setWorkspaceId(me.active_workspace_id))
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        setErrorMessage('Could not load your workspace — refresh the page to try again.');
+        setLoading(false);
+      });
   }, [call]);
 
   const refreshStatus = useCallback(() => {
     if (!workspaceId) return;
     setLoading(true);
+    setErrorMessage(null);
     call<GoogleStatus>(`/workspaces/${workspaceId}/google/status`)
       .then(setStatus)
-      .catch(console.error)
+      .catch((err) => {
+        console.error(err);
+        setErrorMessage('Could not load the Google connection status — refresh to try again.');
+      })
       .finally(() => setLoading(false));
   }, [workspaceId, call]);
 

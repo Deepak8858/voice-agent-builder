@@ -15,10 +15,12 @@ import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import {
   AgentNotFoundError,
+  ComplianceBlockedError,
   ToolExecutionFailedError,
   ToolInputInvalidError,
   ToolNotFoundError,
 } from '../common/errors';
+import { ComplianceService } from '../compliance/compliance.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { validateToolInput } from './input-validator';
 import { WebhookExecutor } from './webhook-executor';
@@ -65,6 +67,7 @@ export class ToolsService {
     private readonly sheetsExecutor: SheetsExecutor,
     private readonly crmExecutor?: CrmExecutor,
     private readonly billing?: BillingService,
+    private readonly compliance?: ComplianceService,
   ) {
     this.executors = new Map<string, ToolExecutor>([
       ['webhook', webhookExecutor],
@@ -223,6 +226,12 @@ export class ToolsService {
       throw new ToolInputInvalidError({ errors: validation.errors });
     }
 
+    // Compliance gate: outbound communications are checked centrally, before
+    // any token resolution or provider call, and block on failure.
+    if (tool.toolType === 'gmail') {
+      await this.assertOutboundEmailAllowed(workspaceId, dto.arguments ?? {});
+    }
+
     const invocation = await this.prisma.toolInvocation.create({
       data: {
         workspaceId,
@@ -295,8 +304,15 @@ export class ToolsService {
     actorUserId: string | null,
     dto: InvokeToolDto,
   ): Promise<ToolInvocationDetail> {
+    // Only workspace-wide tools (agentId null) or tools owned by the
+    // requesting agent are eligible — an agent must not be able to invoke a
+    // sibling agent's private tool by name.
     const tool = await this.prisma.integrationTool.findFirst({
-      where: { workspaceId, name: toolName },
+      where: {
+        workspaceId,
+        name: toolName,
+        OR: [{ agentId: null }, ...(dto.agent_id ? [{ agentId: dto.agent_id }] : [])],
+      },
       select: { id: true },
     });
     if (!tool) throw new ToolNotFoundError(toolName);
@@ -341,6 +357,23 @@ export class ToolsService {
     if (body == null) return Prisma.JsonNull;
     if (typeof body === 'string') return { text: body };
     return body as Prisma.InputJsonValue;
+  }
+
+  /**
+   * Blocks outbound email to contacts who opted out. The recipient is taken
+   * from the validated tool arguments; the schema already requires `to`.
+   */
+  private async assertOutboundEmailAllowed(
+    workspaceId: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.compliance) return;
+    const to = typeof args.to === 'string' ? args.to.trim() : '';
+    if (!to) return;
+    const result = await this.compliance.checkOutboundEmail(workspaceId, to);
+    if (!result.allowed) {
+      throw new ComplianceBlockedError({ reasons: result.reasons });
+    }
   }
 
   private async assertToolsAllowed(workspaceId: string): Promise<void> {

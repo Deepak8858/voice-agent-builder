@@ -5,6 +5,29 @@ import { AppError } from '../common/errors';
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 export const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
+/**
+ * Hard ceiling on token-endpoint requests. A stalled Google endpoint must
+ * not keep OAuth requests pending and consume API request capacity.
+ */
+export const GOOGLE_TOKEN_TIMEOUT_MS = 10_000;
+
+/**
+ * Structured marker set on the AppError details when Google reports
+ * `invalid_grant` (revoked/expired refresh token). Callers must test this
+ * field — never the human-readable message — to detect a reauth condition.
+ */
+export const GOOGLE_REAUTH_DETAILS_KEY = 'googleReauthRequired';
+
+/** Read Google's machine-readable `error` field without logging the body. */
+async function readGoogleErrorCode(response: Response): Promise<string | null> {
+  try {
+    const payload = (await response.json()) as { error?: unknown };
+    return typeof payload.error === 'string' ? payload.error : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RefreshedGoogleToken {
   accessToken: string;
   /** Absolute expiry, already converted from Google's relative `expires_in`. */
@@ -91,15 +114,23 @@ export class GoogleOAuthClient {
           grant_type: 'authorization_code',
           redirect_uri: redirectUri,
         }).toString(),
+        signal: AbortSignal.timeout(GOOGLE_TOKEN_TIMEOUT_MS),
       });
     } catch (err) {
-      // Network-level failure. Never include the request body in the log.
+      // Network-level failure or timeout. Never include the request body in the log.
       this.logger.error(`Google code exchange request failed: ${(err as Error).message}`);
       throw new AppError('CRM_NOT_CONFIGURED', 'Failed to exchange the Google authorization code.', 400);
     }
 
     if (!response.ok) {
-      this.logger.error(`Google code exchange rejected with status ${response.status}`);
+      // Log Google's machine-readable error code only — never the body,
+      // which can echo request material.
+      const errorCode = await readGoogleErrorCode(response);
+      this.logger.error(
+        `Google code exchange rejected with status ${response.status}${
+          errorCode ? ` (${errorCode})` : ''
+        }`,
+      );
       throw new AppError(
         'CRM_NOT_CONFIGURED',
         'Google rejected the authorization code — please try connecting again.',
@@ -107,12 +138,23 @@ export class GoogleOAuthClient {
       );
     }
 
-    const payload = (await response.json()) as {
+    let payload: {
       access_token?: unknown;
       refresh_token?: unknown;
       expires_in?: unknown;
       scope?: unknown;
     };
+    try {
+      payload = (await response.json()) as typeof payload;
+    } catch {
+      // A proxy can return non-JSON on a 200; surface the same AppError as
+      // any other malformed token response instead of a raw SyntaxError.
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google token response was malformed or did not include a refresh token.',
+        400,
+      );
+    }
 
     const accessToken = payload.access_token;
     const refreshToken = payload.refresh_token;
@@ -168,35 +210,52 @@ export class GoogleOAuthClient {
           refresh_token: refreshToken,
           grant_type: 'refresh_token',
         }).toString(),
+        signal: AbortSignal.timeout(GOOGLE_TOKEN_TIMEOUT_MS),
       });
     } catch (err) {
-      // Network-level failure. Never include the request body in the log.
+      // Network-level failure or timeout. Never include the request body in the log.
       this.logger.error(`Google token refresh request failed: ${(err as Error).message}`);
-      throw new AppError('CRM_NOT_CONFIGURED', 'Failed to refresh Google Calendar token.', 400);
+      throw new AppError('CRM_NOT_CONFIGURED', 'Failed to refresh Google token.', 400);
     }
 
     if (!response.ok) {
       // Google returns 400 `invalid_grant` when the refresh token was revoked
-      // or expired; that is unrecoverable and requires a re-connect.
-      this.logger.error(`Google token refresh rejected with status ${response.status}`);
+      // or expired; that is unrecoverable and requires a re-connect. Callers
+      // detect this via the structured details flag, not the message text.
+      const errorCode = await readGoogleErrorCode(response);
+      this.logger.error(
+        `Google token refresh rejected with status ${response.status}${
+          errorCode ? ` (${errorCode})` : ''
+        }`,
+      );
       throw new AppError(
         'CRM_NOT_CONFIGURED',
-        'Google Calendar authorization is no longer valid — re-connect required.',
+        'Google authorization is no longer valid — re-connect required.',
         400,
+        { [GOOGLE_REAUTH_DETAILS_KEY]: true },
       );
     }
 
-    const payload = (await response.json()) as {
+    let payload: {
       access_token?: unknown;
       expires_in?: unknown;
       refresh_token?: unknown;
     };
+    try {
+      payload = (await response.json()) as typeof payload;
+    } catch {
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google token response was malformed.',
+        400,
+      );
+    }
 
     const accessToken = payload.access_token;
     if (typeof accessToken !== 'string' || accessToken.length === 0) {
       throw new AppError(
         'CRM_NOT_CONFIGURED',
-        'Google Calendar token response was malformed.',
+        'Google token response was malformed.',
         400,
       );
     }

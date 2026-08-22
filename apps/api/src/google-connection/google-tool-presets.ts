@@ -2,13 +2,10 @@
  * The single scope set requested by the unified "Connect Google Workspace"
  * flow: Calendar booking, Gmail send, and Sheets append. One consent covers
  * every provisioned tool, so connecting is a genuine one-click experience.
+ * The list itself lives in @voiceforge/shared so the web app's preset copy
+ * can never drift from what the API actually requests.
  */
-export const GOOGLE_WORKSPACE_SCOPES = [
-  'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/calendar.events.freebusy',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/spreadsheets',
-] as const;
+export { GOOGLE_WORKSPACE_SCOPES } from '@voiceforge/shared';
 
 export interface GoogleToolPreset {
   name: string;

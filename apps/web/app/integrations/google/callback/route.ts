@@ -1,7 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { z } from 'zod';
 import { googleConnectionApi, ApiCallError } from '@/lib/api';
 
 const SETTINGS_PATH = '/dashboard/settings/google';
+
+const WorkspaceIdSchema = z.string().uuid();
 
 /**
  * Browser-facing Google OAuth callback. Google redirects here with `code`
@@ -31,12 +34,15 @@ export async function GET(req: NextRequest) {
 
   // The signed state is `workspaceId.expiresAtMs.nonce.signature`; the first
   // segment tells us which workspace's callback endpoint to call. The API
-  // re-verifies the full signature, so this is routing info only.
-  const workspaceId = state.split('.')[0];
-  if (!workspaceId) {
+  // re-verifies the full signature, so this is routing info only — but it is
+  // interpolated into an API path, so it must be a well-formed UUID before we
+  // use it.
+  const workspaceIdParse = WorkspaceIdSchema.safeParse(state.split('.')[0]);
+  if (!workspaceIdParse.success) {
     redirect.searchParams.set('error', 'invalid_state');
     return NextResponse.redirect(redirect);
   }
+  const workspaceId = workspaceIdParse.data;
 
   try {
     await googleConnectionApi.callback(workspaceId, code, state);
