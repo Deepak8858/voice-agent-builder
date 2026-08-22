@@ -10,6 +10,16 @@ updates:
       development-dependencies:
         dependency-type: development
     open-pull-requests-limit: 10
+    ignore:
+      # @prisma/client (production) and prisma CLI (development) land in
+      # different dependabot groups, so a grouped major bump upgrades one
+      # without the other and `prisma generate` fails (v5 CLI cannot run the
+      # v7 client generator). Majors for the pair must be upgraded together,
+      # deliberately, in a dedicated migration PR.
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "prisma"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

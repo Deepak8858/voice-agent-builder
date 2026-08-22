@@ -91,13 +91,19 @@ jobs:
       # The web build prerenders pages that construct a Supabase client, so it
       # needs the public env values. These are public by definition (they ship
       # in the browser bundle); no service-role or secret key is used here.
+      #
+      # Every value falls back to a CI placeholder because Dependabot-triggered
+      # runs receive Dependabot secrets, not repository secrets: the ANON_KEY
+      # resolves to an empty string there, and the Docker image guard below
+      # hard-fails on empty required args. The placeholders are never deployed —
+      # this workflow only verifies, it never pushes an image.
       - name: Build web
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || 'https://ci-placeholder.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'ci-placeholder-anon-key' }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'ci-placeholder-publishable-key' }}
         run: pnpm --filter @voiceforge/web run build
 
   # The audit gate above checks the dependency graph resolved by pnpm in the
@@ -142,13 +148,18 @@ jobs:
           # though this job only checks the shipped dependency graph. The default
           # keeps the gate independent of repository configuration; the value
           # baked into a CI-only image is never deployed.
+          #
+          # The Supabase values fall back to CI placeholders for the same reason
+          # as the verify job's web build: Dependabot-triggered runs do not get
+          # repository secrets, so ANON_KEY arrives empty and Dockerfile.web's
+          # require_arg guard fails every Dependabot PR.
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
             NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
             NEXT_PUBLIC_BILLING_MODE=${{ vars.NEXT_PUBLIC_BILLING_MODE || 'demo' }}
-            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL || 'https://ci-placeholder.supabase.co' }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'ci-placeholder-anon-key' }}
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'ci-placeholder-publishable-key' }}
 
       - name: Assert images ship the patched dependency versions
         run: |
