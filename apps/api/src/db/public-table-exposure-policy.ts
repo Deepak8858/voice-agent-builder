@@ -109,6 +109,10 @@ export const SERVICE_ROLE_ONLY_TABLES = [
   'stripe_events',
   'webhook_events',
   'google_calendar_configs',
+  // Unified Google Workspace OAuth connection. Stores encrypted access and
+  // refresh tokens; only the NestJS API reads/writes it, so the Data API
+  // roles get nothing.
+  'google_oauth_connections',
   'referrals',
   ...BILLING_SERVICE_ROLE_ONLY_TABLES,
 ] as const;

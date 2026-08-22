@@ -1,6 +1,14 @@
 import { z } from 'zod';
 
-export const ToolTypeSchema = z.enum(['webhook', 'http_get', 'http_post', 'google_calendar', 'crm']);
+export const ToolTypeSchema = z.enum([
+  'webhook',
+  'http_get',
+  'http_post',
+  'google_calendar',
+  'gmail',
+  'google_sheets',
+  'crm',
+]);
 export type ToolType = z.infer<typeof ToolTypeSchema>;
 
 export const ToolInvocationStatusSchema = z.enum(['pending', 'success', 'failed']);
@@ -25,6 +33,38 @@ const GoogleCalendarConfigSchema = z.object({
 });
 export type GoogleCalendarConfig = z.infer<typeof GoogleCalendarConfigSchema>;
 
+/**
+ * Gmail/Sheets tool configs identify the operation and target only. Tokens are
+ * never stored here: executors resolve the workspace's unified Google OAuth
+ * connection at call time.
+ */
+const GmailConfigSchema = z.object({
+  operation: z.literal('send_message').default('send_message'),
+});
+export type GmailConfig = z.infer<typeof GmailConfigSchema>;
+
+const GoogleSheetsConfigSchema = z.object({
+  operation: z.literal('append_row').default('append_row'),
+  spreadsheet_id: z.string().min(1).optional(),
+  sheet_name: z.string().min(1).default('Sheet1'),
+});
+export type GoogleSheetsConfig = z.infer<typeof GoogleSheetsConfigSchema>;
+
+/** Per-operation input (tool argument) schemas for the new Google tools. */
+export const GmailSendMessageInputSchema = z.object({
+  to: z.string().email(),
+  subject: z.string().min(1).max(500),
+  body: z.string().min(1).max(20_000),
+});
+export type GmailSendMessageInput = z.infer<typeof GmailSendMessageInputSchema>;
+
+export const SheetsAppendRowInputSchema = z.object({
+  values: z.array(z.union([z.string(), z.number(), z.boolean()])).min(1).max(50),
+  spreadsheet_id: z.string().min(1).optional(),
+  sheet_name: z.string().min(1).optional(),
+});
+export type SheetsAppendRowInput = z.infer<typeof SheetsAppendRowInputSchema>;
+
 const CrmProviderSchema = z.enum(['pipedrive', 'hubspot', 'salesforce', 'generic']);
 const CrmConfigSchema = z.object({
   provider: CrmProviderSchema,
@@ -34,7 +74,13 @@ const CrmConfigSchema = z.object({
 });
 export type CrmConfig = z.infer<typeof CrmConfigSchema>;
 
-const ToolConfigSchema = z.union([WebhookConfigSchema, GoogleCalendarConfigSchema, CrmConfigSchema]);
+const ToolConfigSchema = z.union([
+  WebhookConfigSchema,
+  GoogleCalendarConfigSchema,
+  GmailConfigSchema,
+  GoogleSheetsConfigSchema,
+  CrmConfigSchema,
+]);
 
 const JsonSchemaShape = z
   .object({
@@ -59,6 +105,8 @@ export const CreateToolDtoSchema = z.discriminatedUnion('tool_type', [
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_get'), config: WebhookConfigSchema }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_post'), config: WebhookConfigSchema }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_calendar'), config: GoogleCalendarConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('gmail'), config: GmailConfigSchema }),
+  z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_sheets'), config: GoogleSheetsConfigSchema }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('crm'), config: CrmConfigSchema }),
 ]);
 export type CreateToolDto = z.infer<typeof CreateToolDtoSchema>;
@@ -104,7 +152,13 @@ const PublicCrmConfigSchema = CrmConfigSchema.omit({ api_key: true }).extend({
 });
 
 export const ToolDetailSchema = ToolSummarySchema.extend({
-  config: z.union([PublicWebhookConfigSchema, PublicGoogleCalendarConfigSchema, PublicCrmConfigSchema]),
+  config: z.union([
+    PublicWebhookConfigSchema,
+    PublicGoogleCalendarConfigSchema,
+    GmailConfigSchema,
+    GoogleSheetsConfigSchema,
+    PublicCrmConfigSchema,
+  ]),
   input_schema: JsonSchemaShape,
 });
 export type ToolDetail = z.infer<typeof ToolDetailSchema>;

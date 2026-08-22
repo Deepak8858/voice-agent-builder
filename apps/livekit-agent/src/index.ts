@@ -22,6 +22,7 @@ import {
   createKnowledgeTool,
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
+import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
 import { CallMeter, createRuntimeUsageClient } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 
@@ -125,9 +126,9 @@ async function runCall(
   const spec = await loadAgentSpec(metadata);
   const fallbackVoice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
   const tools: llm.ToolContextEntry[] = [];
+  const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
+  const internalApiKey = process.env.INTERNAL_API_KEY;
   if (retrievalChunkLimit(spec) > 0) {
-    const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
-    const internalApiKey = process.env.INTERNAL_API_KEY;
     const search = apiBaseUrl && internalApiKey
       ? createKnowledgeSearchClient({ apiBaseUrl, internalApiKey })
       : async () => {
@@ -139,6 +140,20 @@ async function runCall(
       search,
     });
     if (knowledgeTool) tools.push(knowledgeTool);
+  }
+
+  // Google tools (Calendar, Gmail, Sheets) referenced by the Agent Spec are
+  // callable during live calls through the internal tool-invocation endpoint.
+  // Each wrapper contains its own failures, so a broken integration degrades
+  // to a fallback message instead of crashing the call.
+  if (apiBaseUrl && internalApiKey && spec.tools.length > 0) {
+    const invoke = createToolInvokeClient({
+      apiBaseUrl,
+      internalApiKey,
+      agentId: metadata.agentId,
+      ...(metadata.callId ? { callId: metadata.callId } : {}),
+    });
+    tools.push(...createGoogleTools({ spec, invoke }));
   }
 
   const session = new voice.AgentSession({

@@ -23,13 +23,27 @@ import { PrismaService } from '../prisma/prisma.service';
 import { validateToolInput } from './input-validator';
 import { WebhookExecutor } from './webhook-executor';
 import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
+import { GmailExecutor } from './executors/gmail.executor';
+import { SheetsExecutor } from './executors/sheets.executor';
 import { CrmExecutor, type CrmContactArgs, type CrmProvider } from './crm-executor';
 
 type ToolCrmProvider = Exclude<CrmProvider, 'generic_webhook'>;
 
+/**
+ * Tenant scope for an execution. Executors that resolve credentials at call
+ * time (Gmail, Sheets) need the workspace id; config never carries tokens.
+ */
+export interface ToolExecutionContext {
+  workspaceId: string;
+}
+
 export interface ToolExecutor {
   readonly name: string;
-  execute(params: Record<string, unknown>, config: Record<string, string>): Promise<ToolCallResult>;
+  execute(
+    params: Record<string, unknown>,
+    config: Record<string, string>,
+    context?: ToolExecutionContext,
+  ): Promise<ToolCallResult>;
 }
 
 export interface ToolCallResult {
@@ -47,6 +61,8 @@ export class ToolsService {
     private readonly audit: AuditService,
     private readonly webhookExecutor: WebhookExecutor,
     private readonly googleCalendarExecutor: GoogleCalendarExecutor,
+    private readonly gmailExecutor: GmailExecutor,
+    private readonly sheetsExecutor: SheetsExecutor,
     private readonly crmExecutor?: CrmExecutor,
     private readonly billing?: BillingService,
   ) {
@@ -55,6 +71,8 @@ export class ToolsService {
       ['http_post', webhookExecutor],
       ['http_get', webhookExecutor],
       [googleCalendarExecutor.name, googleCalendarExecutor],
+      [gmailExecutor.name, gmailExecutor],
+      [sheetsExecutor.name, sheetsExecutor],
     ]);
     if (crmExecutor) {
       this.executors.set('crm', {
@@ -233,7 +251,11 @@ export class ToolsService {
     }
 
     try {
-      const result = await exec.execute(dto.arguments ?? {}, tool.config as Record<string, string>);
+      const result = await exec.execute(
+        dto.arguments ?? {},
+        tool.config as Record<string, string>,
+        { workspaceId },
+      );
       const status = result.success ? 'success' : 'failed';
       const updated = await this.prisma.toolInvocation.update({
         where: { id: invocation.id },
@@ -259,6 +281,26 @@ export class ToolsService {
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, 'failed');
       throw new ToolExecutionFailedError(errorMessage);
     }
+  }
+
+  /**
+   * Invoke a tool by its workspace-unique name. Used by the internal LiveKit
+   * endpoint, where the runtime knows tool names from the Agent Spec but not
+   * tool ids. Reuses the id-based path so invocation logging and auditing
+   * behave identically.
+   */
+  async invokeByName(
+    workspaceId: string,
+    toolName: string,
+    actorUserId: string | null,
+    dto: InvokeToolDto,
+  ): Promise<ToolInvocationDetail> {
+    const tool = await this.prisma.integrationTool.findFirst({
+      where: { workspaceId, name: toolName },
+      select: { id: true },
+    });
+    if (!tool) throw new ToolNotFoundError(toolName);
+    return this.invoke(workspaceId, tool.id, actorUserId, dto);
   }
 
   async listInvocations(
@@ -365,6 +407,15 @@ export class ToolsService {
           refresh_token_set: Boolean(refresh_token),
           client_secret_set: Boolean(client_secret),
         },
+        input_schema: row.inputSchema as ToolDetail['input_schema'],
+      };
+    }
+
+    if (row.toolType === 'gmail' || row.toolType === 'google_sheets') {
+      // These configs identify operation and target only — no secrets to mask.
+      return {
+        ...this.toSummary(row),
+        config: (row.config ?? {}) as ToolDetail['config'],
         input_schema: row.inputSchema as ToolDetail['input_schema'],
       };
     }

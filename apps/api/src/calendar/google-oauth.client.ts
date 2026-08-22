@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { AppError } from '../common/errors';
 
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+export const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 export interface RefreshedGoogleToken {
   accessToken: string;
@@ -10,6 +11,15 @@ export interface RefreshedGoogleToken {
   expiresAt: Date;
   /** Google only returns a new refresh token on rotation; usually absent. */
   refreshToken?: string;
+}
+
+export interface ExchangedGoogleToken {
+  accessToken: string;
+  refreshToken: string;
+  /** Absolute expiry, already converted from Google's relative `expires_in`. */
+  expiresAt: Date;
+  /** Scopes Google actually granted, which may differ from those requested. */
+  scopes: string[];
 }
 
 /**
@@ -22,6 +32,113 @@ export interface RefreshedGoogleToken {
 @Injectable()
 export class GoogleOAuthClient {
   private readonly logger = new Logger(GoogleOAuthClient.name);
+
+  /**
+   * Build the Google consent URL for the authorization-code flow.
+   *
+   * `access_type=offline` + `prompt=consent` force Google to return a refresh
+   * token on every connect, so a re-connect always yields a full token set.
+   */
+  getAuthUrl(scopes: string[], state: string, redirectUri: string): string {
+    const clientId = env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google OAuth client credentials are not configured.',
+        400,
+      );
+    }
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: scopes.join(' '),
+      access_type: 'offline',
+      prompt: 'consent',
+      include_granted_scopes: 'true',
+      state,
+    });
+    return `${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`;
+  }
+
+  /**
+   * Exchange an authorization code for a full token set.
+   *
+   * Throws AppError rather than returning a partial result, so a failed
+   * exchange can never persist a half-connected state.
+   */
+  async exchangeCode(code: string, redirectUri: string): Promise<ExchangedGoogleToken> {
+    const clientId = env.GOOGLE_CLIENT_ID;
+    const clientSecret = env.GOOGLE_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google OAuth client credentials are not configured.',
+        400,
+      );
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+    } catch (err) {
+      // Network-level failure. Never include the request body in the log.
+      this.logger.error(`Google code exchange request failed: ${(err as Error).message}`);
+      throw new AppError('CRM_NOT_CONFIGURED', 'Failed to exchange the Google authorization code.', 400);
+    }
+
+    if (!response.ok) {
+      this.logger.error(`Google code exchange rejected with status ${response.status}`);
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google rejected the authorization code — please try connecting again.',
+        400,
+      );
+    }
+
+    const payload = (await response.json()) as {
+      access_token?: unknown;
+      refresh_token?: unknown;
+      expires_in?: unknown;
+      scope?: unknown;
+    };
+
+    const accessToken = payload.access_token;
+    const refreshToken = payload.refresh_token;
+    if (
+      typeof accessToken !== 'string' || accessToken.length === 0 ||
+      typeof refreshToken !== 'string' || refreshToken.length === 0
+    ) {
+      throw new AppError(
+        'CRM_NOT_CONFIGURED',
+        'Google token response was malformed or did not include a refresh token.',
+        400,
+      );
+    }
+
+    const expiresInSeconds =
+      typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)
+        ? payload.expires_in
+        : 3600;
+
+    return {
+      accessToken,
+      refreshToken,
+      expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
+      scopes: typeof payload.scope === 'string' ? payload.scope.split(' ').filter(Boolean) : [],
+    };
+  }
 
   /**
    * Exchange a refresh token for a fresh access token.

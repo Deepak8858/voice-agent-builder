@@ -116,6 +116,29 @@ export async function requireSessionUser(nextPath = '/dashboard'): Promise<Sessi
   }
 }
 
+/**
+ * Server-side client for the unified Google Workspace connection.
+ * `authorize` returns the consent URL, `status` powers the settings page
+ * state, and `disconnect` removes the stored token set.
+ */
+export const googleConnectionApi = {
+  authorize(workspaceId: string): Promise<{ url: string; state: string }> {
+    return apiFetch(`/workspaces/${workspaceId}/google/authorize`);
+  },
+  status(workspaceId: string): Promise<{ connected: boolean; status: string | null; scopes: string[] }> {
+    return apiFetch(`/workspaces/${workspaceId}/google/status`);
+  },
+  callback(workspaceId: string, code: string, state: string): Promise<{ connected: boolean }> {
+    return apiFetch(`/workspaces/${workspaceId}/google/callback`, {
+      method: 'POST',
+      body: JSON.stringify({ code, state }),
+    });
+  },
+  disconnect(workspaceId: string): Promise<{ success: boolean }> {
+    return apiFetch(`/workspaces/${workspaceId}/google/disconnect`, { method: 'DELETE' });
+  },
+};
+
 export class ApiCallError extends Error {
   constructor(
     public readonly code: string,

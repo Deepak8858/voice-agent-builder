@@ -83,6 +83,14 @@ function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
     name: 'google_calendar',
     execute: vi.fn(),
   };
+  const gmail = {
+    name: 'gmail',
+    execute: vi.fn(),
+  };
+  const sheets = {
+    name: 'google_sheets',
+    execute: vi.fn(),
+  };
   const crm = {
     createContact: vi.fn(),
   };
@@ -94,10 +102,12 @@ function makeService(opts: { tool?: ToolRow | null; toolsAllowed?: boolean }) {
     audit as never,
     executor as never,
     calendar as never,
+    gmail as never,
+    sheets as never,
     crm as never,
     billing as never,
   );
-  return { service, prisma, audit, executor, calendar, crm, billing, invocations };
+  return { service, prisma, audit, executor, calendar, gmail, sheets, crm, billing, invocations };
 }
 
 const baseTool: ToolRow = {
@@ -213,6 +223,7 @@ describe('ToolsService.invoke', () => {
     expect(calendar.execute).toHaveBeenCalledWith(
       { operation: 'create_event' },
       { refresh_token: 'refresh-token', calendar_id: 'primary' },
+      { workspaceId: 'w1' },
     );
   });
 

@@ -133,6 +133,9 @@ const EnvSchema = z.object({
 
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Where Google sends the browser back after consent. Must exactly match an
+  // authorized redirect URI on the OAuth client in Google Cloud Console.
+  GOOGLE_OAUTH_REDIRECT_URI: OptionalUrlEnvSchema,
 
   // Stripe is either fully configured with server-owned prices or Checkout is
   // temporarily unavailable. There is no "demo" billing mode: partial

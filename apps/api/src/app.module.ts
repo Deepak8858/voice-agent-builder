@@ -42,6 +42,7 @@ import { TwilioModule } from './twilio-adapter/twilio.module';
 import { SettingsModule } from './settings/settings.module';
 import { ReferralModule } from './referral/referral.module';
 import { CalendarModule } from './calendar/calendar.module';
+import { GoogleConnectionModule } from './google-connection/google-connection.module';
 import { LiveKitModule } from './livekit/livekit.module';
 import { SecurityModule } from './security/security.module';
 import { TelephonyModule } from './telephony/telephony.module';
@@ -88,6 +89,7 @@ import { env } from './config/env';
     SettingsModule,
     ReferralModule,
     CalendarModule,
+    GoogleConnectionModule,
   ],
   providers: [
     {
