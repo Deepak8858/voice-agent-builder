@@ -190,6 +190,8 @@ describe('env validation', () => {
       ['a localhost HTTP URL', 'http://localhost:3000/integrations/google/callback'],
       ['a localhost HTTPS URL', 'https://localhost:3000/integrations/google/callback'],
       ['a loopback IP', 'https://127.0.0.1/integrations/google/callback'],
+      ['the unspecified IPv4 address', 'https://0.0.0.0/integrations/google/callback'],
+      ['the unspecified IPv6 address', 'https://[::]/integrations/google/callback'],
       ['plain HTTP on a real domain', 'http://app.voiceforge.example/callback'],
     ])('rejects %s in production', async (_label, uri) => {
       vi.resetModules();

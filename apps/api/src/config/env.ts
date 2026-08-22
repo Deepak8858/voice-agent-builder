@@ -346,6 +346,9 @@ function isLocalHostname(hostname: string): boolean {
   return (
     host === 'localhost' ||
     host === '::1' ||
+    // Unspecified bind addresses are not reachable public origins either.
+    host === '0.0.0.0' ||
+    host === '::' ||
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     /^127\./.test(host)

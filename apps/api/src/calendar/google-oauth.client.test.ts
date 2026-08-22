@@ -124,11 +124,19 @@ describe('GoogleOAuthClient.refreshAccessToken', () => {
       new Response(JSON.stringify({ error: 'internal_failure' }), { status: 500 }),
     );
 
-    const rejection = expect(new GoogleOAuthClient().refreshAccessToken('stored-refresh')).rejects;
-    await rejection.toMatchObject({
+    let thrown: unknown;
+    try {
+      await new GoogleOAuthClient().refreshAccessToken('stored-refresh');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toMatchObject({
       errorCode: 'CRM_NOT_CONFIGURED',
       message: expect.stringContaining('try again shortly'),
     });
+    expect(
+      (thrown as { details?: Record<string, unknown> }).details?.[GOOGLE_REAUTH_DETAILS_KEY],
+    ).toBeUndefined();
   });
 
   it('does not flag a rate-limited refresh as a reauth condition', async () => {
