@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { captureClientException } from '@/lib/analytics/posthog';
+import { isChunkLoadError, recoverFromChunkError } from '@/lib/chunk-reload';
 
 /** Inlined by the bundler at build time. See the note in `error.tsx`. */
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -30,7 +31,70 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     captureClientException(error, { digest: error.digest, boundary: 'global' });
+    // A stale chunk after a deploy cannot be fixed by `reset()`, which requests
+    // the same missing file again; a full reload pulls the current chunks.
+    recoverFromChunkError(error);
   }, [error]);
+
+  // While the reload above is in flight, and if it was suppressed as a loop
+  // guard, `reset()` is useless for a chunk error. Offer a reload instead.
+  if (isChunkLoadError(error)) {
+    return (
+      <html lang="en">
+        <body
+          style={{
+            margin: 0,
+            minHeight: '100vh',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '4rem 1.5rem',
+            textAlign: 'center',
+            backgroundColor: '#0a0a0a',
+            color: '#fafafa',
+            fontFamily:
+              'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+          }}
+        >
+          <h1 style={{ margin: 0, fontSize: '1.875rem', letterSpacing: '-0.025em' }}>
+            Updating to the latest version
+          </h1>
+          <p
+            style={{
+              margin: '0.75rem 0 0',
+              maxWidth: '28rem',
+              fontSize: '0.875rem',
+              lineHeight: 1.6,
+              color: '#a1a1aa',
+            }}
+          >
+            A new version of the app was deployed. This page is reloading to load it.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: '1.5rem',
+              height: '2.5rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              borderRadius: '0.375rem',
+              border: 'none',
+              backgroundColor: '#fafafa',
+              color: '#0a0a0a',
+              padding: '0 1rem',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            Reload now
+          </button>
+        </body>
+      </html>
+    );
+  }
 
   return (
     <html lang="en">
