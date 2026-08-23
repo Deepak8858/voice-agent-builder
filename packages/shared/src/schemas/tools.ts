@@ -25,12 +25,13 @@ const WebhookConfigSchema = z.object({
 });
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 
-const GoogleCalendarConfigSchema = z.object({
-  refresh_token: z.string().min(1),
-  client_id: z.string().optional(),
-  client_secret: z.string().optional(),
-  calendar_id: z.string().min(1).default('primary'),
-});
+const GoogleCalendarConfigSchema = z
+  .object({
+    // OAuth credentials live in GoogleOAuthConnection. Tool config identifies
+    // only the target calendar.
+    calendar_id: z.string().min(1).default('primary'),
+  })
+  .strict();
 export type GoogleCalendarConfig = z.infer<typeof GoogleCalendarConfigSchema>;
 
 /**
@@ -147,13 +148,7 @@ const PublicWebhookConfigSchema = WebhookConfigSchema.omit({ hmac_secret: true }
   hmac_secret_set: z.boolean(),
 });
 
-const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema.omit({
-  refresh_token: true,
-  client_secret: true,
-}).extend({
-  refresh_token_set: z.boolean(),
-  client_secret_set: z.boolean(),
-});
+const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema;
 
 const PublicCrmConfigSchema = CrmConfigSchema.omit({ api_key: true }).extend({
   api_key_set: z.boolean(),

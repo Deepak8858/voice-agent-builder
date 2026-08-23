@@ -3,7 +3,11 @@ import { VapiVoiceAdapter } from './vapi.adapter';
 import type { CreateRuntimeAgentInput } from './voice.provider.interface';
 
 vi.mock('../../config/env', () => ({
-  env: { VAPI_API_KEY: 'test-key' },
+  env: {
+    VAPI_API_KEY: 'test-key',
+    VAPI_WEBHOOK_SECRET: 'test-webhook-secret',
+    APP_BASE_URL: 'https://api.voiceforge.test',
+  },
 }));
 
 // Mock PrismaService — needed because adapter now persists providerRuntimeId to DB (Phase 1.2)
@@ -36,7 +40,7 @@ function makeSpec(overrides: Partial<CreateRuntimeAgentInput['spec']> = {}): Cre
     required_fields: [],
     conversation_rules: { ask_one_question_at_a_time: true, confirm_critical_information: true, do_not_make_up_answers: true, fallback_to_human_when_unsure: true },
     knowledge: { retrieval_mode: 'agent_scoped', max_chunks: 5, source_ids: [] },
-    tools: [{ name: 'google_calendar.book_slot', description: 'Book slot', requires_confirmation: true, input_schema: { type: 'object', properties: {}, required: [] } }],
+    tools: [{ name: 'book_calendar_event', description: 'Book slot', requires_confirmation: true, input_schema: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] }, permissions: ['google_calendar'] }],
     handoff: { enabled: true, conditions: ['caller_requests_human'] },
     compliance: { ai_disclosure_required: true, recording_notice_required: false, opt_out_enabled: true, consent_required_for_outbound: true },
     analytics: { success_events: [] },
@@ -73,6 +77,32 @@ describe('VapiVoiceAdapter', () => {
       );
     });
 
+    it('registers callable tools with schema and authenticated callback URL', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-tools' }));
+
+      await adapter.createAgent({
+        workspaceId: 'ws-tools', agentId: 'ag-tools', agentVersionId: 'v-tools',
+        spec: makeSpec(),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
+      expect(body.model.tools).toEqual([
+        expect.objectContaining({
+          type: 'function',
+          function: expect.objectContaining({
+            name: 'book_calendar_event',
+            parameters: expect.objectContaining({ required: ['summary'] }),
+          }),
+          server: {
+            url: 'https://api.voiceforge.test/api/v1/voice/webhooks/vapi/agents/ag-tools/tools',
+            secret: 'test-webhook-secret',
+          },
+          async: false,
+        }),
+      ]);
+    });
+
     it('sets voiceforge metadata on assistant payload', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(jsonResponse({ id: 'aid-meta' }));
 
@@ -101,7 +131,7 @@ describe('VapiVoiceAdapter', () => {
             nodes: [
               { id: 'start', type: 'start', next: 'ask_name' },
               { id: 'ask_name', type: 'ask_question', question: 'May I have your name?', capture_field: 'full_name', next: 'save' },
-              { id: 'save', type: 'tool_call', tool_name: 'google_calendar.book_slot', next: 'end' },
+              { id: 'save', type: 'tool_call', tool_name: 'book_calendar_event', next: 'end' },
               { id: 'end', type: 'end' },
             ],
           },
@@ -112,7 +142,7 @@ describe('VapiVoiceAdapter', () => {
       const body = JSON.parse(req[1]!.body as string);
       expect(body.model.systemPrompt).toContain('Conversation flow');
       expect(body.model.systemPrompt).toContain('ask "May I have your name?"');
-      expect(body.model.systemPrompt).toContain('call tool google_calendar.book_slot');
+      expect(body.model.systemPrompt).toContain('call tool book_calendar_event');
     });
 
     it('does not send speakingRate for Vapi voices because the assistant API rejects it', async () => {
@@ -146,6 +176,24 @@ describe('VapiVoiceAdapter', () => {
   });
 
   describe('updateAgent', () => {
+    it('patches the system prompt and callable tools on republish', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+      await adapter.updateAgent({
+        workspaceId: 'ws-tools',
+        agentId: 'ag-tools',
+        agentVersionId: 'v-tools',
+        provider_runtime_id: 'asst-tools',
+        spec: makeSpec(),
+      });
+
+      const req = vi.mocked(globalThis.fetch).mock.calls[0]!;
+      const body = JSON.parse(req[1]!.body as string);
+      expect(body.model.systemPrompt).toContain('Available tools: book_calendar_event');
+      expect(body.model.tools[0].function.name).toBe('book_calendar_event');
+      expect(body.model.tools[0].server.url).toContain('/agents/ag-tools/tools');
+    });
+
     it('does not patch speakingRate for Vapi voices', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
 

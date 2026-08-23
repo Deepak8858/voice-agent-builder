@@ -25,6 +25,7 @@ import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.inte
 import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 import { BillingService } from '../billing/billing.service';
 import { PostHogService } from '../posthog/posthog.service';
+import { GOOGLE_TOOL_PRESETS } from '../google-connection/google-tool-presets';
 
 /** Short enough that a stale list self-heals even if invalidation is missed. */
 const AGENTS_LIST_TTL_SECONDS = 60;
@@ -347,7 +348,7 @@ export class AgentsService {
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
 
     let versionToPublish = latest;
-    if (agent.specJson && (!latest || !jsonValuesEqual(parsed.data, latest.specJson))) {
+    if (!latest || !jsonValuesEqual(parsed.data, latest.specJson)) {
       const nextNumber = (latest?.versionNumber ?? 0) + 1;
       versionToPublish = await this.prisma.agentVersion.create({
         data: {
@@ -404,6 +405,7 @@ export class AgentsService {
     await this.prisma.agent.update({
       where: { id: agentId },
       data: {
+        specJson: parsed.data as unknown as Prisma.InputJsonValue,
         status: deploymentStatus === 'deployed' ? 'published' : agent.status,
         activeVersionId: deploymentStatus === 'deployed' ? versionToPublish.id : agent.activeVersionId,
       },
@@ -538,33 +540,41 @@ export class AgentsService {
     spec: AgentSpec | Record<string, unknown>,
   ): Promise<AgentSpec | Record<string, unknown>> {
     const flow = (spec as AgentSpec).flow;
-    const toolNames = new Set(
+    const referencedNames = new Set(
       (flow?.nodes ?? [])
         .filter((node) => node.type === 'tool_call')
         .map((node) => (node.type === 'tool_call' ? node.tool_name.trim() : ''))
         .filter(Boolean),
     );
-    if (toolNames.size === 0) return spec;
+    const googleToolNames = new Set(GOOGLE_TOOL_PRESETS.map((preset) => preset.name));
+    const candidateNames = new Set([...referencedNames, ...googleToolNames]);
 
     const rows = await this.prisma.integrationTool.findMany({
       where: {
         workspaceId,
         enabled: true,
-        name: { in: [...toolNames] },
+        name: { in: [...candidateNames] },
         OR: [{ agentId: null }, { agentId }],
       },
       orderBy: { createdAt: 'desc' },
     });
-    if (rows.length === 0) return spec;
+    const eligibleRows = rows.filter(
+      (row) =>
+        referencedNames.has(row.name) ||
+        (row.agentId === null && googleToolNames.has(row.name)),
+    );
 
     const merged = new Map<string, AgentTool>();
     const existingTools = Array.isArray((spec as AgentSpec).tools)
       ? ((spec as AgentSpec).tools as AgentTool[])
       : [];
     for (const tool of existingTools) {
-      merged.set(tool.name, tool);
+      // Provisioned Google tools are reconciled from enabled database rows.
+      // This removes stale declarations when OAuth is disconnected and the
+      // corresponding IntegrationTools are disabled.
+      if (!googleToolNames.has(tool.name)) merged.set(tool.name, tool);
     }
-    for (const row of rows) {
+    for (const row of eligibleRows) {
       merged.set(row.name, {
         name: row.name,
         description: row.description,

@@ -278,7 +278,14 @@ describe('AgentsService.updateFlow', () => {
         where: expect.objectContaining({
           workspaceId: 'w1',
           enabled: true,
-          name: { in: ['google_calendar_booking'] },
+          name: {
+            in: expect.arrayContaining([
+              'google_calendar_booking',
+              'book_calendar_event',
+              'send_gmail',
+              'append_sheet_row',
+            ]),
+          },
         }),
       }),
     );

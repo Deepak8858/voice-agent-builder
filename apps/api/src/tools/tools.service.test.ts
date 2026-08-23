@@ -519,27 +519,15 @@ describe('ToolsService.toDetail', () => {
     expect((detail.config as Record<string, unknown>).hmac_secret).toBeUndefined();
   });
 
-  it('hides google calendar refresh token and client secret', async () => {
+  it('returns only the non-secret Google Calendar target config', async () => {
     const { service } = makeService({
       tool: {
         ...baseTool,
         toolType: 'google_calendar',
-        config: {
-          refresh_token: 'refresh-token',
-          client_id: 'client-id',
-          client_secret: 'client-secret',
-          calendar_id: 'primary',
-        },
+        config: { calendar_id: 'primary' },
       },
     });
     const detail = await service.get('w1', 'tool_1');
-    expect(detail.config).toMatchObject({
-      client_id: 'client-id',
-      calendar_id: 'primary',
-      refresh_token_set: true,
-      client_secret_set: true,
-    });
-    expect((detail.config as Record<string, unknown>).refresh_token).toBeUndefined();
-    expect((detail.config as Record<string, unknown>).client_secret).toBeUndefined();
+    expect(detail.config).toEqual({ calendar_id: 'primary' });
   });
 });

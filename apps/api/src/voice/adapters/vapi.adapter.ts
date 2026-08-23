@@ -69,6 +69,48 @@ async function vapiRequest<T>(
 // ---------------------------------------------------------------------------
 // buildSystemPrompt
 // ---------------------------------------------------------------------------
+function buildVapiTools(spec: AgentSpec, agentId: string): Array<Record<string, unknown>> {
+  const webhookSecret = env.VAPI_WEBHOOK_SECRET ?? env.VOICE_WEBHOOK_SECRET;
+  if (!webhookSecret) return [];
+
+  const serverUrl = new URL(
+    `/api/v1/voice/webhooks/vapi/agents/${encodeURIComponent(agentId)}/tools`,
+    env.APP_BASE_URL ?? env.WEB_BASE_URL,
+  ).toString();
+
+  return spec.tools
+    .filter(
+      (tool) =>
+        /^[a-zA-Z0-9_-]{1,64}$/.test(tool.name) &&
+        Array.isArray(tool.permissions) &&
+        tool.permissions.length === 1,
+    )
+    .map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+      server: {
+        url: serverUrl,
+        // Vapi sends this value back in x-vapi-secret. It is stored only in
+        // Vapi's server-side assistant configuration, never in client payloads.
+        secret: webhookSecret,
+      },
+      async: false,
+    }));
+}
+
+function buildVapiModel(spec: AgentSpec, agentId: string): Record<string, unknown> {
+  return {
+    provider: 'openai',
+    model: 'gpt-4o-mini',
+    systemPrompt: buildSystemPrompt(spec),
+    tools: buildVapiTools(spec, agentId),
+  };
+}
+
 function buildSystemPrompt(spec: AgentSpec): string {
   const parts: string[] = [];
   parts.push(`You are ${spec.identity.agent_name}, a voice agent for ${spec.identity.business_name}.`);
@@ -174,11 +216,7 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
 
     const assistantPayload: Record<string, unknown> = {
       name: spec.name,
-      model: {
-        provider: 'openai',
-        model: 'gpt-4o-mini', // ~10x cheaper than gpt-4o, sufficient for voice agents
-        systemPrompt: buildSystemPrompt(spec),
-      },
+      model: buildVapiModel(spec, input.agentId),
       voice: {
         provider: 'vapi',
         voiceId,
@@ -210,7 +248,11 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
   async updateAgent(input: UpdateRuntimeAgentInput): Promise<void> {
     const { spec } = input;
 
-    const patch: Record<string, unknown> = {};
+    const patch: Record<string, unknown> = {
+      // Republish must synchronize prompt and tools as well as cosmetic fields;
+      // otherwise an existing Vapi assistant can never gain newly connected tools.
+      model: buildVapiModel(spec, input.agentId),
+    };
 
     if (spec.name) patch.name = spec.name;
 
@@ -226,8 +268,6 @@ export class VapiVoiceAdapter implements VoiceRuntimeProvider {
         voiceId: spec.voice.voice_id,
       };
     }
-
-    if (Object.keys(patch).length === 0) return;
 
     await vapiRequest<void>('PATCH', `/assistant/${input.provider_runtime_id}`, patch);
   }

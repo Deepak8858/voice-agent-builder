@@ -494,28 +494,13 @@ export class ToolsService {
     createdAt: Date;
     updatedAt: Date;
   }): ToolDetail {
-    if (row.toolType === 'google_calendar') {
-      const cfg = (row.config ?? {}) as {
-        refresh_token?: string;
-        client_id?: string;
-        client_secret?: string;
-        calendar_id?: string;
-      };
-      const { refresh_token, client_secret, ...publicCfg } = cfg;
-      return {
-        ...this.toSummary(row),
-        config: {
-          ...publicCfg,
-          calendar_id: publicCfg.calendar_id ?? 'primary',
-          refresh_token_set: Boolean(refresh_token),
-          client_secret_set: Boolean(client_secret),
-        },
-        input_schema: row.inputSchema as ToolDetail['input_schema'],
-      };
-    }
-
-    if (row.toolType === 'gmail' || row.toolType === 'google_sheets') {
-      // These configs identify operation and target only — no secrets to mask.
+    if (
+      row.toolType === 'google_calendar' ||
+      row.toolType === 'gmail' ||
+      row.toolType === 'google_sheets'
+    ) {
+      // Google tool configs identify operation and target only — OAuth tokens
+      // are resolved from the workspace's unified connection at invocation time.
       return {
         ...this.toSummary(row),
         config: (row.config ?? {}) as ToolDetail['config'],
