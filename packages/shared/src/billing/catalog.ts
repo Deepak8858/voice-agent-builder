@@ -1,7 +1,7 @@
-import type { CheckoutPlan, PlanType } from '../schemas/billing';
+import type { CheckoutPlan, PlanType, VoicePipeline } from '../schemas/billing';
 
 /** The versioned commercial contract used by pricing, checkout, and runtime admission. */
-export const BILLING_CATALOG_VERSION = '2026-07-24' as const;
+export const BILLING_CATALOG_VERSION = '2026-08-23' as const;
 
 export const MINUTE_PACK = {
   minutes: 100,
@@ -9,15 +9,42 @@ export const MINUTE_PACK = {
   expiresAfterDays: 365,
 } as const;
 
+/**
+ * The Free plan's monthly allowance. It is a *recurring* grant, not a lifetime
+ * one, and it is spendable only on the in-house (`standard`) pipeline, whose
+ * per-minute cost is an order of magnitude below the realtime pipeline. Granting
+ * realtime minutes for free would sell the most expensive runtime at zero price.
+ *
+ * This allowance is the *only* browser-test budget. There is deliberately no
+ * separate lifetime test grant: two independent allowances meant the recurring
+ * one was unspendable, because a browser test is the only thing a Free
+ * organization can start and it was capped by a one-time redemption.
+ */
+export const FREE_MONTHLY_MINUTES = 10 as const;
+
+/**
+ * Share of a plan's calls that run on each runtime pipeline. Percentages are
+ * integers that must sum to 100 so a plan can never be defined with an
+ * unroutable remainder.
+ */
+export interface PipelineMix {
+  realtime: number;
+  standard: number;
+}
+
 export interface PlanEntitlements {
   includedMinutes: number;
-  lifetimeBrowserTestSeconds: number;
   agents: number;
   workspaces: number;
   nangoConnections: number;
   concurrentCalls: number;
   maximumContractConcurrentCalls: number;
   contacts: number;
+  /**
+   * Runtime split for this plan. Free is entirely in-house; Starter is split
+   * evenly; Growth and Enterprise are entirely realtime.
+   */
+  pipelineMix: PipelineMix;
   outboundPstn: boolean;
   campaigns: boolean;
   /**
@@ -32,14 +59,16 @@ export interface PlanEntitlements {
 
 const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
   free: {
-    includedMinutes: 0,
-    lifetimeBrowserTestSeconds: 180,
+    includedMinutes: FREE_MONTHLY_MINUTES,
     agents: 1,
     workspaces: 1,
     nangoConnections: 0,
-    concurrentCalls: 0,
-    maximumContractConcurrentCalls: 0,
+    // One concurrent call, so the recurring free allowance is usable at all,
+    // while a single organization still cannot fan out across the platform.
+    concurrentCalls: 1,
+    maximumContractConcurrentCalls: 1,
     contacts: 50,
+    pipelineMix: { realtime: 0, standard: 100 },
     outboundPstn: false,
     campaigns: false,
     complianceBlocks: true,
@@ -47,13 +76,13 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
   },
   starter: {
     includedMinutes: 200,
-    lifetimeBrowserTestSeconds: 0,
     agents: 3,
     workspaces: 1,
     nangoConnections: 2,
     concurrentCalls: 2,
     maximumContractConcurrentCalls: 2,
     contacts: 500,
+    pipelineMix: { realtime: 50, standard: 50 },
     outboundPstn: true,
     campaigns: true,
     complianceBlocks: true,
@@ -61,13 +90,13 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
   },
   growth: {
     includedMinutes: 1000,
-    lifetimeBrowserTestSeconds: 0,
     agents: 10,
     workspaces: 5,
     nangoConnections: 10,
     concurrentCalls: 10,
     maximumContractConcurrentCalls: 10,
     contacts: 5_000,
+    pipelineMix: { realtime: 100, standard: 0 },
     outboundPstn: true,
     campaigns: true,
     complianceBlocks: true,
@@ -75,13 +104,13 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
   },
   enterprise: {
     includedMinutes: 3000,
-    lifetimeBrowserTestSeconds: 0,
     agents: 30,
     workspaces: 15,
     nangoConnections: 25,
     concurrentCalls: 25,
     maximumContractConcurrentCalls: 50,
     contacts: 25_000,
+    pipelineMix: { realtime: 100, standard: 0 },
     outboundPstn: true,
     campaigns: true,
     complianceBlocks: true,
@@ -91,6 +120,24 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
 
 export function getPlanEntitlements(plan: PlanType): PlanEntitlements {
   return PLAN_ENTITLEMENTS[plan];
+}
+
+/**
+ * Pipelines a plan is *allowed* to use. A plan with a 0% share of a pipeline is
+ * not merely unlikely to be routed there — it must never be routed there, so
+ * admission and routing can both derive the rule from one place instead of
+ * restating it.
+ */
+export function allowedPipelines(plan: PlanType): readonly VoicePipeline[] {
+  const mix = PLAN_ENTITLEMENTS[plan].pipelineMix;
+  const allowed: VoicePipeline[] = [];
+  if (mix.realtime > 0) allowed.push('realtime');
+  if (mix.standard > 0) allowed.push('standard');
+  return allowed;
+}
+
+export function isPipelineAllowed(plan: PlanType, pipeline: VoicePipeline): boolean {
+  return allowedPipelines(plan).includes(pipeline);
 }
 
 /**
@@ -155,17 +202,22 @@ export const PLAN_CATALOG: readonly PlanCatalogEntry[] = [
   {
     id: 'free',
     name: 'Free',
-    tagline: 'One browser test before choosing a production plan.',
+    tagline: 'Ten minutes a month on our own low-latency voice pipeline.',
     priceLabel: '$0',
     monthlyPriceUsd: 0,
     interval: 'month',
-    cta: 'Try in browser',
+    cta: 'Start free',
     dashboardCta: 'Current plan',
-    features: ['One 180-second lifetime browser test', 'Compliance-safe sandbox runtime'],
+    features: [
+      `${FREE_MONTHLY_MINUTES} free minutes every month`,
+      'VoiceForge in-house pipeline (streaming STT, LLM, TTS)',
+      'Browser tests draw from your monthly minutes',
+      'Compliance blocking on every call',
+    ],
     marketingLimits: {
       agents: '1 agent',
-      minutes: '0 PSTN min',
-      concurrentCalls: '0 concurrent calls',
+      minutes: `${FREE_MONTHLY_MINUTES} min/mo`,
+      concurrentCalls: '1 concurrent call',
       tools: '0 integrations',
       workspaces: '1 workspace',
       contacts: '50 contacts',

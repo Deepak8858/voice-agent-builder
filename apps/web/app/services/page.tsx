@@ -71,9 +71,10 @@ export default function ServicesPage() {
           ))}
         </div>
         <p className="mt-4">
-          The Free plan does not include telephone calling. It provides a single 180-second
-          browser-based test so you can evaluate the product before paying. Starter and Growth are
-          purchased directly on the site. Enterprise is sales-assisted and contracted separately.
+          The Free plan does not include telephone calling. It provides a monthly allowance of
+          browser-based test minutes, which reset each month, so you can evaluate the product before
+          paying. Starter and Growth are purchased directly on the site. Enterprise is
+          sales-assisted and contracted separately.
         </p>
         <p className="mt-3">
           See <Link href="/pricing" className="text-primary underline">the pricing page</Link> for

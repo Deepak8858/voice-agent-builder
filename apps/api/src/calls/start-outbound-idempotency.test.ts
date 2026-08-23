@@ -8,7 +8,7 @@ const existingCall = {
   agentVersionId: 'version-1',
   direction: 'outbound',
   status: 'queued',
-  provider: 'vapi',
+  provider: 'openai-realtime',
   providerCallId: 'provider-call-existing',
   fromNumber: null,
   toNumber: '+15551234567',
@@ -40,7 +40,7 @@ function makeService() {
         agentVersionId: 'version-1',
         direction: 'outbound',
         status: 'queued',
-        provider: 'vapi',
+        provider: 'openai-realtime',
         providerCallId: 'provider-call-new',
         fromNumber: null,
         toNumber: '+15551234567',
@@ -70,7 +70,7 @@ function makeService() {
   };
   const audit = { log: vi.fn(async () => undefined) };
   const voice = {
-    name: 'vapi',
+    name: 'openai-realtime',
     startOutboundCall: vi.fn(async () => ({
       provider_call_id: 'provider-call-new',
       status: 'queued',

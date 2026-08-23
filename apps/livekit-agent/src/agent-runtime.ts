@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AgentSpecSchema, type AgentSpec } from '@voiceforge/shared';
+import { AgentSpecSchema, VoicePipelineSchema, type AgentSpec } from '@voiceforge/shared';
 
 export const DispatchMetadataSchema = z
   .object({
@@ -15,6 +15,10 @@ export const DispatchMetadataSchema = z
     provider: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     purpose: z.string().min(1).optional(),
+    // Which runtime to build for this call. Defaulted rather than required so a
+    // job enqueued by the previous release — or a dispatch rule created before
+    // this deploy — still runs, on the behavior it was created with.
+    pipeline: VoicePipelineSchema.default('realtime'),
   })
   .passthrough();
 

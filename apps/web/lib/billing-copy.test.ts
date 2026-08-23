@@ -53,13 +53,26 @@ describe('billing copy', () => {
     ).toEqual([]);
   });
 
-  it('states the Free lifetime browser test and the PSTN exclusion', () => {
+  it('states the Free monthly allowance and the PSTN exclusion', () => {
     const free = getPlanEntitlements('free');
     const copy = allCopy();
 
-    expect(free.lifetimeBrowserTestSeconds).toBe(180);
-    expect(copy).toContain(`${free.lifetimeBrowserTestSeconds} seconds`);
+    expect(free.includedMinutes).toBe(10);
+    expect(copy).toContain(`${free.includedMinutes} browser test minutes each month`);
     expect(copy).toMatch(/cannot place or receive PSTN calls/i);
+  });
+
+  /**
+   * Free's allowance recurs, so copy promising a single lifetime test would
+   * understate what the ledger actually grants and would resurrect the cap that
+   * made those minutes unspendable.
+   */
+  it('never describes the browser test as a one-time lifetime grant', () => {
+    const copy = allCopy();
+
+    expect(copy).not.toMatch(/lifetime/i);
+    expect(copy).not.toMatch(/one (?:browser )?test/i);
+    expect(copy).not.toMatch(/180 seconds/);
   });
 
   it('states started-minute rounding and zero-charge unanswered calls', () => {

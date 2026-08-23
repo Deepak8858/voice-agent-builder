@@ -301,14 +301,14 @@ describe('AgentsService.publish', () => {
     expect(voice.updateAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('free plan publishes with the Vapi provider from the registry', async () => {
-    const vapi = {
-      name: 'vapi',
-      createAgent: vi.fn(async () => ({ provider_runtime_id: 'vapi_rt_1' })),
+  it('free plan publishes with the provider chosen by the registry', async () => {
+    const standard = {
+      name: 'openai-realtime',
+      createAgent: vi.fn(async () => ({ provider_runtime_id: 'openai_rt_free' })),
       updateAgent: vi.fn(async () => {}),
     };
     const voiceRegistry = {
-      forPlan: vi.fn(() => vapi),
+      forPlan: vi.fn(() => standard),
     };
     const { service, versionUpdate } = makeAgentsServiceWith({
       subscriptionPlan: 'free',
@@ -337,12 +337,12 @@ describe('AgentsService.publish', () => {
     await service.publish('w1', 'a1', 'u1');
 
     expect(voiceRegistry.forPlan).toHaveBeenCalledWith('free');
-    expect(vapi.createAgent).toHaveBeenCalledTimes(1);
+    expect(standard.createAgent).toHaveBeenCalledTimes(1);
     expect(versionUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          provider: 'vapi',
-          providerRuntimeId: 'vapi_rt_1',
+          provider: 'openai-realtime',
+          providerRuntimeId: 'openai_rt_free',
         }),
       }),
     );

@@ -14,6 +14,26 @@ const OptionalUrlEnvSchema = z.preprocess(
 );
 
 /**
+ * Runtime providers that no longer exist. A deployment that still selects one
+ * must keep booting — rejecting the value would take the API down on upgrade
+ * for a setting the operator cannot change until the new release is deployed —
+ * so the retired value is coerced to the supported Realtime adapter and
+ * reported by the deprecation warning below.
+ */
+const RETIRED_VOICE_PROVIDERS = ['vapi', 'retell'] as const;
+
+const VoiceProviderEnvSchema = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '') return undefined;
+    if ((RETIRED_VOICE_PROVIDERS as readonly string[]).includes(normalized)) {
+      return 'openai-realtime';
+    }
+  }
+  return value;
+}, z.enum(['mock', 'twilio', 'openai-realtime']).optional());
+
+/**
  * Typed env schema. Keep in sync with the monorepo root `.env.example`.
  * We intentionally load from process.env and validate once at boot so a
  * misconfigured environment fails fast with a readable error.
@@ -32,22 +52,12 @@ const EnvSchema = z.object({
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   AUTH_PROVIDER: z.enum(['supabase']).default('supabase'),
-  VOICE_PROVIDER: z.enum(['mock', 'vapi', 'twilio', 'openai-realtime', 'retell']).optional(),
-  // Azure AI Foundry (gpt-5.4-mini) is the production default. The LLM module
-  // factory still fails fast at boot when the selected provider's key is
-  // missing, so this default does not change credential-less-boot behavior.
+  VOICE_PROVIDER: VoiceProviderEnvSchema,
+  // Azure AI Foundry is the production default. The LLM module factory still
+  // fails fast at boot when the selected provider's key is missing, so this
+  // default does not change credential-less-boot behavior.
   LLM_PROVIDER: z.enum(['github', 'openai', 'anthropic', 'azure-aifoundry']).default('azure-aifoundry'),
   EMBEDDING_PROVIDER: z.enum(['openai']).default('openai'),
-
-  VAPI_API_KEY: z.string().optional(),
-  VAPI_BASE_URL: z.string().default('https://api.vapi.ai'),
-  VAPI_WEBHOOK_SECRET: z.string().optional(),
-  VAPI_PHONE_NUMBER_ID: z.string().optional(),
-
-  RETELL_API_KEY: z.string().optional(),
-  RETELL_BASE_URL: z.string().url().default('https://api.retellai.com'),
-  RETELL_FROM_NUMBER: z.string().optional(),
-  RETELL_VOICE_ID: z.string().default('11labs-Adrian'),
 
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -71,6 +81,22 @@ const EnvSchema = z.object({
   OPENAI_REALTIME_BASE_URL: z.string().default('https://api.openai.com/v1'),
   OPENAI_REALTIME_MODEL: z.string().default('gpt-realtime-2'),
   OPENAI_REALTIME_VOICE: z.string().default('marin'),
+
+  // In-house "standard" pipeline (Azure Speech STT -> Azure AI Foundry LLM ->
+  // Azure Speech TTS). This is the only pipeline the free plan may use, and it
+  // serves half of starter-plan calls. Keeping it behind a flag means an
+  // operator turns it on only once the Azure resources and quota exist; when it
+  // is off, every plan falls back to Realtime and no call can be routed to a
+  // half-configured pipeline.
+  VOICE_STANDARD_PIPELINE_ENABLED: BooleanEnvSchema.default(false),
+  AZURE_OPENAI_ENDPOINT: OptionalUrlEnvSchema,
+  AZURE_OPENAI_API_KEY: z.string().optional(),
+  // Deployment name of the flagship (non-mini) chat model that acts as the
+  // voice brain. Kept as config so the brain can be upgraded without a deploy.
+  AZURE_VOICE_LLM_DEPLOYMENT: z.string().optional(),
+  AZURE_SPEECH_KEY: z.string().optional(),
+  AZURE_SPEECH_REGION: z.string().optional(),
+  AZURE_TTS_VOICE: z.string().default('en-US-AvaMultilingualNeural'),
 
   DEEPGRAM_API_KEY: z.string().optional(),
   DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
@@ -177,6 +203,23 @@ const EnvSchema = z.object({
   // released after this many minutes, so credit is not held indefinitely.
   BILLING_STALE_CALL_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(1440).default(30),
 
+  // Free-plan monthly credit grant sweep. Runs daily rather than monthly on
+  // purpose: the grant is idempotent per organization per calendar month, so a
+  // daily pass costs nothing on already-granted months while also giving an
+  // organization that signs up mid-month its allowance the same day instead of
+  // making it wait for the 1st. Always evaluated in UTC so the month key cannot
+  // shift with the host timezone.
+  FREE_CREDIT_GRANT_CRON: z
+    .string()
+    .default('15 0 * * *')
+    .refine(
+      (v) => {
+        const fields = v.trim().split(/\s+/).length;
+        return fields === 5 || fields === 6;
+      },
+      'FREE_CREDIT_GRANT_CRON must be a 5- or 6-field cron expression',
+    ),
+
   LLM_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
@@ -246,6 +289,27 @@ const EnvSchema = z.object({
       path: ['VOICE_PROVIDER'],
       message: 'VOICE_PROVIDER=mock is not allowed in production',
     });
+  }
+  // A deployment that enables the in-house pipeline without complete Azure
+  // configuration would accept free-plan calls and then fail once the caller is
+  // already connected. Fail at boot naming the missing variable instead.
+  if (value.NODE_ENV === 'production' && value.VOICE_STANDARD_PIPELINE_ENABLED) {
+    const required = [
+      ['AZURE_OPENAI_ENDPOINT', value.AZURE_OPENAI_ENDPOINT],
+      ['AZURE_OPENAI_API_KEY', value.AZURE_OPENAI_API_KEY],
+      ['AZURE_VOICE_LLM_DEPLOYMENT', value.AZURE_VOICE_LLM_DEPLOYMENT],
+      ['AZURE_SPEECH_KEY', value.AZURE_SPEECH_KEY],
+      ['AZURE_SPEECH_REGION', value.AZURE_SPEECH_REGION],
+    ] as const;
+    for (const [name, configured] of required) {
+      if (!configured) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `${name} is required in production when VOICE_STANDARD_PIPELINE_ENABLED=true`,
+        });
+      }
+    }
   }
   // The Azure adapter has no safe default endpoint; require it explicitly in
   // production so a misconfigured deployment fails at boot, not per-request.
@@ -355,9 +419,57 @@ function isLocalHostname(hostname: string): boolean {
   );
 }
 
+/**
+ * Variables that configured the removed Vapi and Retell runtime adapters.
+ * Zod strips unknown keys, so a deployment that still sets them boots normally;
+ * this list exists so an operator is told once that they are now inert rather
+ * than assuming they still influence call routing.
+ */
+export const REMOVED_VOICE_ENV_VARS = [
+  'VAPI_API_KEY',
+  'VAPI_BASE_URL',
+  'VAPI_WEBHOOK_SECRET',
+  'VAPI_PHONE_NUMBER_ID',
+  'RETELL_API_KEY',
+  'RETELL_BASE_URL',
+  'RETELL_FROM_NUMBER',
+  'RETELL_VOICE_ID',
+] as const;
+
+/**
+ * Returns the removed voice provider variables that are still present in the
+ * given environment, so boot can report them without failing. A retired
+ * `VOICE_PROVIDER` selection is reported too, because unlike the other keys it
+ * is silently rewritten rather than ignored.
+ */
+export function findRemovedVoiceEnvVars(
+  source: Record<string, string | undefined> = process.env,
+): string[] {
+  const present = REMOVED_VOICE_ENV_VARS.filter((name) => {
+    const value = source[name];
+    return typeof value === 'string' && value.trim() !== '';
+  }) as string[];
+  const selected = source.VOICE_PROVIDER?.trim().toLowerCase();
+  if (selected && (RETIRED_VOICE_PROVIDERS as readonly string[]).includes(selected)) {
+    present.push('VOICE_PROVIDER');
+  }
+  return present;
+}
+
 export type Env = z.infer<typeof EnvSchema>;
 
 export const env: Env = EnvSchema.parse(process.env);
+
+const removedVoiceEnvVars = findRemovedVoiceEnvVars();
+if (removedVoiceEnvVars.length > 0) {
+  // Emitted once at import time, before Nest's logger exists.
+  console.warn(
+    `[env] Ignoring removed voice provider configuration: ${removedVoiceEnvVars.join(', ')}. ` +
+      'Vapi and Retell are no longer supported; a retired VOICE_PROVIDER value falls back to ' +
+      'openai-realtime. Delete these and configure VOICE_STANDARD_PIPELINE_ENABLED with the ' +
+      'AZURE_SPEECH_* / AZURE_OPENAI_* variables instead.',
+  );
+}
 
 export function isProduction(): boolean {
   return (process.env.NODE_ENV ?? 'development') === 'production';

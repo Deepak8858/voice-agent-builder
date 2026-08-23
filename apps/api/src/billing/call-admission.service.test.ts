@@ -5,7 +5,7 @@ const INPUT = {
   organizationId: 'org-1',
   workspaceId: 'ws-1',
   callId: 'call-1',
-  provider: 'vapi',
+  provider: 'openai-realtime',
   direction: 'outbound' as const,
 };
 

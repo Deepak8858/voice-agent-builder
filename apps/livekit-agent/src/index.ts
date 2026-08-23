@@ -3,10 +3,13 @@ import {
   cli,
   defineAgent,
   voice,
+  type JobProcess,
+  type VAD,
   type llm,
   type JobContext,
 } from '@livekit/agents';
 import * as openai from '@livekit/agents-plugin-openai';
+import * as silero from '@livekit/agents-plugin-silero';
 import { PrismaClient } from '@prisma/client';
 import { fileURLToPath } from 'node:url';
 import {
@@ -17,6 +20,7 @@ import {
   resolveRealtimeVoice,
   type DispatchMetadata,
 } from './agent-runtime.js';
+import { buildStandardSession } from './standard-pipeline.js';
 import {
   createKnowledgeSearchClient,
   createKnowledgeTool,
@@ -100,7 +104,24 @@ async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typ
   throw new Error(`Agent ${metadata.agentId} has no active Agent Spec JSON.`);
 }
 
+/** Key under which {@link prewarm} caches the loaded VAD on the job process. */
+const VAD_USERDATA_KEY = 'vad';
+
 export default defineAgent({
+  // Loading the Silero ONNX model takes long enough to be audible if done once
+  // per call, so it is loaded once per worker process and shared by every job
+  // that process handles. Only the standard pipeline needs it — Realtime does
+  // its own turn detection server-side — but prewarm cannot know which pipeline
+  // the next job will use.
+  prewarm: async (proc: JobProcess) => {
+    try {
+      proc.userData[VAD_USERDATA_KEY] = await silero.VAD.load();
+    } catch (err) {
+      // A failed prewarm must not take the worker down: Realtime calls do not
+      // need VAD, and standard calls fail individually with a clear error.
+      console.error('[prewarm] failed to load Silero VAD; standard-pipeline calls will fail.', err);
+    }
+  },
   entry: async (ctx: JobContext) => {
     const dispatchMetadata = parseDispatchMetadata(ctx.job.metadata);
     await ctx.connect();
@@ -108,7 +129,7 @@ export default defineAgent({
     const metadata = await resolveCallAttribution(dispatchMetadata, participant, prisma.call);
     const meter = createCallMeter(ctx, metadata);
     try {
-      await runCall(ctx, metadata, meter);
+      await runCall(ctx, metadata, meter, ctx.proc.userData[VAD_USERDATA_KEY] as VAD | undefined);
     } catch (err) {
       // The call never became billable. Reporting the failure is what returns
       // the reserved minute and frees the concurrency slot immediately.
@@ -122,6 +143,7 @@ async function runCall(
   ctx: JobContext,
   metadata: DispatchMetadata,
   meter: CallMeter | null,
+  vad: VAD | undefined,
 ): Promise<void> {
   const spec = await loadAgentSpec(metadata);
   const fallbackVoice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
@@ -165,11 +187,16 @@ async function runCall(
     }
   }
 
-  const session = new voice.AgentSession({
-    llm: new openai.realtime.RealtimeModel({
-      voice: resolveRealtimeVoice(spec, fallbackVoice),
-    }),
-  });
+  // The pipeline is a billing decision made by the API when the call was
+  // created (free plans and half of starter calls run in-house), so it is read
+  // from dispatch metadata rather than re-derived here.
+  const session = metadata.pipeline === 'standard'
+    ? buildStandardPipelineSession(spec, vad)
+    : new voice.AgentSession({
+        llm: new openai.realtime.RealtimeModel({
+          voice: resolveRealtimeVoice(spec, fallbackVoice),
+        }),
+      });
 
   await session.start({
     agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
@@ -192,6 +219,25 @@ async function runCall(
   await session.generateReply({
     instructions: firstReplyInstruction(spec),
   });
+}
+
+/**
+ * Builds the in-house cascaded session, requiring the prewarmed VAD.
+ *
+ * Turn detection is not optional for a cascaded pipeline — without it the agent
+ * cannot tell when the caller stopped talking — so a missing VAD fails the call
+ * rather than starting one that can never take a turn.
+ */
+function buildStandardPipelineSession(
+  spec: ReturnType<typeof parseAgentSpec>,
+  vad: VAD | undefined,
+): voice.AgentSession<llm.ToolContext> {
+  if (!vad) {
+    throw new Error(
+      'The standard voice pipeline requires the prewarmed Silero VAD, which failed to load on this worker.',
+    );
+  }
+  return buildStandardSession({ spec, vad });
 }
 
 const agentName = process.env.LIVEKIT_AGENT_NAME ?? 'voiceforge-agent';

@@ -43,6 +43,7 @@ function makeService(opts: {
   toolsAllowed?: boolean;
   emailAllowed?: boolean;
   exportAllowed?: boolean;
+  calendarAllowed?: boolean;
 }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
@@ -106,6 +107,16 @@ function makeService(opts: {
   const compliance = {
     checkOutboundEmail: vi.fn(async () =>
       (opts.emailAllowed ?? true)
+        ? { allowed: true, reasons: [] }
+        : {
+            allowed: false,
+            reasons: [
+              { code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' },
+            ],
+          },
+    ),
+    checkCalendarOperation: vi.fn(async () =>
+      (opts.calendarAllowed ?? true)
         ? { allowed: true, reasons: [] }
         : {
             allowed: false,
@@ -266,6 +277,61 @@ describe('ToolsService.invoke', () => {
       { refresh_token: 'refresh-token', calendar_id: 'primary' },
       { workspaceId: 'w1' },
     );
+  });
+
+  it('blocks Calendar operations before executing and audits reason codes only', async () => {
+    const calendarTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_calendar',
+      config: { calendar_id: 'primary' },
+      inputSchema: {
+        type: 'object',
+        properties: { operation: { type: 'string' }, attendees: { type: 'array' } },
+        required: ['operation'],
+      },
+    };
+    const { service, calendar, compliance, audit, prisma } = makeService({
+      tool: calendarTool,
+      calendarAllowed: false,
+    });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { operation: 'create_event', attendees: ['optout@example.test'] },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    expect(compliance.checkCalendarOperation).toHaveBeenCalledWith(
+      'w1',
+      'create_event',
+      ['optout@example.test'],
+    );
+    expect(calendar.execute).not.toHaveBeenCalled();
+    expect(prisma.toolInvocation.create).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'tool.invoke.blocked',
+      metadata: expect.objectContaining({
+        tool_type: 'google_calendar',
+        reason_codes: ['opted_out'],
+      }),
+    }));
+    expect(JSON.stringify(audit.log.mock.calls)).not.toContain('optout@example.test');
+  });
+
+  it('allows Calendar reads after evaluating the Calendar compliance gate', async () => {
+    const calendarTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_calendar',
+      config: { calendar_id: 'primary' },
+      inputSchema: {
+        type: 'object',
+        properties: { operation: { type: 'string' } },
+        required: ['operation'],
+      },
+    };
+    const { service, calendar, compliance } = makeService({ tool: calendarTool });
+    calendar.execute.mockResolvedValue({ success: true, result: { events: [] } });
+    await service.invoke('w1', 'tool_1', 'u1', { arguments: { operation: 'list_events' } });
+    expect(compliance.checkCalendarOperation).toHaveBeenCalledWith('w1', 'list_events', []);
+    expect(calendar.execute).toHaveBeenCalled();
   });
 
   it('blocks gmail sends to opted-out recipients before executing', async () => {
@@ -519,15 +585,21 @@ describe('ToolsService.toDetail', () => {
     expect((detail.config as Record<string, unknown>).hmac_secret).toBeUndefined();
   });
 
-  it('returns only the non-secret Google Calendar target config', async () => {
+  it('returns only the non-secret Google Calendar target config from legacy rows', async () => {
     const { service } = makeService({
       tool: {
         ...baseTool,
         toolType: 'google_calendar',
-        config: { calendar_id: 'primary' },
+        config: {
+          calendar_id: 'team@example.test',
+          refresh_token: 'legacy-refresh-token',
+          client_id: 'legacy-client-id',
+          client_secret: 'legacy-client-secret',
+        },
       },
     });
     const detail = await service.get('w1', 'tool_1');
-    expect(detail.config).toEqual({ calendar_id: 'primary' });
+    expect(detail.config).toEqual({ calendar_id: 'team@example.test' });
+    expect(JSON.stringify(detail.config)).not.toContain('legacy-');
   });
 });

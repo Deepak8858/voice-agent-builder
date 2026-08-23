@@ -30,6 +30,20 @@ export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 
 /**
+ * Which runtime serves a call.
+ *
+ * - `realtime`: speech-to-speech model (highest quality, highest cost per minute).
+ * - `standard`: the in-house streaming STT -> LLM -> TTS pipeline (low latency,
+ *   roughly an order of magnitude cheaper per minute).
+ *
+ * This is a commercial *and* operational fact about a call, so it is persisted
+ * on the call row and carried in runtime dispatch metadata rather than being
+ * re-derived after the fact.
+ */
+export const VoicePipelineSchema = z.enum(['realtime', 'standard']);
+export type VoicePipeline = z.infer<typeof VoicePipelineSchema>;
+
+/**
  * Lifecycle of an organization's credit balance. `blocked` and `review` both
  * stop paid usage; they are distinguished so support can tell an automated
  * hold from a human-driven investigation.
@@ -136,7 +150,6 @@ export const EntitlementReasonSchema = z.enum([
   'allowed',
   'subscription_required',
   'subscription_inactive',
-  'trial_already_used',
   'credit_insufficient',
   'agent_limit_reached',
   'workspace_limit_reached',
@@ -144,6 +157,12 @@ export const EntitlementReasonSchema = z.enum([
   'organization_concurrency_reached',
   'platform_concurrency_reached',
   'billing_temporarily_unavailable',
+  /**
+   * The requested runtime pipeline is not sold on this plan. Distinct from
+   * `subscription_required` because the remedy is different: the customer is
+   * entitled to call, just not on that runtime.
+   */
+  'pipeline_not_entitled',
 ]);
 export type EntitlementReason = z.infer<typeof EntitlementReasonSchema>;
 
@@ -199,8 +218,21 @@ export interface EffectivePlan {
 export const PAID_CALL_MINIMUM_SECONDS = 60 as const;
 
 export type EntitlementRequest =
-  | { kind: 'paid_call'; minimumSeconds: typeof PAID_CALL_MINIMUM_SECONDS }
-  | { kind: 'browser_test' }
+  | {
+      kind: 'paid_call';
+      minimumSeconds: typeof PAID_CALL_MINIMUM_SECONDS;
+      /**
+       * Runtime the call will use. Supplied so admission can refuse a pipeline
+       * the plan does not sell before any credit is reserved.
+       */
+      pipeline?: VoicePipeline;
+    }
+  /**
+   * A browser test is metered exactly like a telephony minute and is funded by
+   * the same balance, so it carries the same minimum. It is a distinct kind
+   * only because it is the one metered call a plan without PSTN may start.
+   */
+  | { kind: 'browser_test'; minimumSeconds: typeof PAID_CALL_MINIMUM_SECONDS }
   | { kind: 'agent_create'; current: number }
   | { kind: 'workspace_create'; current: number }
   | { kind: 'integration_connect'; current: number }
@@ -212,7 +244,6 @@ export const CreditBalanceDtoSchema = z
     organizationId: IdentifierSchema,
     includedMinutesRemaining: z.number().int().nonnegative(),
     purchasedMinutesRemaining: z.number().int().nonnegative(),
-    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
   })
   .strict();
 export type CreditBalanceDto = z.infer<typeof CreditBalanceDtoSchema>;
@@ -235,7 +266,6 @@ export const BillingSummaryDtoSchema = z
     purchasedSeconds: z.number().int().nonnegative(),
     reservedSeconds: z.number().int().nonnegative(),
     expiringSeconds: z.number().int().nonnegative(),
-    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
     topUpAvailable: z.boolean(),
     availableSeconds: z.number().int().nonnegative(),
     balanceStatus: CreditBalanceStatusSchema,
@@ -248,6 +278,12 @@ export const BillingSummaryDtoSchema = z
       outboundPstn: z.boolean(),
       campaigns: z.boolean(),
       whiteLabel: z.boolean(),
+      pipelineMix: z
+        .object({
+          realtime: z.number().int().min(0).max(100),
+          standard: z.number().int().min(0).max(100),
+        })
+        .strict(),
     }),
     usage: z.object({
       agents: z.number().int().nonnegative(),

@@ -11,7 +11,11 @@ import type {
   EntitlementReason,
   RuntimeUsageDecision,
 } from '@voiceforge/shared';
-import { CreditBalanceStatusSchema, MINUTE_PACK } from '@voiceforge/shared';
+import {
+  CreditBalanceStatusSchema,
+  FREE_MONTHLY_MINUTES,
+  MINUTE_PACK,
+} from '@voiceforge/shared';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -28,6 +32,15 @@ const CREDIT_EXPIRY_HORIZON_DAYS = 30;
  */
 const PURCHASED_PACK_SECONDS = MINUTE_PACK.minutes * CREDIT_SECONDS_PER_MINUTE;
 const PURCHASED_PACK_LIFETIME_MS = MINUTE_PACK.expiresAfterDays * 24 * 60 * 60 * 1_000;
+
+/**
+ * The free plan's recurring monthly allowance. Like an invoice grant it lands in
+ * the `included` bucket at priority 10, so it is always spent before purchased
+ * credit and is forfeited — not rolled over — when the month ends.
+ */
+const FREE_MONTHLY_GRANT_SECONDS = FREE_MONTHLY_MINUTES * CREDIT_SECONDS_PER_MINUTE;
+
+const MonthKeySchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 
 const IdentifierSchema = z.string().trim().min(1);
 const IdempotencyKeySchema = z.string().trim().min(1).max(255);
@@ -47,6 +60,15 @@ const PurchasedGrantInputSchema = z
     organizationId: IdentifierSchema,
     checkoutSessionId: IdentifierSchema,
     purchasedAt: z.date(),
+    actorId: IdentifierSchema.optional(),
+  })
+  .strict();
+
+const FreeMonthlyGrantInputSchema = z
+  .object({
+    organizationId: IdentifierSchema,
+    /** UTC calendar month the allowance belongs to, as `YYYY-MM`. */
+    monthKey: MonthKeySchema,
     actorId: IdentifierSchema.optional(),
   })
   .strict();
@@ -115,7 +137,6 @@ const CreditBalanceReplaySchema = z
     organizationId: IdentifierSchema,
     includedMinutesRemaining: z.number().int().nonnegative(),
     purchasedMinutesRemaining: z.number().int().nonnegative(),
-    lifetimeBrowserTestSecondsRemaining: z.number().int().nonnegative(),
     availableSeconds: z.number().int().nonnegative(),
     reservedSeconds: z.number().int().nonnegative(),
     totalOwnedSeconds: z.number().int().nonnegative(),
@@ -169,6 +190,33 @@ const SubscriptionGrantReplayMetadataSchema = z
     operation: SubscriptionGrantOperationSchema,
     invoiceId: IdentifierSchema,
     includedMinutes: z.number().int().nonnegative(),
+    periodEnd: z.string().datetime(),
+    priority: z.literal(10),
+  })
+  .passthrough();
+
+const FreeMonthlyGrantOperationSchema = z
+  .object({
+    kind: z.literal('free_monthly_grant'),
+    organizationId: IdentifierSchema,
+    monthKey: MonthKeySchema,
+    bucketId: IdentifierSchema,
+    sourceType: z.literal('included'),
+    sourceId: IdentifierSchema,
+    seconds: z.number().int().positive(),
+    periodStart: z.string().datetime(),
+    periodEnd: z.string().datetime(),
+    priority: z.literal(10),
+    status: z.literal('active'),
+  })
+  .strict();
+
+const FreeMonthlyGrantReplayMetadataSchema = z
+  .object({
+    operation: FreeMonthlyGrantOperationSchema,
+    monthKey: MonthKeySchema,
+    includedMinutes: z.number().int().positive(),
+    periodStart: z.string().datetime(),
     periodEnd: z.string().datetime(),
     priority: z.literal(10),
   })
@@ -256,6 +304,7 @@ const ManualReviewPurchasedReversalReplayMetadataSchema = z
 
 export type SubscriptionGrantInput = z.infer<typeof SubscriptionGrantInputSchema>;
 export type PurchasedGrantInput = z.infer<typeof PurchasedGrantInputSchema>;
+export type FreeMonthlyGrantInput = z.infer<typeof FreeMonthlyGrantInputSchema>;
 export type MinuteReservationInput = z.infer<typeof MinuteReservationInputSchema>;
 export type CommitReservationInput = z.infer<typeof CommitReservationInputSchema>;
 export type NextMinuteInput = z.infer<typeof NextMinuteInputSchema>;
@@ -284,7 +333,6 @@ export interface CreditSummary {
   reservedSeconds: number;
   availableSeconds: number;
   expiringSeconds: number;
-  lifetimeBrowserTestSecondsRemaining: number;
   status: CreditBalanceStatus;
   reviewReason: string | null;
 }
@@ -439,6 +487,134 @@ export class CreditLedgerService {
             invoiceId: input.invoiceId,
             includedMinutes: input.includedMinutes,
             periodEnd: input.periodEnd.toISOString(),
+            priority: 10,
+          }),
+        },
+      });
+
+      return this.buildCreditBalance(tx, updatedBalance);
+    });
+  }
+
+  /**
+   * Grants the free plan's recurring monthly allowance.
+   *
+   * Keyed by calendar month rather than by an invoice, because a free
+   * organization has no invoice to hang the grant off. The month key is the only
+   * thing that makes the grant unique, so a cron that fires twice, a replica
+   * that starts twice, and a boot-time sweep all converge on exactly one grant
+   * per organization per month.
+   *
+   * The bucket expires at the end of its month: the free allowance is a monthly
+   * allowance, not an accumulating balance, so unused minutes must not roll
+   * over. Reconciliation's `expireBuckets` pass performs the forfeiture.
+   */
+  async grantFreeMonthlyCredits(rawInput: FreeMonthlyGrantInput): Promise<CreditBalance> {
+    const input = FreeMonthlyGrantInputSchema.parse(rawInput);
+    const { periodStart, periodEnd } = monthBounds(input.monthKey);
+    const sourceId = freeMonthlyGrantKey(input.organizationId, input.monthKey);
+    const idempotencyKey = sourceId;
+    const seconds = FREE_MONTHLY_GRANT_SECONDS;
+
+    return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
+      const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
+      if (existing) {
+        const bucket = await this.findReplaySourceBucket(
+          tx,
+          input.organizationId,
+          'included',
+          sourceId,
+        );
+        // Compared against the seconds the bucket was actually granted, not the
+        // current catalog: changing FREE_MONTHLY_MINUTES must not turn every
+        // historical month into an idempotency conflict.
+        const grantedSeconds = bucket.originalSeconds;
+        this.assertLedgerReplayIdentity(existing, {
+          entryTypes: ['free_monthly_grant'],
+          organizationId: input.organizationId,
+          workspaceId: null,
+          callId: null,
+          bucketId: bucket.id,
+          seconds: grantedSeconds,
+          reasonCode: 'free_monthly_included',
+          metadataSchema: FreeMonthlyGrantReplayMetadataSchema,
+          operationMatches: (metadata) =>
+            metadata.monthKey === input.monthKey &&
+            metadata.periodStart === periodStart.toISOString() &&
+            metadata.periodEnd === periodEnd.toISOString() &&
+            metadata.priority === 10 &&
+            metadata.operation.kind === 'free_monthly_grant' &&
+            metadata.operation.organizationId === input.organizationId &&
+            metadata.operation.monthKey === input.monthKey &&
+            metadata.operation.bucketId === bucket.id &&
+            metadata.operation.sourceType === 'included' &&
+            metadata.operation.sourceId === sourceId &&
+            metadata.operation.seconds === grantedSeconds &&
+            metadata.operation.periodStart === periodStart.toISOString() &&
+            metadata.operation.periodEnd === periodEnd.toISOString() &&
+            metadata.operation.priority === 10 &&
+            metadata.operation.status === 'active' &&
+            bucket.organizationId === input.organizationId &&
+            bucket.sourceType === 'included' &&
+            bucket.sourceId === sourceId &&
+            bucket.validFrom.getTime() === periodStart.getTime() &&
+            bucket.expiresAt.getTime() === periodEnd.getTime() &&
+            bucket.priority === 10,
+        });
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+
+      const bucket = await tx.billingCreditBucket.create({
+        data: {
+          organizationId: input.organizationId,
+          sourceType: 'included',
+          sourceId,
+          originalSeconds: seconds,
+          remainingSeconds: seconds,
+          validFrom: periodStart,
+          expiresAt: periodEnd,
+          priority: 10,
+          status: 'active',
+        },
+      });
+      const updatedBalance = await tx.organizationCreditBalance.update({
+        where: { organizationId: input.organizationId },
+        data: {
+          availableSeconds: { increment: seconds },
+          version: { increment: 1 },
+        },
+      });
+      await tx.billingLedgerEntry.create({
+        data: {
+          organizationId: input.organizationId,
+          bucketId: bucket.id,
+          workspaceId: null,
+          callId: null,
+          entryType: 'free_monthly_grant',
+          seconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+          actorType: 'system',
+          actorId: input.actorId ?? sourceId,
+          reasonCode: 'free_monthly_included',
+          idempotencyKey,
+          metadata: this.jsonMetadata({
+            operation: {
+              kind: 'free_monthly_grant',
+              organizationId: input.organizationId,
+              monthKey: input.monthKey,
+              bucketId: bucket.id,
+              sourceType: 'included',
+              sourceId,
+              seconds,
+              periodStart: periodStart.toISOString(),
+              periodEnd: periodEnd.toISOString(),
+              priority: 10,
+              status: 'active',
+            },
+            monthKey: input.monthKey,
+            includedMinutes: FREE_MONTHLY_MINUTES,
+            periodStart: periodStart.toISOString(),
+            periodEnd: periodEnd.toISOString(),
             priority: 10,
           }),
         },
@@ -1103,13 +1279,9 @@ export class CreditLedgerService {
 
     let includedSeconds = 0;
     let purchasedSeconds = 0;
-    let lifetimeBrowserTestSecondsRemaining = 0;
     let expiringSeconds = 0;
     for (const bucket of buckets) {
       if (bucket.sourceType === 'included') includedSeconds += bucket.remainingSeconds;
-      if (bucket.sourceType === 'lifetime_browser_test') {
-        lifetimeBrowserTestSecondsRemaining += bucket.remainingSeconds;
-      }
       if (bucket.sourceType === 'purchased') {
         purchasedSeconds += bucket.remainingSeconds;
         if (bucket.expiresAt.getTime() <= horizon.getTime()) {
@@ -1125,7 +1297,6 @@ export class CreditLedgerService {
       reservedSeconds: balance?.reservedSeconds ?? 0,
       availableSeconds: balance?.availableSeconds ?? 0,
       expiringSeconds,
-      lifetimeBrowserTestSecondsRemaining,
       status: balance ? toCreditBalanceStatus(balance.status) : 'active',
       reviewReason: balance?.reviewReason ?? null,
     };
@@ -1526,7 +1697,6 @@ export class CreditLedgerService {
       purchasedMinutesRemaining: Math.floor(
         (secondsBySource.purchased ?? 0) / CREDIT_SECONDS_PER_MINUTE,
       ),
-      lifetimeBrowserTestSecondsRemaining: secondsBySource.lifetime_browser_test ?? 0,
       availableSeconds: balance.availableSeconds,
       reservedSeconds: balance.reservedSeconds,
       totalOwnedSeconds: this.totalOwned(balance),
@@ -1540,7 +1710,6 @@ export class CreditLedgerService {
       organizationId: balance.organizationId,
       includedMinutesRemaining: balance.includedMinutesRemaining,
       purchasedMinutesRemaining: balance.purchasedMinutesRemaining,
-      lifetimeBrowserTestSecondsRemaining: balance.lifetimeBrowserTestSecondsRemaining,
     };
   }
 
@@ -1576,7 +1745,6 @@ export class CreditLedgerService {
       organizationId: snapshot.organizationId,
       includedMinutesRemaining: snapshot.includedMinutesRemaining,
       purchasedMinutesRemaining: snapshot.purchasedMinutesRemaining,
-      lifetimeBrowserTestSecondsRemaining: snapshot.lifetimeBrowserTestSecondsRemaining,
       availableSeconds: snapshot.availableSeconds,
       reservedSeconds: snapshot.reservedSeconds,
       totalOwnedSeconds: snapshot.totalOwnedSeconds,
@@ -1973,4 +2141,42 @@ export class CreditLedgerService {
   private jsonMetadata(value: Record<string, Prisma.JsonValue>): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
   }
+}
+
+/**
+ * The UTC calendar month a moment belongs to, as `YYYY-MM`.
+ *
+ * Deliberately UTC rather than server-local: the grant key must not change when
+ * a replica runs in a different timezone, or the same month would be granted
+ * twice under two different keys.
+ */
+export function currentMonthKey(now: Date = new Date()): string {
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  return `${now.getUTCFullYear()}-${month}`;
+}
+
+/** Half-open UTC bounds of a `YYYY-MM` month: `[periodStart, periodEnd)`. */
+export function monthBounds(monthKey: string): { periodStart: Date; periodEnd: Date } {
+  const parsed = MonthKeySchema.safeParse(monthKey);
+  if (!parsed.success) {
+    throw new CreditLedgerInvariantError(
+      `Free monthly grant month key ${monthKey} is not a YYYY-MM calendar month`,
+      'free_grant_month_invalid',
+    );
+  }
+  const [year, month] = parsed.data.split('-').map(Number) as [number, number];
+  return {
+    periodStart: new Date(Date.UTC(year, month - 1, 1)),
+    // Month 12 rolls to the next January; Date.UTC normalizes the overflow.
+    periodEnd: new Date(Date.UTC(year, month, 1)),
+  };
+}
+
+/**
+ * Stable identity of one organization's allowance for one month, used as both
+ * the bucket `sourceId` and the ledger idempotency key so the unique index on
+ * each independently blocks a duplicate grant.
+ */
+export function freeMonthlyGrantKey(organizationId: string, monthKey: string): string {
+  return `free_grant_${organizationId}_${monthKey}`;
 }

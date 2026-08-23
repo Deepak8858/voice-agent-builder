@@ -44,6 +44,132 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_PROVIDER=mock/);
   });
 
+  /**
+   * Removing the Vapi/Retell variables must not break an existing deployment
+   * that still sets them: a boot failure here would take the whole API down on
+   * upgrade. Zod strips unknown keys, so the contract is "boot, then warn".
+   */
+  it('boots with stale Vapi/Retell variables and reports them as ignored', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'vapi',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      VAPI_API_KEY: 'stale-vapi-key',
+      RETELL_VOICE_ID: '11labs-Adrian',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const mod = await import('./env');
+
+      // A retired selection resolves to the supported Realtime adapter rather
+      // than aborting boot on a value the operator cannot yet change.
+      expect(mod.env.VOICE_PROVIDER).toBe('openai-realtime');
+      expect(mod.env).not.toHaveProperty('VAPI_API_KEY');
+      expect(mod.findRemovedVoiceEnvVars()).toEqual([
+        'VAPI_API_KEY',
+        'RETELL_VOICE_ID',
+        'VOICE_PROVIDER',
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('VAPI_API_KEY'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('RETELL_VOICE_ID'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays quiet about removed voice variables when none are set', async () => {
+    vi.resetModules();
+    restoreEnv();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('VAPI_') || key.startsWith('RETELL_')) delete process.env[key];
+    }
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    });
+
+    const mod = await import('./env');
+    expect(mod.findRemovedVoiceEnvVars()).toEqual([]);
+  });
+
+  describe('in-house standard pipeline configuration', () => {
+    const productionBase = {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    };
+    const azureBase = {
+      AZURE_OPENAI_ENDPOINT: 'https://voiceforge.openai.azure.com',
+      AZURE_OPENAI_API_KEY: 'azure-openai-key',
+      AZURE_VOICE_LLM_DEPLOYMENT: 'voice-brain',
+      AZURE_SPEECH_KEY: 'azure-speech-key',
+      AZURE_SPEECH_REGION: 'eastus',
+    };
+
+    it('defaults off so no plan is routed to an unconfigured pipeline', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(false);
+      expect(mod.env.AZURE_TTS_VOICE).toBe('en-US-AvaMultilingualNeural');
+    });
+
+    it.each(Object.keys(azureBase))(
+      'fails production boot when %s is missing but the pipeline is enabled',
+      async (missing) => {
+        vi.resetModules();
+        restoreEnv();
+        const azure = { ...azureBase } as Record<string, string>;
+        delete azure[missing];
+        Object.assign(process.env, productionBase, azure, {
+          VOICE_STANDARD_PIPELINE_ENABLED: 'true',
+        });
+
+        await expect(import('./env')).rejects.toThrow(new RegExp(missing));
+      },
+    );
+
+    it('accepts a fully configured pipeline in production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, azureBase, {
+        VOICE_STANDARD_PIPELINE_ENABLED: 'true',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(true);
+      expect(mod.env.AZURE_VOICE_LLM_DEPLOYMENT).toBe('voice-brain');
+    });
+
+    it('does not require Azure credentials while the pipeline is disabled', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, { VOICE_STANDARD_PIPELINE_ENABLED: 'false' });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(false);
+      expect(mod.env.AZURE_SPEECH_KEY).toBeUndefined();
+    });
+  });
+
   it('does not reject a malformed optional PostHog host while analytics is disabled', async () => {
     vi.resetModules();
     restoreEnv();
@@ -182,7 +308,7 @@ describe('env validation', () => {
       JWT_SECRET: 'production-jwt-secret-with-32-chars',
       ALLOWED_ORIGINS: 'https://app.voiceforge.example',
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
-      VOICE_PROVIDER: 'vapi',
+      VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
     };
 

@@ -23,23 +23,18 @@ function makePrisma(overrides?: {
   balance?: BalanceRow;
   agentCount?: number;
   workspaceCount?: number;
-  trialRedemption?: { maxDurationSeconds: number } | null;
 }) {
   const subscription = overrides?.subscription ?? null;
   const balance =
     overrides?.balance === undefined
       ? { availableSeconds: 6_000, reservedSeconds: 0, status: 'active', reviewReason: null }
       : overrides.balance;
-  const trialRedemption = overrides?.trialRedemption ?? null;
   return {
     subscription: {
       findUnique: vi.fn(async () => subscription),
     },
     organizationCreditBalance: {
       findUnique: vi.fn(async () => balance),
-    },
-    trialRedemption: {
-      findUnique: vi.fn(async () => trialRedemption),
     },
     agent: { count: vi.fn(async () => overrides?.agentCount ?? 0) },
     workspace: { count: vi.fn(async () => overrides?.workspaceCount ?? 0) },
@@ -269,44 +264,128 @@ describe('EntitlementService', () => {
       });
     });
 
-    it('allows exactly one lifetime browser test allowance on Free', async () => {
-      const svc = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
-
-      await expect(svc.check('org-1', { kind: 'browser_test' })).resolves.toMatchObject({
-        allowed: true,
-        reason: 'allowed',
-        limit: 180,
-      });
-    });
-
-    it('refuses a second browser test once the lifetime allowance is redeemed', async () => {
+    /**
+     * A browser test is the one metered call a plan without PSTN may start, so
+     * it must be allowed on Free even though outbound calling is not — as long
+     * as the monthly allowance still has a billable minute in it.
+     */
+    it('funds a Free browser test from the monthly allowance', async () => {
       const svc = makeService(
         makePrisma({
           subscription: { plan: 'free', status: 'active' },
-          trialRedemption: { maxDurationSeconds: 180 },
+          balance: {
+            availableSeconds: 600,
+            reservedSeconds: 0,
+            status: 'active',
+            reviewReason: null,
+          },
         }),
       );
 
-      await expect(svc.check('org-1', { kind: 'browser_test' })).resolves.toMatchObject({
-        allowed: false,
-        reason: 'trial_already_used',
-        current: 180,
-        limit: 180,
+      await expect(
+        svc.check('org-1', { kind: 'browser_test', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({
+        allowed: true,
+        reason: 'allowed',
+        current: 600,
+        limit: 60,
       });
     });
 
-    it('does not spend the trial allowance for a paid organization', async () => {
-      const prisma = makePrisma({
-        subscription: { plan: 'starter', status: 'active' },
-        trialRedemption: { maxDurationSeconds: 180 },
+    it('refuses a browser test once the monthly allowance is spent', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: { plan: 'free', status: 'active' },
+          balance: {
+            availableSeconds: 30,
+            reservedSeconds: 0,
+            status: 'active',
+            reviewReason: null,
+          },
+        }),
+      );
+
+      await expect(
+        svc.check('org-1', { kind: 'browser_test', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({
+        allowed: false,
+        reason: 'credit_insufficient',
+        current: 30,
+        limit: 60,
       });
+    });
+
+    /**
+     * The recurring allowance replaced a one-time trial. A Free organization
+     * that has already run tests this month must still be able to run another
+     * one, which is precisely what the retired lifetime cap prevented.
+     */
+    it('allows repeated Free browser tests while the allowance lasts', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: { plan: 'free', status: 'active' },
+          balance: {
+            availableSeconds: 420,
+            reservedSeconds: 180,
+            status: 'active',
+            reviewReason: null,
+          },
+        }),
+      );
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await expect(
+          svc.check('org-1', { kind: 'browser_test', minimumSeconds: 60 }),
+        ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
+      }
+    });
+
+    it('tells a Free organization to upgrade or wait rather than buy a pack', async () => {
+      // Minute packs are sold only to paid subscriptions, so the pack message
+      // would describe a remedy a Free organization cannot act on.
+      const svc = makeService(
+        makePrisma({
+          subscription: { plan: 'free', status: 'active' },
+          balance: { availableSeconds: 0, reservedSeconds: 0, status: 'active', reviewReason: null },
+        }),
+      );
+
+      await expect(
+        svc.assertAllowed('org-1', { kind: 'browser_test', minimumSeconds: 60 }),
+      ).rejects.toThrow(/free minutes for this month/i);
+    });
+
+    it('funds a paid browser test from the same balance as a telephony call', async () => {
+      const svc = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      await expect(
+        svc.check('org-1', { kind: 'browser_test', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
+    });
+
+    /**
+     * A runtime the plan does not sell is not a credit problem, so the refusal
+     * must name the runtime and must not depend on the balance — otherwise a
+     * well-funded organization would be told to buy minutes it already has.
+     */
+    it('refuses a pipeline the plan does not sell before consulting credit', async () => {
+      const prisma = makePrisma({ subscription: { plan: 'growth', status: 'active' } });
       const svc = makeService(prisma);
 
-      await expect(svc.check('org-1', { kind: 'browser_test' })).resolves.toMatchObject({
-        allowed: true,
-        reason: 'allowed',
-      });
-      expect(prisma.trialRedemption.findUnique).not.toHaveBeenCalled();
+      await expect(
+        svc.check('org-1', { kind: 'paid_call', minimumSeconds: 60, pipeline: 'standard' }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'pipeline_not_entitled' });
+      expect(prisma.organizationCreditBalance.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('allows a starter call on either runtime it is sold', async () => {
+      const svc = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      for (const pipeline of ['realtime', 'standard'] as const) {
+        await expect(
+          svc.check('org-1', { kind: 'paid_call', minimumSeconds: 60, pipeline }),
+        ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
+      }
     });
 
     it('blocks paid calls while the credit balance is in manual review', async () => {

@@ -9,7 +9,9 @@ import type {
   StartOutboundCallDto,
   StartTestSessionDto,
   TestSessionResult,
+  VoicePipeline,
 } from '@voiceforge/shared';
+import { PAID_CALL_MINIMUM_SECONDS } from '@voiceforge/shared';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { AuditService } from '../audit/audit.service';
 import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
@@ -26,11 +28,14 @@ import {
 } from '../common/errors';
 import { ComplianceService } from '../compliance/compliance.service';
 import { RetentionService } from '../compliance/retention.service';
+import { env } from '../config/env';
 import { EvaluationsService } from '../evaluations/evaluations.service';
+import { LiveKitService } from '../livekit/livekit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
+import { PipelineRouterService } from '../voice/pipeline-router.service';
 import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 
 const CALL_LIST_TTL_SECONDS = 15;
@@ -51,7 +56,33 @@ export class CallsService {
     private readonly admission: CallAdmissionService,
     private readonly entitlements: EntitlementService,
     private readonly voiceRegistry?: VoiceProviderRegistry,
+    private readonly pipelineRouter?: PipelineRouterService,
+    private readonly livekit?: LiveKitService,
   ) {}
+
+  /**
+   * Records which runtime pipeline a call was routed to.
+   *
+   * Routing needs the call identity, so it happens after the row exists and the
+   * column is filled in a follow-up write. A routing or write failure must not
+   * fail a call that is otherwise fully admitted: the pipeline is reporting and
+   * reconciliation data, and the runtime receives its own copy in the dispatch
+   * metadata.
+   */
+  private async persistPipeline(
+    organizationId: string,
+    callId: string,
+  ): Promise<void> {
+    if (!this.pipelineRouter || typeof this.entitlements?.getEffectivePlan !== 'function') return;
+    try {
+      const effective = await this.entitlements.getEffectivePlan(organizationId);
+      const { pipeline } = this.pipelineRouter.route(effective.plan, callId);
+      await this.prisma.call.update({ where: { id: callId }, data: { pipeline } });
+    } catch {
+      // Best-effort: the decision is deterministic and can be re-derived from
+      // the plan and call id if it is ever needed and missing.
+    }
+  }
 
   async startTestSession(
     workspaceId: string,
@@ -70,13 +101,27 @@ export class CallsService {
       select: { organizationId: true, retentionDays: true },
     });
 
-    // The free browser test is a lifetime allowance. Claiming it before the
-    // provider session is created means a customer cannot obtain a second
-    // session by racing two requests, because the redemption row is unique per
-    // organization.
-    const trial = await this.entitlements.assertAllowed(ws.organizationId, {
+    // A browser test is a metered call funded by the organization's balance, so
+    // entitlement is checked before any runtime is engaged. Credit is not
+    // reserved here: the reservation is bound to a call row, which does not
+    // exist yet.
+    await this.entitlements.assertAllowed(ws.organizationId, {
       kind: 'browser_test',
+      minimumSeconds: PAID_CALL_MINIMUM_SECONDS,
     });
+
+    const pipeline = await this.testSessionPipeline(ws.organizationId);
+    if (pipeline === 'standard') {
+      return this.startStandardTestSession({
+        workspaceId,
+        organizationId: ws.organizationId,
+        retentionDays: ws.retentionDays,
+        actorUserId,
+        agentId: agent.id,
+        agentVersionId: version.id,
+        contactName: dto.contact_name ?? 'Browser tester',
+      });
+    }
 
     const session = await voice.createBrowserTestSession({
       workspaceId,
@@ -103,6 +148,7 @@ export class CallsService {
         direction: 'browser_test',
         status: transcriptReady ? 'completed' : 'in_progress',
         provider: voice.name,
+        pipeline: 'realtime',
         providerCallId: session.test_session_id,
         contactName: dto.contact_name ?? 'Browser tester',
         startedAt: new Date(),
@@ -121,32 +167,178 @@ export class CallsService {
       },
     });
 
-    await this.recordTrialRedemption({
-      organizationId: ws.organizationId,
-      initiatingUserId: actorUserId,
-      agentVersionId: version.id,
-      callId: call.id,
-      provider: voice.name,
-      providerSessionId: session.test_session_id,
-      maxDurationSeconds: trial.limit,
-    });
-
     await this.audit.log({
       workspaceId,
       actorUserId,
       action: 'call.test_session.start',
       resourceType: 'call',
       resourceId: call.id,
-      metadata: { agent_id: agent.id, version_id: version.id },
+      metadata: { agent_id: agent.id, version_id: version.id, pipeline: 'realtime' },
     });
     await this.invalidateCallList(workspaceId, agent.id);
 
     return {
       call_id: call.id,
       test_session_id: session.test_session_id,
+      pipeline: 'realtime',
       web_socket_url: session.web_socket_url ?? null,
+      livekit_url: null,
+      room_name: null,
       token: session.token ?? null,
       expires_at: session.expires_at,
+    };
+  }
+
+  /**
+   * Which runtime a browser test should use.
+   *
+   * A free organization is only entitled to the in-house pipeline, so its test
+   * must not mint a Realtime client secret — that would hand out the expensive
+   * runtime for free. Without a router (or LiveKit) available, the legacy
+   * Realtime path is kept so tests keep working in development.
+   */
+  private async testSessionPipeline(organizationId: string): Promise<VoicePipeline> {
+    if (!this.pipelineRouter || !this.livekit) return 'realtime';
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    return this.pipelineRouter.isAllowed(effective.plan, 'realtime') ? 'realtime' : 'standard';
+  }
+
+  /**
+   * Runs a browser test on the in-house pipeline.
+   *
+   * The browser joins a LiveKit room instead of talking to a speech-to-speech
+   * model directly, so the same worker, metering, and tool wiring that serve
+   * telephony calls also serve the test. The transcript arrives asynchronously
+   * over the existing call-event stream, so the call starts `in_progress` with
+   * no transcript rather than being polled for one that cannot exist yet.
+   */
+  private async startStandardTestSession(input: {
+    workspaceId: string;
+    organizationId: string;
+    retentionDays: number;
+    actorUserId: string;
+    agentId: string;
+    agentVersionId: string;
+    contactName: string;
+  }): Promise<TestSessionResult> {
+    const livekit = this.livekit!;
+    const expiresAt = new Date(Date.now() + input.retentionDays * 24 * 60 * 60 * 1000);
+
+    const call = await this.prisma.call.create({
+      data: {
+        workspaceId: input.workspaceId,
+        organizationId: input.organizationId,
+        agentId: input.agentId,
+        agentVersionId: input.agentVersionId,
+        direction: 'browser_test',
+        status: 'in_progress',
+        provider: 'livekit',
+        pipeline: 'standard',
+        contactName: input.contactName,
+        startedAt: new Date(),
+        transcriptText: '',
+        expiresAt,
+        retentionDays: input.retentionDays,
+        metadata: { transcript_status: 'pending' } as Prisma.InputJsonValue,
+      },
+    });
+
+    // The test is metered exactly like a telephony call, so it goes through the
+    // same admission gate. This is not only a billing concern: admission is what
+    // reserves the first minute and creates the `CallUsage` row, and the worker's
+    // `call_connected` report commits that reservation. Without it the runtime
+    // would fail to commit and hang the call up as unmetered.
+    const admission = await this.admission.admitCall({
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: call.id,
+      provider: 'livekit',
+      direction: 'browser_test',
+      pipeline: 'standard',
+    });
+    if (isCallDenied(admission)) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
+      });
+      throw this.admission.toError(admission);
+    }
+
+    const roomName = `${env.LIVEKIT_ROOM_PREFIX}-test-${call.id}`;
+    const metadata = {
+      workspaceId: input.workspaceId,
+      organizationId: input.organizationId,
+      agentId: input.agentId,
+      agentVersionId: input.agentVersionId,
+      callId: call.id,
+      direction: 'browser_test',
+      pipeline: 'standard' as const,
+    };
+
+    try {
+      await livekit.createRoomForCall({ roomName, metadata });
+      await livekit.dispatchAgent({
+        roomName,
+        agentName: env.LIVEKIT_AGENT_NAME,
+        metadata,
+      });
+    } catch (err) {
+      // A room that never came up owes nothing, so the reserved minute is
+      // returned and the concurrency slot is freed rather than being held until
+      // the lease expires.
+      await this.admission.compensate(
+        input.organizationId,
+        call.id,
+        'provider_dispatch_failed',
+      );
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
+      });
+      throw err;
+    }
+
+    const token = await livekit.createAccessToken({
+      userId: input.actorUserId,
+      roomName,
+      identity: `tester-${input.actorUserId}`,
+      metadata: { callId: call.id, agentId: input.agentId },
+    });
+
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: { livekitRoomName: roomName, providerCallId: roomName },
+    });
+    await this.prisma.callUsage.updateMany({
+      where: { callId: call.id },
+      data: { providerCallId: roomName },
+    });
+
+    await this.audit.log({
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      action: 'call.test_session.start',
+      resourceType: 'call',
+      resourceId: call.id,
+      metadata: {
+        agent_id: input.agentId,
+        version_id: input.agentVersionId,
+        pipeline: 'standard',
+        room_name: roomName,
+      },
+    });
+    await this.invalidateCallList(input.workspaceId, input.agentId);
+
+    return {
+      call_id: call.id,
+      test_session_id: roomName,
+      pipeline: 'standard',
+      web_socket_url: null,
+      livekit_url: livekit.livekitUrl,
+      room_name: roomName,
+      token,
+      // The browser token, not the agent session, bounds the test window.
+      expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     };
   }
 
@@ -273,6 +465,8 @@ export class CallsService {
       throw this.admission.toError(admission);
     }
 
+    await this.persistPipeline(ws.organizationId, call.id);
+
     let result: Awaited<ReturnType<VoiceRuntimeProvider['startOutboundCall']>>;
     try {
       result = await voice.startOutboundCall({
@@ -332,48 +526,6 @@ export class CallsService {
     return this.toSummary(dispatched);
   }
 
-  /**
-   * Records that the organization has spent its lifetime browser test. The row
-   * is unique per organization, so a concurrent second session loses the race
-   * and is recorded as a duplicate rather than granting a second trial.
-   */
-  private async recordTrialRedemption(input: {
-    organizationId: string;
-    initiatingUserId: string;
-    agentVersionId: string;
-    callId: string;
-    provider: string;
-    providerSessionId: string;
-    maxDurationSeconds: number;
-  }): Promise<void> {
-    const maxDurationSeconds = input.maxDurationSeconds > 0 ? input.maxDurationSeconds : 180;
-    try {
-      await this.prisma.trialRedemption.create({
-        data: {
-          organizationId: input.organizationId,
-          initiatingUserId: input.initiatingUserId,
-          agentVersionId: input.agentVersionId,
-          callId: input.callId,
-          selectedProvider: input.provider,
-          providerSessionId: input.providerSessionId,
-          expiresAt: new Date(Date.now() + maxDurationSeconds * 1000),
-          maxDurationSeconds,
-          disposition: 'claimed',
-        },
-      });
-    } catch (err) {
-      // A unique-constraint violation means the trial was already claimed; the
-      // session itself is still valid and must not be failed for it.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === 'P2002'
-      ) {
-        return;
-      }
-      throw err;
-    }
-  }
-
   async list(workspaceId: string, agentId?: string): Promise<CallSummary[]> {
     const key = this.callListKey(workspaceId, agentId);
     const cached = await this.cache.get<CallSummary[]>(key);
@@ -425,7 +577,7 @@ export class CallsService {
     let turns: CallTurn[] = [];
     if (call.transcriptText && call.status === 'completed') {
       // Reconstruct turns from persisted transcript if available
-      // This avoids re-fetching from Vapi on every GET
+      // This avoids re-fetching from the voice provider on every GET
       const voice = this.voiceForProviderName(call.provider);
       const t = await voice.getTranscript({ callId: call.providerCallId ?? call.id });
       turns = t.turns;
@@ -822,6 +974,7 @@ export class CallsService {
     direction: string;
     status: string;
     provider: string;
+    pipeline?: string | null;
     fromNumber: string | null;
     toNumber: string | null;
     contactName: string | null;
@@ -839,6 +992,10 @@ export class CallsService {
       direction: c.direction as CallSummary['direction'],
       status: c.status as CallSummary['status'],
       provider: c.provider,
+      // The column is a plain string in the database (constrained by a CHECK),
+      // and historical rows predate routing entirely, so an unset or unexpected
+      // value is reported as null rather than guessed at.
+      pipeline: this.toPipeline(c.pipeline),
       from_number: c.fromNumber,
       to_number: c.toNumber,
       contact_name: c.contactName,
@@ -848,5 +1005,9 @@ export class CallsService {
       ended_at: c.endedAt?.toISOString() ?? null,
       created_at: c.createdAt.toISOString(),
     };
+  }
+
+  private toPipeline(value: string | null | undefined): CallSummary['pipeline'] {
+    return value === 'realtime' || value === 'standard' ? value : null;
   }
 }

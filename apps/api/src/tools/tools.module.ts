@@ -11,11 +11,10 @@ import { CrmExecutor } from './crm-executor';
 import { GoogleCalendarExecutor } from './executors/google-calendar.executor';
 import { GmailExecutor } from './executors/gmail.executor';
 import { SheetsExecutor } from './executors/sheets.executor';
-import { VapiToolsController } from './vapi-tools.controller';
 
 @Module({
   imports: [BillingModule, ComplianceModule, GoogleConnectionModule],
-  controllers: [ToolsController, LiveKitToolsController, VapiToolsController],
+  controllers: [ToolsController, LiveKitToolsController],
   providers: [
     ToolsService,
     WebhookExecutor,

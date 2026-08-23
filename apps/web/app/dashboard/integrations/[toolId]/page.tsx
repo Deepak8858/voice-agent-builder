@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -58,12 +58,17 @@ export default function ToolDetailPage({ params }: PageProps) {
       ),
   });
 
+  const generatedArgsText = useMemo(
+    () => toolQuery.data ? JSON.stringify(buildExampleArguments(toolQuery.data), null, 2) : '{}',
+    [toolQuery.data],
+  );
+
   const invokeMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId) throw new Error('No workspace');
       let args: unknown = {};
       try {
-        args = JSON.parse(argsText ?? JSON.stringify(buildExampleArguments(toolQuery.data!)));
+        args = JSON.parse(argsText ?? generatedArgsText);
       } catch (err) {
         throw new Error(`Arguments must be valid JSON: ${(err as Error).message}`);
       }
@@ -215,7 +220,7 @@ export default function ToolDetailPage({ params }: PageProps) {
             </p>
             <Textarea
               rows={10}
-              value={argsText ?? JSON.stringify(buildExampleArguments(tool), null, 2)}
+              value={argsText ?? generatedArgsText}
               onChange={(e) => setArgsText(e.target.value)}
               className="font-mono text-xs"
             />

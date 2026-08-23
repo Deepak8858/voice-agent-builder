@@ -206,7 +206,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
   // telephony minutes without a plan.
   const topUpAllowed =
     summary.data?.topUpAvailable ?? (isPaidPlan(plan) && status === 'active');
-  const browserTestSecondsLeft = summary.data?.lifetimeBrowserTestSecondsRemaining ?? null;
+  const freeMonthlyMinutes = getPlanEntitlements('free').includedMinutes;
 
   return (
     <div className="flex flex-col gap-8">
@@ -352,10 +352,13 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             </p>
           )}
 
-          {browserTestSecondsLeft !== null ? (
+          {/* Free's browser tests are funded by the same balance shown above, so
+              the buckets are the only readout needed — there is no separate
+              lifetime test allowance to report. */}
+          {plan === 'free' ? (
             <p className="text-xs text-muted-foreground">
-              Lifetime browser test remaining: {browserTestSecondsLeft} of{' '}
-              {getPlanEntitlements('free').lifetimeBrowserTestSeconds} seconds.
+              Browser tests draw from your {freeMonthlyMinutes} included minutes, which reset each
+              month and do not accumulate.
             </p>
           ) : null}
 
@@ -393,8 +396,9 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
                 Browser test only
               </Badge>
               <p className="text-sm text-foreground">
-                Free has no phone number and cannot place PSTN calls. Upgrade to{' '}
-                {PLAN_CATALOG[1].name} for included minutes, more agents, and integrations.
+                Free includes {freeMonthlyMinutes} browser test minutes a month but has no phone
+                number, so it cannot place PSTN calls. Upgrade to {PLAN_CATALOG[1].name} for
+                telephony minutes, more agents, and integrations.
               </p>
             </div>
             <Button

@@ -12,6 +12,7 @@ import { ProviderRegistry } from './providers/provider-registry';
 import { TwilioProviderAdapter } from './providers/twilio.provider';
 
 @Module({
+  // VoiceModule is global, so PipelineRouterService resolves without importing it.
   imports: [PrismaModule, AuditModule, BillingModule, ComplianceModule, LiveKitModule, SecurityModule],
   controllers: [TelephonyController, TelephonyWebhookController],
   providers: [TelephonyService, ProviderRegistry, TwilioProviderAdapter],

@@ -6,7 +6,6 @@ const BALANCE = {
   organizationId: 'org-1',
   includedMinutesRemaining: 5,
   purchasedMinutesRemaining: 0,
-  lifetimeBrowserTestSecondsRemaining: 0,
 };
 
 function decision(overrides: Partial<RuntimeUsageDecision> = {}): RuntimeUsageDecision {

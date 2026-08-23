@@ -9,16 +9,19 @@ import type {
   ProviderCredentials,
   StartTelephonyOutboundCallDto,
   SyncedProviderPhoneNumber,
+  VoicePipeline,
 } from '@voiceforge/shared';
 import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/errors';
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
+import { EntitlementService } from '../billing/entitlement.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { EncryptionService } from '../security/encryption.service';
 import { LiveKitService } from '../livekit/livekit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PipelineRouterService } from '../voice/pipeline-router.service';
 import { ProviderRegistry } from './providers/provider-registry';
 import type { ConnectedPhoneNumber, NormalizedCallStatus } from './providers/provider.types';
 import { TwilioProviderAdapter } from './providers/twilio.provider';
@@ -54,7 +57,28 @@ export class TelephonyService {
     private readonly compliance: ComplianceService,
     private readonly twilioFallback: TwilioProviderAdapter,
     private readonly admission: CallAdmissionService,
+    private readonly pipelineRouter?: PipelineRouterService,
+    private readonly entitlements?: EntitlementService,
   ) {}
+
+  /**
+   * Chooses the runtime pipeline for a call and reports it in the shape the
+   * call row and the LiveKit dispatch metadata both need.
+   *
+   * Returns `null` when routing is unavailable (no router or plan lookup wired
+   * in), so the runtime keeps its legacy Realtime behavior and the call row
+   * records no pipeline rather than an invented one.
+   */
+  private async resolvePipeline(
+    organizationId: string,
+    callId: string,
+  ): Promise<VoicePipeline | null> {
+    if (!this.pipelineRouter || typeof this.entitlements?.getEffectivePlan !== 'function') {
+      return null;
+    }
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    return this.pipelineRouter.route(effective.plan, callId).pipeline;
+  }
 
   providers() {
     return {
@@ -569,6 +593,14 @@ export class TelephonyService {
       throw this.admission.toError(admission);
     }
 
+    // Routed after the call row exists, because the split is keyed to the call
+    // identity, and persisted before dispatch so the stored decision and the
+    // metadata the worker receives can never disagree.
+    const pipeline = await this.resolvePipeline(number.organizationId, call.id);
+    if (pipeline) {
+      await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+    }
+
     let result: Awaited<ReturnType<LiveKitService['createOutboundCall']>>;
     try {
       result = await this.livekit.createOutboundCall({
@@ -587,6 +619,7 @@ export class TelephonyService {
           provider: number.provider,
           model: env.OPENAI_REALTIME_MODEL,
           purpose,
+          ...(pipeline ? { pipeline } : {}),
         },
       });
     } catch (err) {
@@ -1062,7 +1095,7 @@ export class TelephonyService {
     const allowed = await this.billing.checkFeatureGate(organizationId, 'byo_telephony');
     if (!allowed) {
       throw new ForbiddenPlanError(
-        'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use Vapi calling only.',
+        'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use the VoiceForge voice pipeline only.',
         BYO_TELEPHONY_PLAN_LIMIT_DETAILS,
       );
     }

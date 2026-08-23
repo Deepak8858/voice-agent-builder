@@ -42,13 +42,23 @@ const spec: AgentSpec = {
 
 describe('LiveKit agent runtime helpers', () => {
   it('requires structured dispatch metadata with an agent id', () => {
+    // Jobs enqueued before the dual-pipeline release carry no pipeline, and must
+    // keep running on the behavior they were created with.
     expect(parseDispatchMetadata(JSON.stringify({ workspaceId: 'ws-1', agentId: 'agent-1' }))).toEqual({
       workspaceId: 'ws-1',
       agentId: 'agent-1',
+      pipeline: 'realtime',
     });
 
     expect(() => parseDispatchMetadata('{}')).toThrow(/agentId/);
     expect(() => parseDispatchMetadata('not json')).toThrow(/metadata/);
+  });
+
+  it('carries an explicit standard pipeline through dispatch metadata', () => {
+    const metadata = parseDispatchMetadata(
+      JSON.stringify({ agentId: 'agent-1', pipeline: 'standard' }),
+    );
+    expect(metadata.pipeline).toBe('standard');
   });
 
   it('builds speaking instructions from Agent Spec JSON', () => {

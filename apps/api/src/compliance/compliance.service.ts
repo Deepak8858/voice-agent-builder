@@ -552,6 +552,42 @@ export class ComplianceService {
   }
 
   /**
+   * Calendar-specific gate applied to every operation. Reads are explicitly
+   * evaluated even though they currently carry no contact identifiers;
+   * event creation additionally blocks invitations to opted-out contacts.
+   */
+  async checkCalendarOperation(
+    workspaceId: string,
+    operation: string,
+    attendeeEmails: string[],
+  ): Promise<{ allowed: boolean; reasons: ComplianceReason[] }> {
+    // Unsupported operations are rejected by tool input/executor validation;
+    // the compliance gate decides policy for every valid Calendar operation.
+    if (operation !== 'create_event') return { allowed: true, reasons: [] };
+
+    const candidates = [...new Set(attendeeEmails.map((email) => email.trim()).filter(Boolean))];
+    if (candidates.length === 0) return { allowed: true, reasons: [] };
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        workspaceId,
+        optOut: true,
+        OR: candidates.map((email) => ({
+          email: { equals: email, mode: 'insensitive' as const },
+        })),
+      },
+      select: { id: true },
+    });
+    return {
+      allowed: contacts.length === 0,
+      reasons: contacts.map((contact) => ({
+        code: 'opted_out',
+        message: `Contact ${contact.id} has opted out of further outreach.`,
+        severity: 'blocking' as const,
+      })),
+    };
+  }
+
+  /**
    * Compliance gate for data-export tools (Sheets append). A row that
    * references an opted-out contact by email must not be exported: opting
    * out means the business must stop processing that person for outreach,

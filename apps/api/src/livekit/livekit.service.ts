@@ -79,6 +79,35 @@ export class LiveKitService {
     return token.toJwt();
   }
 
+  /**
+   * Dispatches an agent worker into a room that has no SIP leg.
+   *
+   * A browser test has no telephony participant, so it cannot ride along with
+   * `createOutboundCall`; the room is joined directly from the browser and the
+   * worker must be asked for separately.
+   */
+  async dispatchAgent(params: {
+    roomName: string;
+    agentName: string;
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    await this.requireAgentDispatchClient().createDispatch(params.roomName, params.agentName, {
+      metadata: JSON.stringify(params.metadata),
+    });
+  }
+
+  /**
+   * The client-facing WebSocket URL of the LiveKit deployment. Browser tests
+   * need it alongside their access token, and it is required rather than
+   * optional because a token without a server address is unusable.
+   */
+  get livekitUrl(): string {
+    if (!env.LIVEKIT_URL) {
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LIVEKIT_URL is not configured.', 500);
+    }
+    return env.LIVEKIT_URL;
+  }
+
   async createInboundSipTrunk(params: CreateInboundSipTrunkParams): Promise<LiveKitSipTrunkResult> {
     const client = this.requireSipClient();
     const metadata = JSON.stringify({

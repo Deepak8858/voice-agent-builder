@@ -417,7 +417,7 @@ describe('TelephonyService', () => {
         to_number: '+14155559876',
         metadata: { purpose: 'appointment_reminder' },
       }),
-    ).rejects.toThrow(/Vapi calling only/);
+    ).rejects.toThrow(/VoiceForge voice pipeline only/);
 
     expect(compliance.check).not.toHaveBeenCalled();
     expect(livekit.createOutboundCall).not.toHaveBeenCalled();

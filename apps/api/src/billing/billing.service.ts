@@ -449,7 +449,6 @@ export class BillingService {
       purchasedSeconds: credit.purchasedSeconds,
       reservedSeconds: credit.reservedSeconds,
       expiringSeconds: credit.expiringSeconds,
-      lifetimeBrowserTestSecondsRemaining: credit.lifetimeBrowserTestSecondsRemaining,
       topUpAvailable: effective.paidAccess,
       availableSeconds: credit.availableSeconds,
       balanceStatus: credit.status,
@@ -462,6 +461,9 @@ export class BillingService {
         outboundPstn: effective.entitlements.outboundPstn,
         campaigns: effective.entitlements.campaigns,
         whiteLabel: effective.entitlements.whiteLabel,
+        // Which runtimes this plan's calls may use. Surfaced so the dashboard
+        // can explain why a free workspace never reaches the realtime model.
+        pipelineMix: effective.entitlements.pipelineMix,
       },
       usage,
       // The reason a paid call would be refused right now is the one the

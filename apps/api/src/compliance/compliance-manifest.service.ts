@@ -61,10 +61,11 @@ export class ComplianceManifestService {
         backups: 'Supabase automated backups + pg_cron snapshots',
       },
       subprocessors: [
-        { name: 'Vapi', purpose: 'Voice telephony', dataTypes: ['audio', 'transcripts'] },
         { name: 'Twilio', purpose: 'Voice telephony', dataTypes: ['audio', 'call metadata'] },
+        { name: 'LiveKit', purpose: 'Realtime media transport', dataTypes: ['audio', 'call metadata'] },
+        { name: 'Microsoft Azure', purpose: 'Speech-to-text, text-to-speech, and LLM inference', dataTypes: ['audio', 'transcripts'] },
+        { name: 'OpenAI', purpose: 'Realtime voice model for paid plans', dataTypes: ['audio', 'transcripts'] },
         { name: 'Supabase', purpose: 'Database + Auth', dataTypes: ['user data', 'call records'] },
-        { name: 'Deepgram', purpose: 'Speech-to-text', dataTypes: ['audio'] },
         { name: 'Resend', purpose: 'Transactional email', dataTypes: ['email addresses'] },
       ],
     };

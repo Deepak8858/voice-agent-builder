@@ -240,6 +240,8 @@ export class ToolsService {
         await this.assertOutboundEmailAllowed(workspaceId, dto.arguments ?? {});
       } else if (tool.toolType === 'google_sheets') {
         await this.assertDataExportAllowed(workspaceId, dto.arguments ?? {});
+      } else if (tool.toolType === 'google_calendar') {
+        await this.assertCalendarOperationAllowed(workspaceId, dto.arguments ?? {});
       }
     } catch (err) {
       if (err instanceof ComplianceBlockedError) {
@@ -398,6 +400,30 @@ export class ToolsService {
   }
 
   /**
+   * Applies the Calendar compliance decision before credential resolution.
+   * Only operation and attendee addresses are supplied to the decision; audit
+   * records contain reason codes only.
+   */
+  private async assertCalendarOperationAllowed(
+    workspaceId: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof this.compliance?.checkCalendarOperation !== 'function') return;
+    const operation = typeof args.operation === 'string' ? args.operation : '';
+    const attendeeEmails = Array.isArray(args.attendees)
+      ? args.attendees.filter((value): value is string => typeof value === 'string')
+      : [];
+    const result = await this.compliance.checkCalendarOperation(
+      workspaceId,
+      operation,
+      attendeeEmails,
+    );
+    if (!result.allowed) {
+      throw new ComplianceBlockedError({ reasons: result.reasons });
+    }
+  }
+
+  /**
    * Blocks Sheets appends that would export data about opted-out contacts.
    * Email-shaped values in the appended row identify the contacts involved;
    * a row referencing an opted-out contact is refused.
@@ -452,7 +478,7 @@ export class ToolsService {
     const allowed = await this.billing.checkFeatureGate(organizationId, 'tools');
     if (!allowed) {
       throw new ForbiddenPlanError(
-        'Integration tools require a paid plan. Free workspaces can use Vapi calling without external tools.',
+        'Integration tools require a paid plan. Free workspaces can use the VoiceForge voice pipeline without external tools.',
       );
     }
   }
@@ -494,11 +520,23 @@ export class ToolsService {
     createdAt: Date;
     updatedAt: Date;
   }): ToolDetail {
-    if (
-      row.toolType === 'google_calendar' ||
-      row.toolType === 'gmail' ||
-      row.toolType === 'google_sheets'
-    ) {
+    if (row.toolType === 'google_calendar') {
+      const config = (row.config ?? {}) as { calendar_id?: unknown };
+      return {
+        ...this.toSummary(row),
+        // Explicit allowlist protects responses backed by legacy rows that may
+        // still contain refresh_token, client_id, or client_secret.
+        config: {
+          calendar_id:
+            typeof config.calendar_id === 'string' && config.calendar_id
+              ? config.calendar_id
+              : 'primary',
+        },
+        input_schema: row.inputSchema as ToolDetail['input_schema'],
+      };
+    }
+
+    if (row.toolType === 'gmail' || row.toolType === 'google_sheets') {
       // Google tool configs identify operation and target only — OAuth tokens
       // are resolved from the workspace's unified connection at invocation time.
       return {

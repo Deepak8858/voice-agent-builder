@@ -21,7 +21,11 @@ const starter = getPlanEntitlements('starter');
 const growth = getPlanEntitlements('growth');
 const enterprise = getPlanEntitlements('enterprise');
 
-const FREE_BROWSER_TEST_MINUTES = Math.floor(free.lifetimeBrowserTestSeconds / 60);
+/**
+ * Free's browser-test budget is simply its monthly allowance. There is no
+ * separate lifetime test grant, so the copy must not describe one.
+ */
+const FREE_MONTHLY_MINUTES = free.includedMinutes;
 /** 365 days expressed in whole months for customer-facing copy. */
 const PACK_EXPIRY_MONTHS = Math.round(MINUTE_PACK.expiresAfterDays / 30.44);
 
@@ -40,7 +44,7 @@ export const CHECKOUT_UNAVAILABLE_MESSAGE =
 
 /** Statements the billing surfaces are required to make. */
 export const BILLING_DISCLOSURES: readonly string[] = [
-  `Free includes one lifetime browser test of up to ${FREE_BROWSER_TEST_MINUTES} minutes (${free.lifetimeBrowserTestSeconds} seconds). Free has no phone number and cannot place or receive PSTN calls.`,
+  `Free includes ${FREE_MONTHLY_MINUTES} browser test minutes each month, which reset monthly and do not accumulate. Free has no phone number and cannot place or receive PSTN calls.`,
   'Every started connected minute is charged, rounded up to the whole minute.',
   'Calls that are never answered use zero VoiceForge minutes.',
   'Included minutes reset each billing period and do not roll over.',
@@ -60,14 +64,16 @@ export interface FeatureComparisonRow {
 export const FEATURE_COMPARISON: readonly FeatureComparisonRow[] = [
   {
     feature: 'Included voice minutes',
-    free: `${free.includedMinutes} PSTN`,
+    // Free's minutes are real included minutes, but they are browser-test only
+    // because the plan carries no PSTN entitlement.
+    free: `${free.includedMinutes}/mo (browser test only)`,
     starter: `${starter.includedMinutes.toLocaleString('en-US')}/mo`,
     growth: `${growth.includedMinutes.toLocaleString('en-US')}/mo`,
     enterprise: `${enterprise.includedMinutes.toLocaleString('en-US')}/mo`,
   },
   {
     feature: 'Browser test',
-    free: `${free.lifetimeBrowserTestSeconds} sec lifetime`,
+    free: 'Uses included minutes',
     starter: 'Uses included minutes',
     growth: 'Uses included minutes',
     enterprise: 'Uses included minutes',
@@ -149,7 +155,7 @@ export const PRICING_FAQ: readonly PricingFaqEntry[] = [
   },
   {
     q: 'What does Free actually include?',
-    a: `Free includes one lifetime browser test of up to ${FREE_BROWSER_TEST_MINUTES} minutes (${free.lifetimeBrowserTestSeconds} seconds). It does not include a phone number, and it cannot place or receive PSTN calls. A paid plan is required for telephony.`,
+    a: `Free includes ${FREE_MONTHLY_MINUTES} minutes each month for browser tests, which run on our in-house voice pipeline. It does not include a phone number, and it cannot place or receive PSTN calls. A paid plan is required for telephony.`,
   },
   {
     q: 'What happens to unused included minutes?',

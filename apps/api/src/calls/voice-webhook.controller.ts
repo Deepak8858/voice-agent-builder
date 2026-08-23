@@ -19,13 +19,12 @@ export class VoiceWebhookController {
   @SkipRateLimit()
   async receive(
     @Param('provider') provider: string,
-    @Headers('x-vapi-signature') vapiSig: string | undefined,
+    @Headers('x-voice-signature') sig: string | undefined,
     @Req() req: RawBodyRequest<Request>,
     @Body() body: unknown,
-    @Headers('x-vapi-timestamp') vapiTimestamp?: string,
+    @Headers('x-voice-timestamp') timestamp?: string,
   ): Promise<{ received: boolean }> {
     const secret = env.VOICE_WEBHOOK_SECRET;
-    const sig = provider === 'vapi' ? vapiSig : undefined;
 
     if (!secret) {
       throw new UnauthorizedException('Missing webhook secret');
@@ -36,15 +35,15 @@ export class VoiceWebhookController {
     if (!req.rawBody) {
       throw new UnauthorizedException('Missing raw webhook body');
     }
-    if (isProduction() && !vapiTimestamp) {
+    if (isProduction() && !timestamp) {
       throw new UnauthorizedException('Missing webhook timestamp');
     }
-    if (vapiTimestamp && !isRecentTimestamp(vapiTimestamp)) {
+    if (timestamp && !isRecentTimestamp(timestamp)) {
       throw new UnauthorizedException('Stale webhook timestamp');
     }
 
-    const signedPayload = vapiTimestamp
-      ? Buffer.concat([Buffer.from(`${vapiTimestamp}.`, 'utf8'), req.rawBody])
+    const signedPayload = timestamp
+      ? Buffer.concat([Buffer.from(`${timestamp}.`, 'utf8'), req.rawBody])
       : req.rawBody;
     const expected = createHmac('sha256', secret).update(signedPayload).digest('hex');
     if (expected.length !== sig.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {

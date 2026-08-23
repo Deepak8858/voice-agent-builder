@@ -45,7 +45,7 @@ describe('ResponseEnvelopeInterceptor', () => {
     const response = { results: [{ toolCallId: 'tc-1', result: '{"ok":true}' }] };
 
     await expect(lastValueFrom(interceptor.intercept(
-      contextForUrl('/api/v1/voice/webhooks/vapi/agents/a1/tools', handler),
+      contextForUrl('/api/v1/voice/webhooks/livekit/agents/a1/tools', handler),
       handlerReturning(response),
     ))).resolves.toBe(response);
   });

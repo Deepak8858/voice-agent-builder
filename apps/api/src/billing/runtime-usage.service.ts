@@ -356,7 +356,6 @@ export class RuntimeUsageService {
         organizationId: event.organizationId,
         includedMinutesRemaining: 0,
         purchasedMinutesRemaining: 0,
-        lifetimeBrowserTestSecondsRemaining: 0,
       },
     };
   }
@@ -379,7 +378,6 @@ export class RuntimeUsageService {
         organizationId: balance.organizationId,
         includedMinutesRemaining: balance.includedMinutesRemaining,
         purchasedMinutesRemaining: balance.purchasedMinutesRemaining,
-        lifetimeBrowserTestSecondsRemaining: balance.lifetimeBrowserTestSecondsRemaining,
       },
     };
   }
