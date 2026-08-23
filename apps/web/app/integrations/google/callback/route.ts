@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { googleConnectionApi, ApiCallError } from '@/lib/api';
+import { publicRedirectUrl } from '@/lib/public-origin';
 
 const SETTINGS_PATH = '/dashboard/settings/google';
 
@@ -19,7 +20,10 @@ export async function GET(req: NextRequest) {
   const state = searchParams.get('state');
   const oauthError = searchParams.get('error');
 
-  const redirect = new URL(SETTINGS_PATH, req.url);
+  // Never derive the redirect from req.url: in the standalone production
+  // server it reflects the container bind address (https://0.0.0.0:3000),
+  // which is unreachable from the user's browser.
+  const redirect = publicRedirectUrl(SETTINGS_PATH, req);
 
   if (oauthError) {
     // e.g. access_denied when the user cancels the consent screen.
