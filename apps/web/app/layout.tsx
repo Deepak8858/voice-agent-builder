@@ -26,9 +26,9 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 const siteName = 'VoiceForge AI';
-const siteTitle = 'VoiceForge AI — Build Voice Agents That Answer';
+const siteTitle = 'VoiceForge AI — Spec-First Voice Agent Platform';
 const siteDescription =
-  'Design, test, deploy, and white-label AI voice calling agents using natural language.';
+  'Build, test, govern, deploy, and white-label reliable AI voice agents from a reviewable Agent Spec JSON contract.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -79,7 +79,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       lang="en"
       className={`${dmSans.variable} ${dmSerif.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
-<body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
+      <body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
         <ClientChrome />
         <QueryProvider>
           <main className="flex flex-1 flex-col">{children}</main>

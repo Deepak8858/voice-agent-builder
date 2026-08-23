@@ -1,13 +1,18 @@
 import Link from 'next/link';
 import { MINUTE_PACK, PLAN_CATALOG } from '@voiceforge/shared';
-import { BUSINESS_LOCATION, LegalPage, Section, SUPPORT_EMAIL } from '@/components/legal/legal-shell';
+import {
+  BUSINESS_LOCATION,
+  LegalPage,
+  Section,
+  SUPPORT_EMAIL,
+} from '@/components/legal/legal-shell';
+import { pageMetadata } from '@/lib/seo';
 
-export const metadata = {
-  title: 'Services — VoiceForge AI',
-  description:
-    'What VoiceForge AI sells: hosted AI voice calling agents, the plans available, how billing works, and what is excluded.',
-  alternates: { canonical: '/services' },
-};
+export const metadata = pageMetadata(
+  'AI Voice Agent Services | VoiceForge',
+  'See how VoiceForge builds, tests, deploys, monitors, and white-labels governed AI voice agents for agencies and client workspaces.',
+  '/services',
+);
 
 export default function ServicesPage() {
   return (
@@ -17,8 +22,9 @@ export default function ServicesPage() {
       intro={
         <>
           VoiceForge AI is a software-as-a-service platform for building, testing, deploying, and
-          monitoring AI voice calling agents. Service is sold online as a monthly subscription and is
-          delivered entirely over the internet. There is no physical product and nothing is shipped.
+          monitoring AI voice calling agents. Service is sold online as a monthly subscription and
+          is delivered entirely over the internet. There is no physical product and nothing is
+          shipped.
         </>
       }
     >
@@ -45,9 +51,7 @@ export default function ServicesPage() {
       </Section>
 
       <Section title="Plans and pricing">
-        <p>
-          All prices are in US dollars and billed monthly per organization. Current plans:
-        </p>
+        <p>All prices are in US dollars and billed monthly per organization. Current plans:</p>
         <div className="mt-4 space-y-4">
           {PLAN_CATALOG.map((plan) => (
             <div key={plan.id} className="rounded-lg border bg-background p-4">
@@ -76,8 +80,11 @@ export default function ServicesPage() {
           purchased directly on the site. Enterprise is sales-assisted and contracted separately.
         </p>
         <p className="mt-3">
-          See <Link href="/pricing" className="text-primary underline">the pricing page</Link> for
-          the current published rates, which are authoritative.
+          See{' '}
+          <Link href="/pricing" className="text-primary underline">
+            the pricing page
+          </Link>{' '}
+          for the current published rates, which are authoritative.
         </p>
       </Section>
 
@@ -90,8 +97,8 @@ export default function ServicesPage() {
         <p className="mt-3">
           If you need more minutes than your plan includes, you can buy a prepaid pack of{' '}
           {MINUTE_PACK.minutes} minutes for ${MINUTE_PACK.priceUsd}. Purchased minutes are consumed
-          only after your included minutes are used up, and expire{' '}
-          {MINUTE_PACK.expiresAfterDays} days after purchase.
+          only after your included minutes are used up, and expire {MINUTE_PACK.expiresAfterDays}{' '}
+          days after purchase.
         </p>
         <p className="mt-3">
           There is no automatic overage billing. When you run out of available minutes, further paid
@@ -106,8 +113,10 @@ export default function ServicesPage() {
           checkout completing. There is no waiting period, onboarding fee, or manual provisioning
           step for self-service plans. Because the service is delivered instantly and consumed as
           metered usage, please read the{' '}
-          <Link href="/refund" className="text-primary underline">refund policy</Link> before
-          purchasing.
+          <Link href="/refund" className="text-primary underline">
+            refund policy
+          </Link>{' '}
+          before purchasing.
         </p>
       </Section>
 
@@ -134,8 +143,8 @@ export default function ServicesPage() {
           You are responsible for the calls your agents place. You must have a lawful basis to
           contact each person you call, honour do-not-call requests, respect local calling hours,
           and comply with call-recording consent law in every jurisdiction you operate in.
-          VoiceForge enforces do-not-call suppression, quiet hours, and consent checks on every plan,
-          but these controls assist your compliance programme rather than replace it.
+          VoiceForge enforces do-not-call suppression, quiet hours, and consent checks on every
+          plan, but these controls assist your compliance programme rather than replace it.
         </p>
         <p className="mt-3">
           Using the platform for fraud, impersonation, harassment, or unlawful robocalling is
