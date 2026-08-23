@@ -49,10 +49,10 @@ export default function Error({
     return (
       <div className="flex min-h-[70vh] flex-col items-center justify-center px-6 py-16 text-center">
         <h1 className="font-[family-name:var(--font-serif)] text-3xl tracking-tight">
-          Updating to the latest version
+          Update available
         </h1>
         <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
-          A new version of the app was deployed. This page is reloading to load it.
+          A new version of the app was deployed. Please reload the page to get the latest version.
         </p>
         <button
           type="button"

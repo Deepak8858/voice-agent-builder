@@ -40,8 +40,8 @@ describe('shouldReloadForChunkError', () => {
     expect(shouldReloadForChunkError(chunkError, 1000, null)).toBe(true);
   });
 
-  it('reloads again once the cooldown has passed', () => {
-    expect(shouldReloadForChunkError(chunkError, RELOAD_COOLDOWN_MS + 1, 0)).toBe(true);
+  it('suppresses a second reload even after the cooldown has passed', () => {
+    expect(shouldReloadForChunkError(chunkError, RELOAD_COOLDOWN_MS + 1, 0)).toBe(false);
   });
 
   it('suppresses a repeat reload inside the cooldown window', () => {

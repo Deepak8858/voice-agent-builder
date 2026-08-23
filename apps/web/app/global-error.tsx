@@ -58,7 +58,7 @@ export default function GlobalError({
           }}
         >
           <h1 style={{ margin: 0, fontSize: '1.875rem', letterSpacing: '-0.025em' }}>
-            Updating to the latest version
+            Update available
           </h1>
           <p
             style={{
@@ -69,7 +69,7 @@ export default function GlobalError({
               color: '#a1a1aa',
             }}
           >
-            A new version of the app was deployed. This page is reloading to load it.
+            A new version of the app was deployed. Please reload the page to get the latest version.
           </p>
           <button
             type="button"

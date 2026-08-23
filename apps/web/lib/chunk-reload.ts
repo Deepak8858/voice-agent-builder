@@ -38,8 +38,8 @@ export function isChunkLoadError(error: unknown): boolean {
 
 /**
  * Decides whether a chunk error should trigger a reload now. Pure so the loop
- * guard is testable without a browser: reload only for a chunk error, and not
- * when the previous reload was inside the cooldown window.
+ * guard is testable without a browser: reload only for a chunk error, and only
+ * when no previous reload has been attempted (even if the cooldown has passed).
  */
 export function shouldReloadForChunkError(
   error: unknown,
@@ -47,7 +47,7 @@ export function shouldReloadForChunkError(
   lastReloadAt: number | null,
 ): boolean {
   if (!isChunkLoadError(error)) return false;
-  if (lastReloadAt !== null && now - lastReloadAt < RELOAD_COOLDOWN_MS) return false;
+  if (lastReloadAt !== null) return false;
   return true;
 }
 
