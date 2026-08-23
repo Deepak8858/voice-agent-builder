@@ -7,6 +7,7 @@ import { CardGridSkeleton } from '@/components/dashboard/page-skeleton';
 import { SessionErrorCard } from '@/components/dashboard/session-error-card';
 import type { ToolSummary } from '@voiceforge/shared';
 import { Plus, Plug, ArrowRight } from 'lucide-react';
+import { GoogleLogo } from '@/components/icons/google-logo';
 
 export default function IntegrationsPage() {
   return (
@@ -24,6 +25,24 @@ export default function IntegrationsPage() {
           </Button>
         }
       />
+
+      <Link
+        href="/dashboard/settings/google"
+        className="group flex items-center justify-between gap-4 rounded-2xl border border-border bg-card/95 p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/20 hover:shadow-md"
+      >
+        <div className="flex items-center gap-4">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border bg-white shadow-sm">
+            <GoogleLogo className="h-5 w-5" />
+          </span>
+          <div>
+            <h3 className="text-base font-semibold text-foreground">Google Workspace</h3>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Connect once to provision Calendar booking, Gmail send, and Sheets append tools for your agents.
+            </p>
+          </div>
+        </div>
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-all group-hover:translate-x-1" />
+      </Link>
 
       <Suspense fallback={<CardGridSkeleton cards={6} />}>
         <IntegrationsSection />

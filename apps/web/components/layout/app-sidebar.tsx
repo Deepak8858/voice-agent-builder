@@ -32,6 +32,7 @@ import {
   Menu,
   Plus,
   Sparkles,
+  CalendarCheck,
 } from 'lucide-react';
 
 const navSections = [
@@ -52,6 +53,7 @@ const navSections = [
       { href: '/dashboard/campaigns', label: 'Campaigns', icon: Sparkles },
       { href: '/dashboard/knowledge', label: 'Knowledge Base', icon: BookOpen },
       { href: '/dashboard/integrations', label: 'Integrations', icon: Plug },
+      { href: '/dashboard/settings/google', label: 'Google Workspace', icon: CalendarCheck },
       { href: '/dashboard/analytics', label: 'Analytics', icon: BarChart3 },
     ],
   },
