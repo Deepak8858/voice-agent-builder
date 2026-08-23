@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import Link from 'next/link';
 import { captureClientException } from '@/lib/analytics/posthog';
+import { isChunkLoadError, recoverFromChunkError } from '@/lib/chunk-reload';
 
 /**
  * Inlined by the bundler at build time, so this is a compile-time constant in
@@ -37,7 +38,32 @@ export default function Error({
     // also writes to the server log, and is the only way to tie this event to
     // the corresponding server-side stack.
     captureClientException(error, { digest: error.digest, boundary: 'route' });
+    // A stale chunk after a deploy cannot be fixed by `reset()`, which requests
+    // the same missing file again; a full reload pulls the current chunks.
+    recoverFromChunkError(error);
   }, [error]);
+
+  // While the reload above is in flight, and if it was suppressed as a loop
+  // guard, `reset()` is useless for a chunk error. Offer a reload instead.
+  if (isChunkLoadError(error)) {
+    return (
+      <div className="flex min-h-[70vh] flex-col items-center justify-center px-6 py-16 text-center">
+        <h1 className="font-[family-name:var(--font-serif)] text-3xl tracking-tight">
+          Update available
+        </h1>
+        <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
+          A new version of the app was deployed. Please reload the page to get the latest version.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="mt-6 inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground"
+        >
+          Reload now
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-[70vh] flex-col items-center justify-center px-6 py-16 text-center">
