@@ -35,7 +35,7 @@ export class PhoneNumbersController {
     @Param('numberId') numberId: string,
     @Body() body: { agent_id: string },
   ) {
-    await this.numbers.assignToAgent(numberId, body.agent_id);
+    await this.numbers.assignToAgent(workspaceId, numberId, body.agent_id);
     return { success: true };
   }
 
@@ -44,7 +44,7 @@ export class PhoneNumbersController {
     @Param('workspaceId') workspaceId: string,
     @Param('numberId') numberId: string,
   ) {
-    await this.numbers.release(numberId);
+    await this.numbers.release(workspaceId, numberId);
     return { success: true };
   }
 }

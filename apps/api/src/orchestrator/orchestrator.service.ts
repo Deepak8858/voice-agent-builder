@@ -60,7 +60,7 @@ export class AgentOrchestratorService {
     if (!agent) throw new Error('Agent not found');
 
     const activeVersion = agent.versions[0];
-    const steps = await this.buildGenerationSteps(agentId, agent.status);
+    const steps = await this.buildGenerationSteps(workspaceId, agentId, agent.status);
 
     return {
       agent_id: agent.id,
@@ -73,10 +73,11 @@ export class AgentOrchestratorService {
   }
 
   async publish(workspaceId: string, agentId: string, actorUserId: string): Promise<void> {
-    await this.prisma.agent.update({
-      where: { id: agentId },
+    const updated = await this.prisma.agent.updateMany({
+      where: { id: agentId, workspaceId },
       data: { status: 'publishing' },
     });
+    if (updated.count === 0) throw new Error('Agent not found');
 
     await this.queue.enqueue('orchestrator.publish', 'publish', { agentId, workspaceId, actorUserId });
   }
@@ -105,11 +106,14 @@ export class AgentOrchestratorService {
     return map[dir] ?? 'inbound_receptionist';
   }
 
-  private async buildGenerationSteps(agentId: string, agentStatus: string) {
+  private async buildGenerationSteps(workspaceId: string, agentId: string, agentStatus: string) {
     const [sources, rules, number] = await Promise.all([
-      this.prisma.knowledgeSource.findMany({ where: { agentId }, select: { status: true } }),
-      this.prisma.crmRoutingRule.findMany({ where: { agentId }, select: { id: true, provider: true } }),
-      this.prisma.twilioPhoneNumber.findFirst({ where: { agentId } }),
+      this.prisma.knowledgeSource.findMany({ where: { agentId, workspaceId }, select: { status: true } }),
+      this.prisma.crmRoutingRule.findMany({
+        where: { agentId, workspaceId },
+        select: { id: true, provider: true },
+      }),
+      this.prisma.twilioPhoneNumber.findFirst({ where: { agentId, workspaceId } }),
     ]);
 
     const hasSpec = sources.length > 0 || rules.length > 0;

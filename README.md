@@ -16,8 +16,7 @@ voice-agent-builder/
   apps/
     web/            Next.js 16 + React 19 + Tailwind 4 frontend
     api/            NestJS backend (Prisma + Postgres + BullMQ)
-    livekit-agent/  LiveKit voice agent worker
-    voice-edge/     Twilio Media Streams bridge (own voice pipeline)
+    livekit-agent/  LiveKit voice agent worker (OpenAI Realtime + in-house Azure pipeline)
   packages/
     shared/         Zod schemas, DTOs, types, template seed data
     ui/             Shared UI primitives
@@ -38,7 +37,7 @@ the `workspace:*` protocol, so `npm install` will not resolve this repo — use
 | Database | Supabase Postgres via Prisma |
 | Queues | Redis/Valkey + BullMQ |
 | Auth | Supabase Auth, JWT verified with pinned algorithm, audience, and issuer (`apps/api/src/auth/supabase-auth.service.ts:119-123`) |
-| Voice | Vapi, Retell, OpenAI Realtime, and LiveKit adapters, plus a dev-only mock (`apps/api/src/voice/adapters/`) |
+| Voice | OpenAI Realtime and the in-house `standard` Azure pipeline via LiveKit, plus a dev-only mock (`apps/api/src/voice/adapters/`) |
 | LLM | Provider adapters under `apps/api/src/llm/` |
 | Validation | Shared Zod schemas at API and UI boundaries |
 
@@ -106,16 +105,15 @@ Required backend env vars are documented in `.env.example`.
 | ------- | ------------ |
 | `pnpm dev` | Runs `@voiceforge/api` and `@voiceforge/web` in parallel |
 | `pnpm build` | Builds shared, API, and web in order |
-| `pnpm typecheck` | Type-checks all six workspaces |
+| `pnpm typecheck` | Type-checks all five workspaces |
 | `pnpm lint` | Lints `@voiceforge/api` and `@voiceforge/web` |
-| `pnpm test` | Runs Vitest for shared, API, and livekit-agent |
+| `pnpm test` | Runs Vitest for shared, API, livekit-agent, and web |
 | `pnpm db:push` | Applies the Prisma schema through `DIRECT_URL` |
 | `pnpm db:seed` | Seeds the MVP agent templates |
 
-The root `test` script does **not** include `apps/web`, which has its own suite
-(`apps/web/package.json`, `apps/web/vitest.config.ts`). CI runs
-`pnpm -r --if-present run test`, which does include it. Run
-`pnpm --filter @voiceforge/web exec vitest run` locally to cover the web tests.
+The root `test` script covers every workspace that has a suite, so a local
+`pnpm test` matches what CI's `pnpm -r --if-present run test` runs. It previously
+omitted `apps/web`, which made a local green misleading.
 
 ## Status
 

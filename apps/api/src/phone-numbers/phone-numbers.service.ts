@@ -86,12 +86,26 @@ export class PhoneNumbersService {
     });
   }
 
-  async assignToAgent(numberId: string, agentId: string) {
-    await this.prisma.twilioPhoneNumber.update({ where: { id: numberId }, data: { agentId } });
+  async assignToAgent(workspaceId: string, numberId: string, agentId: string) {
+    // The agent must also belong to the caller's workspace, otherwise a tenant
+    // could point its own number at another tenant's agent.
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: agentId, workspaceId },
+      select: { id: true },
+    });
+    if (!agent) throw new AppError('NOT_FOUND', 'Agent not found', 404);
+
+    const result = await this.prisma.twilioPhoneNumber.updateMany({
+      where: { id: numberId, workspaceId },
+      data: { agentId },
+    });
+    if (result.count === 0) throw new AppError('NOT_FOUND', 'Phone number not found', 404);
   }
 
-  async release(numberId: string) {
-    const number = await this.prisma.twilioPhoneNumber.findUnique({ where: { id: numberId } });
+  async release(workspaceId: string, numberId: string) {
+    const number = await this.prisma.twilioPhoneNumber.findFirst({
+      where: { id: numberId, workspaceId },
+    });
     if (!number) return;
 
     if (number.type !== 'byo' && number.twilioSid) {
@@ -106,6 +120,6 @@ export class PhoneNumbersService {
         },
       );
     }
-    await this.prisma.twilioPhoneNumber.delete({ where: { id: numberId } });
+    await this.prisma.twilioPhoneNumber.deleteMany({ where: { id: numberId, workspaceId } });
   }
 }

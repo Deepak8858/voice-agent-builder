@@ -32,9 +32,9 @@ production deploy path is now commit-pinned with rollback.
    hand-built. The new workflow fixes this prospectively and has not been used yet.
 3. **Committed infrastructure metadata.** `supabase/.temp/` is still git-tracked,
    and two stale agent worktree snapshots under `.claude/worktrees/` duplicate it.
-4. **Coverage holes in exactly the wrong places.** `apps/voice-edge` — live audio
-   handling — has no tests, and there is no systematic cross-tenant authorization
-   test despite tenant isolation being enforced in application code.
+4. **Coverage holes in exactly the wrong places — closed.** The cross-tenant
+   authorization sweep now exists (item 4), and `apps/voice-edge` was deleted
+   rather than tested (item 5).
 
 Reaching 10/10 is mostly an operations exercise at this point, not a feature one.
 
@@ -73,9 +73,12 @@ tests at `flow-builder-model.test.ts`.
 **Referral system — exists.** `apps/api/src/referral/` with controller, service, and
 module, plus schema backing.
 
-**Own voice pipeline — exists.** `apps/voice-edge/` implements the Twilio Media
-Streams bridge with session store, prompt builder, audio utils, and a Dockerfile.
-It has no tests, which is its main problem.
+**Own voice pipeline — superseded and deleted.** `apps/voice-edge/` was a Twilio
+Media Streams bridge over Deepgram + Cartesia. It was never deployed (no compose
+service, no workflow reference, present only in the root `typecheck` script) and
+was made redundant by the in-house `standard` pipeline in `apps/livekit-agent`.
+Its μ-law codec was also irreparably wrong — see item 5 — so it was removed
+instead of tested.
 
 **Vapi and Retell adapters — removed.** Both adapters, their tests, and the Vapi
 tools controller were deleted, along with every `VAPI_*`/`RETELL_*` variable. The
@@ -102,9 +105,10 @@ unverifiable from this repository.
 **Email.** Fully implemented, including a tenant-scoped weekly digest restricted to
 owners and admins (`apps/api/src/email/email.service.ts:164-242`). It degrades
 cleanly to `{ status: 'skipped', reason: 'email_not_configured' }` without
-`RESEND_API_KEY` (lines 165-170). But **no scheduler invokes it** — there is no
-`@nestjs/schedule` dependency, no cron registration, and no non-test caller of
-`sendWeeklyDigest`. A finished feature with no trigger.
+`RESEND_API_KEY` (lines 165-170). It is now scheduled: `workers/digest.worker.ts`
+registers a repeatable BullMQ job on `WEEKLY_DIGEST_CRON` that fans out one job
+per active workspace, so a single tenant's failure cannot abort the run. It only
+runs where `WORKERS_ENABLED=true`.
 
 **Billing.** Implemented; `BILLING_MODE` defaults to `demo`
 (`apps/api/src/config/env.ts:111`) and the web client disables checkout in any
@@ -140,22 +144,42 @@ needed in an incident.
 
 ### P1 — close the coverage holes that matter
 
-**4. Cross-tenant authorization test sweep.** Assert that every workspace-scoped
-query filters by `workspaceId`. Tenant isolation is enforced in application code
-against a privileged database connection, so one missing `where` clause is a
-cross-tenant leak. This is the highest-value test in the repository.
+**4. Cross-tenant authorization test sweep — done.** Two complementary mechanisms
+live in `apps/api/src/security/`. `cross-tenant-isolation.test.ts` runs the real
+services against an in-memory Prisma stand-in that actually *evaluates* `where`
+clauses over a seeded two-workspace dataset, so dropping a `workspaceId` predicate
+genuinely returns the foreign row and fails the test. `tenant-scope-baseline.test.ts`
+is a static ratchet: it re-derives the tenant-scoped models from `schema.prisma`
+and fails on any *new* unscoped query, keyed by `file:model.operation` so unrelated
+edits do not churn. The sweep found five real cross-tenant defects, all fixed:
+unscoped phone-number assign/release, an unscoped contact re-read that let another
+tenant's opt-out state drive a compliance decision, an unscoped consent lookup, a
+foreign call transcript feeding CRM routing, and an unscoped agent publish.
 
-**5. Test `apps/voice-edge`.** Zero tests on the component that handles live audio
-and Twilio Media Streams. At minimum cover audio framing, session lifecycle, and
-prompt construction.
+Two authorization gaps remain **open** and are not test problems:
+- Three controllers routed under `/workspaces/:workspaceId/` have no
+  `WorkspaceGuard`, so the URL's `workspaceId` is attacker-chosen and the service's
+  predicate is worthless: `phone-numbers.controller.ts`, `audit/audit.controller.ts`,
+  `crm-routing/crm-routing.controller.ts`.
+- `orchestrator.controller.ts` derives the workspace as
+  `req.workspace?.id ?? req.user?.workspaceId ?? req.user?.id ?? ''`, and nothing in
+  the codebase ever assigns `req.workspace`, so it resolves to the user id or the
+  empty string. The service layer now fails closed, but the derivation is still wrong.
 
-**6. Include `apps/web` in the root `test` script.** It has 12 test files that the
-local gate skips. CI's `pnpm -r --if-present run test` picks them up, but developers
-running `pnpm test` locally get a false green.
+**5. `apps/voice-edge` — deleted rather than tested.** Testing it would have
+entrenched a second, undeployed voice runtime that duplicates the in-house pipeline
+via providers (Deepgram, Cartesia) used nowhere else. Its μ-law codec was not
+merely imprecise but non-functional: all 65536 encode values differed from ITU-T
+G.711, the decode table spanned ±512 instead of ±32124, round-tripping failed for
+all 256 codes, and on a 440 Hz tone the error RMS exceeded the signal RMS — the
+output was noise, not degraded audio. Silence encoded to `0x71` instead of `0xFF`.
+A correct implementation already exists in the LiveKit pipeline path.
 
-**7. Schedule the weekly digest, or remove it.** Either add a scheduler and wire
-`sendWeeklyDigest`, or delete the feature. Shipping unreachable code is worse than
-either.
+**6. Include `apps/web` in the root `test` script — done.** The root `test` script
+now runs shared, api, livekit-agent, and web, so a local green matches CI.
+
+**7. Schedule the weekly digest, or remove it — done.** `workers/digest.worker.ts`
+registers a repeatable job keyed on `WEEKLY_DIGEST_CRON` and fans out per workspace.
 
 ### P2 — toolchain and hygiene
 
