@@ -624,9 +624,18 @@ export class TelephonyService {
     // Route after the call row exists because percentage splits are keyed to
     // call identity, but before admission so billing, storage, and dispatch all
     // use the same pipeline decision.
-    const pipeline = await this.resolvePipeline(number.organizationId, call.id);
-    if (pipeline) {
-      await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+    let pipeline: VoicePipeline | null;
+    try {
+      pipeline = await this.resolvePipeline(number.organizationId, call.id);
+      if (pipeline) {
+        await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+      }
+    } catch (err) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'pipeline_routing_failed' },
+      });
+      throw err;
     }
 
     const admission = await this.admission.admitCall({

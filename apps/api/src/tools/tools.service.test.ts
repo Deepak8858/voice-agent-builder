@@ -144,6 +144,26 @@ function makeService(opts: {
           return updated;
         },
       ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const existing = invocations.get(where.id as string);
+          if (
+            !existing ||
+            existing.status !== where.status ||
+            existing.idempotencyKey !== where.idempotencyKey
+          ) {
+            return { count: 0 };
+          }
+          invocations.set(existing.id, { ...existing, ...data } as InvocationRow);
+          return { count: 1 };
+        },
+      ),
     },
   };
   const audit = { log: vi.fn() };

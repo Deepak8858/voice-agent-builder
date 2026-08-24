@@ -62,6 +62,7 @@ const IDEMPOTENT_CLAIM_ATTEMPTS = 2;
  */
 export interface ToolExecutionContext {
   workspaceId: string;
+  idempotencyKey?: string;
 }
 
 export interface ToolExecutor {
@@ -327,7 +328,7 @@ export class ToolsService {
       const result = await exec.execute(
         dto.arguments ?? {},
         tool.config as Record<string, string>,
-        { workspaceId },
+        { workspaceId, ...(idempotencyKey ? { idempotencyKey } : {}) },
       );
       const status = result.success ? 'success' : 'failed';
       const updated = await this.prisma.toolInvocation.update({
@@ -402,13 +403,21 @@ export class ToolsService {
     const startedAt = existing.startedAt?.getTime() ?? 0;
     const stranded = Date.now() - startedAt >= PENDING_IDEMPOTENCY_TAKEOVER_MS;
     if (stranded) {
-      // Free the key so the caller's insert can claim it. Scoped by id, so a
-      // row that reached a terminal state in the meantime is untouched.
-      await this.prisma.toolInvocation.update({
-        where: { id: existing.id },
+      // Release only the pending row observed above. The original invocation
+      // may complete between the read and this update; updateMany makes that
+      // state transition conditional instead of clearing a successful key.
+      const released = await this.prisma.toolInvocation.updateMany({
+        where: { id: existing.id, status: 'pending', idempotencyKey },
         data: { idempotencyKey: null },
       });
-      return null;
+      if (released.count === 1) return null;
+
+      const completed = await this.prisma.toolInvocation.findUnique({
+        where: {
+          workspaceId_toolId_idempotencyKey: { workspaceId, toolId, idempotencyKey },
+        },
+      });
+      if (completed?.status === 'success') return this.toInvocationDetail(completed);
     }
 
     throw new ToolExecutionFailedError('An identical tool invocation is already in progress.', {

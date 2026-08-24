@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { safeFetch } from '../../common/safe-fetch';
 import {
   GOOGLE_REAUTH_REQUIRED_MESSAGE,
@@ -49,7 +50,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
 
     try {
       if (operation === 'create_event') {
-        return await this.createEvent(accessToken, calendarId, params);
+        return await this.createEvent(accessToken, calendarId, params, context.idempotencyKey);
       }
       if (operation === 'list_events') {
         return await this.listEvents(accessToken, calendarId, params);
@@ -57,7 +58,10 @@ export class GoogleCalendarExecutor implements ToolExecutor {
       return await this.findFreeSlot(accessToken, calendarId, params);
     } catch (err) {
       this.logger.error(`Calendar ${operation} request failed: ${(err as Error).message}`);
-      return { success: false, error: 'Google Calendar request failed — please try again shortly.' };
+      return {
+        success: false,
+        error: 'Google Calendar request failed — please try again shortly.',
+      };
     }
   }
 
@@ -65,6 +69,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
     accessToken: string,
     calendarId: string,
     params: Record<string, unknown>,
+    idempotencyKey?: string,
   ): Promise<ToolCallResult> {
     if (typeof params.summary !== 'string' || !params.summary.trim()) {
       return { success: false, error: 'summary is required to create an event.' };
@@ -76,8 +81,12 @@ export class GoogleCalendarExecutor implements ToolExecutor {
       ? params.attendees.filter((a): a is string => typeof a === 'string')
       : [];
 
-    // No retries: event creation is not idempotent — a timed-out request may
-    // still have landed, and retrying would double-book.
+    // Google Calendar accepts caller-supplied event IDs using base32hex
+    // characters. Hashing the internal key yields a stable valid ID, so a retry
+    // after an ambiguous transport failure cannot create a second event.
+    const eventId = idempotencyKey
+      ? createHash('sha256').update(idempotencyKey).digest('hex')
+      : undefined;
     const response = await safeFetch(
       `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
       {
@@ -87,6 +96,7 @@ export class GoogleCalendarExecutor implements ToolExecutor {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          ...(eventId ? { id: eventId } : {}),
           summary: params.summary,
           start: { dateTime: params.start_iso, timeZone: params.time_zone ?? 'UTC' },
           end: { dateTime: params.end_iso, timeZone: params.time_zone ?? 'UTC' },
@@ -95,6 +105,11 @@ export class GoogleCalendarExecutor implements ToolExecutor {
         }),
       },
     );
+    // A retry of an event that Google already accepted returns 409 for the
+    // deterministic ID. Treat that as the successful replay of the same write.
+    if (response.status === 409 && eventId) {
+      return { success: true, result: { event_id: eventId, html_link: null } };
+    }
     const failure = await this.apiFailure(response);
     if (failure) return failure;
 

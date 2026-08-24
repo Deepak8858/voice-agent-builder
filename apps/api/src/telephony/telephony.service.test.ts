@@ -458,6 +458,57 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('marks the call failed when pipeline routing rejects it', async () => {
+    const prisma = makePrisma();
+    const livekit = { createOutboundCall: vi.fn(), livekitSipHost: 'tenant.sip.livekit.cloud' };
+    const admission = makeAdmission();
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      { checkFeatureGate: vi.fn(async () => true) } as never,
+      {
+        check: vi.fn(async () => ({
+          id: 'check-1',
+          status: 'passed',
+          reasons: [],
+          contact_id: null,
+        })),
+        attachCheckToCall: vi.fn(async () => undefined),
+      } as never,
+      {} as never,
+      admission as never,
+      {
+        route: vi.fn(() => {
+          throw new Error('routing unavailable');
+        }),
+      } as never,
+      { getEffectivePlan: vi.fn(async () => ({ plan: 'growth' })) } as never,
+    );
+
+    await expect(
+      service.startOutboundCall('workspace-1', 'user-1', {
+        phone_number_id: 'number-1',
+        to_number: '+14155559876',
+      }),
+    ).rejects.toThrow(/routing unavailable/);
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({
+          status: 'failed',
+          outcome: 'pipeline_routing_failed',
+          endedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+  });
+
   it('blocks free workspaces from using BYO LiveKit outbound calling', async () => {
     const prisma = makePrisma();
     const livekit = {

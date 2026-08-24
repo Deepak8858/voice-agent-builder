@@ -497,9 +497,18 @@ export class CallsService {
       },
     });
 
-    const pipeline = await this.routePipeline(ws.organizationId, call.id);
-    if (pipeline) {
-      await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+    let pipeline: VoicePipeline | null;
+    try {
+      pipeline = await this.routePipeline(ws.organizationId, call.id);
+      if (pipeline) {
+        await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+      }
+    } catch (err) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'pipeline_routing_failed' },
+      });
+      throw err;
     }
     // This legacy endpoint dispatches directly through a runtime adapter. The
     // in-house standard pipeline is only available through TelephonyService,
