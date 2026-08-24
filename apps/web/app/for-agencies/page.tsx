@@ -44,6 +44,8 @@ export default function ForAgenciesPage() {
       related={[
         { href: '/templates', label: 'Browse agent templates' },
         { href: '/compliance', label: 'Review compliance controls' },
+        { href: '/integrations', label: 'Review integrations' },
+        { href: '/resources/white-label-ai-voice-agents', label: 'Read the white-label guide' },
         { href: '/pricing', label: 'See pricing' },
       ]}
     />

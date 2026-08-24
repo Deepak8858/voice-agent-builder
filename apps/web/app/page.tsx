@@ -571,6 +571,12 @@ export default function Home() {
             <Link href="/for-agencies" className="transition hover:text-[#23594f]">
               Agencies
             </Link>
+            <Link href="/integrations" className="transition hover:text-[#23594f]">
+              Integrations
+            </Link>
+            <Link href="/resources" className="transition hover:text-[#23594f]">
+              Resources
+            </Link>
             <Link href="/pricing" className="transition hover:text-[#23594f]">
               Pricing
             </Link>

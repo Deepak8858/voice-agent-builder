@@ -38,6 +38,8 @@ export default function HowItWorksPage() {
       related={[
         { href: '/templates', label: 'Start from a template' },
         { href: '/compliance', label: 'Understand compliance gates' },
+        { href: '/resources/test-ai-voice-agent', label: 'Use the voice-agent QA checklist' },
+        { href: '/integrations', label: 'Review provider and tool integrations' },
         { href: '/for-agencies', label: 'Deliver to agency clients' },
       ]}
     />
