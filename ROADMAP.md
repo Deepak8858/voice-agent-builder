@@ -256,10 +256,19 @@ migration. The sole production path is the dispatch-only
 images in ECR, and deploys `infra/docker/docker-compose.aws.yml` to EC2. Remaining
 cloud-specific values and provisioning assumptions are documented under `infra/aws/`.
 
-**14. Runtime-verify the operational assets.** `scripts/backup-validation.js`,
-`docs/RUNBOOK.md`, `docs/35_BACKUP_RECOVERY.md`, and the k6 suites all exist but none
-were runtime-verified. A restore drill is the only way to know the backup story
-works.
+**14. Runtime-verify the operational assets — static/local verification done; live
+restore drill remains open.** The backup preflight now fails closed on missing
+inputs and accurately states that it checks only a recent non-empty local artifact,
+recovery-env keys, and live-database connectivity. The AWS runbook and backup guide
+now match the dispatch-only EC2/Depot/ECR deploy, external Supabase Postgres, and S3
+knowledge-storage split. All tracked k6 JS/TS files parse under Node 24; current
+`k6/` routes, health response assertions, and Supabase-token prerequisites were
+reconciled with the API. The legacy `load-tests/k6/` collection still targets
+removed unscoped auth/agent/knowledge/webhook routes and needs a separate redesign
+rather than mechanical URL substitution. k6 was not installed locally, so no live
+load was generated. A credentialed restore into an isolated database, integrity
+checks, S3 object recovery check, and measured RTO/RPO are still required before
+the backup story is operationally proven.
 
 ## What would make this 10/10
 

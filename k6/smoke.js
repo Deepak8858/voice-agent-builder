@@ -34,24 +34,24 @@ export default function () {
     'health body is JSON': (r) => {
       try {
         const body = JSON.parse(r.body);
-        return body.status !== undefined && body.db !== undefined && body.redis !== undefined;
+        return body.status !== undefined && body.checks?.db !== undefined && body.checks?.redis !== undefined;
       } catch {
         return false;
       }
     },
-    'health db is ok': (r) => JSON.parse(r.body).db === 'ok',
+    'health db is ok': (r) => JSON.parse(r.body).checks?.db === 'ok',
   });
 
   // 2. Readiness probe (same endpoint, ensures all dependencies are up)
   check(healthRes, {
     'health overall status ok or degraded': (r) => {
       const body = JSON.parse(r.body);
-      return body.status === 'ok' || body.status === 'degraded';
+      return body.status === 'healthy' || body.status === 'degraded';
     },
   });
 
   // 3. Auth-gated endpoint — should return 401, not 500
-  const agentsRes = http.get(`${BASE_URL}/agents`);
+  const agentsRes = http.get(`${BASE_URL}/workspaces/00000000-0000-4000-8000-000000000000/agents`);
   check(agentsRes, {
     'agents returns 401 (auth required)': (r) => r.status === 401,
     'agents returns JSON error': (r) => {

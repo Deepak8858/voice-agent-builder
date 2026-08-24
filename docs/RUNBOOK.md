@@ -98,9 +98,9 @@ unconditional `CREATE TABLE`, so a production database that was never recorded i
 tables. Compare the live schema against the migration history first, and only
 then mark the baseline as applied:
 ```bash
-npx prisma migrate status --schema=apps/api/prisma/schema.prisma
+corepack pnpm --filter @voiceforge/api exec prisma migrate status --schema=prisma/schema.prisma
 # Only after confirming the live schema matches the baseline:
-npx prisma migrate resolve --applied 20260401000000_init --schema=apps/api/prisma/schema.prisma
+corepack pnpm --filter @voiceforge/api exec prisma migrate resolve --applied 20260401000000_init --schema=prisma/schema.prisma
 ```
 Do not run `migrate resolve` speculatively — marking a migration applied without
 verifying schema equivalence hides real drift.
@@ -241,22 +241,39 @@ and it requires the commit to still build from source.
 ## 3. Backup & Restore
 
 ### Automated Backups
-- Supabase provides **daily PITR backups** (Point-in-Time Recovery) via the dashboard.
+- Supabase backup availability, retention, and PITR support depend on the active
+  project plan and must be verified in Supabase Dashboard → Database → Backups.
+- Knowledge files use the S3 bucket named by `S3_KNOWLEDGE_BUCKET`; S3 versioning
+  and lifecycle/replication policy are infrastructure configuration and must be
+  checked separately. The database backup does not include these objects.
 - The EC2 root volume is a 30 GB encrypted gp3 disk. **Provisioning creates no
   snapshot or lifecycle policy** — the host is treated as disposable. The only
   state on it is `/opt/voiceforge/.env`, `deploy-state/`, the certbot directories,
   and the `voiceforge_redis_data` volume. Keep `.env` in a password manager;
   everything else is reproducible from a deploy.
 
-### Manual Backup Verification
+### Backup Preflight (not a restore test)
+Run this from a checked-out repository on a secured operator workstation, not
+from the EC2 deploy directory (the workflow uploads deployment assets, not source):
 ```bash
+export RECOVERY_ENV_FILE=/secure/path/voiceforge-recovery.env
+export BACKUP_DIR=/secure/path/downloaded-db-backups
+export DIRECT_URL='postgresql://...'
 node scripts/backup-validation.js --verbose
 ```
+The script fails closed when inputs are absent, verifies that the newest local
+`.sql`/`.dump` artifact is recent and non-empty, validates required recovery-env
+entries, and checks live database connectivity. It does **not** restore or inspect
+the artifact, compare row counts/checksums, validate foreign keys/indexes/RLS, or
+verify S3 knowledge objects. Follow `docs/35_BACKUP_RECOVERY.md` for the isolated
+restore drill that remains required.
 
 ### Restore from Supabase
-1. Go to Supabase Dashboard → Database → Backups
-2. Select timestamp → Restore
-3. Restart the API to clear the Prisma connection pool: `docker restart vf-api`
+1. Open Supabase Dashboard → Database → Backups and follow the restore workflow
+   available for the active project plan.
+2. Restore to an isolated target first; never point the drill at production.
+3. After an approved production restore, restart both API processes to clear
+   Prisma pools: `docker restart vf-api vf-api-worker`.
 
 ---
 
@@ -264,7 +281,7 @@ node scripts/backup-validation.js --verbose
 
 | Endpoint | Expected | Check |
 |----------|----------|-------|
-| `GET /api/v1/health` (public) | 200 `{ status, db, redis }` | `curl -f https://incfrog.ai/api/v1/health` |
+| `GET /api/v1/health` (public) | 200 `{ status, checks: { db, redis, llm } }` | `curl -f https://incfrog.ai/api/v1/health` |
 | `GET /api/health` (public, web) | 200 | `curl -f https://incfrog.ai/api/health` |
 | nginx liveness (host-local) | 200 | `curl -f http://127.0.0.1/nginx-health` |
 | API metrics (unauthenticated) | 401 | `curl -s -o /dev/null -w "%{http_code}" https://incfrog.ai/api/v1/metrics` |
@@ -276,7 +293,7 @@ because it serves no traffic.
 
 ### k6 Load Tests
 ```bash
-# Smoke (CI gate)
+# Smoke (manual verification; k6 is not part of the Quality Gate workflow)
 k6 run k6/smoke.js -e BASE_URL=https://incfrog.ai/api/v1
 
 # Baseline (2min steady-state)

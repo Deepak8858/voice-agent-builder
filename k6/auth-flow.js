@@ -11,19 +11,14 @@
  *   3. LLM-backed agent generation via POST /workspaces/:workspaceId/agents/generate.
  *   4. Calls dashboard data via GET /workspaces/:workspaceId/calls.
  *
- * Auth strategies (pick one):
- *   A. Bearer token — set AUTH_TOKEN env var. The script sends
- *      `Authorization: Bearer <token>` on every request.
- *   B. Session cookie — set AUTH_EMAIL and AUTH_PASSWORD. The script
- *      signs up / logs in during setup() and propagates the session
- *      cookie to all VUs.
+ * Auth:
+ *   Set AUTH_TOKEN to a Supabase access token. The API no longer exposes
+ *   username/password signup or login endpoints.
  *
  * Environment variables:
  *   BASE_URL      API root (default: http://localhost:4000/api/v1)
  *   WORKSPACE_ID  Target workspace UUID (optional; auto-resolved in setup)
- *   AUTH_TOKEN    Bearer token for header-based auth (optional)
- *   AUTH_EMAIL    Email for session auth (default: auto-generated)
- *   AUTH_PASSWORD Password for session auth (default: LoadTest123!)
+ *   AUTH_TOKEN    Supabase bearer token (required)
  *
  * Thresholds (run fails if breached):
  *   http_req_duration.p(95) < 800 ms  — 95th percentile latency under 800ms
@@ -34,13 +29,11 @@
  *   k6 run k6/auth-flow.js -e BASE_URL=https://api.yourdomain.com -e AUTH_TOKEN=xxx -e WORKSPACE_ID=ws-uuid
  */
 import http from 'k6/http';
-import { check, sleep } from 'k6';
+import { check, sleep, fail } from 'k6';
 import { Rate } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
-const AUTH_EMAIL = __ENV.AUTH_EMAIL || `k6-auth-${Date.now()}@voiceforge.test`;
-const AUTH_PASSWORD = __ENV.AUTH_PASSWORD || 'LoadTest123!';
 const WORKSPACE_ID = __ENV.WORKSPACE_ID;
 
 const customErrorRate = new Rate('custom_errors');
@@ -70,102 +63,34 @@ function makeHeaders() {
   return headers;
 }
 
-/**
- * setup() runs once globally before VUs start.
- *
- * If the caller did not supply AUTH_TOKEN or WORKSPACE_ID we:
- *   1. Create (or log in) a test user.
- *   2. Capture the session cookie.
- *   3. Resolve a workspace ID from /workspaces.
- */
+/** Resolve the workspace once before VUs start. */
 export function setup() {
-  // Fast path: caller provided everything we need.
-  if (AUTH_TOKEN && WORKSPACE_ID) {
-    return { workspaceId: WORKSPACE_ID, cookies: null };
+  if (!AUTH_TOKEN) {
+    fail('AUTH_TOKEN is required; obtain a Supabase access token through the web sign-in flow.');
   }
 
-  const jar = new http.CookieJar();
-  const jsonHeaders = { 'Content-Type': 'application/json' };
-
-  // ── Authenticate (sign-up first, fall back to login) ──
-  const signupRes = http.post(
-    `${BASE_URL}/auth/signup`,
-    JSON.stringify({
-      email: AUTH_EMAIL,
-      password: AUTH_PASSWORD,
-      name: 'k6 Auth Flow Test',
-      organization_name: 'k6 Test Org',
-    }),
-    { headers: jsonHeaders, jar }
-  );
-
-  if (signupRes.status !== 200 && signupRes.status !== 201) {
-    const loginRes = http.post(
-      `${BASE_URL}/auth/login`,
-      JSON.stringify({ email: AUTH_EMAIL, password: AUTH_PASSWORD }),
-      { headers: jsonHeaders, jar }
-    );
-    check(loginRes, {
-      'setup: login succeeds': (r) => r.status === 200,
-    });
-  }
-
-  // Extract cookies so we can inject them into each VU's jar.
-  const cookies = jar.cookiesForURL(BASE_URL);
-
-  // ── Resolve workspace ──
   let workspaceId = WORKSPACE_ID;
   if (!workspaceId) {
-    const wsRes = http.get(`${BASE_URL}/workspaces`, {
-      headers: jsonHeaders,
-      jar,
-    });
-    check(wsRes, {
-      'setup: workspaces list succeeds': (r) => r.status === 200,
-    });
+    const wsRes = http.get(`${BASE_URL}/workspaces`, { headers: makeHeaders() });
+    check(wsRes, { 'setup: workspaces list succeeds': (r) => r.status === 200 });
     if (wsRes.status === 200) {
       try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
+        workspaceId = JSON.parse(wsRes.body).items?.[0]?.id;
       } catch (_e) {
-        // leave workspaceId undefined
+        // handled below
       }
     }
   }
 
   if (!workspaceId) {
-    console.warn(
-      'WARN: No workspace resolved. Set WORKSPACE_ID or ensure the seeded user has a workspace.'
-    );
+    fail('WORKSPACE_ID was not supplied and no workspace could be resolved for AUTH_TOKEN.');
   }
 
-  return { workspaceId, cookies };
+  return { workspaceId, cookies: null };
 }
 
-/**
- * Create a fresh CookieJar for the current VU and seed it with the
- * session cookies gathered during setup().
- */
-function buildJar(data) {
-  if (AUTH_TOKEN) return undefined;
-  const jar = new http.CookieJar();
-  if (data && data.cookies) {
-    for (const name of Object.keys(data.cookies)) {
-      for (const value of data.cookies[name]) {
-        jar.set(BASE_URL, name, value);
-      }
-    }
-  }
-  return jar;
-}
-
-function baseConfig(data) {
-  const jar = buildJar(data);
-  const cfg = { headers: makeHeaders() };
-  if (jar) cfg.jar = jar;
-  return cfg;
+function baseConfig() {
+  return { headers: makeHeaders() };
 }
 
 export default function (data) {
@@ -175,7 +100,7 @@ export default function (data) {
     return;
   }
 
-  const cfg = baseConfig(data);
+  const cfg = baseConfig();
 
   // ── 1. Session validation ──
   // Ensures the auth middleware, session store / JWT validator, and
