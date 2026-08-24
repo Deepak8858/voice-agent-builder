@@ -10,6 +10,7 @@ const LiveKitToolInvokeSchema = z.object({
   tool_name: z.string().min(1).max(64),
   params: z.record(z.string(), z.any()).default({}),
   call_id: z.string().uuid().optional(),
+  idempotency_key: z.string().min(1).max(200).optional(),
   // The tool type the Agent Spec declared for this tool. When present, the
   // lookup enforces it so a spec-declared Gmail tool can never resolve to a
   // same-named tool of another type.
@@ -52,6 +53,7 @@ export class LiveKitToolsController {
       {
         arguments: body.params,
         ...(body.call_id ? { call_id: body.call_id } : {}),
+        ...(body.idempotency_key ? { idempotency_key: body.idempotency_key } : {}),
         agent_id: agentId,
       },
       body.tool_type,

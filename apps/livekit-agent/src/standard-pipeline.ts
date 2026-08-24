@@ -19,6 +19,15 @@ const AZURE_STT_SAMPLE_RATE = 16_000;
 const AZURE_STT_CHANNELS = 1;
 
 /**
+ * Azure Speech auto language detection accepts at most 10 candidate locales in
+ * continuous LID mode, which is the mode the LiveKit Azure plugin always sets
+ * (SpeechServiceConnection_LanguageIdMode=Continuous). Sending more than the
+ * service allows fails recognizer setup, so excess candidates are dropped —
+ * the spec's primary language is pushed first and can never be truncated.
+ */
+const AZURE_STT_MAX_LOCALES = 10;
+
+/**
  * Azure OpenAI data-plane version that supports streamed tool calls on chat
  * completions. Pinned rather than floating so a service-side default change
  * cannot silently alter tool-calling behavior mid-release.
@@ -74,10 +83,7 @@ export class StandardPipelineConfigurationError extends Error {
  * configured deployment voice so a spec authored for Realtime does not break the
  * call with an unknown-voice error.
  */
-export function resolveStandardVoice(
-  spec: AgentSpec,
-  fallbackVoice: string,
-): string {
+export function resolveStandardVoice(spec: AgentSpec, fallbackVoice: string): string {
   const specVoice = spec.voice.voice_id?.trim();
   if (specVoice && isAzureVoiceName(specVoice)) return specVoice;
   return fallbackVoice;
@@ -99,6 +105,7 @@ function isAzureVoiceName(voiceId: string): boolean {
 export function resolveSttLanguage(spec: AgentSpec): string[] {
   const locales: string[] = [];
   const push = (value: string | undefined): void => {
+    if (locales.length >= AZURE_STT_MAX_LOCALES) return;
     const locale = toAzureLocale(value);
     if (locale && !locales.includes(locale)) locales.push(locale);
   };

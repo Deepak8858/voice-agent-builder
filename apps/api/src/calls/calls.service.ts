@@ -60,28 +60,22 @@ export class CallsService {
     private readonly livekit?: LiveKitService,
   ) {}
 
-  /**
-   * Records which runtime pipeline a call was routed to.
-   *
-   * Routing needs the call identity, so it happens after the row exists and the
-   * column is filled in a follow-up write. A routing or write failure must not
-   * fail a call that is otherwise fully admitted: the pipeline is reporting and
-   * reconciliation data, and the runtime receives its own copy in the dispatch
-   * metadata.
-   */
-  private async persistPipeline(
+  private async routePipeline(
     organizationId: string,
     callId: string,
-  ): Promise<void> {
-    if (!this.pipelineRouter || typeof this.entitlements?.getEffectivePlan !== 'function') return;
-    try {
-      const effective = await this.entitlements.getEffectivePlan(organizationId);
-      const { pipeline } = this.pipelineRouter.route(effective.plan, callId);
-      await this.prisma.call.update({ where: { id: callId }, data: { pipeline } });
-    } catch {
-      // Best-effort: the decision is deterministic and can be re-derived from
-      // the plan and call id if it is ever needed and missing.
+  ): Promise<VoicePipeline | null> {
+    if (!this.pipelineRouter || typeof this.entitlements?.getEffectivePlan !== 'function')
+      return null;
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const route = this.pipelineRouter.route(effective.plan, callId);
+    if (route.reason === 'standard_pipeline_disabled' && route.pipeline === 'standard') {
+      throw new AppError(
+        'VOICE_PROVIDER_ERROR',
+        'Voice calls are temporarily unavailable. Please retry shortly.',
+        503,
+      );
     }
+    return route.pipeline;
   }
 
   async startTestSession(
@@ -123,11 +117,57 @@ export class CallsService {
       });
     }
 
-    const session = await voice.createBrowserTestSession({
-      workspaceId,
-      agentId: agent.id,
-      agentVersionId: version.id,
+    const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
+    const call = await this.prisma.call.create({
+      data: {
+        workspaceId,
+        organizationId: ws.organizationId,
+        agentId: agent.id,
+        agentVersionId: version.id,
+        direction: 'browser_test',
+        status: 'in_progress',
+        provider: voice.name,
+        pipeline: 'realtime',
+        contactName: dto.contact_name ?? 'Browser tester',
+        startedAt: new Date(),
+        transcriptText: '',
+        expiresAt,
+        retentionDays: ws.retentionDays,
+        metadata: { transcript_status: 'pending' } as Prisma.InputJsonValue,
+      },
     });
+
+    const admission = await this.admission.admitCall({
+      organizationId: ws.organizationId,
+      workspaceId,
+      callId: call.id,
+      provider: voice.name,
+      direction: 'browser_test',
+      pipeline: 'realtime',
+    });
+    if (isCallDenied(admission)) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: admission.reason },
+      });
+      throw this.admission.toError(admission);
+    }
+
+    let session: Awaited<ReturnType<VoiceRuntimeProvider['createBrowserTestSession']>>;
+    try {
+      session = await voice.createBrowserTestSession({
+        workspaceId,
+        agentId: agent.id,
+        agentVersionId: version.id,
+      });
+    } catch (err) {
+      await this.admission.compensate(ws.organizationId, call.id, 'provider_dispatch_failed');
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
+      });
+      throw err;
+    }
 
     let transcript: { transcript: string; turns: Array<{ at_ms: number }> };
     try {
@@ -136,35 +176,26 @@ export class CallsService {
       transcript = { transcript: '', turns: [] };
     }
     const transcriptReady = transcript.transcript.trim().length > 0 || transcript.turns.length > 0;
-
-    const expiresAt = new Date(new Date().getTime() + ws.retentionDays * 24 * 60 * 60 * 1000);
-
-    const call = await this.prisma.call.create({
+    await this.prisma.call.update({
+      where: { id: call.id },
       data: {
-        workspaceId,
-        organizationId: ws.organizationId,
-        agentId: agent.id,
-        agentVersionId: version.id,
-        direction: 'browser_test',
         status: transcriptReady ? 'completed' : 'in_progress',
-        provider: voice.name,
-        pipeline: 'realtime',
         providerCallId: session.test_session_id,
-        contactName: dto.contact_name ?? 'Browser tester',
-        startedAt: new Date(),
         endedAt: transcriptReady ? new Date() : null,
         durationSeconds: transcriptReady
           ? Math.ceil((transcript.turns.at(-1)?.at_ms ?? 0) / 1000)
           : null,
         transcriptText: transcript.transcript,
         outcome: transcriptReady ? 'test_completed' : null,
-        expiresAt,
-        retentionDays: ws.retentionDays,
         metadata: {
           test_session_id: session.test_session_id,
           transcript_status: transcriptReady ? 'available' : 'pending',
         } as Prisma.InputJsonValue,
       },
+    });
+    await this.prisma.callUsage.updateMany({
+      where: { callId: call.id },
+      data: { providerCallId: session.test_session_id },
     });
 
     await this.audit.log({
@@ -200,7 +231,15 @@ export class CallsService {
   private async testSessionPipeline(organizationId: string): Promise<VoicePipeline> {
     if (!this.pipelineRouter || !this.livekit) return 'realtime';
     const effective = await this.entitlements.getEffectivePlan(organizationId);
-    return this.pipelineRouter.isAllowed(effective.plan, 'realtime') ? 'realtime' : 'standard';
+    const route = this.pipelineRouter.route(effective.plan, `browser-test:${organizationId}`);
+    if (route.reason === 'standard_pipeline_disabled' && route.pipeline === 'standard') {
+      throw new AppError(
+        'VOICE_PROVIDER_ERROR',
+        'Browser tests are temporarily unavailable. Please retry shortly.',
+        503,
+      );
+    }
+    return route.pipeline;
   }
 
   /**
@@ -275,6 +314,7 @@ export class CallsService {
       pipeline: 'standard' as const,
     };
 
+    let token: string;
     try {
       await livekit.createRoomForCall({ roomName, metadata });
       await livekit.dispatchAgent({
@@ -282,28 +322,23 @@ export class CallsService {
         agentName: env.LIVEKIT_AGENT_NAME,
         metadata,
       });
+      token = await livekit.createAccessToken({
+        userId: input.actorUserId,
+        roomName,
+        identity: `tester-${input.actorUserId}`,
+        metadata: { callId: call.id, agentId: input.agentId },
+      });
     } catch (err) {
       // A room that never came up owes nothing, so the reserved minute is
       // returned and the concurrency slot is freed rather than being held until
       // the lease expires.
-      await this.admission.compensate(
-        input.organizationId,
-        call.id,
-        'provider_dispatch_failed',
-      );
+      await this.admission.compensate(input.organizationId, call.id, 'provider_dispatch_failed');
       await this.prisma.call.update({
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: 'provider_dispatch_failed' },
       });
       throw err;
     }
-
-    const token = await livekit.createAccessToken({
-      userId: input.actorUserId,
-      roomName,
-      identity: `tester-${input.actorUserId}`,
-      metadata: { callId: call.id, agentId: input.agentId },
-    });
 
     await this.prisma.call.update({
       where: { id: call.id },
@@ -358,7 +393,11 @@ export class CallsService {
     }
 
     // Idempotency: prevent double-click double-call within 60s
-    const recentDuplicate = await this.findRecentOutboundDuplicate(workspaceId, agentId, dto.to_number);
+    const recentDuplicate = await this.findRecentOutboundDuplicate(
+      workspaceId,
+      agentId,
+      dto.to_number,
+    );
     if (recentDuplicate) {
       return this.toSummary(recentDuplicate);
     }
@@ -411,7 +450,11 @@ export class CallsService {
     const dedupeKey = this.outboundDedupeKey(workspaceId, agent.id, dto.to_number);
     const lockAcquired = await this.cache.acquireLock(dedupeKey, 60);
     if (!lockAcquired) {
-      const duplicate = await this.findRecentOutboundDuplicate(workspaceId, agent.id, dto.to_number);
+      const duplicate = await this.findRecentOutboundDuplicate(
+        workspaceId,
+        agent.id,
+        dto.to_number,
+      );
       if (duplicate) return this.toSummary(duplicate);
       throw new AppError(
         'RATE_LIMITED',
@@ -420,7 +463,11 @@ export class CallsService {
       );
     }
 
-    const duplicateAfterLock = await this.findRecentOutboundDuplicate(workspaceId, agent.id, dto.to_number);
+    const duplicateAfterLock = await this.findRecentOutboundDuplicate(
+      workspaceId,
+      agent.id,
+      dto.to_number,
+    );
     if (duplicateAfterLock) {
       return this.toSummary(duplicateAfterLock);
     }
@@ -450,12 +497,33 @@ export class CallsService {
       },
     });
 
+    const pipeline = await this.routePipeline(ws.organizationId, call.id);
+    if (pipeline) {
+      await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+    }
+    // This legacy endpoint dispatches directly through a runtime adapter. The
+    // in-house standard pipeline is only available through TelephonyService,
+    // which owns the LiveKit SIP context needed to launch it. Never record a
+    // standard decision and then silently execute Realtime instead.
+    if (pipeline === 'standard') {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'standard_runtime_unavailable' },
+      });
+      throw new AppError(
+        'VOICE_PROVIDER_ERROR',
+        'This call must be started through a configured LiveKit phone number.',
+        503,
+      );
+    }
+
     const admission = await this.admission.admitCall({
       organizationId: ws.organizationId,
       workspaceId,
       callId: call.id,
       provider: voice.name,
       direction: 'outbound',
+      ...(pipeline ? { pipeline } : {}),
     });
     if (isCallDenied(admission)) {
       await this.prisma.call.update({
@@ -464,8 +532,6 @@ export class CallsService {
       });
       throw this.admission.toError(admission);
     }
-
-    await this.persistPipeline(ws.organizationId, call.id);
 
     let result: Awaited<ReturnType<VoiceRuntimeProvider['startOutboundCall']>>;
     try {
@@ -477,6 +543,7 @@ export class CallsService {
         fromNumber: dto.from_number,
         contactName: dto.contact_name,
         metadata: dto.metadata,
+        ...(pipeline ? { pipeline } : {}),
       });
     } catch (err) {
       // The provider never took the call, so the customer keeps the reserved
@@ -544,7 +611,10 @@ export class CallsService {
   /**
    * Returns existing CallEvent rows for backfill when a client connects to SSE.
    */
-  async getLiveEvents(callId: string, workspaceId: string): Promise<Array<Record<string, unknown>>> {
+  async getLiveEvents(
+    callId: string,
+    workspaceId: string,
+  ): Promise<Array<Record<string, unknown>>> {
     // `Call.id` is a `@db.Uuid` column, so a non-UUID id makes Prisma throw
     // instead of returning no rows. Treat a malformed id as no backfill.
     if (!isUuid(callId)) return [];
@@ -797,7 +867,9 @@ export class CallsService {
           where: { id: call.agentVersionId ?? '' },
           select: { specJson: true },
         });
-        const language = (version?.specJson as Record<string, unknown> | null)?.language as string | undefined;
+        const language = (version?.specJson as Record<string, unknown> | null)?.language as
+          | string
+          | undefined;
 
         await this.compliance.processTranscriptOptOut({
           workspaceId: updated.workspaceId,
@@ -837,7 +909,10 @@ export class CallsService {
 
       // Queue async evaluation (best-effort — worker handles retries)
       try {
-        await this.queue.enqueue('evaluation', 'evaluate', { callId: call.id, workspaceId: call.workspaceId });
+        await this.queue.enqueue('evaluation', 'evaluate', {
+          callId: call.id,
+          workspaceId: call.workspaceId,
+        });
       } catch {
         // best-effort queueing
       }
@@ -848,11 +923,7 @@ export class CallsService {
     }
   }
 
-  private async resolveAgentVersion(
-    workspaceId: string,
-    agentId: string,
-    versionIdHint?: string,
-  ) {
+  private async resolveAgentVersion(workspaceId: string, agentId: string, versionIdHint?: string) {
     const agent = await this.prisma.agent.findFirst({
       where: { id: agentId, workspaceId },
       include: { versions: { orderBy: { versionNumber: 'desc' } } },
@@ -860,7 +931,7 @@ export class CallsService {
     if (!agent) throw new AgentNotFoundError(agentId);
 
     const version = versionIdHint
-      ? agent.versions.find((v) => v.id === versionIdHint) ?? null
+      ? (agent.versions.find((v) => v.id === versionIdHint) ?? null)
       : (agent.versions.find((v) => v.id === agent.activeVersionId) ?? agent.versions[0] ?? null);
     if (!version) {
       throw new AgentSpecInvalidError({

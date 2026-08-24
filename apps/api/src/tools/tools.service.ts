@@ -37,6 +37,26 @@ type ToolCrmProvider = Exclude<CrmProvider, 'generic_webhook'>;
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * How long a `pending` invocation may keep holding its idempotency key before a
+ * retry is allowed to take it over. A crash (or an aborted request) between the
+ * invocation row's creation and its terminal update would otherwise strand the
+ * key on a row that never reaches an outcome, making that operation
+ * permanently unretryable. The window is deliberately far longer than any
+ * executor's own HTTP timeout so that a genuinely in-flight duplicate is still
+ * refused rather than executed twice.
+ */
+const PENDING_IDEMPOTENCY_TAKEOVER_MS = 2 * 60 * 1000;
+
+/**
+ * Attempts allowed when claiming an idempotency key. The pre-check and the
+ * insert are not atomic, so a concurrent duplicate can pass the pre-check and
+ * still lose the unique index. A single retry suffices: on the second pass the
+ * winner's row is guaranteed to exist, so the attempt resolves to a replay, a
+ * conflict, or a legitimate takeover.
+ */
+const IDEMPOTENT_CLAIM_ATTEMPTS = 2;
+
+/**
  * Tenant scope for an execution. Executors that resolve credentials at call
  * time (Gmail, Sheets) need the workspace id; config never carries tokens.
  */
@@ -109,11 +129,7 @@ export class ToolsService {
     return this.toDetail(row);
   }
 
-  async create(
-    workspaceId: string,
-    actorUserId: string,
-    dto: CreateToolDto,
-  ): Promise<ToolDetail> {
+  async create(workspaceId: string, actorUserId: string, dto: CreateToolDto): Promise<ToolDetail> {
     await this.assertToolsAllowed(workspaceId);
 
     if (dto.agent_id) {
@@ -173,9 +189,7 @@ export class ToolsService {
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.tool_type !== undefined ? { toolType: dto.tool_type } : {}),
         ...(dto.agent_id !== undefined ? { agentId: dto.agent_id } : {}),
-        ...(dto.config !== undefined
-          ? { config: dto.config as Prisma.InputJsonValue }
-          : {}),
+        ...(dto.config !== undefined ? { config: dto.config as Prisma.InputJsonValue } : {}),
         ...(dto.input_schema !== undefined
           ? { inputSchema: dto.input_schema as Prisma.InputJsonValue }
           : {}),
@@ -250,17 +264,48 @@ export class ToolsService {
       throw err;
     }
 
-    const invocation = await this.prisma.toolInvocation.create({
-      data: {
-        workspaceId,
-        organizationId: await this.prisma.organizationIdFor(workspaceId),
-        toolId: tool.id,
-        agentId: dto.agent_id ?? tool.agentId,
-        callId: dto.call_id ?? null,
-        status: 'pending',
-        requestPayload: (dto.arguments as Prisma.InputJsonValue) ?? Prisma.JsonNull,
-      },
-    });
+    const idempotencyKey =
+      tool.toolType === 'google_calendar' && dto.arguments?.operation === 'create_event'
+        ? dto.idempotency_key
+        : undefined;
+
+    const createInvocation = async () =>
+      this.prisma.toolInvocation.create({
+        data: {
+          workspaceId,
+          organizationId: await this.prisma.organizationIdFor(workspaceId),
+          toolId: tool.id,
+          agentId: dto.agent_id ?? tool.agentId,
+          callId: dto.call_id ?? null,
+          status: 'pending',
+          requestPayload: (dto.arguments as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        },
+      });
+
+    let invocation: Awaited<ReturnType<typeof createInvocation>>;
+    if (!idempotencyKey) {
+      invocation = await createInvocation();
+    } else {
+      let claimed: Awaited<ReturnType<typeof createInvocation>> | undefined;
+      for (let attempt = 0; attempt < IDEMPOTENT_CLAIM_ATTEMPTS && !claimed; attempt += 1) {
+        const replay = await this.resolveIdempotentReplay(workspaceId, tool.id, idempotencyKey);
+        if (replay) return replay;
+        try {
+          claimed = await createInvocation();
+        } catch (err) {
+          const isLastAttempt = attempt === IDEMPOTENT_CLAIM_ATTEMPTS - 1;
+          if (isLastAttempt || !this.isUniqueConstraintViolation(err)) throw err;
+        }
+      }
+      if (!claimed) {
+        throw new ToolExecutionFailedError(
+          'Could not claim the idempotency key for this invocation.',
+          { reason: 'idempotency_claim_failed' },
+        );
+      }
+      invocation = claimed;
+    }
 
     const exec = this.executors.get(tool.toolType as string);
     if (!exec) {
@@ -271,6 +316,7 @@ export class ToolsService {
           status: 'failed',
           finishedAt: new Date(),
           errorMessage,
+          ...this.releasedIdempotencyKey(idempotencyKey),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, failed.id, tool.id, 'failed');
@@ -291,6 +337,7 @@ export class ToolsService {
           finishedAt: new Date(),
           responseBody: this.serializeResponse(result.result),
           errorMessage: result.error ?? null,
+          ...(result.success ? {} : this.releasedIdempotencyKey(idempotencyKey)),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, status);
@@ -303,11 +350,70 @@ export class ToolsService {
           status: 'failed',
           finishedAt: new Date(),
           errorMessage,
+          ...this.releasedIdempotencyKey(idempotencyKey),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, 'failed');
       throw new ToolExecutionFailedError(errorMessage);
     }
+  }
+
+  /**
+   * Clears the idempotency key as part of the same update that records a
+   * terminal failure. Retaining the key on a failed row would make the failure
+   * permanent: the LiveKit runtime derives the key deterministically from the
+   * call id and arguments, so every retry of the same calendar event would hash
+   * to the same key, match the failed row, and replay that failure forever —
+   * turning a transient provider error into an operation that can never
+   * succeed. Releasing it keeps the key free for the next attempt while the
+   * failed row is preserved for auditing. Only `success` is replayable, which
+   * is what actually prevents double-booking.
+   */
+  private releasedIdempotencyKey(
+    idempotencyKey: string | undefined,
+  ): { idempotencyKey: null } | Record<string, never> {
+    return idempotencyKey ? { idempotencyKey: null } : {};
+  }
+
+  /**
+   * Resolves what an incoming idempotent invocation should do about an existing
+   * row holding the same key.
+   *
+   * Returns the stored detail only for `success` (the replay that prevents a
+   * duplicate side effect). `failed` rows never reach here because they release
+   * the key on the way out, so a surviving non-success row is `pending`: either
+   * a genuine in-flight duplicate, which is refused so the side effect is not
+   * performed twice, or a row stranded by a crash before its terminal update,
+   * which is handed over to the retry once it ages past the takeover window.
+   */
+  private async resolveIdempotentReplay(
+    workspaceId: string,
+    toolId: string,
+    idempotencyKey: string,
+  ): Promise<ToolInvocationDetail | null> {
+    const existing = await this.prisma.toolInvocation.findUnique({
+      where: {
+        workspaceId_toolId_idempotencyKey: { workspaceId, toolId, idempotencyKey },
+      },
+    });
+    if (!existing) return null;
+    if (existing.status === 'success') return this.toInvocationDetail(existing);
+
+    const startedAt = existing.startedAt?.getTime() ?? 0;
+    const stranded = Date.now() - startedAt >= PENDING_IDEMPOTENCY_TAKEOVER_MS;
+    if (stranded) {
+      // Free the key so the caller's insert can claim it. Scoped by id, so a
+      // row that reached a terminal state in the meantime is untouched.
+      await this.prisma.toolInvocation.update({
+        where: { id: existing.id },
+        data: { idempotencyKey: null },
+      });
+      return null;
+    }
+
+    throw new ToolExecutionFailedError('An identical tool invocation is already in progress.', {
+      reason: 'idempotent_invocation_in_progress',
+    });
   }
 
   /**
@@ -575,6 +681,10 @@ export class ToolsService {
     };
   }
 
+  private isUniqueConstraintViolation(err: unknown): boolean {
+    return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+  }
+
   private toInvocationSummary(row: {
     id: string;
     workspaceId: string;
@@ -634,7 +744,10 @@ export class ToolsService {
     }
     const provider = crmProvider(config.provider);
     if (!provider) {
-      return { success: false, error: 'CRM provider must be pipedrive, hubspot, salesforce, or generic.' };
+      return {
+        success: false,
+        error: 'CRM provider must be pipedrive, hubspot, salesforce, or generic.',
+      };
     }
     const fullName = stringParam(params.full_name) ?? stringParam(params.name);
     if (!fullName) {
@@ -655,7 +768,10 @@ export class ToolsService {
 }
 
 function crmProvider(value: unknown): ToolCrmProvider | null {
-  return value === 'pipedrive' || value === 'hubspot' || value === 'salesforce' || value === 'generic'
+  return value === 'pipedrive' ||
+    value === 'hubspot' ||
+    value === 'salesforce' ||
+    value === 'generic'
     ? value
     : null;
 }

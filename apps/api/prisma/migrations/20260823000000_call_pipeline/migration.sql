@@ -14,7 +14,5 @@ ALTER TABLE "calls" ADD COLUMN IF NOT EXISTS "pipeline" TEXT;
 ALTER TABLE "calls" DROP CONSTRAINT IF EXISTS "calls_pipeline_check";
 ALTER TABLE "calls"
   ADD CONSTRAINT "calls_pipeline_check"
-  CHECK ("pipeline" IS NULL OR "pipeline" IN ('realtime', 'standard'));
-
--- Cost and margin reporting is always "per runtime over a period".
-CREATE INDEX IF NOT EXISTS "calls_pipeline_created_at_idx" ON "calls" ("pipeline", "created_at");
+  CHECK ("pipeline" IS NULL OR "pipeline" IN ('realtime', 'standard')) NOT VALID;
+ALTER TABLE "calls" VALIDATE CONSTRAINT "calls_pipeline_check";

@@ -8,7 +8,11 @@ import {
   resolveSttLanguage,
   type StandardPipelineEnv,
 } from './standard-pipeline';
-import { AzureSpeechConfigurationError, AzureSpeechTTS, DEFAULT_AZURE_TTS_VOICE } from './azure-tts';
+import {
+  AzureSpeechConfigurationError,
+  AzureSpeechTTS,
+  DEFAULT_AZURE_TTS_VOICE,
+} from './azure-tts';
 
 const baseSpec: AgentSpec = {
   schema_version: '1.0',
@@ -57,7 +61,10 @@ const completeEnv: StandardPipelineEnv = {
 describe('resolveStandardVoice', () => {
   it('uses an Azure-style voice from the spec', () => {
     expect(
-      resolveStandardVoice(specWith({ voice_id: 'en-GB-SoniaNeural' }), 'en-US-AvaMultilingualNeural'),
+      resolveStandardVoice(
+        specWith({ voice_id: 'en-GB-SoniaNeural' }),
+        'en-US-AvaMultilingualNeural',
+      ),
     ).toBe('en-GB-SoniaNeural');
   });
 
@@ -65,16 +72,16 @@ describe('resolveStandardVoice', () => {
     // A spec authored against the paid Realtime pipeline must not break the call
     // when the router sends it in-house instead.
     for (const realtimeVoice of ['marin', 'alloy', 'coral', 'shimmer']) {
-      expect(resolveStandardVoice(specWith({ voice_id: realtimeVoice }), 'en-US-AvaMultilingualNeural')).toBe(
-        'en-US-AvaMultilingualNeural',
-      );
+      expect(
+        resolveStandardVoice(specWith({ voice_id: realtimeVoice }), 'en-US-AvaMultilingualNeural'),
+      ).toBe('en-US-AvaMultilingualNeural');
     }
   });
 
   it('falls back when the spec has no voice or only whitespace', () => {
-    expect(resolveStandardVoice(specWith({ voice_id: undefined }), 'en-US-AvaMultilingualNeural')).toBe(
-      'en-US-AvaMultilingualNeural',
-    );
+    expect(
+      resolveStandardVoice(specWith({ voice_id: undefined }), 'en-US-AvaMultilingualNeural'),
+    ).toBe('en-US-AvaMultilingualNeural');
     expect(resolveStandardVoice(specWith({ voice_id: '   ' }), 'en-US-AvaMultilingualNeural')).toBe(
       'en-US-AvaMultilingualNeural',
     );
@@ -113,6 +120,80 @@ describe('resolveSttLanguage', () => {
   it('falls back to en-US when no locale can be resolved', () => {
     // "xx" has no known default region, so it cannot be sent to Azure as-is.
     expect(resolveSttLanguage(specWith({}, 'xx'))).toEqual(['en-US']);
+  });
+
+  it("caps multilingual locale candidates at Azure's limit of ten", () => {
+    const spec = specWith(
+      {
+        language_configs: Object.fromEntries(
+          ['hi', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh', 'ar', 'nl'].map((language) => [
+            language,
+            {},
+          ]),
+        ),
+      },
+      'en',
+    );
+    const locales = resolveSttLanguage(spec);
+    expect(locales).toHaveLength(10);
+    expect(locales[0]).toBe('en-US');
+  });
+
+  it('truncates from the end, preserving declaration order of the survivors', () => {
+    // The cap must drop the lowest-priority candidates (last language_configs
+    // entries), never reorder or displace earlier ones.
+    const spec = specWith(
+      {
+        language_configs: Object.fromEntries(
+          ['hi', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh', 'ar', 'nl'].map((language) => [
+            language,
+            {},
+          ]),
+        ),
+      },
+      'en',
+    );
+    expect(resolveSttLanguage(spec)).toEqual([
+      'en-US',
+      'hi-IN',
+      'es-US',
+      'fr-FR',
+      'de-DE',
+      'it-IT',
+      'pt-BR',
+      'ja-JP',
+      'ko-KR',
+      'zh-CN',
+    ]);
+  });
+
+  it('does not let duplicates or unresolvable subtags consume capped slots', () => {
+    // "en" duplicates the spec language and "xx" resolves to no locale; if
+    // either counted against the cap, a real language at the end would be
+    // dropped even though fewer than ten locales are actually sent to Azure.
+    const spec = specWith(
+      {
+        language_configs: Object.fromEntries(
+          ['en', 'xx', 'hi', 'es', 'fr', 'de', 'it', 'pt', 'ja', 'ko', 'zh'].map((language) => [
+            language,
+            {},
+          ]),
+        ),
+      },
+      'en',
+    );
+    expect(resolveSttLanguage(spec)).toEqual([
+      'en-US',
+      'hi-IN',
+      'es-US',
+      'fr-FR',
+      'de-DE',
+      'it-IT',
+      'pt-BR',
+      'ja-JP',
+      'ko-KR',
+      'zh-CN',
+    ]);
   });
 });
 

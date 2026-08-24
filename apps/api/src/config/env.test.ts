@@ -44,6 +44,20 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_PROVIDER=mock/);
   });
 
+  it('normalizes a supported voice provider value before returning it', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      VOICE_PROVIDER: '  OPENAI-REALTIME  ',
+    });
+
+    const mod = await import('./env');
+    expect(mod.env.VOICE_PROVIDER).toBe('openai-realtime');
+  });
+
   /**
    * Removing the Vapi/Retell variables must not break an existing deployment
    * that still sets them: a boot failure here would take the whole API down on

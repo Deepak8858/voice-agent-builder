@@ -558,6 +558,7 @@ model ToolInvocation {
   responseBody   Json?     @map("response_body")
   errorMessage   String?   @map("error_message")
   durationMs     Int?      @map("duration_ms")
+  idempotencyKey String?   @map("idempotency_key")
   startedAt      DateTime  @default(now()) @map("started_at")
   finishedAt     DateTime? @map("finished_at")
 
@@ -566,6 +567,7 @@ model ToolInvocation {
   agent     Agent?          @relation(fields: [agentId], references: [id])
   call      Call?           @relation(fields: [callId], references: [id], onDelete: SetNull)
 
+  @@unique([workspaceId, toolId, idempotencyKey], map: "tool_invocations_idempotency_uidx")
   @@index([workspaceId, startedAt])
   @@index([organizationId])
   @@index([toolId, startedAt])

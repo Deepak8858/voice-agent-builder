@@ -63,7 +63,8 @@ export class AzureSpeechTTS extends tts.TTS {
       );
     }
 
-    this.#voice = opts.voice?.trim() || process.env.AZURE_TTS_VOICE?.trim() || DEFAULT_AZURE_TTS_VOICE;
+    this.#voice =
+      opts.voice?.trim() || process.env.AZURE_TTS_VOICE?.trim() || DEFAULT_AZURE_TTS_VOICE;
 
     const speechConfig = speechsdk.SpeechConfig.fromSubscription(speechKey, speechRegion);
     speechConfig.speechSynthesisVoiceName = this.#voice;
@@ -106,12 +107,25 @@ export class AzureSpeechTTS extends tts.TTS {
     connOptions?: APIConnectOptions,
     abortSignal?: AbortSignal,
   ): tts.ChunkedStream {
+    const synthesizer = this.#resolveSynthesizer();
     return new AzureSpeechChunkedStream(
       this,
       text,
-      this.#resolveSynthesizer(),
+      synthesizer,
+      () => this.#cancelSynthesis(synthesizer),
       connOptions,
       abortSignal,
+    );
+  }
+
+  /** Closing is the Speech SDK's supported cancellation mechanism for a
+   * SpeechSynthesizer. Drop the cached instance first so the next sentence
+   * cannot reuse an object that is being closed after barge-in. */
+  #cancelSynthesis(synthesizer: speechsdk.SpeechSynthesizer): void {
+    if (this.#synthesizer === synthesizer) this.#synthesizer = undefined;
+    synthesizer.close(
+      () => undefined,
+      () => undefined,
     );
   }
 
@@ -142,16 +156,19 @@ export class AzureSpeechChunkedStream extends tts.ChunkedStream {
   label = 'azure.SpeechChunkedStream';
 
   readonly #synthesizer: speechsdk.SpeechSynthesizer;
+  readonly #cancelSynthesis: () => void;
 
   constructor(
     parent: AzureSpeechTTS,
     text: string,
     synthesizer: speechsdk.SpeechSynthesizer,
+    cancelSynthesis: () => void,
     connOptions?: APIConnectOptions,
     abortSignal?: AbortSignal,
   ) {
     super(text, parent, connOptions, abortSignal);
     this.#synthesizer = synthesizer;
+    this.#cancelSynthesis = cancelSynthesis;
   }
 
   protected async run(): Promise<void> {
@@ -161,13 +178,17 @@ export class AzureSpeechChunkedStream extends tts.ChunkedStream {
     // Frames are emitted as Azure pushes bytes so playback can start before the
     // utterance finishes synthesizing. `final` must land on the last frame, so
     // one frame is always held back until the next one (or completion) arrives.
+    // Azure can invoke the sink after an abort, so `finished` prevents writes to
+    // the queue after cleanup has closed it.
+    let finished = false;
     let pendingFrame: AudioFrame | undefined;
     const flushPending = (final: boolean): void => {
-      if (!pendingFrame) return;
+      if (finished || !pendingFrame) return;
       this.queue.put({ requestId, segmentId: requestId, frame: pendingFrame, final });
       pendingFrame = undefined;
     };
     const enqueue = (frames: AudioFrame[]): void => {
+      if (finished) return;
       for (const frame of frames) {
         flushPending(false);
         pendingFrame = frame;
@@ -180,7 +201,15 @@ export class AzureSpeechChunkedStream extends tts.ChunkedStream {
           resolve();
           return;
         }
-        const onAbort = (): void => resolve();
+        // SpeechSynthesizer has no per-utterance stop API. Closing the active
+        // instance is the supported cancellation path; the parent drops it so a
+        // later sentence lazily creates a fresh connection.
+        const onAbort = (): void => {
+          finished = true;
+          pendingFrame = undefined;
+          this.#cancelSynthesis();
+          resolve();
+        };
         this.abortSignal.addEventListener('abort', onAbort, { once: true });
 
         // Must be the raw callback, not `PushAudioOutputStream.create(...)`:
@@ -222,9 +251,10 @@ export class AzureSpeechChunkedStream extends tts.ChunkedStream {
 
       if (!this.abortSignal.aborted) {
         enqueue(byteStream.flush());
+        flushPending(true);
       }
-      flushPending(true);
     } finally {
+      finished = true;
       this.queue.close();
     }
   }

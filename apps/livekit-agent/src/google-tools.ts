@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { llm } from '@livekit/agents';
 import type { AgentSpec } from '@voiceforge/shared';
 import { z } from 'zod';
@@ -70,6 +71,13 @@ export function createToolInvokeClient(config: {
           tool_name: toolName,
           params,
           ...(config.callId ? { call_id: config.callId } : {}),
+          ...(config.callId && toolType === 'google_calendar' && params.operation === 'create_event'
+            ? {
+                idempotency_key: createHash('sha256')
+                  .update(`${config.callId}:${toolName}:${stableJson(params)}`)
+                  .digest('hex'),
+              }
+            : {}),
           // Declared tool type from the Agent Spec, so the API can refuse a
           // same-named tool of a different type.
           ...(toolType ? { tool_type: toolType } : {}),
@@ -88,6 +96,17 @@ export function createToolInvokeClient(config: {
       errorMessage: parsed.data.error_message,
     };
   };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 const GOOGLE_TOOL_PERMISSIONS = new Set(['google_calendar', 'gmail', 'google_sheets']);

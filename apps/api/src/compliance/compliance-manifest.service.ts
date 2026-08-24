@@ -49,9 +49,15 @@ export class ComplianceManifestService {
       auditLogging: {
         enabled: true,
         eventsTracked: [
-          'call.started', 'call.ended', 'call.blocked',
-          'agent.created', 'agent.updated', 'agent.deleted',
-          'gdpr.contact.erased', 'gdpr.organization_deleted', 'gdpr.user_deleted',
+          'call.started',
+          'call.ended',
+          'call.blocked',
+          'agent.created',
+          'agent.updated',
+          'agent.deleted',
+          'gdpr.contact.erased',
+          'gdpr.organization_deleted',
+          'gdpr.user_deleted',
           'compliance.manifest_generated',
         ],
         exportFormats: ['csv', 'json', 'signed_url'],
@@ -62,9 +68,26 @@ export class ComplianceManifestService {
       },
       subprocessors: [
         { name: 'Twilio', purpose: 'Voice telephony', dataTypes: ['audio', 'call metadata'] },
-        { name: 'LiveKit', purpose: 'Realtime media transport', dataTypes: ['audio', 'call metadata'] },
-        { name: 'Microsoft Azure', purpose: 'Speech-to-text, text-to-speech, and LLM inference', dataTypes: ['audio', 'transcripts'] },
-        { name: 'OpenAI', purpose: 'Realtime voice model for paid plans', dataTypes: ['audio', 'transcripts'] },
+        {
+          name: 'LiveKit',
+          purpose: 'Realtime media transport',
+          dataTypes: ['audio', 'call metadata'],
+        },
+        {
+          name: 'Microsoft Azure',
+          purpose: 'Speech-to-text, text-to-speech, and LLM inference',
+          dataTypes: ['audio', 'transcripts'],
+        },
+        {
+          name: 'OpenAI',
+          purpose: 'Realtime voice model for paid plans',
+          dataTypes: ['audio', 'transcripts'],
+        },
+        {
+          name: 'Google',
+          purpose: 'Customer-authorized Calendar, Gmail, and Sheets integrations',
+          dataTypes: ['email addresses', 'calendar data', 'message content', 'spreadsheet values'],
+        },
         { name: 'Supabase', purpose: 'Database + Auth', dataTypes: ['user data', 'call records'] },
         { name: 'Resend', purpose: 'Transactional email', dataTypes: ['email addresses'] },
       ],

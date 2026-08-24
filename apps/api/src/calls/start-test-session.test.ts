@@ -10,6 +10,8 @@ function makeService(overrides?: {
   /** Supply a router + LiveKit so the in-house pipeline path is reachable. */
   standardPipeline?: boolean;
   plan?: string;
+  /** Mirrors VOICE_STANDARD_PIPELINE_ENABLED=false for the routed plan. */
+  standardPipelineDisabled?: boolean;
 }) {
   const prisma = {
     agent: {
@@ -100,10 +102,24 @@ function makeService(overrides?: {
     ...(overrides?.admission ?? {}),
   };
 
-  // Free is entitled only to the in-house pipeline, which is what routes a free
-  // browser test away from the Realtime runtime.
+  // Mirrors PipelineRouterService for the plans under test: free is entitled
+  // only to the in-house pipeline, which is what routes a free browser test away
+  // from the Realtime runtime, and paid plans here are realtime-only. The
+  // `standard_pipeline_disabled` reason is what the service turns into a refusal
+  // rather than a silent upgrade to the runtime the plan does not pay for.
   const pipelineRouter = {
+    route: vi.fn((plan: string) =>
+      plan === 'free'
+        ? {
+            pipeline: 'standard' as const,
+            reason: overrides?.standardPipelineDisabled
+              ? ('standard_pipeline_disabled' as const)
+              : ('plan_standard_only' as const),
+          }
+        : { pipeline: 'realtime' as const, reason: 'plan_realtime_only' as const },
+    ),
     isAllowed: vi.fn((plan: string) => plan !== 'free'),
+    standardPipelineEnabled: vi.fn(() => !overrides?.standardPipelineDisabled),
   };
   const livekit = {
     livekitUrl: 'wss://livekit.example.test',
@@ -144,12 +160,9 @@ describe('CallsService.startTestSession', () => {
       },
     });
 
-    const result = await service.startTestSession(
-      'workspace-1',
-      'agent-1',
-      'user-1',
-      { contact_name: 'Browser tester' },
-    );
+    const result = await service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+      contact_name: 'Browser tester',
+    });
 
     expect(result).toMatchObject({
       call_id: 'call-1',
@@ -158,8 +171,12 @@ describe('CallsService.startTestSession', () => {
       token: 'token-1',
     });
     expect(voice.getTranscript).toHaveBeenCalledWith({ callId: 'test-session-1' });
-    expect(prisma.call.create).toHaveBeenCalledWith(
+    // The readiness decision is made on the post-session update, so that is
+    // where "still live" has to be asserted: a missing transcript must not mark
+    // the call completed with a zero duration.
+    expect(prisma.call.update).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: { id: 'call-1' },
         data: expect.objectContaining({
           status: 'in_progress',
           endedAt: null,
@@ -189,6 +206,56 @@ describe('CallsService.startTestSession', () => {
     });
     expect(entitlements.assertAllowed.mock.invocationCallOrder[0]).toBeLessThan(
       voice.createBrowserTestSession.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('admits a Realtime browser test before creating the provider session', async () => {
+    const { service, admission, voice } = makeService();
+
+    await service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+      contact_name: 'Browser tester',
+    });
+
+    expect(admission.admitCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        callId: 'call-1',
+        direction: 'browser_test',
+        pipeline: 'realtime',
+      }),
+    );
+    expect(admission.admitCall.mock.invocationCallOrder[0]).toBeLessThan(
+      voice.createBrowserTestSession.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('compensates the Realtime reservation when provider session creation fails', async () => {
+    const { service, admission, prisma } = makeService({
+      voice: {
+        createBrowserTestSession: vi.fn(async () => {
+          throw new Error('realtime unavailable');
+        }),
+      },
+    });
+
+    await expect(
+      service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+        contact_name: 'Browser tester',
+      }),
+    ).rejects.toThrow(/realtime unavailable/);
+
+    expect(admission.compensate).toHaveBeenCalledWith(
+      'org-1',
+      'call-1',
+      'provider_dispatch_failed',
+    );
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'failed',
+          outcome: 'provider_dispatch_failed',
+        }),
+      }),
     );
   });
 
@@ -322,6 +389,37 @@ describe('CallsService.startTestSession', () => {
       );
     });
 
+    it('returns the reserved minute when browser access-token creation fails', async () => {
+      const { service, admission, prisma } = makeService({
+        standardPipeline: true,
+        livekit: {
+          createAccessToken: vi.fn(async () => {
+            throw new Error('token signing unavailable');
+          }),
+        },
+      });
+
+      await expect(
+        service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+          contact_name: 'Browser tester',
+        }),
+      ).rejects.toThrow(/token signing unavailable/);
+
+      expect(admission.compensate).toHaveBeenCalledWith(
+        'org-1',
+        'call-1',
+        'provider_dispatch_failed',
+      );
+      expect(prisma.call.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'failed',
+            outcome: 'provider_dispatch_failed',
+          }),
+        }),
+      );
+    });
+
     /**
      * Reconciliation joins provider records to usage rows by provider call id,
      * and for an in-house test that identifier is the room, which only exists
@@ -354,6 +452,29 @@ describe('CallsService.startTestSession', () => {
 
       expect(voice.createBrowserTestSession).toHaveBeenCalled();
       expect(livekit.createRoomForCall).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A Free plan has no realtime entitlement, so when the in-house pipeline is
+     * switched off it has no runtime at all. Refusing is the only honest answer:
+     * falling back to Realtime would hand the expensive runtime to the tier that
+     * does not pay for it.
+     */
+    it('refuses a Free test instead of upgrading it when the in-house pipeline is off', async () => {
+      const { service, voice, livekit, prisma } = makeService({
+        standardPipeline: true,
+        standardPipelineDisabled: true,
+      });
+
+      await expect(
+        service.startTestSession('workspace-1', 'agent-1', 'user-1', {
+          contact_name: 'Browser tester',
+        }),
+      ).rejects.toThrow(/temporarily unavailable/i);
+
+      expect(voice.createBrowserTestSession).not.toHaveBeenCalled();
+      expect(livekit.createRoomForCall).not.toHaveBeenCalled();
+      expect(prisma.call.create).not.toHaveBeenCalled();
     });
   });
 });
