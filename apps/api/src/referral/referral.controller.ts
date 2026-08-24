@@ -4,13 +4,15 @@ import {
   Post,
   Body,
   UseGuards,
-  Req,
   Param,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { SessionUser } from '@voiceforge/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { CurrentUser } from '../common/current-user.decorator';
+import { SessionScoped } from '../common/decorators/session-scoped.decorator';
+import { ForbiddenError, UnauthorizedError } from '../common/errors';
 import { ReferralService } from './referral.service';
 import { z } from 'zod';
 
@@ -18,18 +20,31 @@ const AcceptReferralSchema = z.object({
   inviteToken: z.string().min(1),
 });
 
-type AuthenticatedRequest = Request & { user: { id: string; active_workspace_id?: string; active_workspace_name?: string; active_workspace_role?: string } };
-
+/**
+ * `WorkspaceGuard` is applied at controller level but only three of these four
+ * routes carry a `:workspaceId` param, so on the other three it did nothing.
+ * Those are marked @SessionScoped(): they take the tenant from the verified
+ * session, and `GET :workspaceId` remains genuinely guarded.
+ *
+ * Each session-scoped handler also derived its tenant as
+ * `active_workspace_id ?? req.user.id`, falling back to the caller's *user* id
+ * as a workspace id. A user id is never a valid workspace id, so the fallback
+ * could only ever mis-scope: `createReferral` and `acceptReferral` would have
+ * thrown a misleading "workspace not found" 401 from the service, and
+ * `listReferrals` would have silently returned an empty list. Failing closed
+ * here reports the real problem.
+ */
 @Controller('referrals')
 @UseGuards(InternalAuthGuard, WorkspaceGuard)
 export class ReferralController {
   constructor(private readonly referral: ReferralService) {}
 
   @Post()
-  async createReferral(@Req() req: AuthenticatedRequest) {
-    const workspaceId = req.user.active_workspace_id ?? req.user.id;
+  @SessionScoped()
+  async createReferral(@CurrentUser() user: SessionUser | undefined) {
+    const { userId, workspaceId } = this.requireWorkspace(user);
     const result = await this.referral.createReferral({
-      actorUserId: req.user.id,
+      actorUserId: userId,
       referrerWorkspaceId: workspaceId,
     });
     return {
@@ -40,26 +55,40 @@ export class ReferralController {
   }
 
   @Post('accept')
+  @SessionScoped()
   async acceptReferral(
-    @Req() req: AuthenticatedRequest,
+    @CurrentUser() user: SessionUser | undefined,
     @Body(new ZodValidationPipe(AcceptReferralSchema)) body: z.infer<typeof AcceptReferralSchema>,
   ) {
-    const workspaceId = req.user.active_workspace_id ?? req.user.id;
+    const { userId, workspaceId } = this.requireWorkspace(user);
     const result = await this.referral.acceptReferral({
       inviteToken: body.inviteToken,
-      referredUserId: req.user.id,
+      referredUserId: userId,
       referredWorkspaceId: workspaceId,
     });
     return { success: true, ...result };
   }
 
   @Get()
-  async listReferrals(@Req() req: AuthenticatedRequest) {
-    return this.referral.listReferrals(req.user.active_workspace_id ?? req.user.id);
+  @SessionScoped()
+  async listReferrals(@CurrentUser() user: SessionUser | undefined) {
+    const { workspaceId } = this.requireWorkspace(user);
+    return this.referral.listReferrals(workspaceId);
   }
 
+  // Guarded by the controller-level WorkspaceGuard, which does apply here.
   @Get(':workspaceId')
   async getReferralsForWorkspace(@Param('workspaceId') workspaceId: string) {
     return this.referral.listReferrals(workspaceId);
+  }
+
+  private requireWorkspace(user: SessionUser | undefined): {
+    userId: string;
+    workspaceId: string;
+  } {
+    if (!user?.id) throw new UnauthorizedError();
+    const workspaceId = user.active_workspace_id;
+    if (!workspaceId) throw new ForbiddenError('No active workspace for this session.');
+    return { userId: user.id, workspaceId };
   }
 }

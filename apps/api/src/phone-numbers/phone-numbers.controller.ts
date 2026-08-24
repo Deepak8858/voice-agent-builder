@@ -1,6 +1,11 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
 import { PhoneNumbersService } from './phone-numbers.service';
+import { WorkspaceGuard } from '../common/workspace.guard';
 
+// Provisioning and releasing numbers spends money and reroutes live calls. The
+// service layer scopes every query by workspace, but without this guard the
+// workspace in the URL is simply whatever the caller typed.
+@UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/phone-numbers')
 export class PhoneNumbersController {
   constructor(private readonly numbers: PhoneNumbersService) {}

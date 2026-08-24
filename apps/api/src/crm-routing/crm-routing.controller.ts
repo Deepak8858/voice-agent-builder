@@ -1,6 +1,8 @@
-import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { CrmRoutingService } from './crm-routing.service';
+import { WorkspaceGuard } from '../common/workspace.guard';
 
+@UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/crm-routing')
 export class CrmRoutingController {
   constructor(private readonly routing: CrmRoutingService) {}

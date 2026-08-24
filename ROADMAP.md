@@ -33,8 +33,9 @@ production deploy path is now commit-pinned with rollback.
 3. **Committed infrastructure metadata.** `supabase/.temp/` is still git-tracked,
    and two stale agent worktree snapshots under `.claude/worktrees/` duplicate it.
 4. **Coverage holes in exactly the wrong places — closed.** The cross-tenant
-   authorization sweep now exists (item 4), and `apps/voice-edge` was deleted
-   rather than tested (item 5).
+   authorization sweep now exists (item 4), route-level tenant authorization is
+   ratcheted separately (item 4b), and `apps/voice-edge` was deleted rather than
+   tested (item 5).
 
 Reaching 10/10 is mostly an operations exercise at this point, not a feature one.
 
@@ -156,15 +157,49 @@ unscoped phone-number assign/release, an unscoped contact re-read that let anoth
 tenant's opt-out state drive a compliance decision, an unscoped consent lookup, a
 foreign call transcript feeding CRM routing, and an unscoped agent publish.
 
-Two authorization gaps remain **open** and are not test problems:
-- Three controllers routed under `/workspaces/:workspaceId/` have no
-  `WorkspaceGuard`, so the URL's `workspaceId` is attacker-chosen and the service's
-  predicate is worthless: `phone-numbers.controller.ts`, `audit/audit.controller.ts`,
-  `crm-routing/crm-routing.controller.ts`.
-- `orchestrator.controller.ts` derives the workspace as
-  `req.workspace?.id ?? req.user?.workspaceId ?? req.user?.id ?? ''`, and nothing in
-  the codebase ever assigns `req.workspace`, so it resolves to the user id or the
-  empty string. The service layer now fails closed, but the derivation is still wrong.
+**4b. Route-level authorization gaps — done.** The two gaps left open above are
+closed, and reviewing them surfaced three more of the same class. The service-layer
+sweep could not see any of these: a query scoped by `where: { workspaceId }` is
+still a cross-tenant hole when `workspaceId` is a path param nobody verified.
+
+- `phone-numbers`, `audit`, and `crm-routing` controllers, all routed under
+  `/workspaces/:workspaceId/`, now carry `WorkspaceGuard`. Previously the URL's
+  `workspaceId` was attacker-chosen and the service predicate was worthless.
+- `orchestrator.controller.ts` no longer derives the workspace as
+  `req.workspace?.id ?? req.user?.workspaceId ?? req.user?.id ?? ''`. Nothing ever
+  assigns `req.workspace` and `SessionUser` has no `workspaceId`, so it collapsed to
+  the caller's *user id*, then to `''`. It now reads `active_workspace_id` and fails
+  closed.
+- **`WorkspaceGuard` silently no-opped on any route without a `:workspaceId`
+  param**, which was the root cause of the rest. It returned `true` early, so
+  applying it to a route keyed by a differently-named param produced a route that
+  looked guarded in review while checking nothing. It now throws instead; routes
+  that legitimately take their tenant from the session declare `@SessionScoped()`.
+- `DELETE v1/orgs/:orgId/contacts/:contactId/erasure` was the worst instance: it
+  carried the no-opping guard, and `ErasureService.eraseContact` treats its first
+  argument as a `workspaceId`, so **any authenticated user could permanently delete
+  another tenant's contact** along with its cascaded calls, consent records,
+  compliance checks, analytics events, evaluations and tool invocations. The route
+  is now `v1/workspaces/me/contacts/:contactId/erasure` and takes the tenant from
+  the verified session.
+- `GET v1/orgs/:orgId/audit-logs` had **no guard at all** — only its sibling
+  `admin/*` routes did — so any authenticated user could read any organization's
+  audit log. It now uses the new `OrganizationGuard`, which verifies membership in a
+  workspace belonging to `:orgId` (or ownership of the org itself), since membership
+  is modelled per workspace rather than per org.
+- `PATCH v1/workspaces/me/retention` and three `referrals` routes carried the
+  decorative guard. They were safe in effect but derived the tenant as
+  `active_workspace_id ?? user.id`, falling back to a user id as a workspace id.
+  They now fail closed and are marked `@SessionScoped()`.
+
+`security/route-guard-analyzer.ts` plus `route-guard-baseline.test.ts` make this a
+ratchet at the layer the tenant-scope analyzer cannot see. It walks every
+controller and reports any route whose path names a tenant that its guards cannot
+check — `WorkspaceGuard` counts only for `:workspaceId`, `OrganizationGuard` only
+for `:orgId`. Unlike the tenant-scope baseline this one is empty and must stay
+empty: accepting a tenant id from the URL without authorizing it is never correct.
+All 116 tenant-param routes are covered. Each fix was mutation-tested by reverting
+it and confirming a specific test fails.
 
 **5. `apps/voice-edge` — deleted rather than tested.** Testing it would have
 entrenched a second, undeployed voice runtime that duplicates the in-house pipeline
@@ -220,7 +255,7 @@ works.
 ## What would make this 10/10
 
 In order: automatic CI as a required check; one traceable production deploy;
-`supabase/.temp/` purged and credentials rotated; a cross-tenant authorization test
-sweep; tests on `apps/voice-edge`; and a completed backup restore drill. None of
-these are feature work. The product is built — what is missing is the machinery that
-proves it stays built.
+`supabase/.temp/` purged and credentials rotated; and a completed backup restore
+drill. The cross-tenant sweep, the route-guard ratchet, and the `apps/voice-edge`
+decision are done. None of the remainder is feature work. The product is built —
+what is missing is the machinery that proves it stays built.
