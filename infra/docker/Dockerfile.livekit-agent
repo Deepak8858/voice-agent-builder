@@ -1,4 +1,10 @@
 # syntax=docker/dockerfile:1.7
+# NODE PIN: deliberately still 20.20.0 while the quality-gate workflows run
+# NODE_VERSION 22.22. See the same note in Dockerfile.api: the workflows moved
+# for jsdom 30 / markAsUncloneable, which nothing in this image uses. Both
+# versions satisfy the root package.json engines ("^20.20.0 || >=22.22.0").
+# Node 20 is end-of-life as of 2026-04-30, so this image still needs its own
+# bump.
 FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
 
 WORKDIR /app

@@ -1,4 +1,12 @@
 # syntax=docker/dockerfile:1.7
+# NODE PIN: deliberately still 20.20.0 while the quality-gate workflows run
+# NODE_VERSION 22.22. The workflows had to move because jsdom 30 (apps/web's
+# vitest DOM environment) needs node:worker_threads.markAsUncloneable, which
+# does not exist before Node 22.10. No image runs the web test suite, so nothing
+# here needs it, and re-basing a production runtime is riskier than re-basing
+# CI. Both satisfy the root package.json engines ("^20.20.0 || >=22.22.0"), so
+# this is a valid split rather than drift. Node 20 is end-of-life as of
+# 2026-04-30 though, so these images still need their own bump.
 FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
 
 WORKDIR /app
