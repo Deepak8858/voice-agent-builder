@@ -40,11 +40,15 @@
 
 - Primary DB: Supabase (us-east-1)
 - Backups: Supabase automated daily + point-in-time recovery
-- Voice processing: Vapi/Twilio (encryption handled by provider)
+- Voice transport: LiveKit + Twilio (encryption handled by provider)
+- Voice runtimes: OpenAI Realtime (paid plans) and the in-house pipeline on Azure
+  AI (Azure Speech STT/TTS + Azure OpenAI)
 - No PHI leaves the platform except to subprocessors listed in DPA
 
 ## BAAs
 
-- Vapi: https://vapi.ai/dpa
+- Microsoft Azure (Speech + Azure OpenAI): https://www.microsoft.com/licensing/docs/view/Microsoft-Products-and-Services-Data-Protection-Addendum-DPA
+- OpenAI: https://openai.com/policies/data-processing-addendum
+- LiveKit: https://livekit.io/legal/dpa
 - Twilio: https://www.twilio.com/legal/bba
 - Supabase: https://supabase.com/dpa

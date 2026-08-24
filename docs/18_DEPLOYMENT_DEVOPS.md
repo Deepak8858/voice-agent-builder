@@ -11,7 +11,7 @@ Database: Neon/Supabase Postgres
 Redis: Upstash
 Storage: Cloudflare R2
 Analytics: PostgreSQL first, ClickHouse Cloud later
-Voice: Vapi/Retell
+Voice: OpenAI Realtime + in-house Azure pipeline (LiveKit transport)
 Billing: Stripe
 ```
 

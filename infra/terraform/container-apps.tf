@@ -241,9 +241,12 @@ resource "azurerm_container_app" "api" {
         value = "clerk"
       }
 
+      # Vapi and Retell were removed in 2026-08; Realtime is the only hosted
+      # runtime, and the in-house Azure pipeline is enabled separately with
+      # VOICE_STANDARD_PIPELINE_ENABLED plus its AZURE_* credentials.
       env {
         name  = "VOICE_PROVIDER"
-        value = "vapi"
+        value = "openai-realtime"
       }
 
       env {
@@ -346,6 +349,16 @@ resource "azurerm_container_app" "web" {
       env {
         name  = "NEXT_PUBLIC_APP_URL"
         value = "https://${local.aca_suffix}-web.${azurerm_container_app_environment.main.default_domain}"
+      }
+
+      # Browser test calls on the in-house pipeline open a WebSocket straight to
+      # LiveKit, so the middleware needs the origin to allow it in the CSP. It is
+      # not a secret: the API already returns it to the browser in every
+      # test-session response. Left empty, the policy simply omits it and test
+      # calls fall back to transcript-only.
+      env {
+        name  = "NEXT_PUBLIC_LIVEKIT_URL"
+        value = var.livekit_url
       }
 
       # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY should be set via Key Vault

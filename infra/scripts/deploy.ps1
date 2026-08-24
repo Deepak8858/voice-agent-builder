@@ -46,8 +46,7 @@ $deployment = New-AzResourceGroupDeployment `
     -encryptionKey $env:ENCRYPTION_KEY `
     -clerkSecretKey $env:CLERK_SECRET_KEY `
     -clerkPublishableKey $env:CLERK_PUBLISHABLE_KEY `
-    -openaiApiKey $env:OPENAI_API_KEY `
-    -vapiApiKey $env:VAPI_API_KEY
+    -openaiApiKey $env:OPENAI_API_KEY
 
 Write-Host ""
 Write-Host "✅ Deployment complete!" -ForegroundColor Green

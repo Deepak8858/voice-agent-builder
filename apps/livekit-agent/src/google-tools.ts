@@ -98,11 +98,38 @@ export function createToolInvokeClient(config: {
   };
 }
 
+/**
+ * Serializes params to a canonical string for hashing: object keys are sorted
+ * recursively so two semantically identical argument sets produce the same
+ * idempotency key regardless of the order the model emitted them in. Array
+ * order is preserved, since it is semantically significant.
+ *
+ * The serialization must agree with what `JSON.stringify` actually puts on the
+ * wire, otherwise two different request bodies could share one key and the
+ * server would replay the wrong result:
+ *  - Keys whose value is `undefined` are skipped, matching `JSON.stringify`
+ *    dropping them from objects. Emitting 'null' instead would make
+ *    `{a: undefined}` and `{a: null}` hash identically while sending different
+ *    payloads. Inside arrays `undefined` still becomes 'null', which is what
+ *    `JSON.stringify` does there.
+ *  - Values carrying a `toJSON` (notably Date) are converted first. Treating
+ *    one as a plain object would serialize it to '{}' because it has no
+ *    enumerable entries, collapsing every distinct date to the same key.
+ * Keys are compared by code point rather than `localeCompare`, whose ordering
+ * is ICU/locale-sensitive and so not guaranteed stable across environments.
+ */
 function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => (entry === undefined ? 'null' : stableJson(entry))).join(',')}]`;
+  }
   if (value && typeof value === 'object') {
+    const toJson = (value as { toJSON?: unknown }).toJSON;
+    if (typeof toJson === 'function') {
+      return stableJson((toJson as () => unknown).call(value));
+    }
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
       .join(',')}}`;
   }

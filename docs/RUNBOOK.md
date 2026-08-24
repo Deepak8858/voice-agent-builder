@@ -114,6 +114,37 @@ non-localhost `WEB_BASE_URL`, a numeric `TRUST_PROXY_HOPS`, and — when
 `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, or none; a partial set
 aborts the deploy. See `.env.production.example`.
 
+**2a. Breaking env change (2026-08): Vapi and Retell removed.** Before deploying
+this release, edit `/opt/voiceforge/.env` on the host. The API no longer reads
+any of these variables, so leaving them behind is misleading rather than fatal:
+
+Remove: `VAPI_API_KEY`, `VAPI_BASE_URL`, `VAPI_WEBHOOK_SECRET`,
+`VAPI_PHONE_NUMBER_ID`, `RETELL_API_KEY`, `RETELL_BASE_URL`,
+`RETELL_FROM_NUMBER`, `RETELL_VOICE_ID`.
+
+Change: `VOICE_PROVIDER=vapi` (or `retell`) becomes `VOICE_PROVIDER=openai-realtime`.
+A retired value is deliberately **not** a boot failure — rejecting it would take
+the API down on upgrade over a setting the operator cannot change until the new
+release is already deployed — so it is coerced to `openai-realtime` and logged as
+a deprecation warning naming every stale variable. Do not treat that warning as
+harmless: the coercion is a migration aid, not a supported configuration.
+
+Add, only if you are enabling the in-house pipeline that serves free-plan and
+half of starter-plan calls: `VOICE_STANDARD_PIPELINE_ENABLED=true` plus
+`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_VOICE_LLM_DEPLOYMENT`,
+`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, and optionally `AZURE_TTS_VOICE` and
+`AZURE_OPENAI_API_VERSION` (leave the latter unset to keep the worker's pinned
+data-plane version). The API **refuses to boot** in production if the flag is on
+while any required Azure variable is empty, which is preferable to accepting a
+free-plan call and failing it after the caller has connected. The same Azure
+variables must be present for the `livekit-agent` service, which reads them from
+the same file. While the flag is off, every plan falls back to Realtime.
+
+Also add `FREE_CREDIT_GRANT_CRON` (default `15 0 * * *`, UTC) if you want to
+override the daily free-allowance sweep. It only runs where
+`WORKERS_ENABLED=true`; without such an instance, free organizations are never
+granted minutes and cannot run even a browser test.
+
 **3. TLS bootstraps itself, in two states.** nginx serves HTTP only until a
 certificate exists, so the first deploy to a fresh host succeeds without one.
 The entrypoint hook enables the port-443 server and HTTP→HTTPS redirects as soon
@@ -140,6 +171,43 @@ docker compose --env-file /opt/voiceforge/.env -f /opt/voiceforge/docker-compose
   run --rm --no-deps api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
 # NEVER use db:push in production
 ```
+
+#### Recover an invalid concurrent index
+A failed `CREATE INDEX CONCURRENTLY` leaves an invalid relation. Check for every
+invalid index after a migration; the ordering puts this release's index first:
+```sql
+SELECT n.nspname AS schema_name,
+       t.relname AS table_name,
+       i.relname AS index_name,
+       x.indisready,
+       pg_size_pretty(pg_relation_size(i.oid)) AS disk_size
+FROM pg_index AS x
+JOIN pg_class AS i ON i.oid = x.indexrelid
+JOIN pg_class AS t ON t.oid = x.indrelid
+JOIN pg_namespace AS n ON n.oid = i.relnamespace
+WHERE NOT x.indisvalid
+ORDER BY (i.relname = 'calls_pipeline_created_at_idx') DESC,
+         n.nspname,
+         i.relname;
+```
+`IF NOT EXISTS` sees the invalid relation and silently skips every later build;
+PostgreSQL cannot use it for reads, so affected queries fall back to sequential
+scans without an error. The invalid index still occupies disk and, once
+`indisready` is true, is maintained by writes.
+
+For the standalone `calls_pipeline_created_at_idx`, run each statement separately
+with autocommit enabled — neither concurrent statement may run in a transaction:
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS public.calls_pipeline_created_at_idx;
+CREATE INDEX CONCURRENTLY calls_pipeline_created_at_idx
+  ON public.calls (pipeline, created_at);
+```
+`DROP INDEX CONCURRENTLY` accepts only one index, does not support `CASCADE`, and
+cannot drop an index on a partitioned table. It therefore also cannot remove an
+index that backs a `UNIQUE` or primary-key constraint. For those cases, schedule
+a maintenance window and use the appropriate constraint operation or plain
+`DROP INDEX`, accounting for its `ACCESS EXCLUSIVE` lock; do not substitute that
+blocking variant on a live table without review.
 
 ### Rollback
 Rollback is automatic: if health checks fail after replacement, the workflow

@@ -41,8 +41,7 @@ voiceforge-ai/
         voice/
           adapters/
             mock.adapter.ts
-            vapi.adapter.ts
-            retell.adapter.ts
+            openai-realtime.adapter.ts
         calls/
         compliance/
         analytics/

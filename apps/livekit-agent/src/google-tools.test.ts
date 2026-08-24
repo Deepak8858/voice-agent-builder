@@ -133,6 +133,48 @@ describe('tool invoke idempotency key', () => {
     );
   });
 
+  it('distinguishes an omitted key from an explicit null, matching the wire payload', async () => {
+    // JSON.stringify drops undefined-valued keys but keeps null ones, so the two
+    // requests below send different bodies. Hashing them identically would let
+    // the server replay one request's result for the other.
+    const withUndefined = await invokedKey({
+      params: { ...createEventParams, description: undefined },
+      callId: 'call-1',
+    });
+    const withNull = await invokedKey({
+      params: { ...createEventParams, description: null },
+      callId: 'call-1',
+    });
+    const withoutField = await invokedKey({ params: createEventParams, callId: 'call-1' });
+
+    expect(withUndefined).not.toBe(withNull);
+    // An undefined value is not sent at all, so it must hash like an absent key.
+    expect(withUndefined).toBe(withoutField);
+  });
+
+  it('does not collapse distinct dates to the same key', async () => {
+    // A Date has no enumerable own entries, so serializing it as a plain object
+    // would reduce every date to '{}' and make all of them collide.
+    const first = await invokedKey({
+      params: { ...createEventParams, start_iso: new Date('2026-09-01T10:00:00Z') },
+      callId: 'call-1',
+    });
+    const second = await invokedKey({
+      params: { ...createEventParams, start_iso: new Date('2026-09-02T10:00:00Z') },
+      callId: 'call-1',
+    });
+
+    expect(first).not.toBe(second);
+    // A Date and its own ISO string serialize identically on the wire, so they
+    // must hash identically too.
+    expect(first).toBe(
+      await invokedKey({
+        params: { ...createEventParams, start_iso: '2026-09-01T10:00:00.000Z' },
+        callId: 'call-1',
+      }),
+    );
+  });
+
   it('is only sent for google_calendar create_event with a call id', async () => {
     // Other operations are reads (or non-calendar tools), where retrying is
     // harmless; the key is scoped to the one operation that creates state.

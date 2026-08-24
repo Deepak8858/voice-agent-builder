@@ -142,6 +142,15 @@ variable "redis_capacity" {
 }
 
 # ---------------------------------------------------------------------------
+# Voice runtime
+# ---------------------------------------------------------------------------
+variable "livekit_url" {
+  description = "LiveKit server URL (wss://...). Consumed by the web app's CSP so browser test calls on the in-house pipeline can open their signalling socket."
+  type        = string
+  default     = ""
+}
+
+# ---------------------------------------------------------------------------
 # Observability
 # ---------------------------------------------------------------------------
 variable "log_analytics_sku" {

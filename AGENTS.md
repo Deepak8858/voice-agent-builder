@@ -41,7 +41,15 @@ Build order 1-13 below is the historical MVP sequence and is complete. It is ret
 10. Compliance engine
 11. White-label settings
 12. Billing
-13. Real Vapi/Retell adapters
+13. Real voice runtime adapters
+
+Since the MVP sequence closed, Vapi and Retell were removed entirely. The two
+supported runtimes are OpenAI Realtime (paid plans) and the in-house `standard`
+pipeline (Azure Speech STT → Azure OpenAI chat → Azure Speech TTS) in
+`apps/livekit-agent`, which is the only runtime the free plan may use. Rule 4
+still holds: route through the adapter interface and `PipelineRouterService`
+rather than hard-coding either runtime.
+
 ## First Working Demo
 ```txt
 Sign up → create workspace → generate agent from prompt → view Agent Spec JSON → test call → publish agent → view call transcript → see analytics → configure white-label branding

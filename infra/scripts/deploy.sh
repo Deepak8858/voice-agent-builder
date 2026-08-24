@@ -44,8 +44,7 @@ az deployment group create \
   --parameters "encryptionKey=$ENCRYPTION_KEY" \
   --parameters "clerkSecretKey=$CLERK_SECRET_KEY" \
   --parameters "clerkPublishableKey=$CLERK_PUBLISHABLE_KEY" \
-  --parameters "openaiApiKey=$OPENAI_API_KEY" \
-  --parameters "vapiApiKey=$VAPI_API_KEY"
+  --parameters "openaiApiKey=$OPENAI_API_KEY"
 
 echo ""
 echo "✅ Deployment complete!"

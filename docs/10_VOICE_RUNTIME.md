@@ -4,7 +4,11 @@
 Support browser test calls, inbound phone calls, controlled outbound calls, transcripts, recordings, tool calls, and transfers.
 
 ## Strategy
-MVP: Mock provider, then Vapi/Retell. Later: OpenAI Realtime + LiveKit + Twilio/Telnyx SIP.
+MVP: Mock provider, then real adapters. Current: two runtimes behind the adapter
+interface — OpenAI Realtime (paid plans) and the in-house `standard` pipeline
+(Azure Speech STT → Azure OpenAI chat → Azure Speech TTS, the only runtime the
+free plan may use), both over LiveKit + Twilio/Telnyx SIP. `PipelineRouterService`
+selects the pipeline from the plan's entitlement mix.
 
 ## Provider Interface
 ```ts

@@ -55,9 +55,12 @@ on `AgentVersion` (`apps/api/prisma/schema.prisma`), not an in-memory map.
 **`JWT_SECRET` fail-fast — fixed.** Minimum 32 characters, and the development
 default is refused in production (`apps/api/src/config/env.ts:97-100`).
 
-**Free tier — fixed.** The free plan grants 10 consumable trial minutes, 5 trial
-outbound calls, 1 agent, and 50 contacts
-(`packages/shared/src/schemas/billing.ts:35-43`).
+**Free tier — fixed.** The free plan grants 10 minutes per month, 1 agent, 1
+concurrent call, and 50 contacts (`packages/shared/src/billing/catalog.ts`). The
+allowance recurs monthly, is granted by `free-credit-grant.worker.ts`, and is
+spendable only on the in-house `standard` pipeline. Free has no PSTN
+entitlement, so browser tests are the only thing that can spend it — which is
+exactly why the former one-time 180-second browser test was retired.
 
 **Visual flow builder — exists.** `apps/web/components/flow-builder/` contains the
 client, model, node palette, config panel, and typed node components, with model
@@ -74,8 +77,13 @@ module, plus schema backing.
 Streams bridge with session store, prompt builder, audio utils, and a Dockerfile.
 It has no tests, which is its main problem.
 
-**Retell adapter — exists.** `apps/api/src/voice/adapters/retell.adapter.ts` with
-tests, registered in `voice-provider.registry.ts`.
+**Vapi and Retell adapters — removed.** Both adapters, their tests, and the Vapi
+tools controller were deleted, along with every `VAPI_*`/`RETELL_*` variable. The
+supported runtimes are OpenAI Realtime and the in-house `standard` pipeline
+(`apps/livekit-agent/src/standard-pipeline.ts`), selected per call by
+`PipelineRouterService`. A retired `VOICE_PROVIDER` value is coerced to
+`openai-realtime` with a deprecation warning so an upgrade cannot fail at boot;
+see `docs/RUNBOOK.md` §2 for the env migration.
 
 **Test count — was 139, is now 523+65.** Measured per workspace: api 64 files / 437
 tests, shared 6 / 18, livekit-agent 1 / 3, web 12 files / 65 tests.
@@ -168,10 +176,10 @@ access logs.
 `docs/WEB_SECURITY_AUDIT.md` described a Clerk-era codebase and have been reduced to
 pointers at `VOICEFORGE_AUDIT_REPORT.md`.
 
-**12. Fix stale landing-page copy.** `apps/web/app/page.tsx:97` says "Mock runtime
-comes first" and line 127 lists "Mock voice runtime" and "Retell-ready". Retell is a
-real, tested adapter and mocks are dev-only. The copy undersells the product and
-contradicts `AGENTS.md` rule 10.
+**12. Fix stale landing-page copy — done.** The landing page now describes the
+OpenAI Realtime and in-house Azure pipelines instead of a mock runtime and
+"Retell-ready", and the privacy policy lists Microsoft Azure, OpenAI, and
+LiveKit as subprocessors in place of Vapi.
 
 ### P3 — consolidation
 
