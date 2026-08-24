@@ -25,7 +25,7 @@ docs             product/build documentation
 ```
 
 ## Toolchain
-The repo is pnpm-native. Use `corepack` + `pnpm` (workflows pin `10.33.2`, see `.github/workflows/ci-cd-ec2.yml:27`). Do not use `npm install` at the root: workspace dependencies are declared with the `workspace:*` protocol, which npm cannot resolve. Do not convert them.
+The repo is pnpm-native. Use `corepack` + `pnpm` (the root `package.json` and `.github/workflows/quality-gate.yml:29` pin `10.33.2`). Do not use `npm install` at the root: workspace dependencies are declared with the `workspace:*` protocol, which npm cannot resolve. Do not convert them.
 When changing `pnpm.overrides` in the root `package.json`, regenerate `pnpm-lock.yaml` in the same commit. CI installs with `--frozen-lockfile` and fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if the two drift.
 ## Build Order
 Build order 1-13 below is the historical MVP sequence and is complete. It is retained for context only; new work is tracked in `ROADMAP.md`.

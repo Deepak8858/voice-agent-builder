@@ -1,6 +1,6 @@
 # VoiceForge AI — Roadmap
 
-**Score: 8/10** · Reconciled against `integration/prod-readiness` at commit `a3deeb3`.
+**Score: 8/10** · Reconciled against `feat/google-tools-vapi-calls` at commit `a6a89f2`.
 
 The previous version of this document scored the product 5/10 and described a
 codebase with broken HMAC webhooks, in-memory provider-id caches, a non-existent
@@ -14,10 +14,10 @@ The product is feature-complete against its own MVP spec and the security postur
 is good. Points are withheld for process and operations, not for features.
 
 **What earns the score.** All nine build phases are implemented and tested: agent
-generation and versioning, templates, knowledge ingestion and retrieval, four real
-voice provider adapters, calls and transcripts, compliance and consent gating,
-analytics, white-label, and billing. 523 tests pass across api, shared, and
-livekit-agent, plus 65 in web. Typecheck is clean across all six workspaces. The
+generation and versioning, templates, knowledge ingestion and retrieval, two
+production voice runtimes, calls and transcripts, compliance and consent gating,
+analytics, white-label, and billing. As of commit `a6a89f2`, 1,536 tests pass
+across the monorepo. Typecheck, lint, and build were also green at that commit. The
 major security findings from the last audit are closed — centralized SSRF
 protection, nonce-based CSP, bounded proxy trust, constant-time secret comparison,
 JWT audience and issuer pinning, and raw-byte webhook signature verification. The
@@ -25,13 +25,16 @@ production deploy path is now commit-pinned with rollback.
 
 **What holds it back.**
 
-1. **No automatic CI.** The quality gate exists but never fires. This is the single
-   most consequential gap: every other guarantee in this document can regress
-   silently between merges.
-2. **Production is not traceable to a commit.** The live Azure VM is healthy but was
-   hand-built. The new workflow fixes this prospectively and has not been used yet.
-3. **Committed infrastructure metadata.** `supabase/.temp/` is still git-tracked,
-   and two stale agent worktree snapshots under `.claude/worktrees/` duplicate it.
+1. **Required-check enforcement is not configured.** Automatic CI now runs on
+   every pull request and push to `main`, but `main` has no branch protection, so
+   the quality gate can still be bypassed during merge.
+2. **The AWS deploy path still needs an operational exercise.** The dispatch-only
+   workflow maps an exact commit to immutable ECR images and includes rollback, but
+   the repository cannot prove that a production deploy and rollback drill have run.
+3. **Sensitive scratch paths are untracked, but history/rotation status is unknown.**
+   `supabase/.temp/` and `.claude/worktrees/` are ignored and have zero tracked
+   paths. Repository state does not prove that prior history was purged or that any
+   potentially exposed credentials were rotated.
 4. **Coverage holes in exactly the wrong places — closed.** The cross-tenant
    authorization sweep now exists (item 4), route-level tenant authorization is
    ratcheted separately (item 4b), and `apps/voice-edge` was deleted rather than
@@ -89,8 +92,9 @@ supported runtimes are OpenAI Realtime and the in-house `standard` pipeline
 `openai-realtime` with a deprecation warning so an upgrade cannot fail at boot;
 see `docs/RUNBOOK.md` §2 for the env migration.
 
-**Test count — was 139, is now 523+65.** Measured per workspace: api 64 files / 437
-tests, shared 6 / 18, livekit-agent 1 / 3, web 12 files / 65 tests.
+**Test count — was 139, is now 1,536.** Commit `a6a89f2` records 1,536 passing
+tests, with typecheck, lint, and build green. This count is cited from that commit's
+gate result rather than rerun solely for this documentation reconciliation.
 
 ## Implemented versus configured
 
@@ -98,9 +102,9 @@ Feature completeness in code does not mean the capability is live. These three a
 worth stating plainly.
 
 **LiveKit / BYO telephony.** Implemented and tested. All LiveKit env vars are
-optional (`apps/api/src/config/env.ts:52-59`); the deploy runs the `livekit` compose
-profile only when all three credentials are present and aborts on a partial set
-(`.github/workflows/deploy-azure-vm.yml:197-206`). Production configuration is
+optional (`apps/api/src/config/env.ts:52-59`); the AWS deploy runs the `livekit`
+Compose profile only when all three credentials are present and aborts on a partial
+set (`.github/workflows/deploy-aws-ec2.yml:476-485`). Production configuration is
 unverifiable from this repository.
 
 **Email.** Fully implemented, including a tenant-scoped weekly digest restricted to
@@ -113,35 +117,37 @@ runs where `WORKERS_ENABLED=true`.
 
 **Billing.** Implemented; `BILLING_MODE` defaults to `demo`
 (`apps/api/src/config/env.ts:111`) and the web client disables checkout in any
-non-`live` mode (`apps/web/lib/billing-mode.ts:22-30`). The Azure deploy requires
-`BILLING_MODE=live` and non-empty Stripe variables
-(`.github/workflows/deploy-azure-vm.yml:170-171,189`), so a successful deploy implies
+non-`live` mode (`apps/web/lib/billing-mode.ts:22-30`). The AWS deploy requires
+`BILLING_MODE=live` and non-empty Stripe variables in `/opt/voiceforge/.env`
+(`.github/workflows/deploy-aws-ec2.yml:429-451`), so a successful deploy implies
 live billing.
 
 ## Open work, prioritized
 
 ### P0 — process and secrets
 
-**1. Add automatic CI.** Create a workflow triggered on `pull_request` and pushes to
-protected branches, running the existing gate from `ci-cd-ec2.yml:34-76` (gitleaks,
-`pnpm audit --prod --audit-level=high`, Prisma generate, shared build, typecheck,
-lint, test). Mark it a required status check. Keep all deploy workflows
-dispatch-only. Without this, nothing else on this list stays fixed.
+**1. Automatic CI — implemented; required-check enforcement remains open.**
+`.github/workflows/quality-gate.yml` runs on every pull request and push to `main`.
+It installs with the frozen lockfile, scans secrets, audits production dependencies,
+generates Prisma, builds shared, typechecks, lints, tests, builds API/web, verifies
+container dependency integrity, and rejects tracked credential scratch paths. The
+production deploy remains dispatch-only. `main` still has no branch protection, so
+configure the Quality Gate jobs as required status checks before treating this as an
+enforced merge gate.
 
-**2. Untrack and purge `supabase/.temp/` and `.claude/worktrees/`.** Nine files are
-still tracked under `supabase/.temp/`, including `pooler-url`, `project-ref`, and
-`linked-project.json`. A second copy of the same directory is committed inside a
-stale agent worktree snapshot at `.claude/worktrees/` (67 tracked paths across two
-snapshots, also containing deploy scripts and a chat transcript). Cleaning up only
-one location would miss the other. Remove both from the index, add them to
-`.gitignore`, and purge from history in a single pass. A scan of the committed
-worktrees found no credential values, only infrastructure metadata and tooling, so
-rotation is precautionary rather than urgent — but rotate the database password if
-there is any doubt about what transited those directories.
+**2. Scratch paths untracked and ignored — index cleanup done; history and rotation
+remain open.** `git ls-files supabase/.temp .claude/worktrees` returns no paths, and
+`.gitignore` excludes both directories. Commits `b9a6266` and `cd8da3a` performed
+the respective index cleanups. The current tree cannot verify that old commits were
+purged or that credentials which may have transited those paths were rotated; audit
+history and rotate affected credentials if that separate operational work has not
+already occurred.
 
-**3. Perform one deploy through `deploy-azure-vm.yml`.** This establishes the first
-verifiable commit-to-production mapping and exercises the rollback path before it is
-needed in an incident.
+**3. Exercise the AWS production deploy and rollback.** Dispatch
+`.github/workflows/deploy-aws-ec2.yml` with a full commit SHA and the explicit
+production confirmation. Verify the Depot builds, immutable ECR tags, EC2 rollout,
+health gates, recorded release state, and rollback path before an incident requires
+them.
 
 ### P1 — close the coverage holes that matter
 
@@ -218,18 +224,19 @@ registers a repeatable job keyed on `WEEKLY_DIGEST_CRON` and fans out per worksp
 
 ### P2 — toolchain and hygiene
 
-**8. Pin the package manager.** Add `"packageManager": "pnpm@10.33.2"` to the root
-`package.json`. It is currently pinned only in workflow env
-(`.github/workflows/ci-cd-ec2.yml:27`), which is how the lockfile/overrides mismatch
-became possible in the first place.
+**8. Pin the package manager — done.** Root `package.json` declares
+`"packageManager": "pnpm@10.33.2"`, matching
+`.github/workflows/quality-gate.yml:29`.
 
 **9. Declare `express` in `apps/api/package.json`.** It is used transitively via
 `@nestjs/platform-express` hoisting. `main.ts` no longer imports it directly
 (`apps/api/src/main.ts:3,31,78-80`), so this is latent — but it depends on a hoisting
 layout that is not guaranteed.
 
-**10. Convert knowledge search from GET to POST** so query terms stop landing in
-access logs.
+**10. Convert knowledge search from GET to POST — done.**
+`apps/api/src/knowledge/knowledge.controller.ts:99-109` exposes
+`POST /workspaces/:workspaceId/knowledge-sources/search` and validates the request
+body, so query terms no longer appear in the URL.
 
 **11. Superseded audit docs — done in this pass.** `docs/SECURITY_AUDIT.md` and
 `docs/WEB_SECURITY_AUDIT.md` described a Clerk-era codebase and have been reduced to
@@ -242,10 +249,12 @@ LiveKit as subprocessors in place of Vapi.
 
 ### P3 — consolidation
 
-**13. Remove the GCP and EC2 workflows** once those paths are decommissioned. Azure
-is the sole production target; the others are dispatch-gated but remain live surface
-area. Externalize the AWS account ids in `infra/docker/docker-compose.prod.yml` if
-that file outlives the migration.
+**13. Consolidate deployment on AWS — done.** The Azure VM, GCP, and legacy EC2
+workflows and the old production Compose definition were deleted during the AWS
+migration. The sole production path is the dispatch-only
+`.github/workflows/deploy-aws-ec2.yml`, which builds with Depot, stores immutable
+images in ECR, and deploys `infra/docker/docker-compose.aws.yml` to EC2. Remaining
+cloud-specific values and provisioning assumptions are documented under `infra/aws/`.
 
 **14. Runtime-verify the operational assets.** `scripts/backup-validation.js`,
 `docs/RUNBOOK.md`, `docs/35_BACKUP_RECOVERY.md`, and the k6 suites all exist but none
@@ -254,8 +263,9 @@ works.
 
 ## What would make this 10/10
 
-In order: automatic CI as a required check; one traceable production deploy;
-`supabase/.temp/` purged and credentials rotated; and a completed backup restore
-drill. The cross-tenant sweep, the route-guard ratchet, and the `apps/voice-edge`
-decision are done. None of the remainder is feature work. The product is built —
-what is missing is the machinery that proves it stays built.
+In order: enforce the automatic CI jobs through branch protection; exercise one
+traceable AWS production deploy and rollback; verify sensitive-path history purge
+and credential rotation; and complete a backup restore drill. The automatic quality
+gate, current-tree scratch-path cleanup, cross-tenant sweep, route-guard ratchet,
+and `apps/voice-edge` decision are done. None of the remainder is feature work. The
+product is built — what is missing is the operational proof that it stays built.

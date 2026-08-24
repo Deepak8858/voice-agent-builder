@@ -24,9 +24,10 @@ voice-agent-builder/
   infra/            Docker, nginx, and deployment assets
 ```
 
-Package manager: **pnpm workspaces** (Node >= 20.11). Workspace dependencies use
-the `workspace:*` protocol, so `npm install` will not resolve this repo — use
-`corepack` + `pnpm` (workflows pin `10.33.2`, `.github/workflows/ci-cd-ec2.yml:27`).
+Package manager: **pnpm workspaces** (Node `^20.20.0 || >=22.22.0`). Workspace
+dependencies use the `workspace:*` protocol, so `npm install` will not resolve this
+repo — use `corepack` + `pnpm` (root `package.json` and
+`.github/workflows/quality-gate.yml:29` pin `10.33.2`).
 
 ## Stack
 
@@ -52,7 +53,7 @@ SIP and OpenAI Realtime. This is **implemented, not necessarily provisioned**: t
 LiveKit variables are optional in config (`apps/api/src/config/env.ts:52-59`), and
 the production deploy only starts the LiveKit profile when all three of
 `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` are present — a partial
-set aborts the deploy (`.github/workflows/deploy-azure-vm.yml:197-206`).
+set aborts the deploy (`.github/workflows/deploy-aws-ec2.yml:476-485`).
 
 Start with:
 
@@ -124,10 +125,13 @@ replay-protected webhooks, evaluations, analytics, permissioned tools, calendar
 and CRM integrations with centralized SSRF protection, compliance and consent
 gates, audit logs, billing, and white-label features.
 
-Production runs on a single Azure VM. Deployment is operator-initiated only:
-there is no push- or PR-triggered pipeline in this repo — all three workflows are
-`workflow_dispatch`-gated (`ci-cd-ec2.yml:13-14`, `deploy-gcp.yml:5-6`,
-`deploy-azure-vm.yml:5-12`).
+Production runs on a single AWS EC2 instance in `us-east-1`. Deployment is
+operator-initiated through the sole production workflow,
+`.github/workflows/deploy-aws-ec2.yml`, which requires a full commit SHA and explicit
+confirmation, builds with Depot, pushes immutable images to ECR, and deploys the AWS
+Compose stack over SSH. Separately, `.github/workflows/quality-gate.yml` runs
+automatically on every pull request and push to `main`; branch protection must still
+be configured to make its jobs required merge checks.
 
 For the current evidence-based assessment, including what is configured in
 production versus merely implemented in code, see `ROADMAP.md` and `status.md`.

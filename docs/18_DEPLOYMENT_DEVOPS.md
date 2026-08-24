@@ -3,44 +3,34 @@
 ## Environments
 local, development, staging, production.
 
-## MVP Deployment
+## Current Production Deployment
 ```txt
-Frontend: Vercel
-Backend: Railway/Render/Fly.io or AWS ECS
-Database: Neon/Supabase Postgres
-Redis: Upstash
-Storage: Cloudflare R2
-Analytics: PostgreSQL first, ClickHouse Cloud later
+Compute: single AWS EC2 t3.large in us-east-1
+Frontend/API/workers: Docker Compose on EC2 behind nginx and CloudFront
+Database: external Supabase Postgres
+Redis: containerized Redis in the EC2 Compose stack
+Knowledge storage: private, versioned Amazon S3
+Images: Depot builds → immutable SHA-tagged Amazon ECR repositories
 Voice: OpenAI Realtime + in-house Azure pipeline (LiveKit transport)
 Billing: Stripe
 ```
 
-## Azure DevOps (Container Apps)
-An alternative, fully-Azure deployment path is documented in `docs/31_AZURE_DEVOPS.md`.
-```txt
-Frontend: Azure Container Apps (Next.js standalone)
-Backend: Azure Container Apps (NestJS)
-Database: Azure Database for PostgreSQL — Flexible Server
-Redis: Azure Cache for Redis
-Registry: Azure Container Registry (ACR)
-CI/CD: GitHub Actions → ACR → Bicep → ACA
-IaC: Bicep (infra/bicep/)
-```
-
-## Production Deployment
-```txt
-Frontend: Vercel/Cloudflare Pages
-Backend: AWS ECS/Fargate or Kubernetes
-Database: RDS PostgreSQL
-Redis: ElastiCache
-Storage: S3
-Workflows: Temporal Cloud
-Analytics: ClickHouse Cloud
-Observability: OpenTelemetry + Sentry + Grafana/HyperDX
-```
+`infra/docker/docker-compose.aws.yml` is the production stack. Provisioning assets
+and the current AWS foundation runbook live under `infra/aws/`; the superseded Azure
+Container Apps design in `docs/31_AZURE_DEVOPS.md` is not an active deploy path.
 
 ## CI/CD
-`Install → Typecheck → Lint → Test → Build → Migration check → Deploy staging → Smoke test → Deploy production`
+`.github/workflows/quality-gate.yml` runs automatically on pull requests and pushes
+to `main`: frozen install → secret scan and dependency audit → Prisma/shared setup →
+typecheck → lint → test → builds and image dependency checks. Branch protection is
+not yet configured, so these jobs are not currently enforced as required checks.
+
+Production deploys are separate and operator-initiated. Dispatch
+`.github/workflows/deploy-aws-ec2.yml` with a full 40-character commit SHA and
+`confirm_production=deploy-production`. It builds with Depot, pushes to ECR, runs
+migration checks, deploys to EC2, verifies internal and public health, records the
+release, and automatically restores the previous release bundle on failure. See
+`docs/RUNBOOK.md` for the operational procedure.
 
 ## Production Launch Checklist
 Auth configured, Stripe configured, voice provider keys set, webhook signatures enabled, backups enabled, error monitoring enabled, rate limits enabled, compliance gate enabled, outbound restricted by default.
@@ -67,7 +57,7 @@ Auth configured, Stripe configured, voice provider keys set, webhook signatures 
 Run a quarterly restore test in a staging environment:
 1. Snapshot the production DB.
 2. Restore to a staging instance.
-3. Run `npm run db:push -- --accept-data-loss` and verify schema integrity.
+3. Run `pnpm db:verify` and verify schema integrity; never use `db:push` against production.
 4. Run `k6 run k6/smoke.js` against staging to confirm health endpoints pass.
 
 ## Load Test Thresholds
@@ -81,16 +71,11 @@ Run them against **staging** (never production).
 | `baseline.js` | 2m | 10 | p95 < 500ms, errors < 1% | p95 > 1s, errors > 5% |
 | `stress.js` | 2.5m | ramp to 50 | p99 < 2s, errors < 5% | p99 > 5s, errors > 10% |
 
-### CI Integration
-Add smoke tests to the deployment pipeline so failing thresholds block the deploy:
-
-```yaml
-# .github/workflows/deploy.yml (GitHub Actions)
-- name: Run smoke tests
-  run: |
-    npm install -g k6
-    k6 run k6/smoke.js -e BASE_URL=${{ env.STAGING_API_URL }}
-```
+### Deployment integration
+The AWS deploy workflow performs API and web health checks both inside the
+containers and through the public nginx endpoints. The k6 suites remain manual
+staging checks; integrating them into deployment is still open and requires a
+staging target rather than running load against production.
 
 ### Baseline expectations for production sizing
 - **10 VUs × 0.5 req/s per VU ≈ 5 req/s** sustained = ~432K requests/day.
