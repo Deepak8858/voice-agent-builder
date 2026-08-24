@@ -38,13 +38,11 @@ env:
   # legacy tolerance rather than a target.
   #
   # Keep in sync with .depot/workflows/quality-gate.yml, which pins the same
-  # value. This is INTENTIONALLY ahead of infra/docker/Dockerfile.*, which stay
-  # on node:20.20.0-bookworm-slim: no image runs the web test suite, so nothing
-  # they ship needs markAsUncloneable, and re-basing a production runtime image
-  # has a far larger blast radius than re-basing CI. Both versions satisfy the
-  # root package.json engines field ("^20.20.0 || >=22.22.0"), so the split is
-  # valid, not drift — but the images should still move off end-of-life Node in
-  # their own change.
+  # value, and with infra/docker/Dockerfile.*, which are on the same 22.22 line
+  # pinned to an exact patch (node:22.22.3-bookworm-slim). The shapes differ on
+  # purpose — CI tracks the newest 22.22.x so it picks up patch fixes, while a
+  # production runtime image is pinned for reproducibility — but the major.minor
+  # must not diverge.
   NODE_VERSION: "22.22"
   PNPM_VERSION: "10.33.2"
 

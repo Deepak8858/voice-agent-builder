@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.7
-# NODE PIN: deliberately still 20.20.0 while the quality-gate workflows run
-# NODE_VERSION 22.22. The workflows had to move because jsdom 30 (apps/web's
-# vitest DOM environment) needs node:worker_threads.markAsUncloneable, which
-# does not exist before Node 22.10. No image runs the web test suite, so nothing
-# here needs it, and re-basing a production runtime is riskier than re-basing
-# CI. Both satisfy the root package.json engines ("^20.20.0 || >=22.22.0"), so
-# this is a valid split rather than drift. Node 20 is end-of-life as of
-# 2026-04-30 though, so these images still need their own bump.
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
+# NODE PIN: keep in sync with the quality-gate workflows
+# (.github/workflows/quality-gate.yml and .depot/workflows/quality-gate.yml),
+# which set NODE_VERSION "22.22" and therefore resolve to the newest published
+# 22.22.x. This image pins the same 22.22 line at an exact patch, because a
+# production runtime should be byte-reproducible while a CI runner should pick
+# up patch fixes automatically. Both sides satisfy the root package.json
+# engines field ("^20.20.0 || >=22.22.0") via its >=22.22.0 arm. Node 20 reached
+# end-of-life on 2026-04-30, so do not move this back onto a 20.x tag.
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS build
 
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
@@ -39,7 +39,7 @@ RUN pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma \
     && pnpm --filter @voiceforge/shared run build \
     && pnpm --filter @voiceforge/api run build
 
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS runtime
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \
