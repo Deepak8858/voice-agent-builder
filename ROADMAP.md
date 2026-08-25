@@ -143,11 +143,15 @@ purged or that credentials which may have transited those paths were rotated; au
 history and rotate affected credentials if that separate operational work has not
 already occurred.
 
-**3. Exercise the AWS production deploy and rollback.** Dispatch
-`.github/workflows/deploy-aws-ec2.yml` with a full commit SHA and the explicit
-production confirmation. Verify the Depot builds, immutable ECR tags, EC2 rollout,
-health gates, recorded release state, and rollback path before an incident requires
-them.
+**3. Exercise the AWS production deploy and rollback — deploy exercised; rollback
+still unproven.** Run `32856726136` dispatched `deploy-aws-ec2.yml` for merge
+commit `1f379c5` (PR #95) with the explicit production confirmation and completed
+green end to end: all three Depot image builds (including the first production
+build of the Node 22 `livekit-agent` image), immutable ECR tags, JIT SSH ingress
+open/revoke, EC2 rollout, migration checks, and the internal and public health
+gates. The rollback path was installed and validated as a precondition by the
+deploy script but has never been *triggered*; an intentional rollback drill (or
+the first failed deploy) is still needed before it can be called proven.
 
 ### P1 — close the coverage holes that matter
 
