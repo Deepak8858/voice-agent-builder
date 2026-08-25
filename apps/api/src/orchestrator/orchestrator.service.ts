@@ -79,6 +79,19 @@ export class AgentOrchestratorService {
     });
     if (updated.count === 0) throw new Error('Agent not found');
 
+    // Publishing puts an agent on live calls, so the transition is auditable in
+    // its own right. The worker records `agent.published` once the agent is
+    // actually live; this records who requested it, which the worker's job
+    // payload alone cannot establish after the fact. Written after the scoped
+    // update matched so a refused publish leaves no record.
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'agent.publish.requested',
+      resourceType: 'agent',
+      resourceId: agentId,
+    });
+
     await this.queue.enqueue('orchestrator.publish', 'publish', { agentId, workspaceId, actorUserId });
   }
 

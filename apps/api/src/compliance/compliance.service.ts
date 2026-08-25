@@ -343,17 +343,21 @@ export class ComplianceService {
     // discarded rather than carried forward: keeping it would both leak the
     // existence of another tenant's contact and write a foreign id onto this
     // workspace's ComplianceCheck row.
+    //
+    // For outbound, the *dialed number* is the only thing that decides who is
+    // actually about to be called, so it - not the supplied id - selects the
+    // contact whose opt-out and consent state is evaluated. Trusting the id
+    // here let a caller pass a consented contact's id while dialling a
+    // different, opted-out contact's number: both rows live in the same
+    // workspace, so the workspace scope below could not catch it, and the call
+    // proceeded on someone else's consent.
     let contactId: string | null = null;
     if (direction === 'outbound' && args.toNumber) {
       const phone = normalizePhone(args.toNumber);
       if (phone) {
-        const contact = args.contactId
-          ? await this.prisma.contact.findFirst({
-              where: { id: args.contactId, workspaceId: args.workspaceId },
-            })
-          : await this.prisma.contact.findUnique({
-              where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
-            });
+        const contact = await this.prisma.contact.findUnique({
+          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+        });
         if (contact) contactId = contact.id;
       }
     } else if (args.contactId) {

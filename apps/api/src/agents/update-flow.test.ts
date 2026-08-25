@@ -6,6 +6,7 @@ import {
   ROUTE_ARGS_METADATA,
 } from '@nestjs/common/constants';
 import { describe, expect, it, vi } from 'vitest';
+import type { ZodTypeAny } from 'zod';
 import type { AgentSpec } from '@voiceforge/shared';
 import { AgentSpecSchema } from '@voiceforge/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -60,7 +61,7 @@ function makeAgentsService(prisma: Record<string, unknown>) {
   );
 }
 
-function getUpdateFlowValidationPipe(): ZodValidationPipe<unknown> {
+function getUpdateFlowValidationPipe(): ZodValidationPipe<ZodTypeAny> {
   const metadata = Reflect.getMetadata(
     ROUTE_ARGS_METADATA,
     AgentsController,

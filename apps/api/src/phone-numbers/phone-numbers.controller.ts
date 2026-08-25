@@ -1,5 +1,7 @@
 import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
+import type { SessionUser } from '@voiceforge/shared';
 import { PhoneNumbersService } from './phone-numbers.service';
+import { CurrentUser } from '../common/current-user.decorator';
 import { WorkspaceGuard } from '../common/workspace.guard';
 
 // Provisioning and releasing numbers spends money and reroutes live calls. The
@@ -39,8 +41,9 @@ export class PhoneNumbersController {
     @Param('workspaceId') workspaceId: string,
     @Param('numberId') numberId: string,
     @Body() body: { agent_id: string },
+    @CurrentUser() user: SessionUser | undefined,
   ) {
-    await this.numbers.assignToAgent(workspaceId, numberId, body.agent_id);
+    await this.numbers.assignToAgent(workspaceId, numberId, body.agent_id, user?.id ?? null);
     return { success: true };
   }
 
@@ -48,8 +51,9 @@ export class PhoneNumbersController {
   async release(
     @Param('workspaceId') workspaceId: string,
     @Param('numberId') numberId: string,
+    @CurrentUser() user: SessionUser | undefined,
   ) {
-    await this.numbers.release(workspaceId, numberId);
+    await this.numbers.release(workspaceId, numberId, user?.id ?? null);
     return { success: true };
   }
 }

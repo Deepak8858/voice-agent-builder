@@ -53,7 +53,7 @@ describe('cross-tenant isolation: phone numbers (bare-id update/delete)', () => 
         { id: 'agent-b', workspaceId: WS_B, name: 'B' },
       ],
     });
-    service = new PhoneNumbersService(prisma as never);
+    service = new PhoneNumbersService(prisma as never, noopAudit() as never);
   });
 
   it('lists only the calling workspace numbers', async () => {
@@ -76,6 +76,28 @@ describe('cross-tenant isolation: phone numbers (bare-id update/delete)', () => 
     });
     const own = prisma.rowsOf('twilioPhoneNumber').find((r) => r['id'] === 'num-a');
     expect(own?.['agentId']).toBeNull();
+  });
+
+  /**
+   * `provision` accepts the same client-supplied agent id as `assignToAgent`
+   * but used to write it straight to `twilioPhoneNumber.create`, so the check
+   * above could be bypassed simply by attaching the foreign agent at purchase
+   * time instead of afterwards. The rejection must also happen before the
+   * Twilio purchase, or the workspace is billed for a number that is then
+   * refused.
+   */
+  it('refuses to provision a number attached to an agent owned by another workspace', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await expect(service.provision(WS_A, '212', 'agent-b')).rejects.toMatchObject({
+      errorCode: 'NOT_FOUND',
+    });
+
+    // No number was bought and no row was written.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(prisma.rowsOf('twilioPhoneNumber').map((r) => r['id'])).toEqual(['num-a', 'num-b']);
+
+    fetchSpy.mockRestore();
   });
 
   it('refuses to release (delete) a phone number owned by another workspace', async () => {
@@ -196,6 +218,53 @@ describe('cross-tenant isolation: compliance check (client-supplied contact id)'
 
     expect(result.status).toBe('blocked');
     expect(result.reasons.map((r) => r.code)).toContain('opted_out');
+  });
+
+  /**
+   * Same-tenant variant of the same bug, which workspace scoping alone cannot
+   * catch. Both contacts belong to workspace A, so the scoped lookup happily
+   * returned the *supplied* contact and evaluated its opt-out and consent
+   * state - even though a different contact's number was being dialled. The
+   * dialled number, not the supplied id, has to select the contact.
+   */
+  it('evaluates the contact behind the dialled number, not a mismatched supplied contact id', async () => {
+    const { prisma, service } = makeService({
+      contact: [
+        // The number actually being dialled belongs to someone who opted out.
+        { id: 'contact-optout', workspaceId: WS_A, phone: PHONE_A, optOut: true },
+        // A different, consented contact in the SAME workspace.
+        { id: 'contact-consented', workspaceId: WS_A, phone: PHONE_B, optOut: false },
+      ],
+      consentRecord: [
+        {
+          id: 'consent-consented',
+          workspaceId: WS_A,
+          contactId: 'contact-consented',
+          consentType: 'outbound_marketing',
+          revokedAt: null,
+          expiresAt: null,
+        },
+      ],
+    });
+
+    const result = await service.check({
+      workspaceId: WS_A,
+      agentId: 'agent-a',
+      direction: 'outbound',
+      // Dialling the opted-out person...
+      toNumber: PHONE_A,
+      // ...while claiming the consented contact's id.
+      contactId: 'contact-consented',
+    });
+
+    // The opt-out on the dialled number must still block the call.
+    expect(result.status).toBe('blocked');
+    expect(result.reasons.map((r) => r.code)).toContain('opted_out');
+
+    // And the check must be recorded against the person actually being called,
+    // never the id the caller asked us to use.
+    expect(result.contact_id).toBe('contact-optout');
+    expect(prisma.rowsOf('complianceCheck')[0]?.['contactId']).toBe('contact-optout');
   });
 });
 
