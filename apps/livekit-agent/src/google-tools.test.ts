@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createToolInvokeClient } from './google-tools';
+import { createToolInvokeClient, stableJson } from './google-tools';
 
 /**
  * The idempotency key must be derived purely from what the call is (callId,
@@ -71,6 +71,13 @@ const createEventParams = {
 };
 
 describe('tool invoke idempotency key', () => {
+  it('serializes sparse array entries as null, matching JSON.stringify', () => {
+    const sparse = Array<unknown>(1);
+
+    expect(stableJson(sparse)).toBe(JSON.stringify(sparse));
+    expect(stableJson(sparse)).toBe('[null]');
+  });
+
   it('emits a 64-char lowercase hex sha256 digest', async () => {
     const key = await invokedKey({ params: createEventParams, callId: 'call-1' });
     expect(key).toMatch(/^[0-9a-f]{64}$/);

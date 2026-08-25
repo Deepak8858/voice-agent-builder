@@ -118,9 +118,11 @@ export function createToolInvokeClient(config: {
  * Keys are compared by code point rather than `localeCompare`, whose ordering
  * is ICU/locale-sensitive and so not guaranteed stable across environments.
  */
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
-    return `[${value.map((entry) => (entry === undefined ? 'null' : stableJson(entry))).join(',')}]`;
+    return `[${Array.from(value, (entry) =>
+      entry === undefined ? 'null' : stableJson(entry),
+    ).join(',')}]`;
   }
   if (value && typeof value === 'object') {
     const toJson = (value as { toJSON?: unknown }).toJSON;

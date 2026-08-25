@@ -23,8 +23,10 @@ export default function DpaPage() {
           <ul className="list-disc pl-5 space-y-1">
             <li><strong>LiveKit</strong> — Real-time audio transport</li>
             <li><strong>Twilio</strong> — Voice telephony (optional)</li>
+            <li><strong>Vobiz</strong> — SIP voice telephony, if you connect a Vobiz number (optional)</li>
             <li><strong>OpenAI</strong> — Realtime voice runtime and language models</li>
             <li><strong>Microsoft Azure</strong> — Speech-to-text, text-to-speech, and Azure OpenAI</li>
+            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional)</li>
             <li><strong>Supabase</strong> — Database and authentication</li>
             <li><strong>Resend</strong> — Transactional email</li>
           </ul>

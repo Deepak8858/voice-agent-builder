@@ -42,9 +42,12 @@ class FakeRoom {
   static instances: FakeRoom[] = [];
   /** When set, the next `connect()` rejects with this error. */
   static connectError: Error | null = null;
+  /** When set, `connect()` blocks on this until the test releases it. */
+  static connectGate: Promise<void> | null = null;
   handlers = new Map<string, (payload?: unknown) => void>();
   canPlaybackAudio = true;
   connect = vi.fn(async () => {
+    if (FakeRoom.connectGate) await FakeRoom.connectGate;
     if (FakeRoom.connectError) throw FakeRoom.connectError;
   });
   disconnect = vi.fn(async () => {});
@@ -70,13 +73,27 @@ class FakeRoom {
 const apiCall = vi.fn();
 const toastError = vi.fn();
 
-vi.mock('livekit-client', () => ({
+const LIVEKIT_MODULE = {
   Room: FakeRoom,
   RoomEvent: {
     TrackSubscribed: 'trackSubscribed',
     AudioPlaybackStatusChanged: 'audioPlaybackChanged',
   },
   Track: { Kind: { Audio: 'audio', Video: 'video' } },
+};
+
+/**
+ * When set, the loader blocks until this resolves, standing in for a
+ * `livekit-client` chunk that is still in flight.
+ */
+let importGate: Promise<void> | null = null;
+
+vi.mock('livekit-client', () => LIVEKIT_MODULE);
+vi.mock('@/lib/load-livekit-client', () => ({
+  loadLiveKitClient: async () => {
+    if (importGate) await importGate;
+    return LIVEKIT_MODULE;
+  },
 }));
 
 vi.mock('@/lib/use-api', () => ({ useApi: () => ({ call: apiCall }) }));
@@ -115,6 +132,8 @@ function audioTrack() {
 beforeEach(() => {
   FakeRoom.instances = [];
   FakeRoom.connectError = null;
+  FakeRoom.connectGate = null;
+  importGate = null;
   apiCall.mockReset();
   toastError.mockReset();
 });
@@ -209,6 +228,54 @@ describe('TestCallDrawer live audio', () => {
     );
     await waitFor(() => expect(screen.getByText(/Live audio unavailable/i)).toBeDefined());
     await waitFor(() => expect(FakeRoom.instances[0]!.disconnect).toHaveBeenCalled());
+  });
+
+  it('never connects a room when the drawer unmounts while the import is pending', async () => {
+    // The dynamic import resolving after teardown is the dangerous case: the
+    // browser would join, publish the microphone, and meter minutes for a
+    // drawer the user already dismissed.
+    apiCall.mockResolvedValue(STANDARD_SESSION);
+    let releaseImport = () => {};
+    importGate = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+
+    const { unmount } = renderDrawer();
+    await startTestCall();
+    unmount();
+
+    await act(async () => {
+      releaseImport();
+      await importGate;
+    });
+
+    expect(FakeRoom.instances).toHaveLength(0);
+  });
+
+  it('hangs up a room whose handshake completes after the drawer closes', async () => {
+    // The import can also land in time while `connect()` is the slow step. That
+    // room is live, so it has to be disconnected rather than simply abandoned.
+    apiCall.mockResolvedValue(STANDARD_SESSION);
+    let releaseConnect = () => {};
+    const connectGate = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    FakeRoom.connectGate = connectGate;
+
+    const { unmount } = renderDrawer();
+    await startTestCall();
+    await waitFor(() => expect(FakeRoom.instances).toHaveLength(1));
+    const room = FakeRoom.instances[0]!;
+
+    unmount();
+
+    await act(async () => {
+      releaseConnect();
+      await connectGate;
+    });
+
+    await waitFor(() => expect(room.disconnect).toHaveBeenCalled());
+    expect(room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
   });
 
   it('disconnects and removes audio elements when the drawer unmounts', async () => {
