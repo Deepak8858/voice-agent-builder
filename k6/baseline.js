@@ -16,6 +16,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
+import { apiData } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL ?? 'http://localhost:4000/api/v1';
 
@@ -36,7 +37,7 @@ export default function () {
   const healthRes = http.get(`${BASE_URL}/health`);
   check(healthRes, {
     'health status 200': (r) => r.status === 200,
-    'health has db field': (r) => JSON.parse(r.body).checks?.db !== undefined,
+    'health has db field': (r) => apiData(r)?.checks?.db !== undefined,
   });
   errorRate.add(healthRes.status !== 200 ? 1 : 0);
 

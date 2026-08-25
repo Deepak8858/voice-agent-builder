@@ -81,14 +81,14 @@ npm run dev
 
 For real voice calls, set environment variables. Vapi and Retell were removed in
 2026-08; the two supported runtimes are OpenAI Realtime and the in-house Azure
-pipeline.
+`standard` pipeline (Azure Speech STT → Azure OpenAI chat → Azure Speech TTS).
 
 ```powershell
-# OpenAI Realtime (paid plans)
+# OpenAI Realtime
 VOICE_PROVIDER=openai-realtime
 OPENAI_API_KEY=your_key
 
-# In-house pipeline (the only runtime the free plan may use)
+# In-house "standard" pipeline (the only runtime the free plan may use)
 VOICE_STANDARD_PIPELINE_ENABLED=true
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_API_KEY=your_key
@@ -96,6 +96,29 @@ AZURE_VOICE_LLM_DEPLOYMENT=your_deployment
 AZURE_SPEECH_KEY=your_key
 AZURE_SPEECH_REGION=your_region
 ```
+
+#### Plan-to-pipeline routing
+
+A paid plan does **not** imply OpenAI Realtime. `PipelineRouterService`
+(`apps/api/src/voice/pipeline-router.service.ts`) derives the runtime from the
+plan's `pipelineMix` in `packages/shared/src/billing/catalog.ts`:
+
+- **free** — 100% `standard`. Never routed to Realtime.
+- **starter** — 50/50 split. The pipeline is chosen per call by a SHA-256 hash of
+  the call ID, so roughly half of starter calls run on the in-house pipeline and
+  the decision is stable for a given call across retries and webhooks.
+- **growth**, **enterprise** — 100% `realtime`.
+
+The decision is persisted on `Call.pipeline`, so retries, webhooks, and
+reconciliation all agree on what actually ran.
+
+When `VOICE_STANDARD_PIPELINE_ENABLED` is off:
+
+- **starter** falls back to Realtime for every call (it has bought Realtime
+  capability, so this costs margin but never breaks a call).
+- **free** has no runtime at all; the router still reports `standard` with reason
+  `standard_pipeline_disabled` and the call is refused upstream with a 503 rather
+  than being silently upgraded to Realtime.
 
 ---
 
@@ -276,8 +299,8 @@ Standard pagination with `skip`/`take` query params.
 | `SUPABASE_ANON_KEY` | Supabase anon key | Yes |
 | `SUPABASE_JWT_SECRET` | Supabase JWT secret | Yes |
 | `STRIPE_SECRET_KEY` | Stripe billing | No |
-| `OPENAI_API_KEY` | OpenAI Realtime runtime (paid plans) | No |
-| `VOICE_STANDARD_PIPELINE_ENABLED` | Enables the in-house Azure pipeline used by the free plan | No |
+| `OPENAI_API_KEY` | OpenAI Realtime runtime (all growth/enterprise calls and the Realtime half of starter) | No |
+| `VOICE_STANDARD_PIPELINE_ENABLED` | Enables the in-house Azure pipeline used by every free-plan call and roughly half of starter-plan calls | No |
 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_KEY` / `AZURE_VOICE_LLM_DEPLOYMENT` | Voice brain for the in-house pipeline | If the pipeline is enabled |
 | `AZURE_SPEECH_KEY` / `AZURE_SPEECH_REGION` | STT and TTS for the in-house pipeline | If the pipeline is enabled |
 
@@ -285,7 +308,7 @@ Standard pagination with `skip`/`take` query params.
 
 ## Known Limitations
 
-1. **Browser Test Session**: Free-plan tests join a LiveKit room on the in-house pipeline and are metered against the plan's monthly minutes; paid plans use an OpenAI Realtime session.
+1. **Browser Test Session**: The runtime follows the same plan routing as calls. Free-plan tests join a LiveKit room on the in-house pipeline and are metered against the plan's monthly minutes; starter tests land on either runtime according to the deterministic split; growth/enterprise tests use an OpenAI Realtime session. When LiveKit or the pipeline router is unavailable, tests fall back to Realtime so local development keeps working.
 2. **Outbound Calls**: Require a published agent and a connected telephony provider; the free plan has no PSTN entitlement.
 3. **Embeddings**: Uses pgvector extension on Supabase for semantic search.
 4. **Rate Limits**: Not yet fully implemented (Phase 10 pending).

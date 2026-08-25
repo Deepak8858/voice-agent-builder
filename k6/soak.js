@@ -32,6 +32,7 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
@@ -78,13 +79,9 @@ export function setup() {
       headers: jsonHeaders,
     });
     if (wsRes.status === 200) {
-      try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(wsRes);
+      if (items && items.length > 0) {
+        workspaceId = items[0].id;
       }
     }
   }
@@ -95,19 +92,22 @@ export function setup() {
       { headers: jsonHeaders }
     );
     if (agentsRes.status === 200) {
-      try {
-        const body = JSON.parse(agentsRes.body);
-        if (body.items && body.items.length > 0) {
-          agentId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(agentsRes);
+      if (items && items.length > 0) {
+        agentId = items[0].id;
       }
     }
   }
 
   if (!workspaceId) {
     fail('WORKSPACE_ID was not supplied and no workspace could be resolved for AUTH_TOKEN.');
+  }
+  // Fail closed for the same reason as the workspace check above: an
+  // unresolved agent leaves `data.agentId` undefined, the single-agent fetch is
+  // skipped for the whole 30-minute run, and the soak silently exercises only
+  // half the endpoints it claims to cover.
+  if (!agentId) {
+    fail('AGENT_ID was not supplied and no agent could be resolved in the workspace.');
   }
 
   return { workspaceId, agentId, cookies: null };
@@ -128,13 +128,8 @@ export default function (data) {
   const healthRes = http.get(`${BASE_URL}/health`);
   check(healthRes, {
     'health returns 200': (r) => r.status === 200,
-    'health db still ok': (r) => {
-      try {
-        return JSON.parse(r.body).checks?.db === 'ok';
-      } catch {
-        return false;
-      }
-    },
+    'health db still ok': (r) => apiData(r)?.checks?.db === 'ok',
+    'health redis still ok': (r) => apiData(r)?.checks?.redis === 'ok',
   });
   customErrorRate.add(healthRes.status >= 400 ? 1 : 0);
 
@@ -148,13 +143,7 @@ export default function (data) {
   const agentsRes = http.get(`${BASE_URL}/workspaces/${ws}/agents`, cfg);
   check(agentsRes, {
     'GET agents returns 200': (r) => r.status === 200,
-    'GET agents returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET agents returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(agentsRes.status >= 400 ? 1 : 0);
 
@@ -171,12 +160,8 @@ export default function (data) {
     check(agentRes, {
       'GET agent by id returns 200': (r) => r.status === 200,
       'GET agent by id returns agent JSON': (r) => {
-        try {
-          const b = JSON.parse(r.body);
-          return b.id !== undefined && b.name !== undefined;
-        } catch {
-          return false;
-        }
+        const b = apiData(r);
+        return b !== null && b.id !== undefined && b.name !== undefined;
       },
     });
     customErrorRate.add(agentRes.status >= 400 ? 1 : 0);

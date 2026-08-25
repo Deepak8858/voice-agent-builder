@@ -33,6 +33,7 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Rate } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
@@ -75,13 +76,9 @@ export function setup() {
       headers: jsonHeaders,
     });
     if (wsRes.status === 200) {
-      try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(wsRes);
+      if (items && items.length > 0) {
+        workspaceId = items[0].id;
       }
     }
   }
@@ -107,20 +104,15 @@ export default function (data) {
   check(healthRes, {
     'health returns 200': (r) => r.status === 200,
     'health body is JSON': (r) => {
-      try {
-        const b = JSON.parse(r.body);
-        return b.status !== undefined && b.checks?.db !== undefined && b.checks?.redis !== undefined;
-      } catch {
-        return false;
-      }
+      const b = apiData(r);
+      return (
+        b !== null &&
+        b.status !== undefined &&
+        b.checks?.db !== undefined &&
+        b.checks?.redis !== undefined
+      );
     },
-    'health db is ok': (r) => {
-      try {
-        return JSON.parse(r.body).checks?.db === 'ok';
-      } catch {
-        return false;
-      }
-    },
+    'health db is ok': (r) => apiData(r)?.checks?.db === 'ok',
   });
   customErrorRate.add(healthRes.status >= 400 ? 1 : 0);
 

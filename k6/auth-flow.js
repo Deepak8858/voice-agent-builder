@@ -31,6 +31,7 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Rate } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
@@ -74,11 +75,9 @@ export function setup() {
     const wsRes = http.get(`${BASE_URL}/workspaces`, { headers: makeHeaders() });
     check(wsRes, { 'setup: workspaces list succeeds': (r) => r.status === 200 });
     if (wsRes.status === 200) {
-      try {
-        workspaceId = JSON.parse(wsRes.body).items?.[0]?.id;
-      } catch (_e) {
-        // handled below
-      }
+      // A malformed or empty list leaves workspaceId undefined, which the
+      // fail-closed check below turns into an aborted run.
+      workspaceId = apiItems(wsRes)?.[0]?.id;
     }
   }
 
@@ -109,12 +108,8 @@ export default function (data) {
   check(meRes, {
     'auth/me returns 200': (r) => r.status === 200,
     'auth/me returns user JSON': (r) => {
-      try {
-        const b = JSON.parse(r.body);
-        return b.id !== undefined && b.email !== undefined;
-      } catch {
-        return false;
-      }
+      const b = apiData(r);
+      return b !== null && b.id !== undefined && b.email !== undefined;
     },
   });
   customErrorRate.add(meRes.status >= 400 ? 1 : 0);
@@ -125,13 +120,7 @@ export default function (data) {
   const agentsRes = http.get(`${BASE_URL}/workspaces/${ws}/agents`, cfg);
   check(agentsRes, {
     'GET /agents returns 200': (r) => r.status === 200,
-    'GET /agents returns items array': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET /agents returns items array': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(agentsRes.status >= 400 ? 1 : 0);
 
@@ -156,13 +145,7 @@ export default function (data) {
   );
   check(genRes, {
     'POST /agents/generate returns 200': (r) => r.status === 200,
-    'POST /agents/generate returns spec': (r) => {
-      try {
-        return JSON.parse(r.body).spec !== undefined;
-      } catch {
-        return false;
-      }
-    },
+    'POST /agents/generate returns spec': (r) => apiData(r)?.spec !== undefined,
   });
   customErrorRate.add(genRes.status >= 400 ? 1 : 0);
 
@@ -172,13 +155,7 @@ export default function (data) {
   const callsRes = http.get(`${BASE_URL}/workspaces/${ws}/calls`, cfg);
   check(callsRes, {
     'GET /calls returns 200': (r) => r.status === 200,
-    'GET /calls returns items array': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET /calls returns items array': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(callsRes.status >= 400 ? 1 : 0);
 

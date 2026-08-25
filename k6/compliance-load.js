@@ -46,6 +46,7 @@
 import http from 'k6/http';
 import { check, sleep, fail } from 'k6';
 import { Rate, Counter, Trend } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
@@ -96,13 +97,9 @@ export function setup() {
       headers: jsonHeaders,
     });
     if (wsRes.status === 200) {
-      try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(wsRes);
+      if (items && items.length > 0) {
+        workspaceId = items[0].id;
       }
     }
   }
@@ -113,13 +110,9 @@ export function setup() {
       { headers: jsonHeaders }
     );
     if (agentsRes.status === 200) {
-      try {
-        const body = JSON.parse(agentsRes.body);
-        if (body.items && body.items.length > 0) {
-          agentId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(agentsRes);
+      if (items && items.length > 0) {
+        agentId = items[0].id;
       }
     }
   }
@@ -165,26 +158,14 @@ export default function (data) {
   const contactsListRes = http.get(`${BASE_URL}/workspaces/${ws}/contacts`, cfg);
   check(contactsListRes, {
     'GET contacts returns 200': (r) => r.status === 200,
-    'GET contacts returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET contacts returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(contactsListRes.status >= 400 ? 1 : 0);
 
   const dncListRes = http.get(`${BASE_URL}/workspaces/${ws}/compliance/dnc`, cfg);
   check(dncListRes, {
     'GET dnc returns 200': (r) => r.status === 200,
-    'GET dnc returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET dnc returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(dncListRes.status >= 400 ? 1 : 0);
 
@@ -204,20 +185,12 @@ export default function (data) {
   );
   check(createRes, {
     'POST contacts returns 200 or 201': (r) => r.status === 200 || r.status === 201,
-    'POST contacts returns contact JSON': (r) => {
-      try {
-        return JSON.parse(r.body).id !== undefined;
-      } catch {
-        return false;
-      }
-    },
+    'POST contacts returns contact JSON': (r) => apiData(r)?.id !== undefined,
   });
   customErrorRate.add(createRes.status >= 400 ? 1 : 0);
 
-  let contactId;
-  try {
-    contactId = JSON.parse(createRes.body).id;
-  } catch (_e) {
+  const contactId = apiData(createRes)?.id;
+  if (contactId === undefined) {
     // If creation failed, skip dependent steps.
     sleep(1);
     return;
@@ -231,13 +204,7 @@ export default function (data) {
   );
   check(getRes, {
     'GET contact by id returns 200': (r) => r.status === 200,
-    'GET contact phone matches': (r) => {
-      try {
-        return JSON.parse(r.body).phone === phone;
-      } catch {
-        return false;
-      }
-    },
+    'GET contact phone matches': (r) => apiData(r)?.phone === phone,
   });
   customErrorRate.add(getRes.status >= 400 ? 1 : 0);
 
@@ -293,25 +260,15 @@ export default function (data) {
   complianceLatency.add(Date.now() - checkStart);
   check(checkRes, {
     'POST compliance/check returns 200': (r) => r.status === 200,
-    'POST compliance/check returns status': (r) => {
-      try {
-        return JSON.parse(r.body).status !== undefined;
-      } catch {
-        return false;
-      }
-    },
+    'POST compliance/check returns status': (r) => apiData(r)?.status !== undefined,
   });
   customErrorRate.add(checkRes.status >= 400 ? 1 : 0);
 
-  try {
-    const checkBody = JSON.parse(checkRes.body);
-    if (checkBody.status === 'passed') {
-      compliancePassed.add(1);
-    } else if (checkBody.status === 'blocked') {
-      complianceBlocked.add(1);
-    }
-  } catch (_e) {
-    /* ignore */
+  const checkBody = apiData(checkRes);
+  if (checkBody?.status === 'passed') {
+    compliancePassed.add(1);
+  } else if (checkBody?.status === 'blocked') {
+    complianceBlocked.add(1);
   }
 
   // ── 6. Add DNC entry (different number) ──

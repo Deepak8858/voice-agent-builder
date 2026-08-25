@@ -3,12 +3,15 @@
  * VoiceForge AI — Backup Validation Script
  *
  * Performs a backup preflight by:
- * 1. Checking that the separately secured recovery environment file exists
+ * 1. Checking that the separately secured recovery environment file exists and
+ *    defines every required recovery key with a non-empty value
  * 2. Checking that a recent, non-empty logical-backup artifact exists
- * 3. Attempting a live-database query for key table counts and audit recency
+ * 3. Checking live database connectivity with a `SELECT 1` probe
  *
- * IMPORTANT: This is not a restore test. A passing result does not prove that the
- * artifact can be restored or that restored row counts/checksums match production.
+ * IMPORTANT: This is not a restore test, and step 3 inspects nothing beyond
+ * connectivity — no table counts, no audit recency, no backup contents. A
+ * passing result does not prove that the artifact can be restored or that
+ * restored row counts/checksums match production.
  *
  * Run:
  *   node scripts/backup-validation.js
@@ -38,6 +41,56 @@ function fail(msg) {
   log(msg, 'error');
 }
 
+/**
+ * Parse a `.env` file with dotenv-compatible semantics.
+ *
+ * Checking the raw assignment text is not enough: `DATABASE_URL=""` is a
+ * non-empty string before parsing but resolves to an empty value, so a recovery
+ * file missing a required secret would pass. This mirrors the parts of dotenv
+ * that decide whether a value is empty:
+ *   - an optional `export ` prefix is stripped
+ *   - full-line comments (`#`) and blank lines are skipped
+ *   - a value wrapped in matching quotes is unwrapped, so "" is empty
+ *   - an unquoted value is trimmed and a trailing ` # comment` removed
+ * Later assignments win, as they do in dotenv.
+ *
+ * Returns a plain object of key -> parsed value.
+ */
+function parseEnvFile(content) {
+  const parsed = Object.create(null);
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+
+    const withoutExport = line.startsWith('export ')
+      ? line.slice('export '.length).trim()
+      : line;
+    const separator = withoutExport.indexOf('=');
+    if (separator <= 0) continue;
+
+    const key = withoutExport.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+
+    let value = withoutExport.slice(separator + 1).trim();
+    const quote = value[0];
+    if (
+      (quote === '"' || quote === "'" || quote === '`') &&
+      value.length >= 2 &&
+      value.endsWith(quote)
+    ) {
+      // Quoted: the quotes delimit the value, so "" is genuinely empty.
+      value = value.slice(1, -1);
+    } else {
+      // Unquoted: an inline comment is not part of the value.
+      const comment = value.indexOf(' #');
+      if (comment !== -1) value = value.slice(0, comment);
+      value = value.trim();
+    }
+    parsed[key] = value;
+  }
+  return parsed;
+}
+
 // 1. Check the separately secured recovery environment file
 const backupEnvPath = process.env.RECOVERY_ENV_FILE;
 if (!backupEnvPath) {
@@ -46,6 +99,7 @@ if (!backupEnvPath) {
   fail(`RECOVERY_ENV_FILE does not exist: ${backupEnvPath}`);
 } else {
   const content = fs.readFileSync(backupEnvPath, 'utf-8');
+  const parsedEnv = parseEnvFile(content);
   const required = [
     'DATABASE_URL',
     'DIRECT_URL',
@@ -55,10 +109,9 @@ if (!backupEnvPath) {
     'ENCRYPTION_KEY',
   ];
   for (const key of required) {
-    const assignment = content
-      .split(/\r?\n/)
-      .find((line) => line.trimStart().startsWith(`${key}=`));
-    if (!assignment || assignment.slice(assignment.indexOf('=') + 1).trim() === '') {
+    // The parsed value is what a recovery would actually load, so an absent key
+    // and a key assigned an empty (or quoted-empty) value fail alike.
+    if (parsedEnv[key] === undefined || parsedEnv[key] === '') {
       fail(`Recovery environment file missing non-empty required key: ${key}`);
     }
   }
