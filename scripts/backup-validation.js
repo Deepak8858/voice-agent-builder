@@ -2,11 +2,16 @@
 /**
  * VoiceForge AI — Backup Validation Script
  *
- * Verifies that critical data can be restored from backup by:
- * 1. Pinging the live database via Prisma
- * 2. Counting key tables (users, workspaces, agents, calls)
- * 3. Checking that the most recent audit log is within the last 24h
- * 4. Validating that a .env.backup file exists and contains required keys
+ * Performs a backup preflight by:
+ * 1. Checking that the separately secured recovery environment file exists and
+ *    defines every required recovery key with a non-empty value
+ * 2. Checking that a recent, non-empty logical-backup artifact exists
+ * 3. Checking live database connectivity with a `SELECT 1` probe
+ *
+ * IMPORTANT: This is not a restore test, and step 3 inspects nothing beyond
+ * connectivity — no table counts, no audit recency, no backup contents. A
+ * passing result does not prove that the artifact can be restored or that
+ * restored row counts/checksums match production.
  *
  * Run:
  *   node scripts/backup-validation.js
@@ -36,22 +41,88 @@ function fail(msg) {
   log(msg, 'error');
 }
 
-// 1. Check .env.backup exists
-const backupEnvPath = path.resolve(__dirname, '..', '.env.backup');
-if (!fs.existsSync(backupEnvPath)) {
-  fail('.env.backup file not found. Create a copy of your production .env for disaster recovery.');
-} else {
-  const content = fs.readFileSync(backupEnvPath, 'utf-8');
-  const required = ['DATABASE_URL', 'DIRECT_URL', 'CLERK_SECRET_KEY', 'JWT_SECRET'];
-  for (const key of required) {
-    if (!content.includes(key)) fail(`.env.backup missing required key: ${key}`);
+/**
+ * Parse a `.env` file with dotenv-compatible semantics.
+ *
+ * Checking the raw assignment text is not enough: `DATABASE_URL=""` is a
+ * non-empty string before parsing but resolves to an empty value, so a recovery
+ * file missing a required secret would pass. This mirrors the parts of dotenv
+ * that decide whether a value is empty:
+ *   - an optional `export ` prefix is stripped
+ *   - full-line comments (`#`) and blank lines are skipped
+ *   - a value wrapped in matching quotes is unwrapped, so "" is empty
+ *   - an unquoted value is trimmed and a trailing ` # comment` removed
+ * Later assignments win, as they do in dotenv.
+ *
+ * Returns a plain object of key -> parsed value.
+ */
+function parseEnvFile(content) {
+  const parsed = Object.create(null);
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+
+    const withoutExport = line.startsWith('export ')
+      ? line.slice('export '.length).trim()
+      : line;
+    const separator = withoutExport.indexOf('=');
+    if (separator <= 0) continue;
+
+    const key = withoutExport.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+
+    let value = withoutExport.slice(separator + 1).trim();
+    const quote = value[0];
+    if (
+      (quote === '"' || quote === "'" || quote === '`') &&
+      value.length >= 2 &&
+      value.endsWith(quote)
+    ) {
+      // Quoted: the quotes delimit the value, so "" is genuinely empty.
+      value = value.slice(1, -1);
+    } else {
+      // Unquoted: an inline comment is not part of the value.
+      const comment = value.indexOf(' #');
+      if (comment !== -1) value = value.slice(0, comment);
+      value = value.trim();
+    }
+    parsed[key] = value;
   }
-  log('.env.backup validated');
+  return parsed;
 }
 
-// 2. Check pg_dump / logical backup recency (if backup dir configured)
-const backupDir = process.env.BACKUP_DIR || path.resolve(__dirname, '..', 'backups');
-if (fs.existsSync(backupDir)) {
+// 1. Check the separately secured recovery environment file
+const backupEnvPath = process.env.RECOVERY_ENV_FILE;
+if (!backupEnvPath) {
+  fail('RECOVERY_ENV_FILE is required and must point to the separately secured recovery environment file');
+} else if (!fs.existsSync(backupEnvPath)) {
+  fail(`RECOVERY_ENV_FILE does not exist: ${backupEnvPath}`);
+} else {
+  const content = fs.readFileSync(backupEnvPath, 'utf-8');
+  const parsedEnv = parseEnvFile(content);
+  const required = [
+    'DATABASE_URL',
+    'DIRECT_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_JWT_SECRET',
+    'JWT_SECRET',
+    'ENCRYPTION_KEY',
+  ];
+  for (const key of required) {
+    // The parsed value is what a recovery would actually load, so an absent key
+    // and a key assigned an empty (or quoted-empty) value fail alike.
+    if (parsedEnv[key] === undefined || parsedEnv[key] === '') {
+      fail(`Recovery environment file missing non-empty required key: ${key}`);
+    }
+  }
+  log('Recovery environment file validated');
+}
+
+// 2. Check downloaded logical-backup artifact recency
+const backupDir = process.env.BACKUP_DIR;
+if (!backupDir) {
+  fail('BACKUP_DIR is required and must point to downloaded logical-backup artifacts');
+} else if (fs.existsSync(backupDir)) {
   const files = fs.readdirSync(backupDir)
     .filter(f => f.endsWith('.sql') || f.endsWith('.dump'))
     .map(f => ({ name: f, mtime: fs.statSync(path.join(backupDir, f)).mtime }))
@@ -61,7 +132,11 @@ if (fs.existsSync(backupDir)) {
     fail(`No backup files found in ${backupDir}`);
   } else {
     const newest = files[0];
+    const newestPath = path.join(backupDir, newest.name);
     const hoursAgo = (Date.now() - newest.mtime.getTime()) / 36e5;
+    if (fs.statSync(newestPath).size === 0) {
+      fail(`Latest backup (${newest.name}) is empty`);
+    }
     if (hoursAgo > 25) {
       fail(`Latest backup (${newest.name}) is ${Math.round(hoursAgo)}h old. Expected < 24h.`);
     } else {
@@ -69,46 +144,30 @@ if (fs.existsSync(backupDir)) {
     }
   }
 } else {
-  log(`BACKUP_DIR not configured or does not exist: ${backupDir}`, 'warn');
+  fail(`BACKUP_DIR does not exist: ${backupDir}`);
 }
 
-// 3. Prisma health check (counts + audit recency)
+// 3. Live database connectivity check (does not inspect backup contents)
 async function validateDatabase() {
   try {
-    // Use npx prisma directly to avoid importing the full app
+    // Use the repository-pinned Prisma CLI rather than downloading via npx.
     const dbUrl = process.env.DATABASE_URL || process.env.DIRECT_URL;
     if (!dbUrl) {
       fail('DATABASE_URL or DIRECT_URL not set in environment');
       return;
     }
 
-    const result = execSync(
-      `npx prisma db execute --stdin --url="${dbUrl}"`,
+    execSync(
+      'corepack pnpm exec prisma db execute --stdin',
       {
-        input: `
-SELECT
-  (SELECT count(*)::int FROM "User") as user_count,
-  (SELECT count(*)::int FROM "Workspace") as workspace_count,
-  (SELECT count(*)::int FROM "Agent") as agent_count,
-  (SELECT count(*)::int FROM "Call") as call_count,
-  (SELECT count(*)::int FROM "AuditLog" WHERE "createdAt" > now() - interval '24 hours') as recent_audits;
-        `,
+        input: 'SELECT 1;',
         encoding: 'utf-8',
         cwd: path.resolve(__dirname, '..', 'apps', 'api'),
         env: { ...process.env, PATH: process.env.PATH },
+        stdio: ['pipe', VERBOSE ? 'inherit' : 'ignore', 'pipe'],
       }
     );
-
-    const lines = result.split('\n').filter(l => l.includes('|'));
-    const dataLine = lines.find(l => l.trim().startsWith('|') && !l.includes('---') && !l.includes('count'));
-    if (dataLine) {
-      const cols = dataLine.split('|').map(s => s.trim()).filter(Boolean);
-      const [users, workspaces, agents, calls, recentAudits] = cols.map(Number);
-      log(`DB counts — users:${users} workspaces:${workspaces} agents:${agents} calls:${calls} recent_audits:${recentAudits}`);
-      if (recentAudits === 0) fail('No audit logs in the last 24h — suspicious silence');
-    } else {
-      fail('Could not parse Prisma db execute output for counts');
-    }
+    log('Live database connectivity check passed');
   } catch (err) {
     fail(`Database validation failed: ${err.message}`);
   }
@@ -121,7 +180,7 @@ SELECT
     log('BACKUP VALIDATION FAILED', 'error');
     process.exit(1);
   } else {
-    log('BACKUP VALIDATION PASSED');
+    log('BACKUP PREFLIGHT PASSED (restore drill still required)');
     process.exit(0);
   }
 })();

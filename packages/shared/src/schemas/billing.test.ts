@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FREE_MONTHLY_MINUTES, isPipelineAllowed } from '../billing/catalog';
 import {
   BillingStatusDtoSchema,
   BillingSummaryDtoSchema,
@@ -7,9 +8,11 @@ import {
   CreateTopUpCheckoutDtoSchema,
   EffectiveSubscriptionStatusSchema,
   EntitlementDecisionSchema,
+  EntitlementReasonSchema,
   PLAN_LIMITS,
   RuntimeUsageEventSchema,
   SubscriptionStatusSchema,
+  VoicePipelineSchema,
 } from './billing';
 
 const BILLING_SUMMARY = {
@@ -24,7 +27,6 @@ const BILLING_SUMMARY = {
   purchasedSeconds: 6_000,
   reservedSeconds: 60,
   expiringSeconds: 12_000,
-  lifetimeBrowserTestSecondsRemaining: 0,
   topUpAvailable: true,
   availableSeconds: 18_000,
   balanceStatus: 'active',
@@ -37,6 +39,7 @@ const BILLING_SUMMARY = {
     outboundPstn: true,
     campaigns: true,
     whiteLabel: false,
+    pipelineMix: { realtime: 50, standard: 50 },
   },
   usage: { agents: 1, workspaces: 1, integrations: 0 },
   blockedReason: 'allowed' as const,
@@ -82,9 +85,35 @@ describe('billing DTO schemas', () => {
     }).success).toBe(false);
   });
 
-  it('does not retain recurring free calling allowances', () => {
-    expect(PLAN_LIMITS.free).toMatchObject({ minutes: 0, concurrentCalls: 0 });
+  it('confines the recurring free allowance to the in-house pipeline', () => {
+    // The Free plan now carries a recurring monthly allowance. The rule that
+    // protects margin is no longer "zero minutes" but "those minutes can never
+    // be spent on the realtime runtime".
+    expect(PLAN_LIMITS.free).toMatchObject({
+      minutes: FREE_MONTHLY_MINUTES,
+      concurrentCalls: 1,
+    });
+    expect(isPipelineAllowed('free', 'realtime')).toBe(false);
+    expect(isPipelineAllowed('free', 'standard')).toBe(true);
     expect(PLAN_LIMITS.starter).not.toHaveProperty('outboundCalls');
+  });
+
+  it('names exactly the two runtime pipelines that can serve a call', () => {
+    expect(VoicePipelineSchema.options).toEqual(['realtime', 'standard']);
+    expect(VoicePipelineSchema.safeParse('vapi').success).toBe(false);
+  });
+
+  it('has no lifetime browser-test allowance left in the billing contract', () => {
+    // Browser tests are funded by the same balance as every other metered
+    // minute, so neither the balance DTO nor the summary reports a separate
+    // lifetime bucket, and no decision can cite a spent trial.
+    expect(EntitlementReasonSchema.options).not.toContain('trial_already_used');
+    expect(
+      BillingSummaryDtoSchema.safeParse({
+        ...BILLING_SUMMARY,
+        lifetimeBrowserTestSecondsRemaining: 0,
+      }).success,
+    ).toBe(false);
   });
 
   it('defaults strict top-up checkout paths while requiring an attempt key', () => {

@@ -50,8 +50,11 @@ stays on the Azure account ($1000 startup credit).
   for the LLM — compliance story for enterprise customers.
 
 ## Non-goals / stays as-is
-- Voice runtime (LiveKit/Twilio/Vapi SIP paths) stays on current infra — realtime
-  audio does not route through Cloudflare.
+- Voice runtime (LiveKit/Twilio SIP paths, OpenAI Realtime, and the in-house
+  `standard` pipeline: Azure Speech STT → Azure OpenAI chat → Azure Speech TTS)
+  stays on current infra — realtime audio does not route through Cloudflare.
+  Azure OpenAI chat is part of the voice runtime, not only of agent generation,
+  so routing, data-flow, and subprocessor planning must cover it.
 - Postgres (Supabase) and Redis stay where they are.
 
 ## Credit accounting quick reference

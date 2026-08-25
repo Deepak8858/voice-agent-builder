@@ -94,7 +94,15 @@ export default function PrivacyPolicyPage() {
         <p>We rely on the following providers to deliver the service:</p>
         <ul className="mt-3 list-disc space-y-1 pl-5">
           <li>
-            <strong className="text-foreground">Vapi</strong> — voice telephony and AI call routing
+            <strong className="text-foreground">Microsoft Azure</strong> — speech recognition, speech
+            synthesis, and the language models behind our own voice pipeline
+          </li>
+          <li>
+            <strong className="text-foreground">OpenAI</strong> — the speech-to-speech model used on
+            paid plans
+          </li>
+          <li>
+            <strong className="text-foreground">LiveKit</strong> — real-time call media transport
           </li>
           <li>
             <strong className="text-foreground">Twilio</strong> — voice telephony, where you connect it

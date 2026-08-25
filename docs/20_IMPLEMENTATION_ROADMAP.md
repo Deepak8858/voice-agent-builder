@@ -10,7 +10,7 @@ Agent tables, Agent Spec schema, prompt-to-agent mock generator, agent builder U
 MVP templates, template selector, manual FAQ, PDF/CSV upload, chunking and embeddings.
 
 ## Phase 3 — Voice Runtime
-Voice adapter interface, mock provider, browser test session, Vapi/Retell adapter, call events/transcripts.
+Voice adapter interface, mock provider, browser test session, real adapters (OpenAI Realtime + in-house Azure pipeline), call events/transcripts.
 
 ## Phase 4 — Inbound Deployment
 Publish agent, provider runtime ID, inbound webhook, call log, post-call evaluation.

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { CallDetail, TestSessionResult } from '@voiceforge/shared';
@@ -17,7 +17,9 @@ import {
 import { StatusBadge } from '@/components/dashboard/status-badge';
 import { useApi } from '@/lib/use-api';
 import { cn } from '@/lib/cn';
-import { ArrowRight, Clock3, MessageSquareText, Phone } from 'lucide-react';
+import { resolveTestCallTransport } from '@/lib/test-call-transport';
+import { loadLiveKitClient } from '@/lib/load-livekit-client';
+import { ArrowRight, Clock3, MessageSquareText, Mic, Phone } from 'lucide-react';
 import posthog from 'posthog-js';
 
 interface TestCallDrawerProps {
@@ -25,10 +27,128 @@ interface TestCallDrawerProps {
   agentId: string;
 }
 
+/** Live-audio state for a test served by the in-house pipeline. */
+type LiveAudioState = 'idle' | 'connecting' | 'connected' | 'blocked' | 'failed';
+
 export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
   const { call } = useApi();
   const [open, setOpen] = useState(false);
   const [callId, setCallId] = useState<string | null>(null);
+  const [liveAudio, setLiveAudio] = useState<LiveAudioState>('idle');
+  // `livekit-client` is only imported for in-house sessions, and only in the
+  // browser, so the realtime path never pays for the WebRTC bundle.
+  const roomRef = useRef<import('livekit-client').Room | null>(null);
+  // Invalidated whenever a join starts or teardown runs. Async join steps must
+  // not publish audio or update state once a newer generation owns the drawer.
+  const connectionGenerationRef = useRef(0);
+  // Remote audio is not played automatically by livekit-client, so the agent's
+  // track has to be attached to an element this component owns and detached on
+  // teardown.
+  const audioElementsRef = useRef<HTMLMediaElement[]>([]);
+
+  const disconnectRoom = useCallback(() => {
+    connectionGenerationRef.current += 1;
+    const room = roomRef.current;
+    roomRef.current = null;
+    for (const element of audioElementsRef.current) element.remove();
+    audioElementsRef.current = [];
+    setLiveAudio('idle');
+    void room?.disconnect();
+  }, []);
+
+  /**
+   * Hangs up a room whose join finished after teardown. `roomRef` is only
+   * cleared when it still points at that room, so a newer join's room is never
+   * dropped by an older generation's cleanup.
+   */
+  const releaseStaleRoom = useCallback((room: import('livekit-client').Room) => {
+    if (roomRef.current === room) roomRef.current = null;
+    void room.disconnect();
+  }, []);
+
+  const joinLiveAudio = useCallback(
+    async (session: TestSessionResult) => {
+      const transport = resolveTestCallTransport(session);
+      if (transport.kind === 'none') return;
+
+      // Every join owns a generation. `disconnectRoom` (close/unmount) bumps the
+      // counter, so a join still awaiting an import or a handshake can detect
+      // that it no longer owns the drawer and tear itself down instead of
+      // publishing audio into a room nobody is listening to.
+      const generation = connectionGenerationRef.current + 1;
+      connectionGenerationRef.current = generation;
+      const isCurrent = () => connectionGenerationRef.current === generation;
+
+      setLiveAudio('connecting');
+      let room: import('livekit-client').Room | undefined;
+      try {
+        const { Room, RoomEvent, Track } = await loadLiveKitClient();
+        // The drawer was closed while the chunk was still loading: never build a
+        // room, so nothing can connect after teardown has already run.
+        if (!isCurrent()) return;
+
+        room = new Room({ adaptiveStream: true, dynacast: true });
+        const joined = room;
+        roomRef.current = joined;
+
+        joined.on(RoomEvent.TrackSubscribed, (track) => {
+          if (!isCurrent() || track.kind !== Track.Kind.Audio) return;
+          const element = track.attach();
+          audioElementsRef.current.push(element);
+          document.body.appendChild(element);
+        });
+        // Browsers can refuse playback until the user gesture is recognised, and
+        // a silent agent looks identical to a broken pipeline. Surface it so the
+        // user can click to enable sound instead of assuming the test failed.
+        joined.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+          if (!isCurrent()) return;
+          setLiveAudio((prev) =>
+            prev === 'idle' || prev === 'failed'
+              ? prev
+              : joined.canPlaybackAudio
+                ? 'connected'
+                : 'blocked',
+          );
+        });
+
+        await joined.connect(transport.url, transport.token);
+        // The handshake completed after teardown, so this room is live but
+        // orphaned. Hang it up rather than leaving it metering minutes.
+        if (!isCurrent()) return void releaseStaleRoom(joined);
+        // The worker is already dispatched into the room, so the only thing left
+        // is a microphone track. Without it the agent hears silence and the test
+        // burns metered minutes on nothing.
+        await joined.localParticipant.setMicrophoneEnabled(true);
+        if (!isCurrent()) return void releaseStaleRoom(joined);
+        setLiveAudio(joined.canPlaybackAudio ? 'connected' : 'blocked');
+      } catch (err) {
+        // A stale join's failure is not the user's problem: the drawer they are
+        // looking at (if any) belongs to a newer generation.
+        if (!isCurrent()) return void (room && releaseStaleRoom(room));
+        // A failed join must not look like a working call: the transcript view
+        // stays usable, but the user is told the audio leg did not come up.
+        disconnectRoom();
+        setLiveAudio('failed');
+        toast.error(
+          err instanceof Error
+            ? `Could not join the test call: ${err.message}`
+            : 'Could not join the test call.',
+        );
+      }
+    },
+    [disconnectRoom, releaseStaleRoom],
+  );
+
+  const allowAudioPlayback = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+    try {
+      await room.startAudio();
+      setLiveAudio('connected');
+    } catch {
+      // Staying in `blocked` keeps the retry affordance on screen.
+    }
+  }, []);
 
   const startMutation = useMutation({
     mutationFn: async () =>
@@ -39,11 +159,26 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
     onSuccess: (res) => {
       setCallId(res.call_id);
       setOpen(true);
-      posthog.capture('test_call_started');
+      posthog.capture('test_call_started', { pipeline: res.pipeline });
       toast.success('Test session created.');
+      void joinLiveAudio(res);
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  // Unmount tears the call leg down. Leaving the room connected would keep
+  // metering minutes for a conversation nobody is having.
+  useEffect(() => disconnectRoom, [disconnectRoom]);
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      // Closing is an explicit hang-up, handled here rather than in an effect so
+      // the disconnect is tied to the user's action instead of a render pass.
+      if (!next) disconnectRoom();
+    },
+    [disconnectRoom],
+  );
 
   const detailQuery = useQuery({
     queryKey: ['call', workspaceId, callId],
@@ -66,7 +201,7 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
         {startMutation.isPending ? 'Starting…' : 'Test call'}
       </Button>
 
-      <Sheet open={open} onOpenChange={setOpen}>
+      <Sheet open={open} onOpenChange={handleOpenChange}>
         {/* ph-no-capture: the drawer renders the test-call transcript. */}
         <SheetContent
           side="right"
@@ -81,6 +216,39 @@ export function TestCallDrawer({ workspaceId, agentId }: TestCallDrawerProps) {
               Review the generated browser test transcript before opening the full call record.
             </SheetDescription>
           </SheetHeader>
+
+          {liveAudio === 'idle' ? null : (
+            <div
+              className={cn(
+                'flex items-center gap-2 border-b px-6 py-3 text-xs',
+                liveAudio === 'failed'
+                  ? 'border-destructive/30 bg-destructive/5 text-destructive'
+                  : 'border-border bg-muted/40 text-muted-foreground',
+              )}
+            >
+              <Mic
+                className={cn('h-3.5 w-3.5', liveAudio === 'connecting' && 'animate-pulse')}
+              />
+              {liveAudio === 'connecting'
+                ? 'Connecting your microphone…'
+                : liveAudio === 'connected'
+                  ? 'Live — speak to the agent. Closing this drawer ends the call.'
+                  : liveAudio === 'blocked'
+                    ? 'Your browser blocked playback, so you cannot hear the agent yet.'
+                    : 'Live audio unavailable. The transcript still updates below.'}
+              {liveAudio === 'blocked' ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto h-7 text-xs"
+                  onClick={() => void allowAudioPlayback()}
+                >
+                  Enable sound
+                </Button>
+              ) : null}
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto px-6 py-5">
             {detailQuery.isPending ? (

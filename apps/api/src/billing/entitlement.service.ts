@@ -10,12 +10,14 @@ import type {
   EntitlementRequest,
   PlanEntitlements,
   PlanType,
+  VoicePipeline,
 } from '@voiceforge/shared';
 import {
   BILLING_CATALOG_VERSION,
   PlanTypeSchema,
   SubscriptionStatusSchema,
   getPlanEntitlements,
+  isPipelineAllowed,
 } from '@voiceforge/shared';
 import { AppError } from '../common/errors';
 import { PrismaService } from '../prisma/prisma.service';
@@ -103,9 +105,14 @@ export class EntitlementService {
 
     switch (request.kind) {
       case 'paid_call':
-        return this.checkPaidCall(effective, request.minimumSeconds, correlationId);
+        return this.checkPaidCall(
+          effective,
+          request.minimumSeconds,
+          correlationId,
+          request.pipeline,
+        );
       case 'browser_test':
-        return this.checkBrowserTest(effective, correlationId);
+        return this.checkBrowserTest(effective, request.minimumSeconds, correlationId);
       case 'agent_create':
         return this.checkQuota(
           effective,
@@ -169,47 +176,28 @@ export class EntitlementService {
   }
 
   /**
-   * The free browser test is a lifetime allowance, not a per-request flag. It
-   * is spent against a persisted redemption, so a customer cannot repeat it by
-   * calling the endpoint again. A paid organization has already bought call
-   * minutes and does not consume the trial.
+   * A browser test is a metered call funded by the organization's balance, on
+   * whichever runtime its plan is entitled to.
+   *
+   * It used to be a one-time lifetime grant tracked by a `trialRedemption` row.
+   * That is gone: Free now carries a recurring monthly allowance, and a browser
+   * test is the only call a plan without PSTN can start, so a separate one-time
+   * cap made the recurring allowance unspendable. Funding both from one balance
+   * means the customer sees a single number and the ledger stays the only place
+   * that decides whether a minute exists.
+   *
+   * The PSTN entitlement is deliberately not consulted here — that is exactly
+   * what distinguishes a browser test from a telephony call on Free.
    */
   private async checkBrowserTest(
     effective: EffectivePlan,
+    minimumSeconds: number,
     correlationId: string,
   ): Promise<EntitlementDecision> {
-    const limit = effective.entitlements.lifetimeBrowserTestSeconds;
-    if (effective.paidAccess) {
-      return this.decision(effective, correlationId, {
-        allowed: true,
-        reason: 'allowed',
-        current: 0,
-        limit,
-      });
-    }
-    if (limit <= 0) {
-      // The plan never granted a browser test, so "already used" would be a
-      // lie and would point the customer at the wrong remedy. The fix is a
-      // plan or payment change.
-      return this.decision(effective, correlationId, {
-        allowed: false,
-        reason: this.unavailableReason(effective),
-        current: 0,
-        limit,
-      });
-    }
-
-    const redemption = await this.prisma.trialRedemption.findUnique({
-      where: { organizationId: effective.organizationId },
-      select: { maxDurationSeconds: true },
-    });
-    const consumed = redemption ? redemption.maxDurationSeconds : 0;
-    const allowed = consumed < limit;
-    return this.decision(effective, correlationId, {
-      allowed,
-      reason: allowed ? 'allowed' : 'trial_already_used',
-      current: consumed,
-      limit,
+    return this.checkFundedCall(effective, minimumSeconds, correlationId, {
+      // Free has no realtime entitlement, so a free test must be refused the
+      // expensive runtime for the same reason a free telephony call would be.
+      pipeline: this.testPipeline(effective),
     });
   }
 
@@ -217,11 +205,48 @@ export class EntitlementService {
     effective: EffectivePlan,
     minimumSeconds: number,
     correlationId: string,
+    pipeline?: VoicePipeline,
   ): Promise<EntitlementDecision> {
     if (!effective.entitlements.outboundPstn || !effective.paidAccess) {
       return this.decision(effective, correlationId, {
         allowed: false,
         reason: this.unavailableReason(effective),
+        current: 0,
+        limit: minimumSeconds,
+      });
+    }
+
+    return this.checkFundedCall(effective, minimumSeconds, correlationId, {
+      ...(pipeline ? { pipeline } : {}),
+    });
+  }
+
+  /**
+   * The runtime a browser test would use. Free is entitled only to the in-house
+   * pipeline, so its test is checked against that rather than against a runtime
+   * it may never be routed to.
+   */
+  private testPipeline(effective: EffectivePlan): VoicePipeline {
+    return isPipelineAllowed(effective.plan, 'realtime') ? 'realtime' : 'standard';
+  }
+
+  /**
+   * Shared funding rule for every metered call: the plan must sell the runtime,
+   * the balance must be healthy, and it must hold at least the minimum billable
+   * amount. The pipeline is checked first because being refused a runtime the
+   * plan does not sell is not a credit problem, and telling the customer to buy
+   * minutes would not fix it.
+   */
+  private async checkFundedCall(
+    effective: EffectivePlan,
+    minimumSeconds: number,
+    correlationId: string,
+    options: { pipeline?: VoicePipeline },
+  ): Promise<EntitlementDecision> {
+    if (options.pipeline && !isPipelineAllowed(effective.plan, options.pipeline)) {
+      return this.decision(effective, correlationId, {
+        allowed: false,
+        reason: 'pipeline_not_entitled',
         current: 0,
         limit: minimumSeconds,
       });
@@ -363,11 +388,16 @@ export class EntitlementService {
       case 'subscription_inactive':
         return 'Your subscription is not active. Update your payment method to continue.';
       case 'credit_insufficient':
-        return 'Your organization does not have enough call minutes. Buy a minute pack to continue.';
+        // Minute packs are sold only to paid subscriptions, so telling a Free
+        // organization to buy one describes a remedy it cannot act on. Its
+        // allowance is recurring, so the honest options are waiting or upgrading.
+        return decision.plan === 'free'
+          ? 'Your organization has used its free minutes for this month. Upgrade to keep calling now, or wait for next month’s allowance.'
+          : 'Your organization does not have enough call minutes. Buy a minute pack to continue.';
       case 'billing_temporarily_unavailable':
         return 'Billing is temporarily unavailable for your organization while a payment issue is reviewed.';
-      case 'trial_already_used':
-        return 'Your organization has already used its lifetime browser test.';
+      case 'pipeline_not_entitled':
+        return 'Your plan does not include this voice runtime. Upgrade to continue.';
       default:
         return `Your ${decision.plan} plan allows ${decision.limit} of these; you are using ${decision.current}.`;
     }

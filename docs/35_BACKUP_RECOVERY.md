@@ -4,87 +4,98 @@
 
 VoiceForge AI uses Supabase Postgres as its primary database. This document covers backup schedules, restore procedures, and testing.
 
-## Supabase Backup Schedule
+## Backup Scope and Schedule
 
-| Type | Frequency | Retention | Notes |
-|------|-----------|-----------|-------|
-| Auto (daily) | Daily | 7 days (free) | Supabase managed |
-| Point-in-time | Continuous | 7 days (free) | Uses WAL archiving |
-| Manual pg_dump | Weekly | 30 days | S3/blob storage |
+Supabase Postgres is external to the EC2 Compose stack. Backup availability,
+retention, PITR support, and any database-branch feature depend on the active
+Supabase project plan; verify them in Supabase Dashboard → Database → Backups
+rather than assuming a fixed free-plan schedule.
 
-## Manual Backup Procedure
+Uploaded knowledge files are a separate backup domain. Production uses S3 when
+`KNOWLEDGE_STORAGE_PROVIDER=s3`, in the bucket named by `S3_KNOWLEDGE_BUCKET`.
+A database restore does not restore those objects. Verify bucket versioning and
+lifecycle/replication settings in AWS as part of every recovery review.
 
-### Using Supabase CLI
+Any manual logical-backup schedule and retention policy must name an owner,
+encrypted destination, retention period, and restore-test cadence. None is
+created by `deploy-aws-ec2.yml` or `infra/aws/provision.sh`.
 
-```bash
-# Install Supabase CLI
-npm install -g supabase
+## Logical Backup Procedure
 
-# Login
-supabase login
-
-# Link project
-supabase link --project-ref <your-project-ref>
-
-# Create manual backup
-supabase db dump --db-url <DIRECT_URL> --file backup-$(date +%Y%m%d).sql
-```
-
-### Upload to S3
+Run from a secured operator workstation with PostgreSQL client tools installed.
+Use the direct database connection, not the PgBouncer runtime URL. Do not put the
+URL on the command line; `PG*` environment variables or a protected password file
+avoid leaking credentials through process listings and shell history.
 
 ```bash
-# Upload to S3
-aws s3 cp backup-$(date +%Y%m%d).sql s3://your-bucket/backups/
+# Example: write a custom-format artifact suitable for pg_restore.
+# Configure PGHOST, PGPORT, PGDATABASE, PGUSER, and PGPASSWORD securely first.
+pg_dump --format=custom --no-owner --no-privileges --file "voiceforge-$(date +%Y%m%d).dump"
+
+# Upload to the approved encrypted backup prefix; do not use the knowledge bucket
+# unless its policy explicitly covers database backups.
+aws s3 cp "voiceforge-$(date +%Y%m%d).dump" "s3://<backup-bucket>/database/"
 ```
 
-## Restore Procedure
+## Restore Drill (isolated target only)
 
-### From pg_dump
+Never run the drill against production and never start by dropping the production
+`public` schema. Provision an empty, isolated PostgreSQL target compatible with
+production extensions, then restore the artifact:
 
 ```bash
-# Drop and recreate database
-psql $DIRECT_URL -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-
-# Restore
-psql $DIRECT_URL < backup-$(date +%Y%m%d).sql
+# Configure PGHOST, PGPORT, PGDATABASE, PGUSER, and PGPASSWORD for the isolated target.
+pg_restore --exit-on-error --clean --if-exists --no-owner --no-privileges \
+  --dbname "$PGDATABASE" "voiceforge-YYYYMMDD.dump"
 ```
 
-### From Supabase PITR
+After restore, run the checks below against the isolated target. Keep the source
+backup immutable throughout the drill.
 
-1. Go to Supabase Dashboard → Database → Point in Time Recovery
-2. Select restore point
-3. Create new database branch
-4. Migrate data to production
-
-## Testing Backups
-
-### Weekly Restore Test (Staging)
+## Repository Backup Preflight
 
 ```bash
-# Create staging branch from latest backup
-supabase branch create restore-test-$(date +%Y%m%d) --project-ref <project-ref>
-
-# Verify schema and data integrity
-# Run: npm run db:push -- --force-reset
-# Run: npm test
+export RECOVERY_ENV_FILE=/secure/path/voiceforge-recovery.env
+export BACKUP_DIR=/secure/path/downloaded-db-backups
+export DIRECT_URL='postgresql://isolated-or-live-connectivity-target'
+node scripts/backup-validation.js --verbose
 ```
 
-### Backup Verification Checklist
+This preflight fails closed on missing inputs and verifies only recovery-env key
+presence, a recent non-empty local artifact, and database connectivity. It does
+not execute `pg_restore`, read the artifact, compare source/restored data, or
+verify S3 knowledge objects. Do not record it as a successful restore drill.
 
-- [ ] Schema matches current migration state
-- [ ] All tables have expected row counts
-- [ ] Foreign keys intact
-- [ ] Indexes present
-- [ ] RLS policies applied
+## Restore Verification Checklist
+
+- [ ] `corepack pnpm --filter @voiceforge/api exec prisma migrate status --schema=prisma/schema.prisma` reports the expected migration state against the restored target
+- [ ] Critical-table row counts are captured before backup and match the restored target
+- [ ] Foreign-key violations are zero (`pg_constraint` checks validated)
+- [ ] Expected indexes are valid (`pg_index.indisvalid` is true)
+- [ ] RLS is enabled and expected policies exist
+- [ ] Representative tenant-scoped API reads succeed against the restored target
+- [ ] Representative S3 knowledge objects exist and can be read by the recovery environment
+- [ ] Recovery time and recovery point are recorded against the agreed RTO/RPO
+
+## Supabase Managed Restore
+
+Use Supabase Dashboard → Database → Backups and follow the restore options shown
+for the active project plan. Restore to an isolated target first. Moving an
+isolated restore into production is an incident-specific change requiring an
+approved cutover plan; this repository cannot prescribe dashboard options that
+are not enabled for the project.
 
 ## Migration Safety
 
 Before running migrations in production:
 
-1. Create manual backup
-2. Test on staging first
-3. Use `npm run db:push` with `--force-reset` only if schema changes require it
-4. Monitor for errors post-migration
+1. Confirm a current managed or logical backup exists.
+2. Restore and test it on an isolated target.
+3. Deploy only through `.github/workflows/deploy-aws-ec2.yml`; it runs
+   `prisma migrate status`, `prisma migrate deploy`, and `db-verify.ts` before
+   replacing services.
+4. Never run `prisma db push --accept-data-loss` or `--force-reset` in production.
+5. Monitor the health gates and logs after deployment.
 
 ## Emergency Contacts
 

@@ -37,11 +37,32 @@ type ToolCrmProvider = Exclude<CrmProvider, 'generic_webhook'>;
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * How long a `pending` invocation may keep holding its idempotency key before a
+ * retry is allowed to take it over. A crash (or an aborted request) between the
+ * invocation row's creation and its terminal update would otherwise strand the
+ * key on a row that never reaches an outcome, making that operation
+ * permanently unretryable. The window is deliberately far longer than any
+ * executor's own HTTP timeout so that a genuinely in-flight duplicate is still
+ * refused rather than executed twice.
+ */
+const PENDING_IDEMPOTENCY_TAKEOVER_MS = 2 * 60 * 1000;
+
+/**
+ * Attempts allowed when claiming an idempotency key. The pre-check and the
+ * insert are not atomic, so a concurrent duplicate can pass the pre-check and
+ * still lose the unique index. A single retry suffices: on the second pass the
+ * winner's row is guaranteed to exist, so the attempt resolves to a replay, a
+ * conflict, or a legitimate takeover.
+ */
+const IDEMPOTENT_CLAIM_ATTEMPTS = 2;
+
+/**
  * Tenant scope for an execution. Executors that resolve credentials at call
  * time (Gmail, Sheets) need the workspace id; config never carries tokens.
  */
 export interface ToolExecutionContext {
   workspaceId: string;
+  idempotencyKey?: string;
 }
 
 export interface ToolExecutor {
@@ -109,11 +130,7 @@ export class ToolsService {
     return this.toDetail(row);
   }
 
-  async create(
-    workspaceId: string,
-    actorUserId: string,
-    dto: CreateToolDto,
-  ): Promise<ToolDetail> {
+  async create(workspaceId: string, actorUserId: string, dto: CreateToolDto): Promise<ToolDetail> {
     await this.assertToolsAllowed(workspaceId);
 
     if (dto.agent_id) {
@@ -173,9 +190,7 @@ export class ToolsService {
         ...(dto.description !== undefined ? { description: dto.description } : {}),
         ...(dto.tool_type !== undefined ? { toolType: dto.tool_type } : {}),
         ...(dto.agent_id !== undefined ? { agentId: dto.agent_id } : {}),
-        ...(dto.config !== undefined
-          ? { config: dto.config as Prisma.InputJsonValue }
-          : {}),
+        ...(dto.config !== undefined ? { config: dto.config as Prisma.InputJsonValue } : {}),
         ...(dto.input_schema !== undefined
           ? { inputSchema: dto.input_schema as Prisma.InputJsonValue }
           : {}),
@@ -240,6 +255,8 @@ export class ToolsService {
         await this.assertOutboundEmailAllowed(workspaceId, dto.arguments ?? {});
       } else if (tool.toolType === 'google_sheets') {
         await this.assertDataExportAllowed(workspaceId, dto.arguments ?? {});
+      } else if (tool.toolType === 'google_calendar') {
+        await this.assertCalendarOperationAllowed(workspaceId, dto.arguments ?? {});
       }
     } catch (err) {
       if (err instanceof ComplianceBlockedError) {
@@ -248,17 +265,48 @@ export class ToolsService {
       throw err;
     }
 
-    const invocation = await this.prisma.toolInvocation.create({
-      data: {
-        workspaceId,
-        organizationId: await this.prisma.organizationIdFor(workspaceId),
-        toolId: tool.id,
-        agentId: dto.agent_id ?? tool.agentId,
-        callId: dto.call_id ?? null,
-        status: 'pending',
-        requestPayload: (dto.arguments as Prisma.InputJsonValue) ?? Prisma.JsonNull,
-      },
-    });
+    const idempotencyKey =
+      tool.toolType === 'google_calendar' && dto.arguments?.operation === 'create_event'
+        ? dto.idempotency_key
+        : undefined;
+
+    const createInvocation = async () =>
+      this.prisma.toolInvocation.create({
+        data: {
+          workspaceId,
+          organizationId: await this.prisma.organizationIdFor(workspaceId),
+          toolId: tool.id,
+          agentId: dto.agent_id ?? tool.agentId,
+          callId: dto.call_id ?? null,
+          status: 'pending',
+          requestPayload: (dto.arguments as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        },
+      });
+
+    let invocation: Awaited<ReturnType<typeof createInvocation>>;
+    if (!idempotencyKey) {
+      invocation = await createInvocation();
+    } else {
+      let claimed: Awaited<ReturnType<typeof createInvocation>> | undefined;
+      for (let attempt = 0; attempt < IDEMPOTENT_CLAIM_ATTEMPTS && !claimed; attempt += 1) {
+        const replay = await this.resolveIdempotentReplay(workspaceId, tool.id, idempotencyKey);
+        if (replay) return replay;
+        try {
+          claimed = await createInvocation();
+        } catch (err) {
+          const isLastAttempt = attempt === IDEMPOTENT_CLAIM_ATTEMPTS - 1;
+          if (isLastAttempt || !this.isUniqueConstraintViolation(err)) throw err;
+        }
+      }
+      if (!claimed) {
+        throw new ToolExecutionFailedError(
+          'Could not claim the idempotency key for this invocation.',
+          { reason: 'idempotency_claim_failed' },
+        );
+      }
+      invocation = claimed;
+    }
 
     const exec = this.executors.get(tool.toolType as string);
     if (!exec) {
@@ -269,6 +317,7 @@ export class ToolsService {
           status: 'failed',
           finishedAt: new Date(),
           errorMessage,
+          ...this.releasedIdempotencyKey(idempotencyKey),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, failed.id, tool.id, 'failed');
@@ -279,7 +328,7 @@ export class ToolsService {
       const result = await exec.execute(
         dto.arguments ?? {},
         tool.config as Record<string, string>,
-        { workspaceId },
+        { workspaceId, ...(idempotencyKey ? { idempotencyKey } : {}) },
       );
       const status = result.success ? 'success' : 'failed';
       const updated = await this.prisma.toolInvocation.update({
@@ -289,6 +338,7 @@ export class ToolsService {
           finishedAt: new Date(),
           responseBody: this.serializeResponse(result.result),
           errorMessage: result.error ?? null,
+          ...(result.success ? {} : this.releasedIdempotencyKey(idempotencyKey)),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, status);
@@ -301,11 +351,78 @@ export class ToolsService {
           status: 'failed',
           finishedAt: new Date(),
           errorMessage,
+          ...this.releasedIdempotencyKey(idempotencyKey),
         },
       });
       await this.logInvocation(workspaceId, actorUserId, updated.id, tool.id, 'failed');
       throw new ToolExecutionFailedError(errorMessage);
     }
+  }
+
+  /**
+   * Clears the idempotency key as part of the same update that records a
+   * terminal failure. Retaining the key on a failed row would make the failure
+   * permanent: the LiveKit runtime derives the key deterministically from the
+   * call id and arguments, so every retry of the same calendar event would hash
+   * to the same key, match the failed row, and replay that failure forever —
+   * turning a transient provider error into an operation that can never
+   * succeed. Releasing it keeps the key free for the next attempt while the
+   * failed row is preserved for auditing. Only `success` is replayable, which
+   * is what actually prevents double-booking.
+   */
+  private releasedIdempotencyKey(
+    idempotencyKey: string | undefined,
+  ): { idempotencyKey: null } | Record<string, never> {
+    return idempotencyKey ? { idempotencyKey: null } : {};
+  }
+
+  /**
+   * Resolves what an incoming idempotent invocation should do about an existing
+   * row holding the same key.
+   *
+   * Returns the stored detail only for `success` (the replay that prevents a
+   * duplicate side effect). `failed` rows never reach here because they release
+   * the key on the way out, so a surviving non-success row is `pending`: either
+   * a genuine in-flight duplicate, which is refused so the side effect is not
+   * performed twice, or a row stranded by a crash before its terminal update,
+   * which is handed over to the retry once it ages past the takeover window.
+   */
+  private async resolveIdempotentReplay(
+    workspaceId: string,
+    toolId: string,
+    idempotencyKey: string,
+  ): Promise<ToolInvocationDetail | null> {
+    const existing = await this.prisma.toolInvocation.findUnique({
+      where: {
+        workspaceId_toolId_idempotencyKey: { workspaceId, toolId, idempotencyKey },
+      },
+    });
+    if (!existing) return null;
+    if (existing.status === 'success') return this.toInvocationDetail(existing);
+
+    const startedAt = existing.startedAt?.getTime() ?? 0;
+    const stranded = Date.now() - startedAt >= PENDING_IDEMPOTENCY_TAKEOVER_MS;
+    if (stranded) {
+      // Release only the pending row observed above. The original invocation
+      // may complete between the read and this update; updateMany makes that
+      // state transition conditional instead of clearing a successful key.
+      const released = await this.prisma.toolInvocation.updateMany({
+        where: { id: existing.id, status: 'pending', idempotencyKey },
+        data: { idempotencyKey: null },
+      });
+      if (released.count === 1) return null;
+
+      const completed = await this.prisma.toolInvocation.findUnique({
+        where: {
+          workspaceId_toolId_idempotencyKey: { workspaceId, toolId, idempotencyKey },
+        },
+      });
+      if (completed?.status === 'success') return this.toInvocationDetail(completed);
+    }
+
+    throw new ToolExecutionFailedError('An identical tool invocation is already in progress.', {
+      reason: 'idempotent_invocation_in_progress',
+    });
   }
 
   /**
@@ -398,6 +515,30 @@ export class ToolsService {
   }
 
   /**
+   * Applies the Calendar compliance decision before credential resolution.
+   * Only operation and attendee addresses are supplied to the decision; audit
+   * records contain reason codes only.
+   */
+  private async assertCalendarOperationAllowed(
+    workspaceId: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    if (typeof this.compliance?.checkCalendarOperation !== 'function') return;
+    const operation = typeof args.operation === 'string' ? args.operation : '';
+    const attendeeEmails = Array.isArray(args.attendees)
+      ? args.attendees.filter((value): value is string => typeof value === 'string')
+      : [];
+    const result = await this.compliance.checkCalendarOperation(
+      workspaceId,
+      operation,
+      attendeeEmails,
+    );
+    if (!result.allowed) {
+      throw new ComplianceBlockedError({ reasons: result.reasons });
+    }
+  }
+
+  /**
    * Blocks Sheets appends that would export data about opted-out contacts.
    * Email-shaped values in the appended row identify the contacts involved;
    * a row referencing an opted-out contact is refused.
@@ -452,7 +593,7 @@ export class ToolsService {
     const allowed = await this.billing.checkFeatureGate(organizationId, 'tools');
     if (!allowed) {
       throw new ForbiddenPlanError(
-        'Integration tools require a paid plan. Free workspaces can use Vapi calling without external tools.',
+        'Integration tools require a paid plan. Free workspaces can use the VoiceForge voice pipeline without external tools.',
       );
     }
   }
@@ -495,27 +636,24 @@ export class ToolsService {
     updatedAt: Date;
   }): ToolDetail {
     if (row.toolType === 'google_calendar') {
-      const cfg = (row.config ?? {}) as {
-        refresh_token?: string;
-        client_id?: string;
-        client_secret?: string;
-        calendar_id?: string;
-      };
-      const { refresh_token, client_secret, ...publicCfg } = cfg;
+      const config = (row.config ?? {}) as { calendar_id?: unknown };
       return {
         ...this.toSummary(row),
+        // Explicit allowlist protects responses backed by legacy rows that may
+        // still contain refresh_token, client_id, or client_secret.
         config: {
-          ...publicCfg,
-          calendar_id: publicCfg.calendar_id ?? 'primary',
-          refresh_token_set: Boolean(refresh_token),
-          client_secret_set: Boolean(client_secret),
+          calendar_id:
+            typeof config.calendar_id === 'string' && config.calendar_id
+              ? config.calendar_id
+              : 'primary',
         },
         input_schema: row.inputSchema as ToolDetail['input_schema'],
       };
     }
 
     if (row.toolType === 'gmail' || row.toolType === 'google_sheets') {
-      // These configs identify operation and target only — no secrets to mask.
+      // Google tool configs identify operation and target only — OAuth tokens
+      // are resolved from the workspace's unified connection at invocation time.
       return {
         ...this.toSummary(row),
         config: (row.config ?? {}) as ToolDetail['config'],
@@ -550,6 +688,10 @@ export class ToolsService {
       config: { ...publicCfg, hmac_secret_set: Boolean(hmac_secret) },
       input_schema: row.inputSchema as ToolDetail['input_schema'],
     };
+  }
+
+  private isUniqueConstraintViolation(err: unknown): boolean {
+    return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
   }
 
   private toInvocationSummary(row: {
@@ -611,7 +753,10 @@ export class ToolsService {
     }
     const provider = crmProvider(config.provider);
     if (!provider) {
-      return { success: false, error: 'CRM provider must be pipedrive, hubspot, salesforce, or generic.' };
+      return {
+        success: false,
+        error: 'CRM provider must be pipedrive, hubspot, salesforce, or generic.',
+      };
     }
     const fullName = stringParam(params.full_name) ?? stringParam(params.name);
     if (!fullName) {
@@ -632,7 +777,10 @@ export class ToolsService {
 }
 
 function crmProvider(value: unknown): ToolCrmProvider | null {
-  return value === 'pipedrive' || value === 'hubspot' || value === 'salesforce' || value === 'generic'
+  return value === 'pipedrive' ||
+    value === 'hubspot' ||
+    value === 'salesforce' ||
+    value === 'generic'
     ? value
     : null;
 }

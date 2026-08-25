@@ -9,16 +9,19 @@ import type {
   ProviderCredentials,
   StartTelephonyOutboundCallDto,
   SyncedProviderPhoneNumber,
+  VoicePipeline,
 } from '@voiceforge/shared';
 import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/errors';
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import { CallAdmissionService, isCallDenied } from '../billing/call-admission.service';
+import { EntitlementService } from '../billing/entitlement.service';
 import { ComplianceService } from '../compliance/compliance.service';
 import { EncryptionService } from '../security/encryption.service';
 import { LiveKitService } from '../livekit/livekit.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PipelineRouterService } from '../voice/pipeline-router.service';
 import { ProviderRegistry } from './providers/provider-registry';
 import type { ConnectedPhoneNumber, NormalizedCallStatus } from './providers/provider.types';
 import { TwilioProviderAdapter } from './providers/twilio.provider';
@@ -54,7 +57,36 @@ export class TelephonyService {
     private readonly compliance: ComplianceService,
     private readonly twilioFallback: TwilioProviderAdapter,
     private readonly admission: CallAdmissionService,
+    private readonly pipelineRouter?: PipelineRouterService,
+    private readonly entitlements?: EntitlementService,
   ) {}
+
+  /**
+   * Chooses the runtime pipeline for a call and reports it in the shape the
+   * call row and the LiveKit dispatch metadata both need.
+   *
+   * Returns `null` when routing is unavailable (no router or plan lookup wired
+   * in), so the runtime keeps its legacy Realtime behavior and the call row
+   * records no pipeline rather than an invented one.
+   */
+  private async resolvePipeline(
+    organizationId: string,
+    callId: string,
+  ): Promise<VoicePipeline | null> {
+    if (!this.pipelineRouter || typeof this.entitlements?.getEffectivePlan !== 'function') {
+      return null;
+    }
+    const effective = await this.entitlements.getEffectivePlan(organizationId);
+    const route = this.pipelineRouter.route(effective.plan, callId);
+    if (route.reason === 'standard_pipeline_disabled' && route.pipeline === 'standard') {
+      throw new AppError(
+        'VOICE_PROVIDER_ERROR',
+        'Voice calls are temporarily unavailable. Please retry shortly.',
+        503,
+      );
+    }
+    return route.pipeline;
+  }
 
   providers() {
     return {
@@ -77,7 +109,11 @@ export class TelephonyService {
     };
   }
 
-  async createConnection(workspaceId: string, actorUserId: string, dto: CreateTelephonyConnectionDto) {
+  async createConnection(
+    workspaceId: string,
+    actorUserId: string,
+    dto: CreateTelephonyConnectionDto,
+  ) {
     const workspace = await this.workspace(workspaceId);
     await this.assertByoTelephonyAllowed(workspace.organizationId);
     const adapter = this.registry.adapterFor(dto.provider);
@@ -97,7 +133,9 @@ export class TelephonyService {
         provider: dto.provider,
         displayName: dto.display_name,
         providerAccountId: validation.providerAccountId ?? null,
-        encryptedCredentials: this.encryption.encryptJson(dto.credentials) as unknown as Prisma.InputJsonValue,
+        encryptedCredentials: this.encryption.encryptJson(
+          dto.credentials,
+        ) as unknown as Prisma.InputJsonValue,
         status: 'connected',
         lastVerifiedAt: new Date(),
       },
@@ -127,8 +165,12 @@ export class TelephonyService {
     const workspace = await this.workspace(workspaceId);
     await this.assertByoTelephonyAllowed(workspace.organizationId);
     const connection = await this.connection(workspaceId, connectionId);
-    const credentials = this.encryption.decryptJson<ProviderCredentials>(connection.encryptedCredentials);
-    const numbers = await this.registry.adapterFor(connection.provider as never).listPhoneNumbers(credentials);
+    const credentials = this.encryption.decryptJson<ProviderCredentials>(
+      connection.encryptedCredentials,
+    );
+    const numbers = await this.registry
+      .adapterFor(connection.provider as never)
+      .listPhoneNumbers(credentials);
 
     await this.prisma.telephonyProviderConnection.update({
       where: { id: connection.id },
@@ -224,7 +266,8 @@ export class TelephonyService {
               phoneNumberE164: number.phone_number,
               inboundEnabled: true,
               outboundEnabled: false,
-              sipTrunkId: typeof number.metadata?.sipTrunkId === 'string' ? number.metadata.sipTrunkId : null,
+              sipTrunkId:
+                typeof number.metadata?.sipTrunkId === 'string' ? number.metadata.sipTrunkId : null,
             },
           });
       created.push(row);
@@ -305,7 +348,12 @@ export class TelephonyService {
     return { items: rows.map((row) => this.phoneNumberDto(row)) };
   }
 
-  async assignAgent(workspaceId: string, numberId: string, actorUserId: string, dto: AssignPhoneNumberAgentDto) {
+  async assignAgent(
+    workspaceId: string,
+    numberId: string,
+    actorUserId: string,
+    dto: AssignPhoneNumberAgentDto,
+  ) {
     const number = await this.number(workspaceId, numberId);
     await this.assertByoTelephonyAllowed(number.organizationId);
     if (dto.agent_id) {
@@ -411,13 +459,15 @@ export class TelephonyService {
       const credentials = this.encryption.decryptJson<ProviderCredentials>(
         number.providerConnection.encryptedCredentials,
       );
-      providerRouting = await this.registry.adapterFor(number.provider as never).configureInboundRouting({
-        credentials,
-        phoneNumber: this.connectedNumber(number),
-        livekitSipUri: `sip:${this.livekit.livekitSipHost}`,
-        fallbackWebhookUrl: this.webhookUrl(`telephony/${number.provider}/fallback/${number.id}`),
-        statusCallbackUrl: this.webhookUrl(`telephony/${number.provider}/status/${number.id}`),
-      });
+      providerRouting = await this.registry
+        .adapterFor(number.provider as never)
+        .configureInboundRouting({
+          credentials,
+          phoneNumber: this.connectedNumber(number),
+          livekitSipUri: `sip:${this.livekit.livekitSipHost}`,
+          fallbackWebhookUrl: this.webhookUrl(`telephony/${number.provider}/fallback/${number.id}`),
+          statusCallbackUrl: this.webhookUrl(`telephony/${number.provider}/status/${number.id}`),
+        });
     }
 
     await this.prisma.telephonyPhoneNumber.update({
@@ -448,13 +498,17 @@ export class TelephonyService {
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     if (number.livekitConfig?.dispatchRuleId) {
-      await this.livekit.deleteDispatchRule(number.livekitConfig.dispatchRuleId).catch(() => undefined);
+      await this.livekit
+        .deleteDispatchRule(number.livekitConfig.dispatchRuleId)
+        .catch(() => undefined);
     }
     if (number.livekitConfig?.inboundTrunkId) {
       await this.livekit.deleteSipTrunk(number.livekitConfig.inboundTrunkId).catch(() => undefined);
     }
     if (number.livekitConfig?.outboundTrunkId) {
-      await this.livekit.deleteSipTrunk(number.livekitConfig.outboundTrunkId).catch(() => undefined);
+      await this.livekit
+        .deleteSipTrunk(number.livekitConfig.outboundTrunkId)
+        .catch(() => undefined);
     }
     const updated = await this.prisma.telephonyPhoneNumber.update({
       where: { id: number.id },
@@ -470,14 +524,22 @@ export class TelephonyService {
     return this.phoneNumberDto(updated);
   }
 
-  async startOutboundCall(workspaceId: string, actorUserId: string, dto: StartTelephonyOutboundCallDto) {
+  async startOutboundCall(
+    workspaceId: string,
+    actorUserId: string,
+    dto: StartTelephonyOutboundCallDto,
+  ) {
     const number = await this.prisma.telephonyPhoneNumber.findFirst({
       where: { id: dto.phone_number_id, workspaceId },
       include: { livekitConfig: true },
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     if (!number.assignedAgentId || !number.livekitConfig?.outboundTrunkId) {
-      throw new AppError('VALIDATION_ERROR', 'This phone number is not configured for outbound LiveKit calls.', 400);
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'This phone number is not configured for outbound LiveKit calls.',
+        400,
+      );
     }
 
     const workspace = await this.prisma.workspace.findUniqueOrThrow({
@@ -485,7 +547,10 @@ export class TelephonyService {
       select: { organizationId: true, retentionDays: true },
     });
     await this.assertByoTelephonyAllowed(workspace.organizationId);
-    const featureAllowed = await this.billing.checkFeatureGate(workspace.organizationId, 'outbound');
+    const featureAllowed = await this.billing.checkFeatureGate(
+      workspace.organizationId,
+      'outbound',
+    );
     if (!featureAllowed) {
       throw new ForbiddenPlanError('Outbound calls require a paid plan.');
     }
@@ -529,7 +594,9 @@ export class TelephonyService {
     }
 
     const roomName = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-outbound-${Date.now()}`;
-    const expiresAt = new Date(new Date().getTime() + workspace.retentionDays * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      new Date().getTime() + workspace.retentionDays * 24 * 60 * 60 * 1000,
+    );
 
     // Persisted before dispatch so the concurrency lease, credit reservation,
     // and usage record have a call to attach to.
@@ -554,12 +621,30 @@ export class TelephonyService {
       },
     });
 
+    // Route after the call row exists because percentage splits are keyed to
+    // call identity, but before admission so billing, storage, and dispatch all
+    // use the same pipeline decision.
+    let pipeline: VoicePipeline | null;
+    try {
+      pipeline = await this.resolvePipeline(number.organizationId, call.id);
+      if (pipeline) {
+        await this.prisma.call.update({ where: { id: call.id }, data: { pipeline } });
+      }
+    } catch (err) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'pipeline_routing_failed' },
+      });
+      throw err;
+    }
+
     const admission = await this.admission.admitCall({
       organizationId: number.organizationId,
       workspaceId,
       callId: call.id,
       provider: 'livekit',
       direction: 'outbound',
+      ...(pipeline ? { pipeline } : {}),
     });
     if (isCallDenied(admission)) {
       await this.prisma.call.update({
@@ -587,6 +672,7 @@ export class TelephonyService {
           provider: number.provider,
           model: env.OPENAI_REALTIME_MODEL,
           purpose,
+          ...(pipeline ? { pipeline } : {}),
         },
       });
     } catch (err) {
@@ -624,7 +710,11 @@ export class TelephonyService {
         contact_id: checkResult.contact_id,
       },
     });
-    return { call_id: call.id, provider_call_id: result.providerCallId, room_name: result.roomName };
+    return {
+      call_id: call.id,
+      provider_call_id: result.providerCallId,
+      room_name: result.roomName,
+    };
   }
 
   async handleTwilioVoice(
@@ -645,7 +735,14 @@ export class TelephonyService {
     }
     const callSid = String(payload.CallSid ?? '');
     if (callSid) {
-      await this.recordWebhookEvent('twilio', `${callSid}:voice`, 'call.voice', number.id, payload, true);
+      await this.recordWebhookEvent(
+        'twilio',
+        `${callSid}:voice`,
+        'call.voice',
+        number.id,
+        payload,
+        true,
+      );
       const call = await this.ensureInboundCall({
         workspaceId: number.workspaceId,
         organizationId: number.organizationId,
@@ -733,7 +830,14 @@ export class TelephonyService {
       await this.assertVobizWebhookSignature(number, payload, request, 'call.status');
     }
     const normalized = this.normalizeStatus(provider, payload);
-    await this.recordWebhookEvent(provider, normalized.eventId ?? normalized.providerCallId, 'call.status', phoneNumberId, payload, true);
+    await this.recordWebhookEvent(
+      provider,
+      normalized.eventId ?? normalized.providerCallId,
+      'call.status',
+      phoneNumberId,
+      payload,
+      true,
+    );
     const call = await this.prisma.call.findFirst({
       where: {
         provider,
@@ -768,7 +872,12 @@ export class TelephonyService {
       context.call?.id ?? null,
     );
     if (context.call) {
-      await this.updateCallFromLiveKitWebhook(context.call, eventType, parsed, context.participantId);
+      await this.updateCallFromLiveKitWebhook(
+        context.call,
+        eventType,
+        parsed,
+        context.participantId,
+      );
     }
     return { processed: true, event: eventType };
   }
@@ -781,21 +890,35 @@ export class TelephonyService {
       providerMetadata?: Prisma.JsonValue | null;
     },
     payload: Record<string, unknown>,
-    request: {
-      headers: Record<string, string | string[] | undefined>;
-      url: string;
-      rawBody?: string;
-    } | undefined,
+    request:
+      | {
+          headers: Record<string, string | string[] | undefined>;
+          url: string;
+          rawBody?: string;
+        }
+      | undefined,
     eventType: string,
   ): Promise<void> {
     if (!request) {
-      await this.recordInvalidWebhook('twilio', number, payload, eventType, 'missing_request_context');
+      await this.recordInvalidWebhook(
+        'twilio',
+        number,
+        payload,
+        eventType,
+        'missing_request_context',
+      );
       throw new UnauthorizedError('Missing Twilio webhook signature context.');
     }
 
     const secret = this.twilioWebhookSecret(number);
     if (!secret) {
-      await this.recordInvalidWebhook('twilio', number, payload, eventType, 'missing_webhook_secret');
+      await this.recordInvalidWebhook(
+        'twilio',
+        number,
+        payload,
+        eventType,
+        'missing_webhook_secret',
+      );
       throw new UnauthorizedError('Twilio webhook signing secret is not configured.');
     }
 
@@ -824,13 +947,25 @@ export class TelephonyService {
     eventType: string,
   ): Promise<void> {
     if (!request) {
-      await this.recordInvalidWebhook('vobiz', number, payload, eventType, 'missing_request_context');
+      await this.recordInvalidWebhook(
+        'vobiz',
+        number,
+        payload,
+        eventType,
+        'missing_request_context',
+      );
       throw new UnauthorizedError('Missing Vobiz webhook signature context.');
     }
 
     const secret = this.storedWebhookSecret(number);
     if (!secret) {
-      await this.recordInvalidWebhook('vobiz', number, payload, eventType, 'missing_webhook_secret');
+      await this.recordInvalidWebhook(
+        'vobiz',
+        number,
+        payload,
+        eventType,
+        'missing_webhook_secret',
+      );
       throw new UnauthorizedError('Vobiz webhook signing secret is not configured.');
     }
 
@@ -889,13 +1024,15 @@ export class TelephonyService {
       payload,
       false,
     );
-    await Promise.resolve(this.audit.log({
-      workspaceId: number.workspaceId,
-      action: 'telephony.webhook.invalid_signature',
-      resourceType: 'telephony_phone_number',
-      resourceId: number.id,
-      metadata: { provider, event_type: eventType, reason },
-    })).catch(() => undefined);
+    await Promise.resolve(
+      this.audit.log({
+        workspaceId: number.workspaceId,
+        action: 'telephony.webhook.invalid_signature',
+        resourceType: 'telephony_phone_number',
+        resourceId: number.id,
+        metadata: { provider, event_type: eventType, reason },
+      }),
+    ).catch(() => undefined);
   }
 
   /**
@@ -967,12 +1104,19 @@ export class TelephonyService {
       call.agentId !== params.agentId ||
       call.phoneNumberId !== params.phoneNumberId
     ) {
-      throw new AppError('CALL_IDENTITY_COLLISION', 'Provider call identity belongs to another tenant.', 409);
+      throw new AppError(
+        'CALL_IDENTITY_COLLISION',
+        'Provider call identity belongs to another tenant.',
+        409,
+      );
     }
     return call;
   }
 
-  private normalizeStatus(provider: 'twilio' | 'vobiz', payload: Record<string, unknown>): NormalizedCallStatus {
+  private normalizeStatus(
+    provider: 'twilio' | 'vobiz',
+    payload: Record<string, unknown>,
+  ): NormalizedCallStatus {
     if (provider === 'twilio') {
       const callSid = String(payload.CallSid ?? payload.call_sid ?? '');
       const status = String(payload.CallStatus ?? payload.call_status ?? 'unknown');
@@ -1062,7 +1206,7 @@ export class TelephonyService {
     const allowed = await this.billing.checkFeatureGate(organizationId, 'byo_telephony');
     if (!allowed) {
       throw new ForbiddenPlanError(
-        'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use Vapi calling only.',
+        'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use the VoiceForge voice pipeline only.',
         BYO_TELEPHONY_PLAN_LIMIT_DETAILS,
       );
     }
@@ -1072,7 +1216,8 @@ export class TelephonyService {
     const connection = await this.prisma.telephonyProviderConnection.findFirst({
       where: { id: connectionId, workspaceId, status: { not: 'disconnected' } },
     });
-    if (!connection) throw new AppError('TELEPHONY_NOT_FOUND', 'Provider connection not found.', 404);
+    if (!connection)
+      throw new AppError('TELEPHONY_NOT_FOUND', 'Provider connection not found.', 404);
     return connection;
   }
 
@@ -1146,7 +1291,13 @@ export class TelephonyService {
     lastSyncedAt?: Date | null;
     createdAt: Date;
     assignedAgent?: { id: string; name: string } | null;
-    livekitConfig?: { status: string; livekitSipHost: string; inboundTrunkId: string | null; outboundTrunkId: string | null; dispatchRuleId: string | null } | null;
+    livekitConfig?: {
+      status: string;
+      livekitSipHost: string;
+      inboundTrunkId: string | null;
+      outboundTrunkId: string | null;
+      dispatchRuleId: string | null;
+    } | null;
     providerConnection?: { id: string; displayName: string; status: string } | null;
   }) {
     return {
@@ -1200,28 +1351,30 @@ export class TelephonyService {
     const participant = this.objectMetadata(payload.participant);
     const participantMetadata = parseJsonObject(participant.metadata);
     const roomName = stringValue(room.name ?? payload.room_name ?? payload.roomName);
-    const participantId = stringValue(participant.sid ?? participant.identity ?? payload.participant_id);
+    const participantId = stringValue(
+      participant.sid ?? participant.identity ?? payload.participant_id,
+    );
     const phoneNumberId =
-      stringValue(participantMetadata.phoneNumberId) ??
-      extractPhoneNumberIdFromRoom(roomName);
+      stringValue(participantMetadata.phoneNumberId) ?? extractPhoneNumberIdFromRoom(roomName);
 
-    const call = roomName || participantId
-      ? await this.prisma.call.findFirst({
-          where: {
-            OR: [
-              ...(roomName ? [{ livekitRoomName: roomName }] : []),
-              ...(participantId ? [{ providerCallId: participantId }] : []),
-            ],
-          },
-          select: {
-            id: true,
-            workspaceId: true,
-            organizationId: true,
-            startedAt: true,
-            endedAt: true,
-          },
-        })
-      : null;
+    const call =
+      roomName || participantId
+        ? await this.prisma.call.findFirst({
+            where: {
+              OR: [
+                ...(roomName ? [{ livekitRoomName: roomName }] : []),
+                ...(participantId ? [{ providerCallId: participantId }] : []),
+              ],
+            },
+            select: {
+              id: true,
+              workspaceId: true,
+              organizationId: true,
+              startedAt: true,
+              endedAt: true,
+            },
+          })
+        : null;
 
     return { call, phoneNumberId: phoneNumberId ?? null, participantId: participantId ?? null };
   }
@@ -1247,7 +1400,12 @@ export class TelephonyService {
         ...(participantId ? { livekitParticipantId: participantId } : {}),
         ...(endedAt ? { endedAt } : {}),
         ...(endedAt && call.startedAt
-          ? { durationSeconds: Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000)) }
+          ? {
+              durationSeconds: Math.max(
+                0,
+                Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000),
+              ),
+            }
           : {}),
       },
     });
@@ -1291,18 +1449,23 @@ export class TelephonyService {
   private webhookSecretMetadata(secret: string | null): Record<string, unknown> {
     return {
       hasWebhookSecret: Boolean(secret),
-      webhookSecretEncrypted: secret
-        ? this.encryption.encryptJson({ secret })
-        : null,
+      webhookSecretEncrypted: secret ? this.encryption.encryptJson({ secret }) : null,
     };
   }
 
-  private normalizeSipTrunkDomain(provider: string, value: string | null | undefined): string | null {
+  private normalizeSipTrunkDomain(
+    provider: string,
+    value: string | null | undefined,
+  ): string | null {
     const raw = value?.trim().replace(/^sip:/, '') ?? '';
     if (!raw) return null;
     const domain = provider === 'vobiz' && !raw.includes('.') ? `${raw}.sip.vobiz.ai` : raw;
     if (!/^[a-zA-Z0-9.-]+$/.test(domain) || !domain.includes('.')) {
-      throw new AppError('VALIDATION_ERROR', 'SIP domain must be a valid host, for example tenant.sip.vobiz.ai.', 400);
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'SIP domain must be a valid host, for example tenant.sip.vobiz.ai.',
+        400,
+      );
     }
     return domain.toLowerCase();
   }
@@ -1334,7 +1497,9 @@ export class TelephonyService {
   }
 
   private isTerminalStatus(status: string): boolean {
-    return ['completed', 'failed', 'busy', 'no-answer', 'cancelled', 'canceled', 'ended'].includes(status);
+    return ['completed', 'failed', 'busy', 'no-answer', 'cancelled', 'canceled', 'ended'].includes(
+      status,
+    );
   }
 
   private findRecentOutboundDuplicate(
@@ -1380,6 +1545,8 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
 
 function extractPhoneNumberIdFromRoom(roomName: string | null): string | null {
   if (!roomName) return null;
-  const match = roomName.match(/^call-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i);
+  const match = roomName.match(
+    /^call-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-/i,
+  );
   return match?.[1] ?? null;
 }

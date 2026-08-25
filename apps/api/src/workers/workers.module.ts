@@ -3,6 +3,7 @@ import { AgentGenWorker } from './agent-gen.worker';
 import { BillingReconciliationWorker } from './billing-reconciliation.worker';
 import { CallLeaseRenewalWorker } from './call-lease-renewal.worker';
 import { EvaluationWorker } from './evaluation.worker';
+import { FreeCreditGrantWorker } from './free-credit-grant.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
 import { EmbeddingsWorker } from './embeddings.worker';
@@ -48,6 +49,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     OrchestratorWorker,
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
+    FreeCreditGrantWorker,
   ],
   exports: [
     AgentGenWorker,
@@ -60,6 +62,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     OrchestratorWorker,
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
+    FreeCreditGrantWorker,
   ],
 })
 export class WorkersModule {}

@@ -21,11 +21,29 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 20.20 is the floor, not a preference: posthog-node declares
-  # "^20.20.0 || >=22.22.0" and a bare "20" would let a runner image resolve to
-  # an earlier 20.x that cannot install it. Keep in sync with the root
-  # package.json engines field and infra/docker/Dockerfile.*.
-  NODE_VERSION: "20.20"
+  # 22.22 is the floor, not a preference. Two dependency constraints set it:
+  #   - posthog-node declares "^20.20.0 || >=22.22.0".
+  #   - jsdom 30, which is apps/web's vitest DOM environment, declares
+  #     "^22.22.2 || ^24.15.0 || >=26.0.0" and pulls undici 8, whose
+  #     lib/web/webidl reads markAsUncloneable from node:worker_threads. That
+  #     export landed in Node 22.10 and was never backported to 20.x, so the
+  #     entire web suite aborted on 20.20 with "TypeError:
+  #     webidl.util.markAsUncloneable is not a function" while passing on every
+  #     developer machine. 20.x was never a Node version jsdom 30 supported.
+  # A bare "22" is still avoided for the reason the old "20" was: it lets a
+  # runner image resolve to a 22.x below the constraints above. "22.22" resolves
+  # to the newest published 22.22.x (22.22.3 at time of writing), which clears
+  # jsdom's ^22.22.2 floor; do not narrow this to 22.22.0 or 22.22.1. Node 20
+  # reached end-of-life on 2026-04-30, so the 20.x half of the engines range is
+  # legacy tolerance rather than a target.
+  #
+  # Keep in sync with .depot/workflows/quality-gate.yml, which pins the same
+  # value, and with infra/docker/Dockerfile.*, which are on the same 22.22 line
+  # pinned to an exact patch (node:22.22.3-bookworm-slim). The shapes differ on
+  # purpose — CI tracks the newest 22.22.x so it picks up patch fixes, while a
+  # production runtime image is pinned for reproducibility — but the major.minor
+  # must not diverge.
+  NODE_VERSION: "22.22"
   PNPM_VERSION: "10.33.2"
 
 permissions:

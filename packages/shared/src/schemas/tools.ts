@@ -25,12 +25,13 @@ const WebhookConfigSchema = z.object({
 });
 export type WebhookConfig = z.infer<typeof WebhookConfigSchema>;
 
-const GoogleCalendarConfigSchema = z.object({
-  refresh_token: z.string().min(1),
-  client_id: z.string().optional(),
-  client_secret: z.string().optional(),
-  calendar_id: z.string().min(1).default('primary'),
-});
+const GoogleCalendarConfigSchema = z
+  .object({
+    // OAuth credentials live in GoogleOAuthConnection. Tool config identifies
+    // only the target calendar.
+    calendar_id: z.string().min(1).default('primary'),
+  })
+  .strict();
 export type GoogleCalendarConfig = z.infer<typeof GoogleCalendarConfigSchema>;
 
 /**
@@ -67,7 +68,10 @@ export const GmailSendMessageInputSchema = z.object({
 export type GmailSendMessageInput = z.infer<typeof GmailSendMessageInputSchema>;
 
 export const SheetsAppendRowInputSchema = z.object({
-  values: z.array(z.union([z.string(), z.number(), z.boolean()])).min(1).max(50),
+  values: z
+    .array(z.union([z.string(), z.number(), z.boolean()]))
+    .min(1)
+    .max(50),
   spreadsheet_id: z.string().min(1).optional(),
   sheet_name: z.string().min(1).optional(),
 });
@@ -99,9 +103,13 @@ const JsonSchemaShape = z
   .passthrough();
 
 const CreateToolBaseShape = {
-  name: z.string().min(1).max(64).regex(/^[a-z0-9_]+$/, {
-    message: 'name must be snake_case (a–z, 0–9, _ only).',
-  }),
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9_]+$/, {
+      message: 'name must be snake_case (a–z, 0–9, _ only).',
+    }),
   description: z.string().min(1).max(500),
   agent_id: z.string().uuid().nullable().optional(),
   input_schema: JsonSchemaShape,
@@ -109,12 +117,32 @@ const CreateToolBaseShape = {
 };
 
 export const CreateToolDtoSchema = z.discriminatedUnion('tool_type', [
-  z.object({ ...CreateToolBaseShape, tool_type: z.literal('webhook'), config: WebhookConfigSchema }),
-  z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_get'), config: WebhookConfigSchema }),
-  z.object({ ...CreateToolBaseShape, tool_type: z.literal('http_post'), config: WebhookConfigSchema }),
-  z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_calendar'), config: GoogleCalendarConfigSchema }),
+  z.object({
+    ...CreateToolBaseShape,
+    tool_type: z.literal('webhook'),
+    config: WebhookConfigSchema,
+  }),
+  z.object({
+    ...CreateToolBaseShape,
+    tool_type: z.literal('http_get'),
+    config: WebhookConfigSchema,
+  }),
+  z.object({
+    ...CreateToolBaseShape,
+    tool_type: z.literal('http_post'),
+    config: WebhookConfigSchema,
+  }),
+  z.object({
+    ...CreateToolBaseShape,
+    tool_type: z.literal('google_calendar'),
+    config: GoogleCalendarConfigSchema,
+  }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('gmail'), config: GmailConfigSchema }),
-  z.object({ ...CreateToolBaseShape, tool_type: z.literal('google_sheets'), config: GoogleSheetsConfigSchema }),
+  z.object({
+    ...CreateToolBaseShape,
+    tool_type: z.literal('google_sheets'),
+    config: GoogleSheetsConfigSchema,
+  }),
   z.object({ ...CreateToolBaseShape, tool_type: z.literal('crm'), config: CrmConfigSchema }),
 ]);
 export type CreateToolDto = z.infer<typeof CreateToolDtoSchema>;
@@ -147,13 +175,7 @@ const PublicWebhookConfigSchema = WebhookConfigSchema.omit({ hmac_secret: true }
   hmac_secret_set: z.boolean(),
 });
 
-const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema.omit({
-  refresh_token: true,
-  client_secret: true,
-}).extend({
-  refresh_token_set: z.boolean(),
-  client_secret_set: z.boolean(),
-});
+const PublicGoogleCalendarConfigSchema = GoogleCalendarConfigSchema;
 
 const PublicCrmConfigSchema = CrmConfigSchema.omit({ api_key: true }).extend({
   api_key_set: z.boolean(),
@@ -175,6 +197,7 @@ export const InvokeToolDtoSchema = z.object({
   arguments: z.record(z.string(), z.any()).default({}),
   call_id: z.string().uuid().optional(),
   agent_id: z.string().uuid().optional(),
+  idempotency_key: z.string().min(1).max(200).optional(),
 });
 export type InvokeToolDto = z.infer<typeof InvokeToolDtoSchema>;
 
@@ -229,9 +252,7 @@ export const GoogleConnectionStatusResponseSchema = z.object({
   status: z.string().nullable(),
   scopes: z.array(z.string()),
 });
-export type GoogleConnectionStatusResponse = z.infer<
-  typeof GoogleConnectionStatusResponseSchema
->;
+export type GoogleConnectionStatusResponse = z.infer<typeof GoogleConnectionStatusResponseSchema>;
 
 /** Response of DELETE /workspaces/:id/google/disconnect. */
 export const GoogleDisconnectResponseSchema = z.object({

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentSpec } from '@voiceforge/shared';
 import {
   buildVoiceForgeInstructions,
@@ -6,6 +6,7 @@ import {
   parseDispatchMetadata,
   resolveRealtimeVoice,
 } from './agent-runtime';
+import { createToolInvokeClient } from './google-tools';
 
 const spec: AgentSpec = {
   schema_version: '1.0',
@@ -40,15 +41,66 @@ const spec: AgentSpec = {
   analytics: { success_events: [] },
 };
 
+describe('LiveKit Google tool invocation', () => {
+  it('sends a deterministic idempotency key for Calendar creates only', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: { status: 'success', result: { event_id: 'evt-1' }, error_message: null },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const invoke = createToolInvokeClient({
+      apiBaseUrl: 'http://api:4000',
+      internalApiKey: 'internal-key',
+      agentId: 'agent-1',
+      callId: 'call-1',
+      fetchImpl,
+    });
+
+    await invoke(
+      'calendar',
+      { operation: 'create_event', start_iso: '2026-08-24T10:00:00Z', summary: 'Demo' },
+      'google_calendar',
+    );
+    await invoke(
+      'calendar',
+      { summary: 'Demo', operation: 'create_event', start_iso: '2026-08-24T10:00:00Z' },
+      'google_calendar',
+    );
+    await invoke('calendar', { operation: 'list_events' }, 'google_calendar');
+
+    expect(bodies[0]?.idempotency_key).toMatch(/^[a-f0-9]{64}$/);
+    expect(bodies[1]?.idempotency_key).toBe(bodies[0]?.idempotency_key);
+    expect(bodies[2]).not.toHaveProperty('idempotency_key');
+  });
+});
+
 describe('LiveKit agent runtime helpers', () => {
   it('requires structured dispatch metadata with an agent id', () => {
-    expect(parseDispatchMetadata(JSON.stringify({ workspaceId: 'ws-1', agentId: 'agent-1' }))).toEqual({
+    // Jobs enqueued before the dual-pipeline release carry no pipeline, and must
+    // keep running on the behavior they were created with.
+    expect(
+      parseDispatchMetadata(JSON.stringify({ workspaceId: 'ws-1', agentId: 'agent-1' })),
+    ).toEqual({
       workspaceId: 'ws-1',
       agentId: 'agent-1',
+      pipeline: 'realtime',
     });
 
     expect(() => parseDispatchMetadata('{}')).toThrow(/agentId/);
     expect(() => parseDispatchMetadata('not json')).toThrow(/metadata/);
+  });
+
+  it('carries an explicit standard pipeline through dispatch metadata', () => {
+    const metadata = parseDispatchMetadata(
+      JSON.stringify({ agentId: 'agent-1', pipeline: 'standard' }),
+    );
+    expect(metadata.pipeline).toBe('standard');
   });
 
   it('builds speaking instructions from Agent Spec JSON', () => {
@@ -71,6 +123,8 @@ describe('LiveKit agent runtime helpers', () => {
       'Say exactly: "Hello, this is Deepak QA Agent from VoiceForge. Can you hear me clearly?"',
     );
     expect(resolveRealtimeVoice(spec, 'coral')).toBe('marin');
-    expect(resolveRealtimeVoice({ ...spec, voice: { ...spec.voice, voice_id: undefined } }, 'coral')).toBe('coral');
+    expect(
+      resolveRealtimeVoice({ ...spec, voice: { ...spec.voice, voice_id: undefined } }, 'coral'),
+    ).toBe('coral');
   });
 });

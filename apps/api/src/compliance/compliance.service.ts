@@ -336,19 +336,35 @@ export class ComplianceService {
     const direction = args.direction;
 
     // Resolve / link contact for outbound flows when phone is supplied.
-    let contactId: string | null = args.contactId ?? null;
+    //
+    // `args.contactId` is client-supplied (`dto.contact_id`), so it is treated
+    // as a *claim* that must be resolved against this workspace before it is
+    // used or persisted. An id that does not resolve within the workspace is
+    // discarded rather than carried forward: keeping it would both leak the
+    // existence of another tenant's contact and write a foreign id onto this
+    // workspace's ComplianceCheck row.
+    //
+    // For outbound, the *dialed number* is the only thing that decides who is
+    // actually about to be called, so it - not the supplied id - selects the
+    // contact whose opt-out and consent state is evaluated. Trusting the id
+    // here let a caller pass a consented contact's id while dialling a
+    // different, opted-out contact's number: both rows live in the same
+    // workspace, so the workspace scope below could not catch it, and the call
+    // proceeded on someone else's consent.
+    let contactId: string | null = null;
     if (direction === 'outbound' && args.toNumber) {
       const phone = normalizePhone(args.toNumber);
       if (phone) {
-        const contact = contactId
-          ? await this.prisma.contact.findFirst({
-              where: { id: contactId, workspaceId: args.workspaceId },
-            })
-          : await this.prisma.contact.findUnique({
-              where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
-            });
+        const contact = await this.prisma.contact.findUnique({
+          where: { workspaceId_phone: { workspaceId: args.workspaceId, phone } },
+        });
         if (contact) contactId = contact.id;
       }
+    } else if (args.contactId) {
+      const contact = await this.prisma.contact.findFirst({
+        where: { id: args.contactId, workspaceId: args.workspaceId },
+      });
+      contactId = contact?.id ?? null;
     }
 
     // 1. Agent must be published for outbound.
@@ -408,9 +424,14 @@ export class ComplianceService {
           }
         }
 
-        // 5. Opt-out check on the linked contact.
+        // 5. Opt-out check on the linked contact. Always re-scope to the
+        // workspace: contactId can originate from a client-supplied
+        // `contact_id`, so a bare id lookup would let another tenant's
+        // opt-out/consent state drive this workspace's compliance decision.
         const contact = contactId
-          ? await this.prisma.contact.findUnique({ where: { id: contactId } })
+          ? await this.prisma.contact.findFirst({
+              where: { id: contactId, workspaceId: args.workspaceId },
+            })
           : null;
         if (contact?.optOut) {
           reasons.push({
@@ -433,6 +454,7 @@ export class ComplianceService {
             const validConsent = await this.prisma.consentRecord.findFirst({
               where: {
                 contactId: contact.id,
+                workspaceId: args.workspaceId,
                 consentType: { in: ['outbound_marketing', 'outbound_transactional'] },
                 revokedAt: null,
                 OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
@@ -549,6 +571,42 @@ export class ComplianceService {
       });
     }
     return { allowed: reasons.length === 0, reasons };
+  }
+
+  /**
+   * Calendar-specific gate applied to every operation. Reads are explicitly
+   * evaluated even though they currently carry no contact identifiers;
+   * event creation additionally blocks invitations to opted-out contacts.
+   */
+  async checkCalendarOperation(
+    workspaceId: string,
+    operation: string,
+    attendeeEmails: string[],
+  ): Promise<{ allowed: boolean; reasons: ComplianceReason[] }> {
+    // Unsupported operations are rejected by tool input/executor validation;
+    // the compliance gate decides policy for every valid Calendar operation.
+    if (operation !== 'create_event') return { allowed: true, reasons: [] };
+
+    const candidates = [...new Set(attendeeEmails.map((email) => email.trim()).filter(Boolean))];
+    if (candidates.length === 0) return { allowed: true, reasons: [] };
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        workspaceId,
+        optOut: true,
+        OR: candidates.map((email) => ({
+          email: { equals: email, mode: 'insensitive' as const },
+        })),
+      },
+      select: { id: true },
+    });
+    return {
+      allowed: contacts.length === 0,
+      reasons: contacts.map((contact) => ({
+        code: 'opted_out',
+        message: `Contact ${contact.id} has opted out of further outreach.`,
+        severity: 'blocking' as const,
+      })),
+    };
   }
 
   /**

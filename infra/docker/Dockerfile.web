@@ -1,5 +1,16 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
+# NODE PIN: keep in sync with the quality-gate workflows
+# (.github/workflows/quality-gate.yml and .depot/workflows/quality-gate.yml),
+# which set NODE_VERSION "22.22" and therefore resolve to the newest published
+# 22.22.x. This image pins the same 22.22 line at an exact patch, because a
+# production runtime should be byte-reproducible while a CI runner should pick
+# up patch fixes automatically. Both sides satisfy the root package.json
+# engines field ("^20.20.0 || >=22.22.0") via its >=22.22.0 arm, and the pinned
+# patch also clears jsdom 30's ^22.22.2 floor — irrelevant here, since jsdom is
+# only loaded by `vitest run` and no image stage invokes it, but it keeps the
+# two pins interchangeable. Node 20 reached end-of-life on 2026-04-30, so do
+# not move this back onto a 20.x tag.
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS build
 
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
@@ -64,7 +75,6 @@ RUN corepack enable \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/livekit-agent/package.json apps/livekit-agent/package.json
-COPY apps/voice-edge/package.json apps/voice-edge/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
@@ -82,7 +92,7 @@ RUN pnpm --filter @voiceforge/shared run build
 RUN --mount=type=cache,id=voiceforge-next,target=/app/apps/web/.next/cache,sharing=locked \
     pnpm --filter @voiceforge/web run build
 
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS runtime
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production \

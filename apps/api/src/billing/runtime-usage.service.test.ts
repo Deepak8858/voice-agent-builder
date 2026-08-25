@@ -5,7 +5,6 @@ const BALANCE = {
   organizationId: 'org-1',
   includedMinutesRemaining: 10,
   purchasedMinutesRemaining: 0,
-  lifetimeBrowserTestSecondsRemaining: 0,
 };
 
 interface StoredEvent {

@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { useApi } from '@/lib/use-api';
 import { ArrowLeft, Play, Power, Trash2, Plug } from 'lucide-react';
@@ -32,7 +33,9 @@ export default function ToolDetailPage({ params }: PageProps) {
   const qc = useQueryClient();
 
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [argsText, setArgsText] = useState('{\n  "name": "Ada",\n  "phone": "5551234567"\n}');
+  const [argsText, setArgsText] = useState<string | null>(null);
+  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(null);
+  const [sheetName, setSheetName] = useState<string | null>(null);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
@@ -55,12 +58,17 @@ export default function ToolDetailPage({ params }: PageProps) {
       ),
   });
 
+  const generatedArgsText = useMemo(
+    () => toolQuery.data ? JSON.stringify(buildExampleArguments(toolQuery.data), null, 2) : '{}',
+    [toolQuery.data],
+  );
+
   const invokeMutation = useMutation({
     mutationFn: async () => {
       if (!workspaceId) throw new Error('No workspace');
       let args: unknown = {};
       try {
-        args = JSON.parse(argsText);
+        args = JSON.parse(argsText ?? generatedArgsText);
       } catch (err) {
         throw new Error(`Arguments must be valid JSON: ${(err as Error).message}`);
       }
@@ -86,6 +94,31 @@ export default function ToolDetailPage({ params }: PageProps) {
     },
     onSuccess: () => {
       toast.success('Toggled.');
+      qc.invalidateQueries({ queryKey: ['tool', workspaceId, toolId] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const saveSheetsConfig = useMutation({
+    mutationFn: async () => {
+      if (!workspaceId || toolQuery.data?.tool_type !== 'google_sheets') {
+        throw new Error('No Google Sheets tool loaded');
+      }
+      const normalizedSpreadsheetId = (spreadsheetId ?? '').trim();
+      if (!normalizedSpreadsheetId) throw new Error('Spreadsheet ID is required');
+      return call<ToolDetail>(`/workspaces/${workspaceId}/tools/${toolId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          config: {
+            operation: 'append_row',
+            spreadsheet_id: normalizedSpreadsheetId,
+            sheet_name: (sheetName ?? '').trim() || 'Sheet1',
+          },
+        }),
+      });
+    },
+    onSuccess: () => {
+      toast.success('Google Sheets target saved.');
       qc.invalidateQueries({ queryKey: ['tool', workspaceId, toolId] });
     },
     onError: (err: Error) => toast.error(err.message),
@@ -119,7 +152,12 @@ export default function ToolDetailPage({ params }: PageProps) {
   }
   const tool = toolQuery.data;
   const webhookConfig = isWebhookConfig(tool.config) ? tool.config : null;
-  const calendarConfig = isCalendarConfig(tool.config) ? tool.config : null;
+  const calendarConfig = tool.tool_type === 'google_calendar' && isCalendarConfig(tool.config)
+    ? tool.config
+    : null;
+  const sheetsConfig = tool.tool_type === 'google_sheets' && isSheetsConfig(tool.config)
+    ? tool.config
+    : null;
 
   return (
     /*
@@ -145,7 +183,7 @@ export default function ToolDetailPage({ params }: PageProps) {
               {tool.enabled ? 'enabled' : 'disabled'}
             </Badge>
             {webhookConfig?.hmac_secret_set ? <Badge variant="outline">HMAC signed</Badge> : null}
-            {calendarConfig?.refresh_token_set ? <Badge variant="outline">Calendar connected</Badge> : null}
+            {calendarConfig ? <Badge variant="outline">Calendar configured</Badge> : null}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -182,7 +220,7 @@ export default function ToolDetailPage({ params }: PageProps) {
             </p>
             <Textarea
               rows={10}
-              value={argsText}
+              value={argsText ?? generatedArgsText}
               onChange={(e) => setArgsText(e.target.value)}
               className="font-mono text-xs"
             />
@@ -215,11 +253,43 @@ export default function ToolDetailPage({ params }: PageProps) {
                 </>
               ) : null}
               {calendarConfig ? (
-                <>
-                  <Row label="Calendar" value={calendarConfig.calendar_id ?? 'primary'} />
-                  <Row label="Refresh token" value={calendarConfig.refresh_token_set ? 'set' : 'not set'} />
-                  <Row label="Client secret" value={calendarConfig.client_secret_set ? 'set' : 'not set'} />
-                </>
+                <Row label="Calendar" value={calendarConfig.calendar_id ?? 'primary'} />
+              ) : null}
+              {sheetsConfig ? (
+                <div className="space-y-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                      Spreadsheet ID
+                    </span>
+                    <Input
+                      value={spreadsheetId ?? sheetsConfig.spreadsheet_id ?? ''}
+                      onChange={(event) => setSpreadsheetId(event.target.value)}
+                      placeholder="From the Google Sheets URL"
+                      className="font-mono text-xs"
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs uppercase tracking-wide text-muted-foreground">
+                      Sheet name
+                    </span>
+                    <Input
+                      value={sheetName ?? sheetsConfig.sheet_name ?? 'Sheet1'}
+                      onChange={(event) => setSheetName(event.target.value)}
+                      placeholder="Sheet1"
+                    />
+                  </label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => saveSheetsConfig.mutate()}
+                    disabled={
+                      saveSheetsConfig.isPending ||
+                      !(spreadsheetId ?? sheetsConfig.spreadsheet_id ?? '').trim()
+                    }
+                  >
+                    {saveSheetsConfig.isPending ? 'Saving…' : 'Save Sheets target'}
+                  </Button>
+                </div>
               ) : null}
               <Row label="Agent" value={tool.agent_id ?? 'workspace-wide'} />
             </dl>
@@ -283,8 +353,65 @@ function isWebhookConfig(config: ToolConfig): config is Extract<ToolConfig, { ur
   return 'url' in config;
 }
 
-function isCalendarConfig(
+function isCalendarConfig(config: ToolConfig): config is { calendar_id: string } {
+  return 'calendar_id' in config;
+}
+
+function isSheetsConfig(
   config: ToolConfig,
-): config is Extract<ToolConfig, { refresh_token_set: boolean }> {
-  return 'refresh_token_set' in config;
+): config is { operation: 'append_row'; spreadsheet_id?: string; sheet_name: string } {
+  return 'operation' in config && config.operation === 'append_row';
+}
+
+function buildExampleArguments(tool: ToolDetail): Record<string, unknown> {
+  if (tool.tool_type === 'google_sheets') return { values: ['Example value'] };
+  if (tool.tool_type === 'gmail') {
+    return {
+      to: 'recipient@example.com',
+      subject: 'Test message',
+      body: 'This is a test message from VoiceForge.',
+    };
+  }
+  if (tool.tool_type === 'google_calendar') {
+    const start = new Date(Date.now() + 60 * 60 * 1000);
+    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    return {
+      operation: 'create_event',
+      summary: 'Test appointment',
+      start_iso: start.toISOString(),
+      end_iso: end.toISOString(),
+      time_zone: 'UTC',
+    };
+  }
+
+  const properties = tool.input_schema.properties ?? {};
+  const required = new Set(tool.input_schema.required ?? []);
+  return Object.fromEntries(
+    Object.entries(properties)
+      .filter(([name]) => required.has(name))
+      .map(([name, schema]) => [name, exampleForSchema(schema)]),
+  );
+}
+
+function exampleForSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return 'example';
+  const value = schema as Record<string, unknown>;
+  if (Array.isArray(value.enum) && value.enum.length > 0) return value.enum[0];
+  const type = Array.isArray(value.type) ? value.type[0] : value.type;
+  if (type === 'array') return [exampleForSchema(value.items)];
+  if (type === 'number' || type === 'integer') return 1;
+  if (type === 'boolean') return true;
+  if (type === 'object') {
+    const properties = value.properties;
+    const required = new Set(Array.isArray(value.required) ? value.required : []);
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return {};
+    return Object.fromEntries(
+      Object.entries(properties)
+        .filter(([name]) => required.has(name))
+        .map(([name, child]) => [name, exampleForSchema(child)]),
+    );
+  }
+  if (value.format === 'email') return 'recipient@example.com';
+  if (value.format === 'date-time') return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  return 'example';
 }

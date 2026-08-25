@@ -98,9 +98,9 @@ unconditional `CREATE TABLE`, so a production database that was never recorded i
 tables. Compare the live schema against the migration history first, and only
 then mark the baseline as applied:
 ```bash
-npx prisma migrate status --schema=apps/api/prisma/schema.prisma
+corepack pnpm --filter @voiceforge/api exec prisma migrate status --schema=prisma/schema.prisma
 # Only after confirming the live schema matches the baseline:
-npx prisma migrate resolve --applied 20260401000000_init --schema=apps/api/prisma/schema.prisma
+corepack pnpm --filter @voiceforge/api exec prisma migrate resolve --applied 20260401000000_init --schema=prisma/schema.prisma
 ```
 Do not run `migrate resolve` speculatively — marking a migration applied without
 verifying schema equivalence hides real drift.
@@ -113,6 +113,37 @@ non-localhost `WEB_BASE_URL`, a numeric `TRUST_PROXY_HOPS`, and — when
 `AWS_REGION=us-east-1`. LiveKit must be configured with all three of
 `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, or none; a partial set
 aborts the deploy. See `.env.production.example`.
+
+**2a. Breaking env change (2026-08): Vapi and Retell removed.** Before deploying
+this release, edit `/opt/voiceforge/.env` on the host. The API no longer reads
+any of these variables, so leaving them behind is misleading rather than fatal:
+
+Remove: `VAPI_API_KEY`, `VAPI_BASE_URL`, `VAPI_WEBHOOK_SECRET`,
+`VAPI_PHONE_NUMBER_ID`, `RETELL_API_KEY`, `RETELL_BASE_URL`,
+`RETELL_FROM_NUMBER`, `RETELL_VOICE_ID`.
+
+Change: `VOICE_PROVIDER=vapi` (or `retell`) becomes `VOICE_PROVIDER=openai-realtime`.
+A retired value is deliberately **not** a boot failure — rejecting it would take
+the API down on upgrade over a setting the operator cannot change until the new
+release is already deployed — so it is coerced to `openai-realtime` and logged as
+a deprecation warning naming every stale variable. Do not treat that warning as
+harmless: the coercion is a migration aid, not a supported configuration.
+
+Add, only if you are enabling the in-house pipeline that serves free-plan and
+half of starter-plan calls: `VOICE_STANDARD_PIPELINE_ENABLED=true` plus
+`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_VOICE_LLM_DEPLOYMENT`,
+`AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`, and optionally `AZURE_TTS_VOICE` and
+`AZURE_OPENAI_API_VERSION` (leave the latter unset to keep the worker's pinned
+data-plane version). The API **refuses to boot** in production if the flag is on
+while any required Azure variable is empty, which is preferable to accepting a
+free-plan call and failing it after the caller has connected. The same Azure
+variables must be present for the `livekit-agent` service, which reads them from
+the same file. While the flag is off, every plan falls back to Realtime.
+
+Also add `FREE_CREDIT_GRANT_CRON` (default `15 0 * * *`, UTC) if you want to
+override the daily free-allowance sweep. It only runs where
+`WORKERS_ENABLED=true`; without such an instance, free organizations are never
+granted minutes and cannot run even a browser test.
 
 **3. TLS bootstraps itself, in two states.** nginx serves HTTP only until a
 certificate exists, so the first deploy to a fresh host succeeds without one.
@@ -140,6 +171,43 @@ docker compose --env-file /opt/voiceforge/.env -f /opt/voiceforge/docker-compose
   run --rm --no-deps api npx prisma migrate deploy --schema=apps/api/prisma/schema.prisma
 # NEVER use db:push in production
 ```
+
+#### Recover an invalid concurrent index
+A failed `CREATE INDEX CONCURRENTLY` leaves an invalid relation. Check for every
+invalid index after a migration; the ordering puts this release's index first:
+```sql
+SELECT n.nspname AS schema_name,
+       t.relname AS table_name,
+       i.relname AS index_name,
+       x.indisready,
+       pg_size_pretty(pg_relation_size(i.oid)) AS disk_size
+FROM pg_index AS x
+JOIN pg_class AS i ON i.oid = x.indexrelid
+JOIN pg_class AS t ON t.oid = x.indrelid
+JOIN pg_namespace AS n ON n.oid = i.relnamespace
+WHERE NOT x.indisvalid
+ORDER BY (i.relname = 'calls_pipeline_created_at_idx') DESC,
+         n.nspname,
+         i.relname;
+```
+`IF NOT EXISTS` sees the invalid relation and silently skips every later build;
+PostgreSQL cannot use it for reads, so affected queries fall back to sequential
+scans without an error. The invalid index still occupies disk and, once
+`indisready` is true, is maintained by writes.
+
+For the standalone `calls_pipeline_created_at_idx`, run each statement separately
+with autocommit enabled — neither concurrent statement may run in a transaction:
+```sql
+DROP INDEX CONCURRENTLY IF EXISTS public.calls_pipeline_created_at_idx;
+CREATE INDEX CONCURRENTLY calls_pipeline_created_at_idx
+  ON public.calls (pipeline, created_at);
+```
+`DROP INDEX CONCURRENTLY` accepts only one index, does not support `CASCADE`, and
+cannot drop an index on a partitioned table. It therefore also cannot remove an
+index that backs a `UNIQUE` or primary-key constraint. For those cases, schedule
+a maintenance window and use the appropriate constraint operation or plain
+`DROP INDEX`, accounting for its `ACCESS EXCLUSIVE` lock; do not substitute that
+blocking variant on a live table without review.
 
 ### Rollback
 Rollback is automatic: if health checks fail after replacement, the workflow
@@ -173,22 +241,39 @@ and it requires the commit to still build from source.
 ## 3. Backup & Restore
 
 ### Automated Backups
-- Supabase provides **daily PITR backups** (Point-in-Time Recovery) via the dashboard.
+- Supabase backup availability, retention, and PITR support depend on the active
+  project plan and must be verified in Supabase Dashboard → Database → Backups.
+- Knowledge files use the S3 bucket named by `S3_KNOWLEDGE_BUCKET`; S3 versioning
+  and lifecycle/replication policy are infrastructure configuration and must be
+  checked separately. The database backup does not include these objects.
 - The EC2 root volume is a 30 GB encrypted gp3 disk. **Provisioning creates no
   snapshot or lifecycle policy** — the host is treated as disposable. The only
   state on it is `/opt/voiceforge/.env`, `deploy-state/`, the certbot directories,
   and the `voiceforge_redis_data` volume. Keep `.env` in a password manager;
   everything else is reproducible from a deploy.
 
-### Manual Backup Verification
+### Backup Preflight (not a restore test)
+Run this from a checked-out repository on a secured operator workstation, not
+from the EC2 deploy directory (the workflow uploads deployment assets, not source):
 ```bash
+export RECOVERY_ENV_FILE=/secure/path/voiceforge-recovery.env
+export BACKUP_DIR=/secure/path/downloaded-db-backups
+export DIRECT_URL='postgresql://...'
 node scripts/backup-validation.js --verbose
 ```
+The script fails closed when inputs are absent, verifies that the newest local
+`.sql`/`.dump` artifact is recent and non-empty, validates required recovery-env
+entries, and checks live database connectivity. It does **not** restore or inspect
+the artifact, compare row counts/checksums, validate foreign keys/indexes/RLS, or
+verify S3 knowledge objects. Follow `docs/35_BACKUP_RECOVERY.md` for the isolated
+restore drill that remains required.
 
 ### Restore from Supabase
-1. Go to Supabase Dashboard → Database → Backups
-2. Select timestamp → Restore
-3. Restart the API to clear the Prisma connection pool: `docker restart vf-api`
+1. Open Supabase Dashboard → Database → Backups and follow the restore workflow
+   available for the active project plan.
+2. Restore to an isolated target first; never point the drill at production.
+3. After an approved production restore, restart both API processes to clear
+   Prisma pools: `docker restart vf-api vf-api-worker`.
 
 ---
 
@@ -196,7 +281,7 @@ node scripts/backup-validation.js --verbose
 
 | Endpoint | Expected | Check |
 |----------|----------|-------|
-| `GET /api/v1/health` (public) | 200 `{ status, db, redis }` | `curl -f https://incfrog.ai/api/v1/health` |
+| `GET /api/v1/health` (public) | 200 `{ status, checks: { db, redis, llm } }` | `curl -f https://incfrog.ai/api/v1/health` |
 | `GET /api/health` (public, web) | 200 | `curl -f https://incfrog.ai/api/health` |
 | nginx liveness (host-local) | 200 | `curl -f http://127.0.0.1/nginx-health` |
 | API metrics (unauthenticated) | 401 | `curl -s -o /dev/null -w "%{http_code}" https://incfrog.ai/api/v1/metrics` |
@@ -208,7 +293,7 @@ because it serves no traffic.
 
 ### k6 Load Tests
 ```bash
-# Smoke (CI gate)
+# Smoke (manual verification; k6 is not part of the Quality Gate workflow)
 k6 run k6/smoke.js -e BASE_URL=https://incfrog.ai/api/v1
 
 # Baseline (2min steady-state)

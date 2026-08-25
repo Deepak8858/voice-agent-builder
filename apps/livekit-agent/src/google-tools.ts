@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { llm } from '@livekit/agents';
 import type { AgentSpec } from '@voiceforge/shared';
 import { z } from 'zod';
@@ -70,6 +71,13 @@ export function createToolInvokeClient(config: {
           tool_name: toolName,
           params,
           ...(config.callId ? { call_id: config.callId } : {}),
+          ...(config.callId && toolType === 'google_calendar' && params.operation === 'create_event'
+            ? {
+                idempotency_key: createHash('sha256')
+                  .update(`${config.callId}:${toolName}:${stableJson(params)}`)
+                  .digest('hex'),
+              }
+            : {}),
           // Declared tool type from the Agent Spec, so the API can refuse a
           // same-named tool of a different type.
           ...(toolType ? { tool_type: toolType } : {}),
@@ -88,6 +96,46 @@ export function createToolInvokeClient(config: {
       errorMessage: parsed.data.error_message,
     };
   };
+}
+
+/**
+ * Serializes params to a canonical string for hashing: object keys are sorted
+ * recursively so two semantically identical argument sets produce the same
+ * idempotency key regardless of the order the model emitted them in. Array
+ * order is preserved, since it is semantically significant.
+ *
+ * The serialization must agree with what `JSON.stringify` actually puts on the
+ * wire, otherwise two different request bodies could share one key and the
+ * server would replay the wrong result:
+ *  - Keys whose value is `undefined` are skipped, matching `JSON.stringify`
+ *    dropping them from objects. Emitting 'null' instead would make
+ *    `{a: undefined}` and `{a: null}` hash identically while sending different
+ *    payloads. Inside arrays `undefined` still becomes 'null', which is what
+ *    `JSON.stringify` does there.
+ *  - Values carrying a `toJSON` (notably Date) are converted first. Treating
+ *    one as a plain object would serialize it to '{}' because it has no
+ *    enumerable entries, collapsing every distinct date to the same key.
+ * Keys are compared by code point rather than `localeCompare`, whose ordering
+ * is ICU/locale-sensitive and so not guaranteed stable across environments.
+ */
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${Array.from(value, (entry) =>
+      entry === undefined ? 'null' : stableJson(entry),
+    ).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const toJson = (value as { toJSON?: unknown }).toJSON;
+    if (typeof toJson === 'function') {
+      return stableJson((toJson as () => unknown).call(value));
+    }
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
 }
 
 const GOOGLE_TOOL_PERMISSIONS = new Set(['google_calendar', 'gmail', 'google_sheets']);

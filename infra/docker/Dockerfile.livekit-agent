@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS build
+# NODE PIN: keep in sync with the quality-gate workflows, which set
+# NODE_VERSION "22.22" and so resolve to the newest published 22.22.x; see the
+# same note in Dockerfile.api. This image pins the same 22.22 line at an exact
+# patch for reproducibility. Both satisfy the root package.json engines field
+# ("^20.20.0 || >=22.22.0") via its >=22.22.0 arm. Node 20 reached end-of-life
+# on 2026-04-30, so do not move this back onto a 20.x tag.
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS build
 
 WORKDIR /app
 ENV PNPM_HOME=/pnpm \
@@ -15,7 +21,6 @@ RUN apt-get update \
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/livekit-agent/package.json apps/livekit-agent/package.json
-COPY apps/voice-edge/package.json apps/voice-edge/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
@@ -33,7 +38,7 @@ RUN pnpm exec prisma generate --schema=apps/api/prisma/schema.prisma \
     && pnpm --filter @voiceforge/shared run build \
     && pnpm --filter @voiceforge/livekit-agent run build
 
-FROM --platform=linux/amd64 node:20.20.0-bookworm-slim AS runtime
+FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production

@@ -261,19 +261,19 @@ model AgentVersion {
 // the client resumes the conversation and any in-flight generation by reloading
 // this row. Scoped to (workspace, user); never shared across users.
 model AgentGenSession {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  userId         String   @map("user_id") @db.Uuid
-  status         String   @default("awaiting_user") // awaiting_user | generating | finalizing | completed | failed
-  messages       Json     @default("[]") // [{role: 'user'|'assistant', content, at}]
-  currentSpec    Json?    @map("current_spec")
-  specValid      Boolean  @default(false) @map("spec_valid")
-  agentId        String?  @map("agent_id") @db.Uuid // set on finalize
-  lastError      String?  @map("last_error")
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  status         String    @default("awaiting_user") // awaiting_user | generating | finalizing | completed | failed
+  messages       Json      @default("[]") // [{role: 'user'|'assistant', content, at}]
+  currentSpec    Json?     @map("current_spec")
+  specValid      Boolean   @default(false) @map("spec_valid")
+  agentId        String?   @map("agent_id") @db.Uuid // set on finalize
+  lastError      String?   @map("last_error")
   generatingAt   DateTime? @map("generating_at") // set when a job is enqueued; used by the stale sweep
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([workspaceId, userId, status])
   @@index([status, generatingAt])
@@ -369,6 +369,11 @@ model Call {
   direction            String // inbound | outbound | browser_test
   status               String    @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
   provider             String    @default("")
+  // Runtime that served the call: realtime | standard. Nullable because calls
+  // created before pipeline routing existed have no truthful value; a default
+  // would silently attribute historical minutes to a runtime that did not run
+  // them, corrupting cost reconciliation.
+  pipeline             String?
   providerCallId       String?   @map("provider_call_id")
   phoneNumberId        String?   @map("phone_number_id") @db.Uuid
   livekitRoomName      String?   @map("livekit_room_name")
@@ -413,6 +418,10 @@ model Call {
   @@index([agentId, createdAt])
   @@index([phoneNumberId])
   @@index([contactId])
+  // Cost reconciliation and margin reporting are always "per runtime, per
+  // period", so the index leads with pipeline rather than relying on the
+  // organization index and filtering.
+  @@index([pipeline, createdAt])
   @@map("calls")
 }
 
@@ -549,6 +558,7 @@ model ToolInvocation {
   responseBody   Json?     @map("response_body")
   errorMessage   String?   @map("error_message")
   durationMs     Int?      @map("duration_ms")
+  idempotencyKey String?   @map("idempotency_key")
   startedAt      DateTime  @default(now()) @map("started_at")
   finishedAt     DateTime? @map("finished_at")
 
@@ -557,6 +567,7 @@ model ToolInvocation {
   agent     Agent?          @relation(fields: [agentId], references: [id])
   call      Call?           @relation(fields: [callId], references: [id], onDelete: SetNull)
 
+  @@unique([workspaceId, toolId, idempotencyKey], map: "tool_invocations_idempotency_uidx")
   @@index([workspaceId, startedAt])
   @@index([organizationId])
   @@index([toolId, startedAt])

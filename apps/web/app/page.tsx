@@ -41,7 +41,7 @@ const heroStats = [
   // Stated as a rule rather than a count: "0 outbound calls" read as "no calls
   // are made at all", which is the opposite of the product claim.
   { value: '100%', label: 'of outbound calls pass compliance gates first' },
-  { value: '4', label: 'production voice provider adapters' },
+  { value: '2', label: 'voice pipelines: in-house Azure and OpenAI Realtime' },
 ];
 
 const workflowSteps = [
@@ -97,8 +97,8 @@ const proofPoints: IconItem[] = [
   },
   {
     icon: SlidersHorizontal,
-    title: 'Provider adapters',
-    body: 'Vapi, Retell, OpenAI Realtime, and Twilio run behind one runtime interface, so switching provider never rewrites the agent.',
+    title: 'Two voice pipelines, one contract',
+    body: 'Our own Azure speech-to-speech pipeline and OpenAI Realtime run behind one runtime interface, so the pipeline your plan uses never changes how the agent is built.',
   },
 ];
 
@@ -134,8 +134,8 @@ const transcriptLines = [
 
 const integrationRows = [
   ['Supabase', 'PostgreSQL', 'Zod schemas'],
-  ['Vapi', 'Retell', 'OpenAI Realtime'],
-  ['Twilio', 'LiveKit / BYO telephony', 'Own voice pipeline'],
+  ['Azure AI Speech', 'Azure AI Foundry', 'OpenAI Realtime'],
+  ['Twilio', 'LiveKit / BYO telephony', 'In-house voice pipeline'],
   ['Audit logs', 'Compliance checks', 'White-label workspaces'],
 ];
 

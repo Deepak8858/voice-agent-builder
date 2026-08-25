@@ -28,6 +28,7 @@ interface InvocationRow {
   toolId: string;
   agentId: string | null;
   callId: string | null;
+  idempotencyKey: string | null;
   status: string;
   responseStatus: number | null;
   responseBody: Prisma.JsonValue | null;
@@ -38,21 +39,82 @@ interface InvocationRow {
   requestPayload: Prisma.JsonValue;
 }
 
+/**
+ * Mirrors Postgres' behaviour for the `(workspace_id, tool_id, idempotency_key)`
+ * unique index: NULLs are distinct, so any number of non-idempotent invocations
+ * coexist while a non-null key may be held by at most one row.
+ */
+function findByIdempotencyKey(
+  invocations: Map<string, InvocationRow>,
+  key: { workspaceId: string; toolId: string; idempotencyKey: string | null },
+): InvocationRow | null {
+  if (key.idempotencyKey == null) return null;
+  return (
+    [...invocations.values()].find(
+      (row) =>
+        row.workspaceId === key.workspaceId &&
+        row.toolId === key.toolId &&
+        row.idempotencyKey != null &&
+        row.idempotencyKey === key.idempotencyKey,
+    ) ?? null
+  );
+}
+
+function uniqueViolation(): Prisma.PrismaClientKnownRequestError {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    code: 'P2002',
+    clientVersion: 'test',
+    meta: { target: ['tool_invocations_idempotency_uidx'] },
+  });
+}
+
 function makeService(opts: {
   tool?: ToolRow | null;
   toolsAllowed?: boolean;
   emailAllowed?: boolean;
   exportAllowed?: boolean;
+  calendarAllowed?: boolean;
+  /** Seed rows that already hold an idempotency key, e.g. a stranded `pending`. */
+  seedInvocations?: InvocationRow[];
+  /**
+   * Simulates losing the unique-index race: the first `create` that carries an
+   * idempotency key throws P2002 after `onLostRace` has inserted the winner.
+   */
+  onLostRace?: (invocations: Map<string, InvocationRow>) => void;
 }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
+  for (const row of opts.seedInvocations ?? []) invocations.set(row.id, row);
+  let lostRacePending = Boolean(opts.onLostRace);
   const prisma = {
     organizationIdFor: vi.fn(async () => 'org-1'),
     integrationTool: {
       findFirst: vi.fn(async () => opts.tool ?? null),
     },
     toolInvocation: {
+      findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const key = where.workspaceId_toolId_idempotencyKey as
+          | { workspaceId: string; toolId: string; idempotencyKey: string }
+          | undefined;
+        if (!key) return null;
+        return findByIdempotencyKey(invocations, key);
+      }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const key = (data.idempotencyKey as string | null) ?? null;
+        if (key !== null && lostRacePending) {
+          lostRacePending = false;
+          opts.onLostRace?.(invocations);
+          throw uniqueViolation();
+        }
+        if (
+          findByIdempotencyKey(invocations, {
+            workspaceId: data.workspaceId as string,
+            toolId: data.toolId as string,
+            idempotencyKey: key,
+          })
+        ) {
+          throw uniqueViolation();
+        }
         invCounter += 1;
         const row: InvocationRow = {
           id: `inv_${invCounter}`,
@@ -60,6 +122,7 @@ function makeService(opts: {
           toolId: data.toolId as string,
           agentId: (data.agentId as string | null) ?? null,
           callId: (data.callId as string | null) ?? null,
+          idempotencyKey: key,
           status: data.status as string,
           responseStatus: null,
           responseBody: null,
@@ -72,13 +135,35 @@ function makeService(opts: {
         invocations.set(row.id, row);
         return row;
       }),
-      update: vi.fn(async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        const existing = invocations.get(where.id);
-        if (!existing) throw new Error('not found');
-        const updated = { ...existing, ...data } as InvocationRow;
-        invocations.set(where.id, updated);
-        return updated;
-      }),
+      update: vi.fn(
+        async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          const existing = invocations.get(where.id);
+          if (!existing) throw new Error('not found');
+          const updated = { ...existing, ...data } as InvocationRow;
+          invocations.set(where.id, updated);
+          return updated;
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const existing = invocations.get(where.id as string);
+          if (
+            !existing ||
+            existing.status !== where.status ||
+            existing.idempotencyKey !== where.idempotencyKey
+          ) {
+            return { count: 0 };
+          }
+          invocations.set(existing.id, { ...existing, ...data } as InvocationRow);
+          return { count: 1 };
+        },
+      ),
     },
   };
   const audit = { log: vi.fn() };
@@ -109,9 +194,15 @@ function makeService(opts: {
         ? { allowed: true, reasons: [] }
         : {
             allowed: false,
-            reasons: [
-              { code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' },
-            ],
+            reasons: [{ code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' }],
+          },
+    ),
+    checkCalendarOperation: vi.fn(async () =>
+      (opts.calendarAllowed ?? true)
+        ? { allowed: true, reasons: [] }
+        : {
+            allowed: false,
+            reasons: [{ code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' }],
           },
     ),
     checkDataExport: vi.fn(async () =>
@@ -119,9 +210,7 @@ function makeService(opts: {
         ? { allowed: true, reasons: [] }
         : {
             allowed: false,
-            reasons: [
-              { code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' },
-            ],
+            reasons: [{ code: 'opted_out', message: 'Contact opted out.', severity: 'blocking' }],
           },
     ),
   };
@@ -169,14 +258,25 @@ const baseTool: ToolRow = {
   updatedAt: new Date(),
 };
 
+const calendarTool: ToolRow = {
+  ...baseTool,
+  toolType: 'google_calendar',
+  config: { calendar_id: 'primary' },
+  inputSchema: {
+    type: 'object',
+    properties: { operation: { type: 'string' } },
+    required: ['operation'],
+  },
+};
+
 describe('ToolsService.invoke', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('throws ToolNotFoundError when tool missing', async () => {
     const { service } = makeService({ tool: null });
-    await expect(
-      service.invoke('w1', 'missing', 'u1', { arguments: {} }),
-    ).rejects.toBeInstanceOf(ToolNotFoundError);
+    await expect(service.invoke('w1', 'missing', 'u1', { arguments: {} })).rejects.toBeInstanceOf(
+      ToolNotFoundError,
+    );
   });
 
   it('throws ToolExecutionFailedError when tool disabled', async () => {
@@ -196,9 +296,9 @@ describe('ToolsService.invoke', () => {
 
   it('rejects invalid input against schema', async () => {
     const { service, executor } = makeService({ tool: baseTool });
-    await expect(
-      service.invoke('w1', 'tool_1', 'u1', { arguments: {} }),
-    ).rejects.toBeInstanceOf(ToolInputInvalidError);
+    await expect(service.invoke('w1', 'tool_1', 'u1', { arguments: {} })).rejects.toBeInstanceOf(
+      ToolInputInvalidError,
+    );
     expect(executor.execute).not.toHaveBeenCalled();
   });
 
@@ -266,6 +366,239 @@ describe('ToolsService.invoke', () => {
       { refresh_token: 'refresh-token', calendar_id: 'primary' },
       { workspaceId: 'w1' },
     );
+  });
+
+  it('returns the stored Calendar result when a create_event idempotency key is retried', async () => {
+    const { service, calendar } = makeService({ tool: calendarTool });
+    calendar.execute.mockResolvedValue({ success: true, result: { eventId: 'evt_1' } });
+    const dto = {
+      arguments: { operation: 'create_event' },
+      idempotency_key: 'call-1:create-event',
+    };
+
+    const first = await service.invoke('w1', 'tool_1', 'u1', dto);
+    const retried = await service.invoke('w1', 'tool_1', 'u1', dto);
+
+    expect(first.id).toBe(retried.id);
+    expect(calendar.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-executes when a create_event idempotency key is retried after a failure', async () => {
+    const { service, calendar, invocations } = makeService({ tool: calendarTool });
+    const dto = {
+      arguments: { operation: 'create_event' },
+      idempotency_key: 'call-1:create-event',
+    };
+
+    // A transient provider failure must not make the operation permanently
+    // unretryable: the key is released so the next attempt can claim it.
+    calendar.execute.mockResolvedValueOnce({ success: false, error: 'HTTP 503' });
+    const failed = await service.invoke('w1', 'tool_1', 'u1', dto);
+    expect(failed.status).toBe('failed');
+    expect([...invocations.values()][0]!.idempotencyKey).toBeNull();
+
+    calendar.execute.mockResolvedValueOnce({ success: true, result: { eventId: 'evt_1' } });
+    const retried = await service.invoke('w1', 'tool_1', 'u1', dto);
+
+    expect(retried.status).toBe('success');
+    expect(retried.id).not.toBe(failed.id);
+    expect(calendar.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the idempotency key when the executor throws', async () => {
+    const { service, calendar, invocations } = makeService({ tool: calendarTool });
+    calendar.execute.mockRejectedValue(new Error('network down'));
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { operation: 'create_event' },
+        idempotency_key: 'call-1:create-event',
+      }),
+    ).rejects.toBeInstanceOf(ToolExecutionFailedError);
+    const stored = [...invocations.values()][0]!;
+    expect(stored.status).toBe('failed');
+    expect(stored.idempotencyKey).toBeNull();
+  });
+
+  it('refuses a duplicate while an identical invocation is still in flight', async () => {
+    const inFlight: InvocationRow = {
+      id: 'inv_inflight',
+      workspaceId: 'w1',
+      toolId: 'tool_1',
+      agentId: null,
+      callId: null,
+      idempotencyKey: 'call-1:create-event',
+      status: 'pending',
+      responseStatus: null,
+      responseBody: null,
+      durationMs: null,
+      startedAt: new Date(),
+      finishedAt: null,
+      errorMessage: null,
+      requestPayload: null,
+    };
+    const { service, calendar } = makeService({
+      tool: calendarTool,
+      seedInvocations: [inFlight],
+    });
+
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { operation: 'create_event' },
+        idempotency_key: 'call-1:create-event',
+      }),
+    ).rejects.toThrow(/already in progress/);
+    // A pending row is not a result, and the side effect must not run twice.
+    expect(calendar.execute).not.toHaveBeenCalled();
+  });
+
+  it('takes over a pending row stranded by a crash before its terminal update', async () => {
+    const stranded: InvocationRow = {
+      id: 'inv_stranded',
+      workspaceId: 'w1',
+      toolId: 'tool_1',
+      agentId: null,
+      callId: null,
+      idempotencyKey: 'call-1:create-event',
+      status: 'pending',
+      responseStatus: null,
+      responseBody: null,
+      durationMs: null,
+      startedAt: new Date(Date.now() - 10 * 60 * 1000),
+      finishedAt: null,
+      errorMessage: null,
+      requestPayload: null,
+    };
+    const { service, calendar, invocations } = makeService({
+      tool: calendarTool,
+      seedInvocations: [stranded],
+    });
+    calendar.execute.mockResolvedValue({ success: true, result: { eventId: 'evt_1' } });
+
+    const result = await service.invoke('w1', 'tool_1', 'u1', {
+      arguments: { operation: 'create_event' },
+      idempotency_key: 'call-1:create-event',
+    });
+
+    expect(result.status).toBe('success');
+    expect(invocations.get('inv_stranded')!.idempotencyKey).toBeNull();
+    expect(calendar.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the winner of a concurrent idempotency race instead of throwing', async () => {
+    const { service, calendar } = makeService({
+      tool: calendarTool,
+      onLostRace: (invocations) => {
+        invocations.set('inv_winner', {
+          id: 'inv_winner',
+          workspaceId: 'w1',
+          toolId: 'tool_1',
+          agentId: null,
+          callId: null,
+          idempotencyKey: 'call-1:create-event',
+          status: 'success',
+          responseStatus: null,
+          responseBody: { eventId: 'evt_winner' },
+          durationMs: null,
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          errorMessage: null,
+          requestPayload: null,
+        });
+      },
+    });
+
+    const result = await service.invoke('w1', 'tool_1', 'u1', {
+      arguments: { operation: 'create_event' },
+      idempotency_key: 'call-1:create-event',
+    });
+
+    expect(result.id).toBe('inv_winner');
+    expect(result.status).toBe('success');
+    expect(calendar.execute).not.toHaveBeenCalled();
+  });
+
+  it('ignores the idempotency key for operations other than create_event', async () => {
+    const { service, calendar, invocations } = makeService({ tool: calendarTool });
+    calendar.execute.mockResolvedValue({ success: true, result: { events: [] } });
+    const dto = {
+      arguments: { operation: 'list_events' },
+      idempotency_key: 'call-1:list-events',
+    };
+
+    await service.invoke('w1', 'tool_1', 'u1', dto);
+    await service.invoke('w1', 'tool_1', 'u1', dto);
+
+    // Reads are not deduplicated, and no row may claim the key.
+    expect(calendar.execute).toHaveBeenCalledTimes(2);
+    expect(invocations.size).toBe(2);
+    expect([...invocations.values()].every((row) => row.idempotencyKey === null)).toBe(true);
+  });
+
+  it('ignores the idempotency key for non-Calendar tools', async () => {
+    const { service, executor, invocations } = makeService({ tool: baseTool });
+    executor.execute.mockResolvedValue({ success: true, result: { status: 200 } });
+    const dto = { arguments: { name: 'Ada' }, idempotency_key: 'call-1:webhook' };
+
+    await service.invoke('w1', 'tool_1', 'u1', dto);
+    await service.invoke('w1', 'tool_1', 'u1', dto);
+
+    expect(executor.execute).toHaveBeenCalledTimes(2);
+    expect(invocations.size).toBe(2);
+  });
+
+  it('blocks Calendar operations before executing and audits reason codes only', async () => {
+    const calendarTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_calendar',
+      config: { calendar_id: 'primary' },
+      inputSchema: {
+        type: 'object',
+        properties: { operation: { type: 'string' }, attendees: { type: 'array' } },
+        required: ['operation'],
+      },
+    };
+    const { service, calendar, compliance, audit, prisma } = makeService({
+      tool: calendarTool,
+      calendarAllowed: false,
+    });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', {
+        arguments: { operation: 'create_event', attendees: ['optout@example.test'] },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    expect(compliance.checkCalendarOperation).toHaveBeenCalledWith('w1', 'create_event', [
+      'optout@example.test',
+    ]);
+    expect(calendar.execute).not.toHaveBeenCalled();
+    expect(prisma.toolInvocation.create).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'tool.invoke.blocked',
+        metadata: expect.objectContaining({
+          tool_type: 'google_calendar',
+          reason_codes: ['opted_out'],
+        }),
+      }),
+    );
+    expect(JSON.stringify(audit.log.mock.calls)).not.toContain('optout@example.test');
+  });
+
+  it('allows Calendar reads after evaluating the Calendar compliance gate', async () => {
+    const calendarTool: ToolRow = {
+      ...baseTool,
+      toolType: 'google_calendar',
+      config: { calendar_id: 'primary' },
+      inputSchema: {
+        type: 'object',
+        properties: { operation: { type: 'string' } },
+        required: ['operation'],
+      },
+    };
+    const { service, calendar, compliance } = makeService({ tool: calendarTool });
+    calendar.execute.mockResolvedValue({ success: true, result: { events: [] } });
+    await service.invoke('w1', 'tool_1', 'u1', { arguments: { operation: 'list_events' } });
+    expect(compliance.checkCalendarOperation).toHaveBeenCalledWith('w1', 'list_events', []);
+    expect(calendar.execute).toHaveBeenCalled();
   });
 
   it('blocks gmail sends to opted-out recipients before executing', async () => {
@@ -519,27 +852,21 @@ describe('ToolsService.toDetail', () => {
     expect((detail.config as Record<string, unknown>).hmac_secret).toBeUndefined();
   });
 
-  it('hides google calendar refresh token and client secret', async () => {
+  it('returns only the non-secret Google Calendar target config from legacy rows', async () => {
     const { service } = makeService({
       tool: {
         ...baseTool,
         toolType: 'google_calendar',
         config: {
-          refresh_token: 'refresh-token',
-          client_id: 'client-id',
-          client_secret: 'client-secret',
-          calendar_id: 'primary',
+          calendar_id: 'team@example.test',
+          refresh_token: 'legacy-refresh-token',
+          client_id: 'legacy-client-id',
+          client_secret: 'legacy-client-secret',
         },
       },
     });
     const detail = await service.get('w1', 'tool_1');
-    expect(detail.config).toMatchObject({
-      client_id: 'client-id',
-      calendar_id: 'primary',
-      refresh_token_set: true,
-      client_secret_set: true,
-    });
-    expect((detail.config as Record<string, unknown>).refresh_token).toBeUndefined();
-    expect((detail.config as Record<string, unknown>).client_secret).toBeUndefined();
+    expect(detail.config).toEqual({ calendar_id: 'team@example.test' });
+    expect(JSON.stringify(detail.config)).not.toContain('legacy-');
   });
 });

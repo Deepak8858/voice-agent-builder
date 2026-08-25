@@ -182,7 +182,8 @@ export function PricingPage({
           Choose your plan
         </h1>
         <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-          Try one browser test on Free, then pick the plan that matches the minutes you actually run.
+          Test in your browser on Free every month, then pick the plan that matches the minutes you
+          actually run.
         </p>
       </div>
 

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CreditLedgerService, type CreditBalance } from './credit-ledger.service';
+import {
+  CreditLedgerService,
+  currentMonthKey,
+  freeMonthlyGrantKey,
+  monthBounds,
+  type CreditBalance,
+} from './credit-ledger.service';
 
 type BalanceRecord = {
   id: string;
@@ -691,6 +697,10 @@ class MemoryPrisma {
 
 const NOW = new Date('2026-07-25T12:00:00.000Z');
 const PERIOD_END = new Date('2026-08-25T12:00:00.000Z');
+/** The UTC calendar month {@link NOW} falls in, and its half-open bounds. */
+const CURRENT_MONTH_KEY = '2026-07';
+const MONTH_START = new Date('2026-07-01T00:00:00.000Z');
+const MONTH_END = new Date('2026-08-01T00:00:00.000Z');
 
 function makeService(): {
   prisma: MemoryPrisma;
@@ -778,6 +788,139 @@ describe('CreditLedgerService', () => {
       },
     ]);
     expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
+  });
+
+  it('grants the free monthly allowance once per organization per month', async () => {
+    const { prisma, service } = makeService();
+    const input = { organizationId: 'org-free', monthKey: CURRENT_MONTH_KEY };
+
+    const first = await service.grantFreeMonthlyCredits(input);
+    const stateAfterFirst = snapshotCreditState(prisma);
+    const duplicate = await service.grantFreeMonthlyCredits(input);
+
+    expectExactSeconds(first, { available: 600, reserved: 0, totalOwned: 600 });
+    expect(first.includedMinutesRemaining).toBe(10);
+    expect(duplicate).toEqual(first);
+    expect(prisma.buckets).toMatchObject([
+      {
+        organizationId: 'org-free',
+        sourceType: 'included',
+        sourceId: 'free_grant_org-free_2026-07',
+        originalSeconds: 600,
+        remainingSeconds: 600,
+        priority: 10,
+        validFrom: MONTH_START,
+        expiresAt: MONTH_END,
+        status: 'active',
+      },
+    ]);
+    expect(prisma.ledger).toMatchObject([
+      {
+        organizationId: 'org-free',
+        entryType: 'free_monthly_grant',
+        seconds: 600,
+        balanceAfterSeconds: 600,
+        actorType: 'system',
+        reasonCode: 'free_monthly_included',
+        idempotencyKey: 'free_grant_org-free_2026-07',
+      },
+    ]);
+    expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
+  });
+
+  /**
+   * The whole point of keying by month: the allowance recurs. A second month
+   * must produce a second grant even though the organization already received
+   * one, or a free customer would get 10 minutes for life.
+   */
+  it('grants a separate allowance for each calendar month', async () => {
+    const { prisma, service } = makeService();
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-free-months',
+      monthKey: '2026-07',
+    });
+    const balance = await service.grantFreeMonthlyCredits({
+      organizationId: 'org-free-months',
+      monthKey: '2026-08',
+    });
+
+    expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual([
+      'free_grant_org-free-months_2026-07',
+      'free_grant_org-free-months_2026-08',
+    ]);
+    expect(prisma.buckets[1]).toMatchObject({
+      validFrom: MONTH_END,
+      expiresAt: new Date('2026-09-01T00:00:00.000Z'),
+    });
+    // Only July is currently valid, so August is owned but not yet spendable.
+    // Total owned still reflects both grants.
+    expect(balance.availableSeconds).toBe(1_200);
+    expect(balance.includedMinutesRemaining).toBe(10);
+  });
+
+  it('rolls a December allowance into the following January', async () => {
+    const { prisma, service } = makeService();
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-free-december',
+      monthKey: '2026-12',
+    });
+
+    expect(prisma.buckets[0]).toMatchObject({
+      validFrom: new Date('2026-12-01T00:00:00.000Z'),
+      expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    });
+  });
+
+  it('rejects a month key that is not a calendar month', async () => {
+    const { prisma, service } = makeService();
+
+    await expect(
+      service.grantFreeMonthlyCredits({
+        organizationId: 'org-free-invalid',
+        monthKey: '2026-13',
+      }),
+    ).rejects.toThrow();
+    expect(prisma.buckets).toHaveLength(0);
+    expect(prisma.ledger).toHaveLength(0);
+  });
+
+  /**
+   * Free minutes must be spent before purchased ones, exactly like invoiced
+   * included minutes: the free grant expires at month end, so spending a
+   * purchased pack first would silently forfeit credit the customer paid for.
+   */
+  it('spends the free monthly allowance before purchased credit', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedRuntimeScope({
+      organizationId: 'org-free-priority',
+      workspaceId: 'workspace-free-priority',
+      callId: 'call-free-priority',
+    });
+    await service.grantPurchasedCredits({
+      organizationId: 'org-free-priority',
+      checkoutSessionId: 'cs_free_priority',
+      purchasedAt: NOW,
+    });
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-free-priority',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    const decision = await service.reserveAndDebitNextMinute({
+      organizationId: 'org-free-priority',
+      workspaceId: 'workspace-free-priority',
+      callId: 'call-free-priority',
+      eventId: 'event-free-priority',
+      idempotencyKey: 'runtime:event-free-priority:debit',
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(
+      prisma.buckets.find((bucket) => bucket.sourceType === 'included')?.remainingSeconds,
+    ).toBe(540);
+    expect(
+      prisma.buckets.find((bucket) => bucket.sourceType === 'purchased')?.remainingSeconds,
+    ).toBe(6_000);
   });
 
   it('consumes included buckets before purchased buckets', async () => {
@@ -2353,7 +2496,7 @@ describe('CreditLedgerService', () => {
   };
 
   async function makeGrantReplayFixture(
-    kind: 'subscription' | 'purchased',
+    kind: 'subscription' | 'purchased' | 'free_monthly',
   ): Promise<GrantReplayFixture> {
     const { prisma, service } = makeService();
     if (kind === 'subscription') {
@@ -2367,6 +2510,20 @@ describe('CreditLedgerService', () => {
       return {
         prisma,
         retry: () => service.grantSubscriptionCredits(input),
+        entry: prisma.ledger[0]!,
+        bucket: prisma.buckets[0]!,
+      };
+    }
+
+    if (kind === 'free_monthly') {
+      const input = {
+        organizationId: 'org-free-monthly-exact-replay',
+        monthKey: CURRENT_MONTH_KEY,
+      };
+      await service.grantFreeMonthlyCredits(input);
+      return {
+        prisma,
+        retry: () => service.grantFreeMonthlyCredits(input),
         entry: prisma.ledger[0]!,
         bucket: prisma.buckets[0]!,
       };
@@ -2499,40 +2656,115 @@ describe('CreditLedgerService', () => {
     },
   );
 
-  it.each(['subscription', 'purchased'] as const)(
+  const freeMonthlyGrantReplayMutations: GrantReplayMutation[] = [
+    ['the ledger bucket ID differs', ({ entry }) => (entry.bucketId = 'bucket-wrong')],
+    ['the bucket source type differs', ({ bucket }) => (bucket.sourceType = 'purchased')],
+    [
+      'the bucket source ID belongs to another month',
+      ({ bucket }) => (bucket.sourceId = 'free_grant_org-free-monthly-exact-replay_2026-08'),
+    ],
+    [
+      'the bucket period start differs',
+      ({ bucket }) => (bucket.validFrom = new Date('2026-07-02T00:00:00.000Z')),
+    ],
+    [
+      'the bucket period end differs',
+      ({ bucket }) => (bucket.expiresAt = new Date('2026-09-01T00:00:00.000Z')),
+    ],
+    ['the bucket priority differs', ({ bucket }) => (bucket.priority = 20)],
+    [
+      'the ledger workspace is non-null',
+      ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
+    ],
+    ['the ledger call is non-null', ({ entry }) => (entry.callId = 'call-unexpected')],
+    ['the ledger seconds differ from the granted bucket', ({ entry }) => (entry.seconds = 599)],
+    ['the ledger reason differs', ({ entry }) => (entry.reasonCode = 'subscription_included')],
+    [
+      'required month metadata is missing',
+      ({ entry }) => delete metadataRecord(entry).monthKey,
+    ],
+    [
+      'the metadata month differs',
+      ({ entry }) => (metadataRecord(entry).monthKey = '2026-08'),
+    ],
+    [
+      'the metadata period end differs',
+      ({ entry }) => (metadataRecord(entry).periodEnd = '2026-09-01T00:00:00.000Z'),
+    ],
+    ['the metadata priority terms differ', ({ entry }) => (metadataRecord(entry).priority = 20)],
+    [
+      'the operation is a subscription grant wearing this key',
+      ({ entry }) =>
+        ((metadataRecord(entry).operation as Record<string, unknown>)['kind'] =
+          'subscription_grant'),
+    ],
+  ];
+
+  it.each(freeMonthlyGrantReplayMutations)(
+    'rejects free monthly grant replay when %s',
+    async (_label, mutate) => {
+      const fixture = await makeGrantReplayFixture('free_monthly');
+      mutate(fixture);
+      const stateBeforeRetry = snapshotCreditState(fixture.prisma);
+
+      await expect(fixture.retry()).rejects.toMatchObject({
+        code: 'credit_ledger_invariant',
+        reasonCode: 'idempotency_conflict',
+      });
+      expect(fixture.prisma.ledger).toHaveLength(1);
+      expect(fixture.prisma.buckets).toHaveLength(1);
+      expect(snapshotCreditState(fixture.prisma)).toEqual(stateBeforeRetry);
+    },
+  );
+
+  const exactGrantOperations = {
+    subscription: {
+      kind: 'subscription_grant',
+      organizationId: 'org-subscription-exact-replay',
+      invoiceId: 'in_subscription_exact_replay',
+      sourceType: 'included',
+      sourceId: 'in_subscription_exact_replay',
+      seconds: 600,
+      periodEnd: PERIOD_END.toISOString(),
+      priority: 10,
+      status: 'active',
+    },
+    purchased: {
+      kind: 'purchased_grant',
+      organizationId: 'org-purchased-exact-replay',
+      checkoutSessionId: 'cs_purchased_exact_replay',
+      sourceType: 'purchased',
+      sourceId: 'cs_purchased_exact_replay',
+      seconds: 6_000,
+      purchasedAt: NOW.toISOString(),
+      expiresAt: new Date(NOW.getTime() + 365 * 24 * 60 * 60 * 1_000).toISOString(),
+      priority: 20,
+      status: 'active',
+    },
+    free_monthly: {
+      kind: 'free_monthly_grant',
+      organizationId: 'org-free-monthly-exact-replay',
+      monthKey: CURRENT_MONTH_KEY,
+      sourceType: 'included',
+      sourceId: 'free_grant_org-free-monthly-exact-replay_2026-07',
+      seconds: 600,
+      periodStart: MONTH_START.toISOString(),
+      periodEnd: MONTH_END.toISOString(),
+      priority: 10,
+      status: 'active',
+    },
+  } as const;
+
+  it.each(['subscription', 'purchased', 'free_monthly'] as const)(
     'persists exact %s grant operation terms and safely replays them',
     async (kind) => {
       const fixture = await makeGrantReplayFixture(kind);
       const operation = metadataRecord(fixture.entry).operation;
 
-      expect(operation).toEqual(
-        kind === 'subscription'
-          ? {
-              kind: 'subscription_grant',
-              organizationId: 'org-subscription-exact-replay',
-              invoiceId: 'in_subscription_exact_replay',
-              bucketId: fixture.bucket.id,
-              sourceType: 'included',
-              sourceId: 'in_subscription_exact_replay',
-              seconds: 600,
-              periodEnd: PERIOD_END.toISOString(),
-              priority: 10,
-              status: 'active',
-            }
-          : {
-              kind: 'purchased_grant',
-              organizationId: 'org-purchased-exact-replay',
-              checkoutSessionId: 'cs_purchased_exact_replay',
-              bucketId: fixture.bucket.id,
-              sourceType: 'purchased',
-              sourceId: 'cs_purchased_exact_replay',
-              seconds: 6_000,
-              purchasedAt: NOW.toISOString(),
-              expiresAt: new Date(NOW.getTime() + 365 * 24 * 60 * 60 * 1_000).toISOString(),
-              priority: 20,
-              status: 'active',
-            },
-      );
+      expect(operation).toEqual({
+        ...exactGrantOperations[kind],
+        bucketId: fixture.bucket.id,
+      });
       const stateBeforeRetry = snapshotCreditState(fixture.prisma);
       await expect(fixture.retry()).resolves.toMatchObject({
         organizationId: fixture.entry.organizationId,
@@ -2946,5 +3178,66 @@ describe('CreditLedgerService', () => {
     });
     expect(prisma.ledger).toHaveLength(1);
     expect(snapshotCreditState(prisma)).toEqual(deniedStateBeforeRetry);
+  });
+});
+
+describe('currentMonthKey', () => {
+  it('is stable across every instant within one UTC month', () => {
+    expect(currentMonthKey(new Date('2026-07-01T00:00:00.000Z'))).toBe(
+      currentMonthKey(new Date('2026-07-31T23:59:59.999Z')),
+    );
+  });
+
+  it('changes at the UTC month boundary', () => {
+    expect(currentMonthKey(new Date('2026-07-31T23:59:59.999Z'))).not.toBe(
+      currentMonthKey(new Date('2026-08-01T00:00:00.000Z')),
+    );
+  });
+
+  /**
+   * The grant key must be derived in UTC. A local-time derivation would place
+   * this instant in July for a host west of UTC, so the same month would be
+   * granted twice under two different keys.
+   */
+  it('derives the month in UTC, not the host timezone', () => {
+    expect(currentMonthKey(new Date('2026-08-01T00:30:00.000Z'))).toBe('2026-08');
+  });
+
+  it('zero-pads single-digit months', () => {
+    expect(currentMonthKey(new Date('2026-03-15T00:00:00.000Z'))).toBe('2026-03');
+  });
+});
+
+describe('monthBounds', () => {
+  it('returns the half-open UTC bounds of the month', () => {
+    expect(monthBounds('2026-07')).toEqual({
+      periodStart: new Date('2026-07-01T00:00:00.000Z'),
+      periodEnd: new Date('2026-08-01T00:00:00.000Z'),
+    });
+  });
+
+  it('rolls December into the next January rather than month 13', () => {
+    expect(monthBounds('2026-12').periodEnd).toEqual(new Date('2027-01-01T00:00:00.000Z'));
+  });
+
+  it.each(['2026-13', '2026-00', '2026-7', '26-07', 'not-a-month', ''])(
+    'rejects %s instead of silently granting an arbitrary period',
+    (monthKey) => {
+      expect(() => monthBounds(monthKey)).toThrowError(
+        expect.objectContaining({ reasonCode: 'free_grant_month_invalid' }),
+      );
+    },
+  );
+});
+
+describe('freeMonthlyGrantKey', () => {
+  it('is unique per organization and month', () => {
+    expect(freeMonthlyGrantKey('org-a', '2026-07')).toBe('free_grant_org-a_2026-07');
+    expect(freeMonthlyGrantKey('org-a', '2026-07')).not.toBe(
+      freeMonthlyGrantKey('org-a', '2026-08'),
+    );
+    expect(freeMonthlyGrantKey('org-a', '2026-07')).not.toBe(
+      freeMonthlyGrantKey('org-b', '2026-07'),
+    );
   });
 });

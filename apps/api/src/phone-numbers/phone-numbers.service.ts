@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { env } from '../config/env';
 import { AppError } from '../common/errors';
 
@@ -7,7 +8,10 @@ import { AppError } from '../common/errors';
 export class PhoneNumbersService {
   private readonly logger = new Logger(PhoneNumbersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async list(workspaceId: string) {
     return this.prisma.twilioPhoneNumber.findMany({
@@ -16,7 +20,33 @@ export class PhoneNumbersService {
     });
   }
 
+  /**
+   * Resolves an agent id within the caller's workspace, or refuses.
+   *
+   * Every path that writes `agentId` onto a phone number must go through this:
+   * an agent id is client-supplied, and a number pointed at another tenant's
+   * agent routes that tenant's calls through this workspace's number. The
+   * not-found error is deliberately indistinguishable from "no such agent" so
+   * the response does not confirm that a foreign agent id exists.
+   */
+  private async requireWorkspaceAgent(workspaceId: string, agentId: string): Promise<string> {
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: agentId, workspaceId },
+      select: { id: true },
+    });
+    if (!agent) throw new AppError('NOT_FOUND', 'Agent not found', 404);
+    return agent.id;
+  }
+
   async provision(workspaceId: string, areaCode: string, agentId?: string): Promise<string> {
+    // Validated before the search/purchase, and before the credential check,
+    // because this is caller input: a rejection after the number is bought
+    // would leave a paid-for number stranded on the Twilio account with no
+    // local row. Previously `agentId` went straight into `create()` below, so
+    // a caller in workspace A could provision a number already pointed at an
+    // agent in workspace B.
+    if (agentId) await this.requireWorkspaceAgent(workspaceId, agentId);
+
     const sid = env.TWILIO_ACCOUNT_SID;
     const token = env.TWILIO_AUTH_TOKEN;
     if (!sid || !token) throw new AppError('TWILIO_NOT_CONFIGURED', 'Twilio credentials not set', 500);
@@ -86,12 +116,38 @@ export class PhoneNumbersService {
     });
   }
 
-  async assignToAgent(numberId: string, agentId: string) {
-    await this.prisma.twilioPhoneNumber.update({ where: { id: numberId }, data: { agentId } });
+  async assignToAgent(
+    workspaceId: string,
+    numberId: string,
+    agentId: string,
+    actorUserId?: string | null,
+  ) {
+    // The agent must also belong to the caller's workspace, otherwise a tenant
+    // could point its own number at another tenant's agent.
+    await this.requireWorkspaceAgent(workspaceId, agentId);
+
+    const result = await this.prisma.twilioPhoneNumber.updateMany({
+      where: { id: numberId, workspaceId },
+      data: { agentId },
+    });
+    if (result.count === 0) throw new AppError('NOT_FOUND', 'Phone number not found', 404);
+
+    // Reassignment reroutes live inbound calls, so the transition needs an
+    // audit record. Logged only after the scoped update actually matched a row.
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'phone_number.assign',
+      resourceType: 'twilio_phone_number',
+      resourceId: numberId,
+      metadata: { agent_id: agentId },
+    });
   }
 
-  async release(numberId: string) {
-    const number = await this.prisma.twilioPhoneNumber.findUnique({ where: { id: numberId } });
+  async release(workspaceId: string, numberId: string, actorUserId?: string | null) {
+    const number = await this.prisma.twilioPhoneNumber.findFirst({
+      where: { id: numberId, workspaceId },
+    });
     if (!number) return;
 
     if (number.type !== 'byo' && number.twilioSid) {
@@ -106,6 +162,21 @@ export class PhoneNumbersService {
         },
       );
     }
-    await this.prisma.twilioPhoneNumber.delete({ where: { id: numberId } });
+    await this.prisma.twilioPhoneNumber.deleteMany({ where: { id: numberId, workspaceId } });
+
+    // Releasing gives the number back to the carrier and drops the local row,
+    // so this is the last point at which the number's history can be recorded.
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'phone_number.release',
+      resourceType: 'twilio_phone_number',
+      resourceId: numberId,
+      metadata: {
+        phone_number: number.phoneNumber,
+        type: number.type,
+        previous_agent_id: number.agentId,
+      },
+    });
   }
 }

@@ -1,7 +1,13 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { WorkspaceGuard } from '../common/workspace.guard';
 
+// Audit logs are the record of who did what inside a tenant, so an unguarded
+// read here is a disclosure of another tenant's activity. The `workspaceId`
+// predicate below is only meaningful once membership in the URL's workspace has
+// been verified.
+@UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/audit-logs')
 export class AuditController {
   constructor(private readonly prisma: PrismaService) {}

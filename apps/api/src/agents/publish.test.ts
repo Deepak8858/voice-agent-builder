@@ -99,6 +99,9 @@ function makeAgentsServiceWith(opts: {
       create: versionCreate,
       update: versionUpdate,
     },
+    integrationTool: {
+      findMany: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
+    },
     workspace: {
       findUniqueOrThrow: vi.fn(async () => ({ id: 'w1', organizationId: 'org1' })),
     },
@@ -298,14 +301,14 @@ describe('AgentsService.publish', () => {
     expect(voice.updateAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('free plan publishes with the Vapi provider from the registry', async () => {
-    const vapi = {
-      name: 'vapi',
-      createAgent: vi.fn(async () => ({ provider_runtime_id: 'vapi_rt_1' })),
+  it('free plan publishes with the provider chosen by the registry', async () => {
+    const standard = {
+      name: 'openai-realtime',
+      createAgent: vi.fn(async () => ({ provider_runtime_id: 'openai_rt_free' })),
       updateAgent: vi.fn(async () => {}),
     };
     const voiceRegistry = {
-      forPlan: vi.fn(() => vapi),
+      forPlan: vi.fn(() => standard),
     };
     const { service, versionUpdate } = makeAgentsServiceWith({
       subscriptionPlan: 'free',
@@ -334,12 +337,12 @@ describe('AgentsService.publish', () => {
     await service.publish('w1', 'a1', 'u1');
 
     expect(voiceRegistry.forPlan).toHaveBeenCalledWith('free');
-    expect(vapi.createAgent).toHaveBeenCalledTimes(1);
+    expect(standard.createAgent).toHaveBeenCalledTimes(1);
     expect(versionUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          provider: 'vapi',
-          providerRuntimeId: 'vapi_rt_1',
+          provider: 'openai-realtime',
+          providerRuntimeId: 'openai_rt_free',
         }),
       }),
     );
@@ -458,6 +461,82 @@ describe('AgentsService.publish', () => {
     expect(agentUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'published', activeVersionId: 'v-created' }),
+      }),
+    );
+  });
+
+  it('adds enabled workspace Google tools to a persisted published version without flow nodes', async () => {
+    const initialSpec = spec();
+    const { service, prisma, voice, agentUpdate, versionCreate } = makeAgentsServiceWith({
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        status: 'published',
+        specJson: initialSpec,
+        activeVersionId: 'v1',
+        versions: [
+          {
+            id: 'v1',
+            agentId: 'a1',
+            versionNumber: 1,
+            specJson: initialSpec,
+            deploymentStatus: 'deployed',
+            provider: 'mock',
+            providerRuntimeId: 'mock_rt_existing',
+            createdAt: new Date(),
+            note: null,
+          },
+        ],
+      },
+    });
+    prisma.integrationTool.findMany.mockResolvedValueOnce([
+      {
+        id: 'google-tool-1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        agentId: null,
+        name: 'append_sheet_row',
+        description: 'Append a row to Google Sheets.',
+        toolType: 'google_sheets',
+        config: { operation: 'append_row', sheet_name: 'Sheet1' },
+        inputSchema: {
+          type: 'object',
+          properties: { values: { type: 'array', items: { type: 'string' } } },
+          required: ['values'],
+        },
+        enabled: true,
+        createdBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    await service.publish('w1', 'a1', 'u1');
+
+    const expectedTool = expect.objectContaining({
+      name: 'append_sheet_row',
+      permissions: ['google_sheets'],
+    });
+    expect(versionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          specJson: expect.objectContaining({ tools: [expectedTool] }),
+        }),
+      }),
+    );
+    expect(voice.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentVersionId: 'v-created',
+        spec: expect.objectContaining({ tools: [expectedTool] }),
+      }),
+    );
+    expect(agentUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          activeVersionId: 'v-created',
+          specJson: expect.objectContaining({ tools: [expectedTool] }),
+        }),
       }),
     );
   });

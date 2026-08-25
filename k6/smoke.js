@@ -14,6 +14,7 @@
  */
 import http from 'k6/http';
 import { check } from 'k6';
+import { apiData } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL ?? 'http://localhost:4000/api/v1';
 
@@ -28,36 +29,46 @@ export const options = {
 
 export default function () {
   // 1. Health check
+  //
+  // HealthController returns `{ status, checks: { db, redis, llm: { provider,
+  // status } } }`, where `db`/`redis` are 'ok' | 'error' and `llm.status` is
+  // 'ok' | 'unavailable'. `status` is 'healthy' only when all three are 'ok'.
   const healthRes = http.get(`${BASE_URL}/health`);
   check(healthRes, {
     'health returns 200': (r) => r.status === 200,
-    'health body is JSON': (r) => {
-      try {
-        const body = JSON.parse(r.body);
-        return body.status !== undefined && body.db !== undefined && body.redis !== undefined;
-      } catch {
-        return false;
-      }
+    'health body has the documented shape': (r) => {
+      const body = apiData(r);
+      return (
+        body !== null &&
+        body.status !== undefined &&
+        body.checks?.db !== undefined &&
+        body.checks?.redis !== undefined &&
+        body.checks?.llm?.status !== undefined
+      );
     },
-    'health db is ok': (r) => JSON.parse(r.body).db === 'ok',
+    'health db is ok': (r) => apiData(r)?.checks?.db === 'ok',
+    'health redis is ok': (r) => apiData(r)?.checks?.redis === 'ok',
+    'health llm is ok': (r) => apiData(r)?.checks?.llm?.status === 'ok',
   });
 
-  // 2. Readiness probe (same endpoint, ensures all dependencies are up)
+  // 2. Readiness probe (same endpoint, ensures all dependencies are up).
+  //
+  // Fail closed: 'degraded' means at least one of db/redis/llm is down, which
+  // must not gate a deployment as passing.
   check(healthRes, {
-    'health overall status ok or degraded': (r) => {
-      const body = JSON.parse(r.body);
-      return body.status === 'ok' || body.status === 'degraded';
-    },
+    'health overall status is healthy': (r) => apiData(r)?.status === 'healthy',
   });
 
-  // 3. Auth-gated endpoint — should return 401, not 500
-  const agentsRes = http.get(`${BASE_URL}/agents`);
+  // 3. Auth-gated endpoint — should return 401, not 500.
+  // Error responses are not enveloped in `data`; the filter emits
+  // `{ success: false, data: null, error }` directly.
+  const agentsRes = http.get(`${BASE_URL}/workspaces/00000000-0000-4000-8000-000000000000/agents`);
   check(agentsRes, {
     'agents returns 401 (auth required)': (r) => r.status === 401,
     'agents returns JSON error': (r) => {
       try {
         const body = JSON.parse(r.body);
-        return body.error !== undefined;
+        return body.error !== undefined && body.error !== null;
       } catch {
         return false;
       }

@@ -39,7 +39,7 @@ describe('OutboundCallWorker', () => {
     calls.startOutboundCall.mockResolvedValue({
       id: 'call-1',
       status: 'queued',
-      provider: 'vapi',
+      provider: 'openai-realtime',
     });
     telephony.startOutboundCall.mockResolvedValue({
       call_id: 'call-1',

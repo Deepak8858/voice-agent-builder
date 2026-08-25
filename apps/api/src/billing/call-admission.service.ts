@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import type { EntitlementReason } from '@voiceforge/shared';
+import type { EntitlementReason, EntitlementRequest, VoicePipeline } from '@voiceforge/shared';
 import { PAID_CALL_MINIMUM_SECONDS } from '@voiceforge/shared';
 import { AuditService } from '../audit/audit.service';
 import { AppError } from '../common/errors';
@@ -14,7 +14,17 @@ export interface AdmitCallInput {
   workspaceId: string;
   callId: string;
   provider: string;
-  direction: 'outbound' | 'inbound';
+  /**
+   * `browser_test` is admitted like any other metered call, but it is the one
+   * direction a plan without PSTN may still start, so it is named rather than
+   * folded into `inbound`.
+   */
+  direction: 'outbound' | 'inbound' | 'browser_test';
+  /**
+   * Runtime this call will use, when it is already known. Supplied so a plan
+   * that does not sell the runtime is refused before any credit is reserved.
+   */
+  pipeline?: VoicePipeline;
   providerCallId?: string | null;
 }
 
@@ -83,6 +93,21 @@ export class CallAdmissionService {
     private readonly metrics: MetricsService,
   ) {}
 
+  /**
+   * A browser test is funded by the same balance as a telephony call but is not
+   * gated on PSTN, which is what lets a plan without a phone number run one.
+   */
+  private entitlementRequest(input: AdmitCallInput): EntitlementRequest {
+    if (input.direction === 'browser_test') {
+      return { kind: 'browser_test', minimumSeconds: PAID_CALL_MINIMUM_SECONDS };
+    }
+    return {
+      kind: 'paid_call',
+      minimumSeconds: PAID_CALL_MINIMUM_SECONDS,
+      ...(input.pipeline ? { pipeline: input.pipeline } : {}),
+    };
+  }
+
   async admitCall(input: AdmitCallInput): Promise<CallAdmission> {
     const effective = await this.entitlements.getEffectivePlan(input.organizationId);
 
@@ -91,7 +116,7 @@ export class CallAdmissionService {
     // subscription instead of two reads that can disagree.
     const entitlement = await this.entitlements.check(
       input.organizationId,
-      { kind: 'paid_call', minimumSeconds: PAID_CALL_MINIMUM_SECONDS },
+      this.entitlementRequest(input),
       effective,
     );
     if (!entitlement.allowed) {

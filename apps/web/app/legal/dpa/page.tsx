@@ -13,15 +13,20 @@ export default function DpaPage() {
         </Section>
 
         <Section title="How We Use Your Data">
-          Voice calls are processed by Vapi/Twilio for telephony. Audio is transcribed by Deepgram.
+          Voice calls are carried over LiveKit and Twilio. Call audio is handled by the voice runtime
+          assigned to your plan — either OpenAI Realtime or our in-house pipeline on Microsoft Azure
+          (Azure Speech for transcription and synthesis, Azure OpenAI for reasoning).
           Call metadata and transcripts are stored in Supabase. We do not sell your data.
         </Section>
 
         <Section title="Subprocessors">
           <ul className="list-disc pl-5 space-y-1">
-            <li><strong>Vapi</strong> — Voice telephony and AI routing</li>
+            <li><strong>LiveKit</strong> — Real-time audio transport</li>
             <li><strong>Twilio</strong> — Voice telephony (optional)</li>
-            <li><strong>Deepgram</strong> — Speech-to-text transcription</li>
+            <li><strong>Vobiz</strong> — SIP voice telephony, if you connect a Vobiz number (optional)</li>
+            <li><strong>OpenAI</strong> — Realtime voice runtime and language models</li>
+            <li><strong>Microsoft Azure</strong> — Speech-to-text, text-to-speech, and Azure OpenAI</li>
+            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional)</li>
             <li><strong>Supabase</strong> — Database and authentication</li>
             <li><strong>Resend</strong> — Transactional email</li>
           </ul>

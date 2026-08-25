@@ -1,9 +1,11 @@
 import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { SupabaseAuthService } from '../auth/supabase-auth.service';
 import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
+import { IS_SESSION_SCOPED_KEY } from './decorators/session-scoped.decorator';
 import { ForbiddenError, UnauthorizedError, WorkspaceNotFoundError } from './errors';
 import type { SessionUser } from '@voiceforge/shared';
 
@@ -20,6 +22,15 @@ interface CachedWorkspaceAccess {
  * populates req.user from headers issued by the Next.js proxy. This
  * guard then verifies the caller is a member of the :workspaceId in
  * the URL and refines req.user with that workspace's role.
+ *
+ * This guard only authorizes routes that carry a `:workspaceId` path param. It
+ * used to `return true` for any other route, which made it a silent no-op
+ * wherever it was applied to a route keyed by a differently-named param — the
+ * route looked guarded in review but performed no tenant check at all. It now
+ * refuses instead. Routes keyed by `:orgId` belong to `OrganizationGuard`;
+ * routes that derive their tenant from `active_workspace_id` need no guard here
+ * because the global InternalAuthGuard already populates it from a verified
+ * token, and must opt out explicitly with @SessionScoped().
  */
 @Injectable()
 export class WorkspaceGuard implements CanActivate {
@@ -27,6 +38,7 @@ export class WorkspaceGuard implements CanActivate {
     private readonly prisma: PrismaService,
     private readonly authService: SupabaseAuthService,
     private readonly cache: CacheService,
+    private readonly reflector?: Reflector,
   ) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
@@ -37,8 +49,10 @@ export class WorkspaceGuard implements CanActivate {
 
     const workspaceId = req.params['workspaceId'];
     if (!workspaceId) {
-      // Route not workspace-scoped; the InternalAuthGuard already accepted it.
-      return true;
+      // Fail closed. Silently accepting here is what turned this guard into
+      // decoration on routes whose tenant param is named something else.
+      if (this.isSessionScoped(ctx)) return true;
+      throw new ForbiddenError('This route is not workspace-scoped.');
     }
 
     const accessKey = this.workspaceAccessKey(workspaceId, user.id);
@@ -89,6 +103,17 @@ export class WorkspaceGuard implements CanActivate {
     }
 
     return this.authService.getSessionUser(req);
+  }
+
+  /**
+   * True when the handler or its controller declares that it takes its tenant
+   * from the session rather than the path, via @SessionScoped().
+   */
+  private isSessionScoped(ctx: ExecutionContext): boolean {
+    return this.reflector?.getAllAndOverride<boolean>(IS_SESSION_SCOPED_KEY, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]) === true;
   }
 
   private workspaceAccessKey(workspaceId: string, userId: string): string {

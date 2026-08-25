@@ -23,7 +23,7 @@ export class CrmFanOutService {
     callId: string,
     contactData: CrmContactArgs,
   ): Promise<FanOutResult> {
-    const call = await this.prisma.call.findFirst({ where: { id: callId } });
+    const call = await this.prisma.call.findFirst({ where: { id: callId, workspaceId } });
     const transcript = call?.transcriptText ?? '';
     const rules = await this.routing.findMatchingRules(workspaceId, agentId, transcript);
 

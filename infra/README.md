@@ -20,15 +20,14 @@ infra/
 │   ├── Dockerfile.livekit-agent  # LiveKit voice agent image
 │   ├── docker-compose.yml        # Local development
 │   └── docker-compose.aws.yml    # Production (EC2)
-├── nginx/
-│   ├── nginx.conf                # Base config and upstreams
-│   ├── http.conf                 # Pre-certificate: serves the app over HTTP
-│   ├── http-redirect.conf        # Post-certificate: redirects to HTTPS
-│   ├── https.conf.template       # TLS server
-│   ├── docker-entrypoint.d/      # Selects HTTP or HTTPS at container start
-│   ├── systemd/                  # Certificate renewal service and timer
-│   └── TLS-BOOTSTRAP.txt         # First-certificate procedure
-└── scripts/                      # Retired pre-migration scripts; they exit 1
+└── nginx/
+    ├── nginx.conf                # Base config and upstreams
+    ├── http.conf                 # Pre-certificate: serves the app over HTTP
+    ├── http-redirect.conf        # Post-certificate: redirects to HTTPS
+    ├── https.conf.template       # TLS server
+    ├── docker-entrypoint.d/      # Selects HTTP or HTTPS at container start
+    ├── systemd/                  # Certificate renewal service and timer
+    └── TLS-BOOTSTRAP.txt         # First-certificate procedure
 ```
 
 ## Local development

@@ -25,17 +25,14 @@
  *   GET    /workspaces/:workspaceId/compliance/dnc
  *
  * Auth:
- *   Set AUTH_TOKEN for Bearer auth, or AUTH_EMAIL + AUTH_PASSWORD for
- *   session-cookie auth. Without auth the workspace-scoped endpoints
- *   will return 401.
+ *   Set AUTH_TOKEN to a Supabase access token. The suite fails before load
+ *   starts when it is missing.
  *
  * Environment variables:
  *   BASE_URL      API root (default: http://localhost:4000/api/v1)
  *   WORKSPACE_ID  Target workspace UUID (optional; resolved in setup)
  *   AGENT_ID      Agent UUID for compliance checks (optional; first agent used)
- *   AUTH_TOKEN    Bearer token (optional)
- *   AUTH_EMAIL    Session auth email (optional)
- *   AUTH_PASSWORD Session auth password (optional)
+ *   AUTH_TOKEN    Supabase bearer token (required)
  *
  * Thresholds:
  *   http_req_duration.p(95) < 1.5 s  — generous for compliance DB writes
@@ -47,13 +44,12 @@
  *   k6 run k6/compliance-load.js -e BASE_URL=https://api.yourdomain.com -e AUTH_TOKEN=xxx
  */
 import http from 'k6/http';
-import { check, sleep } from 'k6';
+import { check, sleep, fail } from 'k6';
 import { Rate, Counter, Trend } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
-const AUTH_EMAIL = __ENV.AUTH_EMAIL || `k6-compliance-${Date.now()}@voiceforge.test`;
-const AUTH_PASSWORD = __ENV.AUTH_PASSWORD || 'LoadTest123!';
 const WORKSPACE_ID = __ENV.WORKSPACE_ID;
 const AGENT_ID = __ENV.AGENT_ID;
 
@@ -88,50 +84,22 @@ function makeHeaders() {
 }
 
 export function setup() {
-  if (AUTH_TOKEN && WORKSPACE_ID && AGENT_ID) {
-    return { workspaceId: WORKSPACE_ID, agentId: AGENT_ID, cookies: null };
+  if (!AUTH_TOKEN) {
+    fail('AUTH_TOKEN is required; obtain a Supabase access token through the web sign-in flow.');
   }
 
-  const jar = new http.CookieJar();
-  const jsonHeaders = { 'Content-Type': 'application/json' };
-
-  const signupRes = http.post(
-    `${BASE_URL}/auth/signup`,
-    JSON.stringify({
-      email: AUTH_EMAIL,
-      password: AUTH_PASSWORD,
-      name: 'k6 Compliance Test',
-      organization_name: 'k6 Test Org',
-    }),
-    { headers: jsonHeaders, jar }
-  );
-
-  if (signupRes.status !== 200 && signupRes.status !== 201) {
-    const loginRes = http.post(
-      `${BASE_URL}/auth/login`,
-      JSON.stringify({ email: AUTH_EMAIL, password: AUTH_PASSWORD }),
-      { headers: jsonHeaders, jar }
-    );
-    check(loginRes, { 'setup: login ok': (r) => r.status === 200 });
-  }
-
-  const cookies = jar.cookiesForURL(BASE_URL);
+  const jsonHeaders = makeHeaders();
   let workspaceId = WORKSPACE_ID;
   let agentId = AGENT_ID;
 
   if (!workspaceId) {
     const wsRes = http.get(`${BASE_URL}/workspaces`, {
       headers: jsonHeaders,
-      jar,
     });
     if (wsRes.status === 200) {
-      try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(wsRes);
+      if (items && items.length > 0) {
+        workspaceId = items[0].id;
       }
     }
   }
@@ -139,48 +107,28 @@ export function setup() {
   if (workspaceId && !agentId) {
     const agentsRes = http.get(
       `${BASE_URL}/workspaces/${workspaceId}/agents`,
-      { headers: jsonHeaders, jar }
+      { headers: jsonHeaders }
     );
     if (agentsRes.status === 200) {
-      try {
-        const body = JSON.parse(agentsRes.body);
-        if (body.items && body.items.length > 0) {
-          agentId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(agentsRes);
+      if (items && items.length > 0) {
+        agentId = items[0].id;
       }
     }
   }
 
   if (!workspaceId) {
-    console.warn('WARN: No workspace resolved. Set WORKSPACE_ID env var.');
+    fail('WORKSPACE_ID was not supplied and no workspace could be resolved for AUTH_TOKEN.');
   }
   if (!agentId) {
-    console.warn('WARN: No agent resolved. Set AGENT_ID env var.');
+    fail('AGENT_ID was not supplied and no agent could be resolved in the workspace.');
   }
 
-  return { workspaceId, agentId, cookies };
+  return { workspaceId, agentId, cookies: null };
 }
 
-function buildJar(data) {
-  if (AUTH_TOKEN) return undefined;
-  const jar = new http.CookieJar();
-  if (data && data.cookies) {
-    for (const name of Object.keys(data.cookies)) {
-      for (const value of data.cookies[name]) {
-        jar.set(BASE_URL, name, value);
-      }
-    }
-  }
-  return jar;
-}
-
-function baseConfig(data) {
-  const jar = buildJar(data);
-  const cfg = { headers: makeHeaders() };
-  if (jar) cfg.jar = jar;
-  return cfg;
+function baseConfig() {
+  return { headers: makeHeaders() };
 }
 
 /**
@@ -201,7 +149,7 @@ export default function (data) {
     return;
   }
 
-  const cfg = baseConfig(data);
+  const cfg = baseConfig();
   const vu = __VU;
   const iter = __ITER;
 
@@ -210,26 +158,14 @@ export default function (data) {
   const contactsListRes = http.get(`${BASE_URL}/workspaces/${ws}/contacts`, cfg);
   check(contactsListRes, {
     'GET contacts returns 200': (r) => r.status === 200,
-    'GET contacts returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET contacts returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(contactsListRes.status >= 400 ? 1 : 0);
 
   const dncListRes = http.get(`${BASE_URL}/workspaces/${ws}/compliance/dnc`, cfg);
   check(dncListRes, {
     'GET dnc returns 200': (r) => r.status === 200,
-    'GET dnc returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET dnc returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(dncListRes.status >= 400 ? 1 : 0);
 
@@ -249,20 +185,12 @@ export default function (data) {
   );
   check(createRes, {
     'POST contacts returns 200 or 201': (r) => r.status === 200 || r.status === 201,
-    'POST contacts returns contact JSON': (r) => {
-      try {
-        return JSON.parse(r.body).id !== undefined;
-      } catch {
-        return false;
-      }
-    },
+    'POST contacts returns contact JSON': (r) => apiData(r)?.id !== undefined,
   });
   customErrorRate.add(createRes.status >= 400 ? 1 : 0);
 
-  let contactId;
-  try {
-    contactId = JSON.parse(createRes.body).id;
-  } catch (_e) {
+  const contactId = apiData(createRes)?.id;
+  if (contactId === undefined) {
     // If creation failed, skip dependent steps.
     sleep(1);
     return;
@@ -276,13 +204,7 @@ export default function (data) {
   );
   check(getRes, {
     'GET contact by id returns 200': (r) => r.status === 200,
-    'GET contact phone matches': (r) => {
-      try {
-        return JSON.parse(r.body).phone === phone;
-      } catch {
-        return false;
-      }
-    },
+    'GET contact phone matches': (r) => apiData(r)?.phone === phone,
   });
   customErrorRate.add(getRes.status >= 400 ? 1 : 0);
 
@@ -338,25 +260,15 @@ export default function (data) {
   complianceLatency.add(Date.now() - checkStart);
   check(checkRes, {
     'POST compliance/check returns 200': (r) => r.status === 200,
-    'POST compliance/check returns status': (r) => {
-      try {
-        return JSON.parse(r.body).status !== undefined;
-      } catch {
-        return false;
-      }
-    },
+    'POST compliance/check returns status': (r) => apiData(r)?.status !== undefined,
   });
   customErrorRate.add(checkRes.status >= 400 ? 1 : 0);
 
-  try {
-    const checkBody = JSON.parse(checkRes.body);
-    if (checkBody.status === 'passed') {
-      compliancePassed.add(1);
-    } else if (checkBody.status === 'blocked') {
-      complianceBlocked.add(1);
-    }
-  } catch (_e) {
-    /* ignore */
+  const checkBody = apiData(checkRes);
+  if (checkBody?.status === 'passed') {
+    compliancePassed.add(1);
+  } else if (checkBody?.status === 'blocked') {
+    complianceBlocked.add(1);
   }
 
   // ── 6. Add DNC entry (different number) ──
