@@ -149,8 +149,13 @@ function analyzeFile(filePath: string, relativeTo: string, models: Set<string>):
       expanded = expanded.replace(/\b([A-Za-z_$][\w$]*)\b/g, (name) => {
         const declarations = initializers.get(name);
         if (!declarations) return name;
+        // `initializers` is keyed by identifier name for the whole file, not
+        // per scope. Never substitute a declaration that follows the call site:
+        // a later, unrelated initializer that happens to mention workspaceId
+        // would make a genuinely unscoped query look tenant-scoped, which is an
+        // unsafe failure direction for a security ratchet.
         const visible = declarations.filter((d) => d.pos < atPos);
-        const chosen = visible.length > 0 ? visible[visible.length - 1] : declarations[0];
+        const chosen = visible[visible.length - 1];
         return chosen ? `${name} /*${chosen.text}*/` : name;
       });
     }
