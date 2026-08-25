@@ -1,6 +1,7 @@
 import { Body, Controller, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { ToolTypeSchema } from '@voiceforge/shared';
+import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { AgentNotFoundError } from '../common/errors';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,14 +21,20 @@ const LiveKitToolInvokeSchema = z.object({
 type LiveKitToolInvoke = z.infer<typeof LiveKitToolInvokeSchema>;
 
 /**
- * Service-to-service tool invocation for the LiveKit runtime. The global
- * InternalAuthGuard protects this route with x-internal-key. Tenant scope is
+ * Service-to-service tool invocation for the LiveKit runtime. Tenant scope is
  * deliberately derived from the persisted agent rather than accepted from
  * request metadata, matching LiveKitKnowledgeController.
  *
  * Dispatching goes through ToolsService.invoke, so every live-call tool run
  * gets the same ToolInvocation row and audit log entry as a dashboard run.
+ *
+ * @InternalOnly() for the same reason as the knowledge route, and it matters
+ * more here: `agentId` is taken from the path with no caller-ownership check,
+ * so a user able to reach this route could execute any workspace's connected
+ * Google tools by agent id. The internal key does not stop that on its own
+ * because the frontend proxy attaches it to whatever path a browser requests.
  */
+@InternalOnly()
 @Controller('internal/livekit/agents/:agentId/tools')
 export class LiveKitToolsController {
   constructor(

@@ -7,6 +7,7 @@ import { CacheService } from '../cache/cache.service';
 import { env } from '../config/env';
 import { IS_SESSION_SCOPED_KEY } from './decorators/session-scoped.decorator';
 import { ForbiddenError, UnauthorizedError, WorkspaceNotFoundError } from './errors';
+import { constantTimeEqual } from './secure-compare';
 import type { SessionUser } from '@voiceforge/shared';
 
 const WORKSPACE_ACCESS_TTL_SECONDS = 300;
@@ -98,7 +99,10 @@ export class WorkspaceGuard implements CanActivate {
     const expected = env.INTERNAL_API_KEY;
     const provided = headerString(req, 'x-internal-key');
 
-    if (!expected || !provided || provided !== expected) {
+    // Same comparison as InternalAuthGuard. A plain `!==` here leaked the key
+    // one prefix byte at a time to anyone who could time this path, which
+    // undermined the constant-time check on the guard in front of it.
+    if (!expected || !provided || !constantTimeEqual(provided, expected)) {
       throw new UnauthorizedError();
     }
 

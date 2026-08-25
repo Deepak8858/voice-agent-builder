@@ -1,5 +1,6 @@
 import { Body, Controller, Param, Post } from '@nestjs/common';
 import { z } from 'zod';
+import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { AgentNotFoundError } from '../common/errors';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { KnowledgeService } from '../knowledge/knowledge.service';
@@ -14,10 +15,18 @@ const LiveKitKnowledgeSearchSchema = z.object({
 type LiveKitKnowledgeSearch = z.infer<typeof LiveKitKnowledgeSearchSchema>;
 
 /**
- * Service-to-service retrieval for the LiveKit runtime. Global InternalAuthGuard
- * protects this route with x-internal-key. Tenant scope is deliberately derived
- * from the persisted agent rather than accepted from request metadata.
+ * Service-to-service retrieval for the LiveKit runtime. Tenant scope is
+ * deliberately derived from the persisted agent rather than accepted from
+ * request metadata.
+ *
+ * That derivation is only safe while the caller is our own runtime. `agentId`
+ * comes from the path and is not checked against any caller identity, so a
+ * user who could reach this route would be able to read any workspace's
+ * knowledge base by id. `x-internal-key` does not prevent that, because the
+ * frontend proxy holds the key and forwards arbitrary paths; @InternalOnly()
+ * does, by refusing any request that carries user context.
  */
+@InternalOnly()
 @Controller('internal/livekit/agents/:agentId/knowledge')
 export class LiveKitKnowledgeController {
   constructor(
