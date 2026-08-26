@@ -44,6 +44,10 @@ function makeService(
     lockAvailable?: boolean;
     subscriptions?: Array<{ organizationId: string }>;
     costSum?: number;
+    outstandingReservations?: {
+      matureReservedSeconds: number;
+      freshReservationCount: number;
+    };
   } = {},
 ) {
   const balances = opts.balances ?? [];
@@ -64,9 +68,24 @@ function makeService(
       }),
       update: balanceUpdate,
     },
-    $queryRaw: vi.fn(async (..._args: unknown[]) => [
-      { locked: opts.lockAvailable ?? true },
-    ]),
+    // Dispatches on the query text because reconciliation now issues three
+    // distinct raw queries inside one transaction: the advisory lock, the
+    // balance row lock, and the outstanding-reservation aggregate.
+    $queryRaw: vi.fn(async (...args: unknown[]) => {
+      const text = Array.from(args[0] as ArrayLike<string>).join(' ');
+      if (text.includes('pg_try_advisory_xact_lock')) {
+        return [{ locked: opts.lockAvailable ?? true }];
+      }
+      if (text.includes('FOR UPDATE')) {
+        return [{ id: 'balance-row-1' }];
+      }
+      return [
+        opts.outstandingReservations ?? {
+          matureReservedSeconds: 0,
+          freshReservationCount: 0,
+        },
+      ];
+    }),
   };
 
   const prisma = {
@@ -186,6 +205,8 @@ describe('ReconciliationService.reconcileBalances', () => {
     const { service, balanceUpdate, audit } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 600, reservedSeconds: 60 }],
       activeBuckets: [{ remainingSeconds: 600 }],
+      // The reserved projection matches the ledger's mature outstanding sum.
+      outstandingReservations: { matureReservedSeconds: 60, freshReservationCount: 0 },
     });
 
     const report = await service.reconcileBalances();
@@ -193,6 +214,118 @@ describe('ReconciliationService.reconcileBalances', () => {
     expect(report.projectionCorrections).toBe(0);
     expect(balanceUpdate).not.toHaveBeenCalled();
     expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('repairs stranded reservedSeconds from the ledger outstanding sum', async () => {
+    // The projection says a minute is still reserved, but every ledger
+    // reservation has been committed or released: the stranded 60s would
+    // shrink the customer's usable balance forever.
+    const { service, balanceUpdate, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 600, reservedSeconds: 60 }],
+      activeBuckets: [{ remainingSeconds: 600 }],
+      outstandingReservations: { matureReservedSeconds: 0, freshReservationCount: 0 },
+    });
+
+    const report = await service.reconcileBalances();
+
+    expect(report.projectionCorrections).toBe(1);
+    expect(balanceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reservedSeconds: 0 }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.projection_corrected',
+        metadata: expect.objectContaining({
+          previousReservedSeconds: 60,
+          correctedReservedSeconds: 0,
+          reservedDriftSeconds: -60,
+          reservedRepairDeferred: false,
+        }),
+      }),
+    );
+  });
+
+  it('restores reservedSeconds lost by the projection', async () => {
+    // The mirror image: the ledger holds a mature outstanding reservation the
+    // projection dropped. Without repair the org can over-admit calls.
+    const { service, balanceUpdate } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 600, reservedSeconds: 0 }],
+      activeBuckets: [{ remainingSeconds: 600 }],
+      outstandingReservations: { matureReservedSeconds: 60, freshReservationCount: 0 },
+    });
+
+    const report = await service.reconcileBalances();
+
+    expect(report.projectionCorrections).toBe(1);
+    expect(balanceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ reservedSeconds: 60 }),
+      }),
+    );
+  });
+
+  it('defers the reserved repair while a fresh reservation is in flight', async () => {
+    // A reservation younger than the stale-call timeout may be mid-commit;
+    // clawing it back here would race the ledger. The repair must wait for a
+    // later pass instead of touching reservedSeconds.
+    const { service, balanceUpdate, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 600, reservedSeconds: 60 }],
+      activeBuckets: [{ remainingSeconds: 600 }],
+      outstandingReservations: { matureReservedSeconds: 0, freshReservationCount: 1 },
+    });
+
+    const report = await service.reconcileBalances();
+
+    expect(report.projectionCorrections).toBe(0);
+    expect(balanceUpdate).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('still repairs available drift while the reserved repair is deferred', async () => {
+    const { service, balanceUpdate, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 100, reservedSeconds: 60 }],
+      activeBuckets: [{ remainingSeconds: 600 }],
+      outstandingReservations: { matureReservedSeconds: 0, freshReservationCount: 1 },
+    });
+
+    const report = await service.reconcileBalances();
+
+    expect(report.projectionCorrections).toBe(1);
+    expect(balanceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ availableSeconds: 600 }),
+      }),
+    );
+    // reservedSeconds must be absent from the write while deferred.
+    const [updateArgs] = balanceUpdate.mock.calls[0] as [
+      { data: Record<string, unknown> },
+    ];
+    expect(updateArgs.data).not.toHaveProperty('reservedSeconds');
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ reservedRepairDeferred: true }),
+      }),
+    );
+  });
+
+  it('locks the balance row before reading the projection', async () => {
+    const { service, tx } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 0 }],
+      activeBuckets: [],
+    });
+
+    await service.reconcileBalances();
+
+    // The advisory lock only excludes other reconciliation replicas; the row
+    // lock is what serializes against ledger commits and releases.
+    const rowLockCall = tx.$queryRaw.mock.calls.find(([templateStrings]) =>
+      Array.from(templateStrings as ArrayLike<string>)
+        .join(' ')
+        .includes('FOR UPDATE'),
+    );
+    expect(rowLockCall).toBeDefined();
   });
 
   it('takes a transaction-scoped advisory lock per organization', async () => {

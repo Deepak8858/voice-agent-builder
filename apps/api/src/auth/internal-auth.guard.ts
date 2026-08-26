@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
 import { env } from '../config/env';
 import { UnauthorizedError } from '../common/errors';
+import { IS_INTERNAL_ONLY_KEY } from '../common/decorators/internal-only.decorator';
 import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
 import { constantTimeEqual } from '../common/secure-compare';
 import { SupabaseAuthService } from './supabase-auth.service';
@@ -18,6 +19,8 @@ import { SupabaseAuthService } from './supabase-auth.service';
  *   authorization    Supabase access token, when acting as a user
  *
  * Public routes (health, metrics, provider webhooks) opt out via @Public().
+ * Routes that our own runtime calls and a user must never reach, even through
+ * the frontend proxy, declare @InternalOnly().
  */
 @Injectable()
 export class InternalAuthGuard implements CanActivate {
@@ -59,6 +62,18 @@ export class InternalAuthGuard implements CanActivate {
       return true;
     }
 
+    // Holding the internal key is not enough to reach an @InternalOnly() route,
+    // because the frontend proxy holds it too and forwards whatever path the
+    // browser asks for. A request carrying user context is by definition not
+    // our runtime, so it is refused before the handler can act on a body it
+    // would otherwise trust as machine-issued.
+    if (this.isInternalOnly(ctx)) {
+      this.logger.warn(
+        `Rejecting user-authenticated request to internal-only route ${req.method} ${req.path}.`,
+      );
+      throw new UnauthorizedError();
+    }
+
     const sessionUser = await this.authService.getSessionUser(req);
     if (!sessionUser?.id || !isValidUUID(sessionUser.id)) {
       this.logger.warn('Supabase bearer token did not resolve to a valid app user.');
@@ -68,6 +83,14 @@ export class InternalAuthGuard implements CanActivate {
     req.user = sessionUser;
 
     return true;
+  }
+
+  /** True when the handler or its controller declares @InternalOnly(). */
+  private isInternalOnly(ctx: ExecutionContext): boolean {
+    return this.reflector.getAllAndOverride<boolean>(IS_INTERNAL_ONLY_KEY, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]) === true;
   }
 }
 

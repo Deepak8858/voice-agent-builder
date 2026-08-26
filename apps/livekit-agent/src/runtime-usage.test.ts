@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RuntimeUsageDecision } from '@voiceforge/shared';
-import { CallMeter, createRuntimeUsageClient } from './runtime-usage';
+import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage';
 
 const BALANCE = {
   organizationId: 'org-1',
@@ -110,6 +110,9 @@ describe('createRuntimeUsageClient', () => {
 function makeMeter(overrides: {
   emit?: ReturnType<typeof vi.fn>;
   maxConsecutiveFailures?: number;
+  maxDurationSeconds?: number;
+  minuteIntervalMs?: number;
+  now?: () => Date;
 } = {}) {
   const emit = overrides.emit ?? vi.fn(async () => decision());
   const terminate = vi.fn(async () => undefined);
@@ -119,7 +122,13 @@ function makeMeter(overrides: {
     emit: emit as never,
     terminate,
     maxConsecutiveFailures: overrides.maxConsecutiveFailures ?? 2,
-    now: () => new Date('2026-06-07T10:00:00.000Z'),
+    ...(overrides.maxDurationSeconds !== undefined
+      ? { maxDurationSeconds: overrides.maxDurationSeconds }
+      : {}),
+    ...(overrides.minuteIntervalMs !== undefined
+      ? { minuteIntervalMs: overrides.minuteIntervalMs }
+      : {}),
+    now: overrides.now ?? (() => new Date('2026-06-07T10:00:00.000Z')),
     logger: { warn: vi.fn(), error: vi.fn() } as never,
   });
   return { meter, emit, terminate };
@@ -236,19 +245,111 @@ describe('CallMeter', () => {
     expect(terminate).toHaveBeenCalledWith('metering_unavailable');
   });
 
-  it('resets the failure count once metering recovers', async () => {
+  it('retries the same boundary after an alternating failure instead of granting a free minute', async () => {
     const emit = vi
       .fn()
       .mockRejectedValueOnce(new Error('api down'))
-      .mockResolvedValueOnce(decision())
-      .mockRejectedValueOnce(new Error('api down'));
+      .mockResolvedValueOnce(decision());
     const { meter, terminate } = makeMeter({ emit, maxConsecutiveFailures: 2 });
 
     await meter.reportMinuteBoundary();
     await meter.reportMinuteBoundary();
-    await meter.reportMinuteBoundary();
 
+    expect(emit.mock.calls.map((call) => (call[0] as { eventId: string }).eventId)).toEqual([
+      'call-1:minute:2',
+      'call-1:minute:2',
+    ]);
     expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent boundary reports so one minute cannot be charged twice', async () => {
+    let release!: (value: RuntimeUsageDecision) => void;
+    const emit = vi.fn(() => new Promise<RuntimeUsageDecision>((resolve) => { release = resolve; }));
+    const { meter } = makeMeter({ emit });
+
+    const first = meter.reportMinuteBoundary();
+    const second = meter.reportMinuteBoundary();
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    release(decision());
+    await Promise.all([first, second]);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('hangs up at the funded deadline when a boundary request remains in flight', async () => {
+    vi.useFakeTimers();
+    try {
+      const emit = vi
+        .fn()
+        .mockResolvedValueOnce(decision())
+        .mockImplementationOnce(() => new Promise<RuntimeUsageDecision>(() => undefined));
+      const { meter, terminate } = makeMeter({
+        emit,
+        minuteIntervalMs: 60_000,
+        now: () => new Date(Date.now()),
+      });
+      await meter.connected('pc-1');
+      meter.start();
+
+      // The boundary fires at 60s reporting minute 2, whose funding runs out at
+      // 120s. Termination must happen at that deadline, not at the boundary.
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2);
+      expect(terminate).toHaveBeenCalledWith('metering_unavailable');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not hang up when the first-boundary emit is delayed but confirmed within the reported minute', async () => {
+    vi.useFakeTimers();
+    try {
+      const emit = vi
+        .fn()
+        .mockResolvedValueOnce(decision())
+        .mockImplementationOnce(
+          () =>
+            new Promise<RuntimeUsageDecision>((resolve) => {
+              setTimeout(() => resolve(decision()), 5_000);
+            }),
+        )
+        .mockResolvedValue(decision());
+      const { meter, terminate } = makeMeter({
+        emit,
+        minuteIntervalMs: 60_000,
+        now: () => new Date(Date.now()),
+      });
+      await meter.connected('pc-1');
+      meter.start();
+
+      // The first boundary fires at exactly 60s. A slow-but-successful emit
+      // must not be raced against a zero-width deadline computed from the
+      // previous minute.
+      await vi.advanceTimersByTimeAsync(65_000);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(emit.mock.calls.map((call) => (call[0] as { eventId: string }).eventId)).toContain(
+        'call-1:minute:2',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hangs up at a configured hard duration cap', async () => {
+    vi.useFakeTimers();
+    try {
+      const { meter, terminate } = makeMeter({ maxDurationSeconds: 90 });
+      await meter.connected('pc-1');
+      meter.start();
+
+      await vi.advanceTimersByTimeAsync(89_999);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(terminate).toHaveBeenCalledWith('max_duration_exceeded');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not restart or emit an end after billing termination', async () => {
@@ -272,6 +373,7 @@ describe('CallMeter', () => {
   it('reports the end exactly once so a shutdown callback cannot double-settle', async () => {
     const { meter, emit } = makeMeter();
 
+    await meter.connected('pc-1');
     await meter.ended(120);
     await meter.ended(120);
 
@@ -297,9 +399,65 @@ describe('CallMeter', () => {
   it('does not report a failure after the call already ended', async () => {
     const { meter, emit } = makeMeter();
 
+    await meter.connected('pc-1');
     await meter.ended(30);
     await meter.failed('runtime_error');
 
     expect(emit.mock.calls.filter((call) => (call[0] as { type: string }).type === 'call_failed')).toHaveLength(0);
+  });
+
+  it('reports call_ended after billing enforcement terminates a connected call', async () => {
+    const emit = vi
+      .fn()
+      .mockResolvedValueOnce(decision())
+      .mockResolvedValueOnce(decision({ allowed: false, reason: 'credit_insufficient' }))
+      .mockResolvedValue(decision());
+    const { meter } = makeMeter({ emit });
+
+    await meter.connected('pc-1');
+    await meter.reportMinuteBoundary();
+    await meter.ended(61);
+
+    expect(emit.mock.calls.map((call) => (call[0] as { type: string }).type)).toEqual([
+      'call_connected',
+      'minute_boundary',
+      'call_ended',
+    ]);
+  });
+
+  it('authorizes billing before starting the voice session', async () => {
+    const order: string[] = [];
+    const emit = vi.fn(async () => {
+      order.push('connected');
+      return decision();
+    });
+    const { meter } = makeMeter({ emit });
+    const callbacks: Array<() => Promise<void>> = [];
+
+    await runWithMeteredCall(
+      meter,
+      'pc-1',
+      (callback) => callbacks.push(callback),
+      async () => { order.push('session'); },
+    );
+
+    expect(order).toEqual(['connected', 'session']);
+    expect(callbacks).toHaveLength(1);
+  });
+
+  it('never starts voice and reports call_failed when connection billing is refused', async () => {
+    const emit = vi.fn(async () => decision({ allowed: false, reason: 'credit_insufficient' }));
+    const { meter } = makeMeter({ emit });
+    const callbacks: Array<() => Promise<void>> = [];
+    const run = vi.fn(async () => undefined);
+
+    await expect(runWithMeteredCall(meter, 'pc-1', (callback) => callbacks.push(callback), run))
+      .resolves.toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    await callbacks[0]!();
+    expect(emit.mock.calls.map((call) => (call[0] as { type: string }).type)).toEqual([
+      'call_connected',
+      'call_failed',
+    ]);
   });
 });

@@ -27,14 +27,14 @@ async function invokedBody(options: {
   params: Record<string, unknown>;
   toolName?: string;
   toolType?: string;
-  callId?: string | undefined;
+  callId?: string;
 }): Promise<Record<string, unknown>> {
   const fetchImpl = vi.fn(async () => invokeOkResponse());
   const invoke = createToolInvokeClient({
     apiBaseUrl: 'http://api:4000',
     internalApiKey: 'internal-key',
     agentId: 'agent-1',
-    ...(options.callId !== undefined ? { callId: options.callId } : {}),
+    callId: options.callId ?? 'call-1',
     fetchImpl: fetchImpl as unknown as typeof fetch,
   });
 
@@ -54,7 +54,7 @@ async function invokedKey(options: {
   params: Record<string, unknown>;
   toolName?: string;
   toolType?: string;
-  callId?: string | undefined;
+  callId?: string;
 }): Promise<string> {
   const body = await invokedBody(options);
   const key = body.idempotency_key;
@@ -182,7 +182,7 @@ describe('tool invoke idempotency key', () => {
     );
   });
 
-  it('is only sent for google_calendar create_event with a call id', async () => {
+  it('is only sent for google_calendar create_event', async () => {
     // Other operations are reads (or non-calendar tools), where retrying is
     // harmless; the key is scoped to the one operation that creates state.
     const gmailBody = await invokedBody({
@@ -197,9 +197,12 @@ describe('tool invoke idempotency key', () => {
       callId: 'call-1',
     });
     expect(listBody).not.toHaveProperty('idempotency_key');
+  });
 
-    const noCallBody = await invokedBody({ params: createEventParams, callId: undefined });
-    expect(noCallBody).not.toHaveProperty('idempotency_key');
-    expect(noCallBody).not.toHaveProperty('call_id');
+  it('always sends the bound call id', async () => {
+    // The internal route refuses requests without a call bound to the agent,
+    // so the client must never omit it.
+    const body = await invokedBody({ params: { operation: 'list_events' }, callId: 'call-9' });
+    expect(body).toMatchObject({ call_id: 'call-9' });
   });
 });

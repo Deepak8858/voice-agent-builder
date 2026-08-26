@@ -308,9 +308,54 @@ export class RuntimeUsageService {
     }
   }
 
+  /**
+   * Settles a call the runtime reports as finished.
+   *
+   * `connectedAt` decides whether anything is owed, and it must be consulted
+   * before the row is finalized. `call_ended` is not conditional on a
+   * successful `call_connected`: the meter's shutdown callback fires on any
+   * teardown, so an end can arrive for a call whose commit never happened —
+   * the commit was refused, the ledger was unreachable for the whole retry
+   * budget, or the process died between admission and connection.
+   *
+   * Finalizing such a call unconditionally strands its reserved minute for
+   * good. `finalized` is outside the window `finalizeStaleCalls` sweeps
+   * (`pending`/`releasing`), and `reconcileOneBalance` only rebuilds
+   * `availableSeconds`, never `reservedSeconds`. So the seconds would be gone
+   * from the customer's bucket and counted as reserved forever, with no pass
+   * that can recover either. A call that never connected is therefore
+   * compensated rather than completed, which returns the minute, frees the
+   * concurrency slot, and closes the usage row in one idempotent step.
+   */
   private async onEnded(
     event: Extract<RuntimeUsageEvent, { type: 'call_ended' }>,
   ): Promise<RuntimeUsageDecision> {
+    const usage = await this.prisma.callUsage.findFirst({
+      where: { callId: event.callId, organizationId: event.organizationId },
+      select: { connectedAt: true },
+    });
+
+    // Written as an explicit null check on a selected column rather than a
+    // truthiness test so the meaning survives the non-strict production build.
+    if (usage !== null && usage.connectedAt === null) {
+      // `compensate` tolerates an already-committed reservation, so a commit
+      // that landed between this read and here degrades to a logged skip
+      // instead of corrupting the balance.
+      await this.admission.compensate(
+        event.organizationId,
+        event.callId,
+        'ended_without_connect',
+      );
+      // Recorded after compensation, which owns `endedAt` and the finalization
+      // state; only the runtime-reported duration is added here.
+      await this.prisma.callUsage.updateMany({
+        where: { callId: event.callId, organizationId: event.organizationId },
+        data: { rawConnectedSeconds: event.durationSeconds },
+      });
+      const compensatedBalance = await this.creditLedger.getBalance(event.organizationId);
+      return this.decision(event, true, 'allowed', 0, compensatedBalance);
+    }
+
     await this.prisma.callUsage.updateMany({
       where: { callId: event.callId, organizationId: event.organizationId },
       data: {

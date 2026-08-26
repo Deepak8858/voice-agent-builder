@@ -52,7 +52,9 @@ export function createToolInvokeClient(config: {
   apiBaseUrl: string;
   internalApiKey: string;
   agentId: string;
-  callId?: string;
+  /** The admitted call this invocation serves; the API refuses requests whose
+   * call is not bound to the path agent. */
+  callId: string;
   fetchImpl?: typeof fetch;
 }): ToolInvoker {
   const baseUrl = config.apiBaseUrl.replace(/\/$/, '');
@@ -70,8 +72,8 @@ export function createToolInvokeClient(config: {
         body: JSON.stringify({
           tool_name: toolName,
           params,
-          ...(config.callId ? { call_id: config.callId } : {}),
-          ...(config.callId && toolType === 'google_calendar' && params.operation === 'create_event'
+          call_id: config.callId,
+          ...(toolType === 'google_calendar' && params.operation === 'create_event'
             ? {
                 idempotency_key: createHash('sha256')
                   .update(`${config.callId}:${toolName}:${stableJson(params)}`)

@@ -140,6 +140,19 @@ free-plan call and failing it after the caller has connected. The same Azure
 variables must be present for the `livekit-agent` service, which reads them from
 the same file. While the flag is off, every plan falls back to Realtime.
 
+**Azure quota is not enforced by the platform — check it before enabling.**
+`BILLING_GLOBAL_CONCURRENCY` (default 100) caps concurrent calls platform-wide,
+but nothing in the API or worker knows the Azure resource quotas behind the
+standard pipeline: Azure Speech has a per-resource concurrent-request limit for
+STT and TTS, and the Azure OpenAI deployment has TPM/RPM quota. If those limits
+are lower than the concurrent standard-pipeline call volume the billing cap
+allows, Azure throttles with 429s **mid-call** — the call is admitted, credit is
+reserved, and then the caller hears silence or the call drops. Before enabling
+the flag (and before raising `BILLING_GLOBAL_CONCURRENCY`), confirm in the Azure
+portal that the Speech resource tier and the LLM deployment quota cover the
+expected peak of concurrent standard-pipeline calls (free plan plus roughly half
+of starter-plan traffic), and request quota increases first if not.
+
 Also add `FREE_CREDIT_GRANT_CRON` (default `15 0 * * *`, UTC) if you want to
 override the daily free-allowance sweep. It only runs where
 `WORKERS_ENABLED=true`; without such an instance, free organizations are never
