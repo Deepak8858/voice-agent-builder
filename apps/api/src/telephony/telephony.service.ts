@@ -776,10 +776,10 @@ export class TelephonyService {
   /**
    * Admits an inbound call exactly once.
    *
-   * Providers retry voice webhooks, and a retry must not consume a second
-   * concurrency slot or reserve a second minute. The usage record written by a
-   * successful admission is the marker that the call is already paid for, so a
-   * repeat delivery is bridged straight through.
+   * Providers retry voice webhooks, and a retry must not reserve a second
+   * minute. The usage record written by a successful admission is the marker
+   * that the call is already paid for; a repeat delivery only re-asserts the
+   * concurrency slot (idempotent per call) before it is bridged.
    */
   private async admitInboundCall(input: {
     organizationId: string;
@@ -792,7 +792,13 @@ export class TelephonyService {
       where: { callId: input.callId },
       select: { finalizationState: true },
     });
-    if (existingUsage && existingUsage.finalizationState !== 'finalized') return true;
+    if (existingUsage && existingUsage.finalizationState !== 'finalized') {
+      // The call is already paid for, but the concurrency lease taken by the
+      // original admission may have expired between webhook deliveries. The
+      // slot is re-asserted so a retried delivery can never bridge a call
+      // that holds no lease and push the organization past its cap.
+      return this.admission.reassertLease(input.organizationId, input.callId);
+    }
 
     const admission = await this.admission.admitCall({
       organizationId: input.organizationId,

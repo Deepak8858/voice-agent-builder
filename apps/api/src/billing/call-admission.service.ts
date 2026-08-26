@@ -219,6 +219,37 @@ export class CallAdmissionService {
   }
 
   /**
+   * Re-asserts the concurrency slot for a call that was already admitted.
+   *
+   * Providers retry voice webhooks, and the lease taken by the original
+   * admission may have expired between deliveries. Bridging the retry without
+   * a slot would let the organization run more concurrent calls than its plan
+   * allows, so the slot is re-taken here. Acquisition is idempotent per call:
+   * a still-active lease is returned unchanged, an expired one is re-acquired
+   * against current capacity, and a refusal means the bridge must not happen.
+   */
+  async reassertLease(organizationId: string, callId: string): Promise<boolean> {
+    try {
+      const effective = await this.entitlements.getEffectivePlan(organizationId);
+      const organizationLimit = effective.entitlements.concurrentCalls;
+      if (organizationLimit < 1) return false;
+      const lease = await this.concurrency.acquire({ callId, organizationId, organizationLimit });
+      if (isLeaseRefused(lease)) {
+        this.logger.warn(
+          `Concurrency lease could not be re-asserted for call ${callId}: ${lease.reason}`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Concurrency lease re-assertion failed for call ${callId}: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * Undo a completed admission. Used when the provider refuses the call after
    * we have already reserved credit, and by the runtime when a call fails
    * before it ever connects. Safe to call more than once: the ledger release is

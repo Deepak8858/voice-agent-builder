@@ -277,6 +277,47 @@ describe('CallAdmissionService.admitCall', () => {
   });
 });
 
+describe('CallAdmissionService.reassertLease', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('re-takes the slot for an already-admitted call', async () => {
+    const { service, concurrency } = makeService();
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(true);
+
+    expect(concurrency.acquire).toHaveBeenCalledWith({
+      callId: 'call-1',
+      organizationId: 'org-1',
+      organizationLimit: 2,
+    });
+  });
+
+  it('refuses when the organization is back at its concurrency cap', async () => {
+    const { service } = makeService({
+      lease: { allowed: false, reason: 'organization_concurrency_reached' },
+    });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+  });
+
+  it('refuses without consulting Redis when the plan has no concurrency contract', async () => {
+    const { service, concurrency } = makeService({ concurrentCalls: 0 });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+
+    expect(concurrency.acquire).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the plan lookup throws', async () => {
+    const { service, entitlements, concurrency } = makeService();
+    entitlements.getEffectivePlan.mockRejectedValue(new Error('billing db down'));
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+
+    expect(concurrency.acquire).not.toHaveBeenCalled();
+  });
+});
+
 describe('CallAdmissionService.compensate', () => {
   beforeEach(() => vi.clearAllMocks());
 
