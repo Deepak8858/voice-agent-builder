@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
-import { pageMetadata } from '@/lib/seo';
+import { JsonLd, breadcrumbJsonLd, pageMetadata } from '@/lib/seo';
 import { templateContent } from '@/lib/template-content';
+import { templateListJsonLd } from './templates-structured-data';
 
 export const metadata = pageMetadata(
   'AI Voice Agent Templates | VoiceForge',
@@ -12,6 +13,15 @@ export const metadata = pageMetadata(
 export default function TemplatesPage() {
   return (
     <div className="min-h-screen bg-[#fbf6ea] text-[#07130f]">
+      <JsonLd
+        data={[
+          templateListJsonLd(),
+          breadcrumbJsonLd([
+            { name: 'Home', path: '/' },
+            { name: 'Templates', path: '/templates' },
+          ]),
+        ]}
+      />
       <section className="bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:px-8 md:py-28">
         <div className="mx-auto max-w-6xl">
           <p className="font-mono text-sm uppercase tracking-[0.18em] text-[#bfff4a]">

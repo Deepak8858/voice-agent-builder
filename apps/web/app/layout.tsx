@@ -5,6 +5,8 @@ import { Toaster } from 'sonner';
 import { ClientChrome } from '@/components/layout/client-chrome';
 import { QueryProvider } from '@/components/providers/query-provider';
 import { siteUrl } from '@/lib/site-url';
+import { JsonLd } from '@/lib/seo';
+import { organizationJsonLd, webSiteJsonLd } from './site-structured-data';
 import './globals.css';
 
 const dmSans = DM_Sans({
@@ -80,6 +82,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`${dmSans.variable} ${dmSerif.variable} ${ibmPlexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
+        <JsonLd data={[organizationJsonLd(), webSiteJsonLd()]} />
         <ClientChrome />
         <QueryProvider>
           <main className="flex flex-1 flex-col">{children}</main>
