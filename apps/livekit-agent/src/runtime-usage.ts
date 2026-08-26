@@ -84,7 +84,8 @@ export interface CallMeterConfig {
    */
   terminate: (reason: string) => Promise<void> | void;
   minuteIntervalMs?: number;
-  /** Unreported minute boundaries tolerated before the call is terminated. */
+  maxDurationSeconds?: number;
+  /** Attempts of the same unreported boundary tolerated before termination. */
   maxConsecutiveFailures?: number;
   /**
    * Base wait between connection retry attempts. Tests set this to 0 to keep
@@ -118,20 +119,26 @@ const DEFAULT_CONNECT_RETRY_BASE_MS = 250;
  */
 export class CallMeter {
   private readonly minuteIntervalMs: number;
+  private readonly maxDurationSeconds: number | undefined;
   private readonly maxConsecutiveFailures: number;
   private readonly connectRetryBaseMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => Date;
   private readonly logger: Pick<Console, 'warn' | 'error'>;
 
-  private timer: ReturnType<typeof setInterval> | null = null;
+  private boundaryTimer: ReturnType<typeof setTimeout> | null = null;
+  private durationTimer: ReturnType<typeof setTimeout> | null = null;
+  private boundaryInFlight: Promise<void> | null = null;
+  private started = false;
   private minute = 1;
   private consecutiveFailures = 0;
   private connectedAt: Date | null = null;
-  private settled = false;
+  private terminating = false;
+  private finalized = false;
 
   constructor(private readonly config: CallMeterConfig) {
     this.minuteIntervalMs = config.minuteIntervalMs ?? MINUTE_MS;
+    this.maxDurationSeconds = config.maxDurationSeconds;
     this.maxConsecutiveFailures = Math.max(
       config.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES,
       1,
@@ -152,13 +159,13 @@ export class CallMeter {
    * not allowed to proceed.
    */
   async connected(providerCallId: string): Promise<void> {
-    this.connectedAt = this.now();
+    const occurredAt = this.now();
     const event = {
       type: 'call_connected' as const,
       eventId: `${this.config.callId}:connected`,
       callId: this.config.callId,
       organizationId: this.config.organizationId,
-      occurredAt: this.connectedAt.toISOString(),
+      occurredAt: occurredAt.toISOString(),
       providerCallId,
     };
 
@@ -174,7 +181,10 @@ export class CallMeter {
       }
       try {
         const decision = await this.config.emit(event);
-        if (decision.allowed) return;
+        if (decision.allowed) {
+          this.connectedAt = occurredAt;
+          return;
+        }
         if (decision.reason !== 'billing_temporarily_unavailable') {
           await this.terminate(decision.reason);
           return;
@@ -202,40 +212,65 @@ export class CallMeter {
     return base + Math.floor(Math.random() * this.connectRetryBaseMs);
   }
 
-  get isSettled(): boolean {
-    return this.settled;
+  get isConnected(): boolean {
+    return this.connectedAt !== null;
   }
 
-  /** Begins charging for every subsequent minute. */
+  get isSettled(): boolean {
+    return this.terminating || this.finalized;
+  }
+
+  /** Begins charging for every subsequent minute and enforces the hard call cap. */
   start(): void {
-    if (this.timer || this.settled) return;
-    this.timer = setInterval(() => {
-      void this.reportMinuteBoundary();
-    }, this.minuteIntervalMs);
-    this.timer.unref?.();
+    if (this.started || this.terminating || this.finalized || !this.connectedAt) return;
+    this.started = true;
+    this.scheduleNextBoundary();
+    if (this.maxDurationSeconds !== undefined) {
+      const elapsedMs = this.now().getTime() - this.connectedAt.getTime();
+      const remainingMs = Math.max(this.maxDurationSeconds * 1_000 - elapsedMs, 0);
+      this.durationTimer = setTimeout(() => {
+        void this.terminate('max_duration_exceeded');
+      }, remainingMs);
+      this.durationTimer.unref?.();
+    }
   }
 
   stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
+    this.started = false;
+    if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
+    if (this.durationTimer) clearTimeout(this.durationTimer);
+    this.boundaryTimer = null;
+    this.durationTimer = null;
   }
 
   /** Exposed for direct invocation in tests; normally driven by `start()`. */
   async reportMinuteBoundary(): Promise<void> {
-    if (this.settled) return;
-    this.minute += 1;
-    const minute = this.minute;
+    if (this.terminating || this.finalized) return;
+    if (this.boundaryInFlight) return this.boundaryInFlight;
 
+    const reporting = this.reportPendingMinute();
+    this.boundaryInFlight = reporting;
     try {
-      const decision = await this.config.emit({
-        type: 'minute_boundary',
-        eventId: `${this.config.callId}:minute:${minute}`,
-        callId: this.config.callId,
-        organizationId: this.config.organizationId,
-        occurredAt: this.now().toISOString(),
-        minute,
-      });
+      await reporting;
+    } finally {
+      if (this.boundaryInFlight === reporting) this.boundaryInFlight = null;
+    }
+  }
+
+  private async reportPendingMinute(): Promise<void> {
+    const minute = this.minute + 1;
+    const event = {
+      type: 'minute_boundary' as const,
+      eventId: `${this.config.callId}:minute:${minute}`,
+      callId: this.config.callId,
+      organizationId: this.config.organizationId,
+      occurredAt: this.now().toISOString(),
+      minute,
+    };
+    try {
+      const decision = this.connectedAt
+        ? await this.emitBeforeFundedDeadline(event)
+        : await this.config.emit(event);
       if (!decision.allowed && decision.reason === 'billing_temporarily_unavailable') {
         await this.recordTransientFailure(minute, decision.reason);
         return;
@@ -243,10 +278,46 @@ export class CallMeter {
       this.consecutiveFailures = 0;
       if (!decision.allowed) {
         await this.terminate(decision.reason);
+        return;
       }
+      this.minute = minute;
+      this.scheduleNextBoundary();
     } catch (err) {
       await this.recordTransientFailure(minute, (err as Error).message);
     }
+  }
+
+  private async emitBeforeFundedDeadline(
+    event: Extract<RuntimeUsageEvent, { type: 'minute_boundary' }>,
+  ): Promise<RuntimeUsageDecision> {
+    const fundedUntil = (this.connectedAt as Date).getTime() + this.minute * this.minuteIntervalMs;
+    const remainingMs = Math.max(fundedUntil - this.now().getTime(), 0);
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.config.emit(event),
+        new Promise<never>((_resolve, reject) => {
+          deadlineTimer = setTimeout(
+            () => reject(new Error('funded minute expired before metering was confirmed')),
+            remainingMs,
+          );
+          deadlineTimer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+    }
+  }
+
+  private scheduleNextBoundary(): void {
+    if (!this.started || !this.connectedAt || this.terminating || this.finalized) return;
+    if (this.boundaryTimer) clearTimeout(this.boundaryTimer);
+    const fundedUntil = this.connectedAt.getTime() + this.minute * this.minuteIntervalMs;
+    this.boundaryTimer = setTimeout(() => {
+      this.boundaryTimer = null;
+      void this.reportMinuteBoundary();
+    }, Math.max(fundedUntil - this.now().getTime(), 0));
+    this.boundaryTimer.unref?.();
   }
 
   /**
@@ -254,8 +325,8 @@ export class CallMeter {
    * and an explicit end must not both close the same call.
    */
   async ended(durationSeconds?: number): Promise<void> {
-    if (this.settled) return;
-    this.settled = true;
+    if (this.finalized || !this.connectedAt) return;
+    this.finalized = true;
     this.stop();
 
     const seconds = durationSeconds ?? this.elapsedSeconds();
@@ -283,8 +354,12 @@ export class CallMeter {
    * when the runtime is already failing.
    */
   async failed(failureCode: string): Promise<void> {
-    if (this.settled) return;
-    this.settled = true;
+    if (this.finalized) return;
+    if (this.connectedAt) {
+      await this.ended();
+      return;
+    }
+    this.finalized = true;
     this.stop();
 
     try {
@@ -309,14 +384,22 @@ export class CallMeter {
       `[metering] call ${this.config.callId} minute ${minute} unreported ` +
         `(${this.consecutiveFailures}/${this.maxConsecutiveFailures}): ${detail}`,
     );
-    if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+    const fundedUntil = this.connectedAt
+      ? this.connectedAt.getTime() + this.minute * this.minuteIntervalMs
+      : Number.POSITIVE_INFINITY;
+    if (
+      this.consecutiveFailures >= this.maxConsecutiveFailures ||
+      this.now().getTime() >= fundedUntil
+    ) {
       await this.terminate('metering_unavailable');
+      return;
     }
+    this.scheduleNextBoundary();
   }
 
   private async terminate(reason: string): Promise<void> {
-    if (this.settled) return;
-    this.settled = true;
+    if (this.terminating || this.finalized) return;
+    this.terminating = true;
     this.stop();
     try {
       await this.config.terminate(reason);
@@ -331,4 +414,26 @@ export class CallMeter {
     if (!this.connectedAt) return 0;
     return Math.max(Math.floor((this.now().getTime() - this.connectedAt.getTime()) / 1_000), 0);
   }
+}
+
+/**
+ * Commits billing before starting any voice session. The shutdown callback is
+ * installed first so SIGTERM during authorization still releases the reserved
+ * minute with `call_failed`; once committed, every exit path reports `call_ended`.
+ */
+export async function runWithMeteredCall(
+  meter: CallMeter,
+  providerCallId: string,
+  addShutdownCallback: (callback: () => Promise<void>) => void,
+  run: () => Promise<void>,
+): Promise<boolean> {
+  addShutdownCallback(async () => {
+    if (meter.isConnected) await meter.ended();
+    else await meter.failed('connection_not_committed');
+  });
+  await meter.connected(providerCallId);
+  if (!meter.isConnected || meter.isSettled) return false;
+  meter.start();
+  await run();
+  return true;
 }

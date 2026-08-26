@@ -10,6 +10,7 @@ export const DispatchMetadataSchema = z
     agentId: z.string().min(1),
     callId: z.string().min(1).optional(),
     providerCallId: z.string().min(1).optional(),
+    maxDurationSeconds: z.number().int().positive().optional(),
     phoneNumberId: z.string().min(1).optional(),
     direction: z.enum(['inbound', 'outbound']).optional(),
     provider: z.string().min(1).optional(),

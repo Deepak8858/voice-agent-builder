@@ -27,7 +27,7 @@ import {
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
-import { CallMeter, createRuntimeUsageClient } from './runtime-usage.js';
+import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 
 const prisma = new PrismaClient();
@@ -56,6 +56,9 @@ function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter
     callId: metadata.callId,
     organizationId: metadata.organizationId,
     emit: createRuntimeUsageClient({ apiBaseUrl, internalApiKey }),
+    ...(metadata.maxDurationSeconds !== undefined
+      ? { maxDurationSeconds: metadata.maxDurationSeconds }
+      : {}),
     // Hanging up is the only enforcement the runtime has: a refused minute must
     // end the call rather than merely stop being recorded.
     terminate: async (reason) => {
@@ -198,27 +201,29 @@ async function runCall(
         }),
       });
 
-  await session.start({
-    agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
-    room: ctx.room,
-  });
-
-  if (meter) {
-    // Registered before the first reply so a crash mid-conversation still
-    // settles the call instead of leaking its reservation and lease.
-    ctx.addShutdownCallback(async () => {
-      await meter.ended();
+  const startSession = async (): Promise<void> => {
+    await session.start({
+      agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
+      room: ctx.room,
     });
-    // Inbound attribution preserves Twilio's CallSid. Outbound calls already
-    // carry their provider identity in dispatch metadata when available.
-    await meter.connected(metadata.providerCallId ?? ctx.room.name ?? (metadata.callId as string));
-    if (meter.isSettled) return;
-    meter.start();
+    await session.generateReply({
+      instructions: firstReplyInstruction(spec),
+    });
+  };
+
+  if (!meter) {
+    await startSession();
+    return;
   }
 
-  await session.generateReply({
-    instructions: firstReplyInstruction(spec),
-  });
+  // Billing authorization must precede AgentSession.start(): both Realtime and
+  // standard sessions begin automatic turn handling as soon as they start.
+  await runWithMeteredCall(
+    meter,
+    metadata.providerCallId ?? ctx.room.name ?? (metadata.callId as string),
+    (callback) => ctx.addShutdownCallback(callback),
+    startSession,
+  );
 }
 
 /**
