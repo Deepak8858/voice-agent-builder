@@ -130,6 +130,18 @@ export class ReconciliationService {
 
   private async reconcileOneBalance(organizationId: string): Promise<boolean> {
     const correction = await this.withOrganizationLock(organizationId, async (tx) => {
+      // The advisory lock only serializes reconciliation replicas. Ledger
+      // operations serialize on the balance row itself (`withLockedBalance`
+      // takes FOR UPDATE), so without this row lock a commit or release could
+      // land between the reads below and the write, and the write would
+      // clobber it with stale figures.
+      await tx.$queryRaw`
+        SELECT id
+        FROM organization_credit_balances
+        WHERE organization_id = ${organizationId}::uuid
+        FOR UPDATE
+      `;
+
       const now = new Date();
       const buckets = await tx.billingCreditBucket.findMany({
         where: {
@@ -153,11 +165,60 @@ export class ReconciliationService {
       // customer credit for every in-flight call.
       const expectedAvailable = bucketSeconds;
       const driftSeconds = expectedAvailable - balance.availableSeconds;
-      if (driftSeconds === 0) return null;
+
+      // The authoritative reserved figure is the set of ledger `reservation`
+      // entries with no same-call commit or release. `CallUsage` cannot stand
+      // in for it: a crash before usage persistence leaves a reservation with
+      // no usage row at all. A reservation younger than the stale-call timeout
+      // may be committing right now, so any fresh outstanding reservation
+      // defers the reserved repair to a later pass rather than clawing back an
+      // in-flight minute; `finalizeStaleCalls` uses the same threshold, which
+      // keeps the two repairs from disagreeing about the same reservation.
+      const reservationCutoff = new Date(
+        now.getTime() - env.BILLING_STALE_CALL_TIMEOUT_MINUTES * MINUTE_MS,
+      );
+      const [outstanding] = await tx.$queryRaw<
+        Array<{ matureReservedSeconds: number; freshReservationCount: number }>
+      >`
+        SELECT
+          COALESCE(SUM(r.seconds) FILTER (WHERE r.created_at < ${reservationCutoff}), 0)::int
+            AS "matureReservedSeconds",
+          COUNT(*) FILTER (WHERE r.created_at >= ${reservationCutoff})::int
+            AS "freshReservationCount"
+        FROM billing_ledger_entries r
+        WHERE r.organization_id = ${organizationId}::uuid
+          AND r.entry_type = 'reservation'
+          AND r.reason_code = 'initial_minute'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM billing_ledger_entries f
+            WHERE f.organization_id = r.organization_id
+              AND f.call_id = r.call_id
+              AND f.entry_type IN ('reservation_commit', 'reservation_release')
+          )
+      `;
+      const reservedRepairDeferred = (outstanding?.freshReservationCount ?? 0) > 0;
+      const expectedReserved = reservedRepairDeferred
+        ? balance.reservedSeconds
+        : (outstanding?.matureReservedSeconds ?? 0);
+      const reservedDriftSeconds = expectedReserved - balance.reservedSeconds;
+
+      if (driftSeconds === 0 && reservedDriftSeconds === 0) return null;
+
+      if (reservedDriftSeconds !== 0) {
+        this.logger.warn(
+          `Repairing reservedSeconds for organization ${organizationId}: ` +
+            `${balance.reservedSeconds} -> ${expectedReserved} (${reservedDriftSeconds}s drift).`,
+        );
+      }
 
       await tx.organizationCreditBalance.update({
         where: { organizationId },
-        data: { availableSeconds: expectedAvailable, version: { increment: 1 } },
+        data: {
+          availableSeconds: expectedAvailable,
+          ...(reservedDriftSeconds !== 0 ? { reservedSeconds: expectedReserved } : {}),
+          version: { increment: 1 },
+        },
       });
 
       return {
@@ -165,6 +226,10 @@ export class ReconciliationService {
         correctedAvailableSeconds: expectedAvailable,
         reservedSeconds: balance.reservedSeconds,
         driftSeconds,
+        previousReservedSeconds: balance.reservedSeconds,
+        correctedReservedSeconds: expectedReserved,
+        reservedDriftSeconds,
+        reservedRepairDeferred,
       };
     });
 
