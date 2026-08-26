@@ -3,6 +3,18 @@ import { NextResponse, type NextRequest } from 'next/server';
 /**
  * Performs a cheap auth-cookie presence check in middleware.
  * Full session validation happens in the dashboard layout and API.
+ *
+ * Prefixes here require a session, and must be authenticated *application*
+ * paths only. Do not add a prefix that also matches a public marketing route:
+ * `PROTECTED_PREFIXES` wins over `PUBLIC_PREFIXES`, so a collision answers
+ * Googlebot — always cookie-less — with a 307 to `/sign-in`, and the page can
+ * never be indexed. `/compliance` and `/integrations` were listed here while
+ * also being marketing pages in `sitemap.ts`, which silently made both
+ * uncrawlable.
+ *
+ * `/integrations/google` stays protected because the authenticated Google OAuth
+ * callback lives under it; only the `/integrations` marketing page itself is
+ * public. `app/sitemap-crawlability.test.ts` enforces this contract.
  */
 export const PROTECTED_PREFIXES = [
   '/dashboard',
@@ -12,8 +24,7 @@ export const PROTECTED_PREFIXES = [
   '/invite',
   '/settings',
   '/knowledge',
-  '/integrations',
-  '/compliance',
+  '/integrations/google',
   '/analytics',
   '/white-label',
   '/clients',
@@ -37,6 +48,14 @@ export const PUBLIC_PREFIXES = [
   '/support',
   '/refund',
   '/privacypolicy',
+  '/for-agencies',
+  '/templates',
+  '/compliance',
+  '/integrations',
+  '/how-it-works',
+  '/compare',
+  '/resources',
+  '/a',
 ];
 
 function matchesPrefix(path: string, prefixes: readonly string[]): boolean {

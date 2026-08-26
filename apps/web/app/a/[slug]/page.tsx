@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { Mic2, Building2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DemoAudioPlayer } from '@/components/demo-audio-player';
+import { sharePageMetadata } from './share-metadata';
 
 interface AgentSharePageProps {
   params: Promise<{ slug: string }>;
@@ -220,11 +221,12 @@ export async function generateMetadata({ params }: AgentSharePageProps) {
   const agent = await getAgentBySlug(slug);
 
   if (!agent || !agent.found) {
-    return { title: 'Agent Not Found' };
+    return sharePageMetadata(slug, null);
   }
 
-  return {
-    title: `${agent.name} - Voice Agent by ${agent.workspaceName}`,
-    description: `Try this AI voice agent for ${agent.spec?.identity?.business_name ?? 'your business'}. Built with VoiceForge AI.`,
-  };
+  return sharePageMetadata(slug, {
+    name: agent.name,
+    workspaceName: agent.workspaceName,
+    businessName: agent.spec?.identity?.business_name,
+  });
 }
