@@ -290,7 +290,10 @@ export class CallMeter {
   private async emitBeforeFundedDeadline(
     event: Extract<RuntimeUsageEvent, { type: 'minute_boundary' }>,
   ): Promise<RuntimeUsageDecision> {
-    const fundedUntil = (this.connectedAt as Date).getTime() + this.minute * this.minuteIntervalMs;
+    // The boundary timer fires exactly when the previously funded minute ends,
+    // so the deadline for confirming the *reported* minute is the end of that
+    // minute — not the boundary itself, which would leave zero time to emit.
+    const fundedUntil = (this.connectedAt as Date).getTime() + event.minute * this.minuteIntervalMs;
     const remainingMs = Math.max(fundedUntil - this.now().getTime(), 0);
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -384,8 +387,11 @@ export class CallMeter {
       `[metering] call ${this.config.callId} minute ${minute} unreported ` +
         `(${this.consecutiveFailures}/${this.maxConsecutiveFailures}): ${detail}`,
     );
+    // A transient failure while reporting `minute` may be retried until that
+    // minute itself has fully elapsed. Using the stale previous minute here
+    // would terminate a call whose first-boundary emit was merely delayed.
     const fundedUntil = this.connectedAt
-      ? this.connectedAt.getTime() + this.minute * this.minuteIntervalMs
+      ? this.connectedAt.getTime() + minute * this.minuteIntervalMs
       : Number.POSITIVE_INFINITY;
     if (
       this.consecutiveFailures >= this.maxConsecutiveFailures ||

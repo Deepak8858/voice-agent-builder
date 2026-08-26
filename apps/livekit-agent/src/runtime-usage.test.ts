@@ -291,8 +291,46 @@ describe('CallMeter', () => {
       await meter.connected('pc-1');
       meter.start();
 
-      await vi.advanceTimersByTimeAsync(60_001);
+      // The boundary fires at 60s reporting minute 2, whose funding runs out at
+      // 120s. Termination must happen at that deadline, not at the boundary.
+      await vi.advanceTimersByTimeAsync(119_999);
+      expect(terminate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2);
       expect(terminate).toHaveBeenCalledWith('metering_unavailable');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not hang up when the first-boundary emit is delayed but confirmed within the reported minute', async () => {
+    vi.useFakeTimers();
+    try {
+      const emit = vi
+        .fn()
+        .mockResolvedValueOnce(decision())
+        .mockImplementationOnce(
+          () =>
+            new Promise<RuntimeUsageDecision>((resolve) => {
+              setTimeout(() => resolve(decision()), 5_000);
+            }),
+        )
+        .mockResolvedValue(decision());
+      const { meter, terminate } = makeMeter({
+        emit,
+        minuteIntervalMs: 60_000,
+        now: () => new Date(Date.now()),
+      });
+      await meter.connected('pc-1');
+      meter.start();
+
+      // The first boundary fires at exactly 60s. A slow-but-successful emit
+      // must not be raced against a zero-width deadline computed from the
+      // previous minute.
+      await vi.advanceTimersByTimeAsync(65_000);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(emit.mock.calls.map((call) => (call[0] as { eventId: string }).eventId)).toContain(
+        'call-1:minute:2',
+      );
     } finally {
       vi.useRealTimers();
     }

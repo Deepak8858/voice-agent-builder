@@ -23,6 +23,9 @@ const SearchResponseSchema = z.object({
 
 export interface KnowledgeSearchRequest {
   agentId: string;
+  /** The admitted call this retrieval serves; the API refuses requests whose
+   * call is not bound to the path agent. */
+  callId: string;
   query: string;
   maxChunks: number;
   retrievalMode: 'agent_scoped' | 'workspace_scoped';
@@ -56,6 +59,7 @@ export function createKnowledgeSearchClient(config: {
           query: request.query,
           max_chunks: request.maxChunks,
           retrieval_mode: request.retrievalMode,
+          call_id: request.callId,
         }),
         signal: AbortSignal.timeout(8_000),
       },
@@ -71,6 +75,7 @@ export function createKnowledgeSearchClient(config: {
 export function createKnowledgeTool(config: {
   spec: AgentSpec;
   agentId: string;
+  callId: string;
   search: KnowledgeSearch;
 }) {
   const maxChunks = retrievalChunkLimit(config.spec);
@@ -90,6 +95,7 @@ export function createKnowledgeTool(config: {
       try {
         const hits = await config.search({
           agentId: config.agentId,
+          callId: config.callId,
           query,
           maxChunks,
           retrievalMode,

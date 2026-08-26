@@ -232,20 +232,66 @@ export class CallAdmissionService {
     try {
       const effective = await this.entitlements.getEffectivePlan(organizationId);
       const organizationLimit = effective.entitlements.concurrentCalls;
-      if (organizationLimit < 1) return false;
+      if (organizationLimit < 1) {
+        await this.auditLeaseReassertionDenied(organizationId, callId, {
+          reason: 'organization_concurrency_reached',
+          organizationLimit,
+        });
+        return false;
+      }
       const lease = await this.concurrency.acquire({ callId, organizationId, organizationLimit });
       if (isLeaseRefused(lease)) {
         this.logger.warn(
           `Concurrency lease could not be re-asserted for call ${callId}: ${lease.reason}`,
         );
+        await this.auditLeaseReassertionDenied(organizationId, callId, {
+          reason: lease.reason,
+          organizationLimit,
+        });
         return false;
       }
+      // Like the admission audit, the reassertion record is evidence that this
+      // organization was allowed to keep occupying a concurrency slot. If it
+      // cannot be written the bridge must not happen, so a throw here falls
+      // through to the catch below and refuses the reassertion.
+      await this.audit.log({
+        organizationId,
+        action: 'billing.call_lease_reasserted',
+        resourceType: 'call',
+        resourceId: callId,
+        metadata: { organizationLimit, leaseExpiresAt: lease.expiresAt },
+      });
       return true;
     } catch (err) {
       this.logger.error(
         `Concurrency lease re-assertion failed for call ${callId}: ${(err as Error).message}`,
       );
       return false;
+    }
+  }
+
+  /**
+   * Best-effort audit of a refused reassertion. A refusal holds no resources,
+   * so an unwritable audit record must not escalate the refusal into a throw —
+   * the caller already receives `false` either way.
+   */
+  private async auditLeaseReassertionDenied(
+    organizationId: string,
+    callId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await this.audit.log({
+        organizationId,
+        action: 'billing.call_lease_reassertion_denied',
+        resourceType: 'call',
+        resourceId: callId,
+        metadata,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Lease reassertion denial audit failed for call ${callId}: ${(err as Error).message}`,
+      );
     }
   }
 

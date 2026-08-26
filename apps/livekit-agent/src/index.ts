@@ -153,6 +153,14 @@ async function runCall(
   const tools: llm.ToolContextEntry[] = [];
   const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
+  // Attribution (entry) guarantees a call id before any session runs; the
+  // internal knowledge and tool routes require it to bind the agent to the
+  // admitted call's tenant, so a missing id fails here rather than as a 403
+  // mid-conversation.
+  const callId = metadata.callId;
+  if (!callId) {
+    throw new Error('[runtime] callId is required before knowledge or tools can be configured.');
+  }
   if (retrievalChunkLimit(spec) > 0) {
     const search = apiBaseUrl && internalApiKey
       ? createKnowledgeSearchClient({ apiBaseUrl, internalApiKey })
@@ -162,6 +170,7 @@ async function runCall(
     const knowledgeTool = createKnowledgeTool({
       spec,
       agentId: metadata.agentId,
+      callId,
       search,
     });
     if (knowledgeTool) tools.push(knowledgeTool);
@@ -177,7 +186,7 @@ async function runCall(
         apiBaseUrl,
         internalApiKey,
         agentId: metadata.agentId,
-        ...(metadata.callId ? { callId: metadata.callId } : {}),
+        callId,
       });
       tools.push(...createGoogleTools({ spec, invoke }));
     } else {
@@ -220,7 +229,7 @@ async function runCall(
   // standard sessions begin automatic turn handling as soon as they start.
   await runWithMeteredCall(
     meter,
-    metadata.providerCallId ?? ctx.room.name ?? (metadata.callId as string),
+    metadata.providerCallId ?? ctx.room.name ?? callId,
     (callback) => ctx.addShutdownCallback(callback),
     startSession,
   );
