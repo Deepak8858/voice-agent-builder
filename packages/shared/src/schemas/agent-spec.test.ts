@@ -99,8 +99,73 @@ describe('AgentSpecSchema', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('preserves flow node positions', () => {
+    const parsed = AgentSpecSchema.parse({
+      ...minimal,
+      flow: {
+        start_node_id: 'start',
+        nodes: [
+          { id: 'start', type: 'start', next: 'end', position: { x: 12, y: 34 } },
+          { id: 'end', type: 'end', position: { x: 56, y: 78 } },
+        ],
+      },
+    });
+
+    expect(parsed.flow?.nodes[0]?.position).toStrictEqual({ x: 12, y: 34 });
+  });
+
+  it('rejects flows with multiple start nodes', () => {
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      flow: {
+        start_node_id: 'start-a',
+        nodes: [
+          { id: 'start-a', type: 'start', next: 'end' },
+          { id: 'start-b', type: 'start', next: 'end' },
+          { id: 'end', type: 'end' },
+        ],
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
   it('rejects unknown agent_type', () => {
     const parsed = AgentSpecSchema.safeParse({ ...minimal, agent_type: 'cold_sales' });
     expect(parsed.success).toBe(false);
+  });
+
+  it('drops a partial allowed_call_window instead of rejecting the spec', () => {
+    // The model sometimes emits the key with the hour fields missing. A partial
+    // window must degrade to "no window" rather than fail the whole spec.
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      compliance: {
+        ...minimal.compliance,
+        allowed_call_window: { timezone: 'America/New_York' },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.compliance.allowed_call_window).toBeUndefined();
+    }
+  });
+
+  it('keeps a complete allowed_call_window', () => {
+    const parsed = AgentSpecSchema.safeParse({
+      ...minimal,
+      compliance: {
+        ...minimal.compliance,
+        allowed_call_window: { timezone: 'America/New_York', start_hour: 9, end_hour: 20 },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.compliance.allowed_call_window).toEqual({
+        timezone: 'America/New_York',
+        start_hour: 9,
+        end_hour: 20,
+      });
+    }
   });
 });

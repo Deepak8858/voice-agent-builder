@@ -8,7 +8,7 @@ const existingCall = {
   agentVersionId: 'version-1',
   direction: 'outbound',
   status: 'queued',
-  provider: 'vapi',
+  provider: 'openai-realtime',
   providerCallId: 'provider-call-existing',
   fromNumber: null,
   toNumber: '+15551234567',
@@ -20,7 +20,7 @@ const existingCall = {
   createdAt: new Date('2026-05-26T12:00:00.000Z'),
 };
 
-function makeService() {
+function makeService(options?: { routeFailure?: Error }) {
   const prisma = {
     workspace: {
       findUniqueOrThrow: vi.fn(async () => ({
@@ -29,10 +29,9 @@ function makeService() {
       })),
     },
     call: {
-      findFirst: vi
-        .fn()
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(existingCall),
+      findFirst: options?.routeFailure
+        ? vi.fn(async () => null)
+        : vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(existingCall),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: 'call-new',
         workspaceId: 'ws-1',
@@ -40,7 +39,7 @@ function makeService() {
         agentVersionId: 'version-1',
         direction: 'outbound',
         status: 'queued',
-        provider: 'vapi',
+        provider: 'openai-realtime',
         providerCallId: 'provider-call-new',
         fromNumber: null,
         toNumber: '+15551234567',
@@ -50,6 +49,10 @@ function makeService() {
         startedAt: new Date(),
         endedAt: null,
         createdAt: new Date(),
+        ...data,
+      })),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'call-new',
         ...data,
       })),
     },
@@ -70,7 +73,7 @@ function makeService() {
   };
   const audit = { log: vi.fn(async () => undefined) };
   const voice = {
-    name: 'vapi',
+    name: 'openai-realtime',
     startOutboundCall: vi.fn(async () => ({
       provider_call_id: 'provider-call-new',
       status: 'queued',
@@ -93,9 +96,19 @@ function makeService() {
   };
   const queue = { enqueue: vi.fn(async () => undefined) };
   const cache = {
-    acquireLock: vi.fn(async () => false),
+    acquireLock: vi.fn(async () => (options?.routeFailure ? true : false)),
     publish: vi.fn(async () => undefined),
     del: vi.fn(async () => undefined),
+  };
+  const admission = {
+    admitCall: vi.fn(async () => ({
+      admitted: true as const,
+      leaseToken: 'lease-1',
+      leaseExpiresAt: new Date().toISOString(),
+      reservedSeconds: 60,
+    })),
+    compensate: vi.fn(async () => undefined),
+    toError: vi.fn(() => new Error('denied')),
   };
   const service = new CallsService(
     prisma as never,
@@ -108,9 +121,19 @@ function makeService() {
     queue as never,
     {} as never,
     cache as never,
+    admission as never,
+    { getEffectivePlan: vi.fn(async () => ({ plan: 'growth' })) } as never,
+    undefined,
+    options?.routeFailure
+      ? ({
+          route: vi.fn(() => {
+            throw options.routeFailure;
+          }),
+        } as never)
+      : undefined,
   );
 
-  return { service, prisma, voice, cache };
+  return { service, prisma, voice, cache, admission };
 }
 
 describe('CallsService.startOutboundCall idempotency', () => {
@@ -124,5 +147,46 @@ describe('CallsService.startOutboundCall idempotency', () => {
     expect(cache.acquireLock).toHaveBeenCalled();
     expect(voice.startOutboundCall).not.toHaveBeenCalled();
     expect(result.id).toBe('call-existing');
+  });
+
+  it('marks a newly created call failed when pipeline routing rejects it', async () => {
+    const { service, prisma, voice, admission } = makeService({
+      routeFailure: new Error('routing unavailable'),
+    });
+
+    await expect(
+      service.startOutboundCall('ws-1', 'agent-1', 'user-1', {
+        to_number: '+15551234567',
+      }),
+    ).rejects.toThrow(/routing unavailable/);
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-new' },
+        data: expect.objectContaining({
+          status: 'failed',
+          outcome: 'pipeline_routing_failed',
+          endedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(voice.startOutboundCall).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Admission reserves a minute of credit and takes a concurrency lease. A
+   * request that short-circuits on the existing call must not do either, or a
+   * double-click would charge the customer twice and hold a slot nothing ever
+   * releases.
+   */
+  it('neither reserves credit nor takes a lease when it returns the duplicate call', async () => {
+    const { service, admission, prisma } = makeService();
+
+    await service.startOutboundCall('ws-1', 'agent-1', 'user-1', { to_number: '+15551234567' });
+
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(admission.compensate).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
   });
 });

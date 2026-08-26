@@ -13,10 +13,10 @@ const demoSharePath =
 
 const navLinks = [
   { href: '/#product', label: 'Product' },
-  { href: '/#workflow', label: 'Workflow' },
-  { href: '/#compliance', label: 'Compliance' },
-  { href: '/#demo-call', label: 'Demo call' },
-  { href: '/#agencies', label: 'Agencies' },
+  { href: '/how-it-works', label: 'Workflow' },
+  { href: '/compliance', label: 'Compliance' },
+  { href: '/templates', label: 'Templates' },
+  { href: '/for-agencies', label: 'Agencies' },
   { href: '/pricing', label: 'Pricing' },
   { href: demoSharePath, label: 'Share page', externalIcon: true },
 ];

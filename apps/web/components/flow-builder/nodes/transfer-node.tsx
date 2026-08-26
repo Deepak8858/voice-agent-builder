@@ -2,14 +2,23 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { NodeCard } from './node-card';
+import { getNodeMeta } from './node-meta';
 
-export const TransferNode = memo(function TransferNode({ data }: NodeProps) {
-  const target = (data?.target_phone as string) ?? 'Transfer to...';
+export const TransferNode = memo(function TransferNode({ data, selected }: NodeProps) {
+  const meta = getNodeMeta('transfer');
+  const target =
+    typeof data?.target_phone === 'string' && data.target_phone.trim() ? data.target_phone : '';
   return (
-    <div className="min-w-[200px] rounded-xl border-2 border-red-400 bg-red-50 px-4 py-3 shadow-sm dark:bg-red-950/40">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-red-500">Transfer</p>
-      <p className="font-mono text-sm text-red-900 dark:text-red-100">{target || 'Human agent'}</p>
-      <Handle type="target" position={Position.Top} className="!bg-red-400" />
-    </div>
+    <NodeCard
+      icon={meta.icon}
+      title="Transfer"
+      theme={meta.theme}
+      preview={target || 'Human agent'}
+      previewMono={Boolean(target)}
+      selected={selected}
+    >
+      <Handle type="target" position={Position.Top} className={meta.theme.handle} />
+    </NodeCard>
   );
 });

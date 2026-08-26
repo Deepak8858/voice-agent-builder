@@ -21,6 +21,7 @@ import {
   type UpdateWhiteLabelSettingsDto,
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
+import { SessionScoped } from '../common/decorators/session-scoped.decorator';
 import { UnauthorizedError } from '../common/errors';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -108,6 +109,14 @@ export class ClientInvitesController {
   }
 }
 
+/**
+ * `WorkspaceGuard` is applied here but `invites/accept` has no `:workspaceId`
+ * param, so it never performed a tenant check. That is correct for this route:
+ * the caller is accepting an invite into a workspace they are not yet a member
+ * of, so a membership check would reject every legitimate request. The invite
+ * token is the authorization, verified in `acceptInvite`. @SessionScoped()
+ * records that intent now that the guard refuses unrecognised routes.
+ */
 @UseGuards(WorkspaceGuard)
 @Controller('invites/accept')
 export class InviteAcceptController {
@@ -115,6 +124,7 @@ export class InviteAcceptController {
 
   @Post()
   @HttpCode(200)
+  @SessionScoped()
   async accept(
     @Body(new ZodValidationPipe(AcceptClientInviteDtoSchema)) dto: AcceptClientInviteDto,
     @CurrentUser() user: SessionUser | undefined,

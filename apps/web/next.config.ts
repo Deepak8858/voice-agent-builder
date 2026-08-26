@@ -55,6 +55,26 @@ const nextConfig: NextConfig = {
   },
   async headers() {
 
+    /**
+     * Long-lived caching for assets served out of `public/`.
+     *
+     * Next.js defaults these to `public, max-age=0`, which forces a
+     * revalidation round trip on every view. The hero image is the landing
+     * page's LCP element, so that default directly cost the largest paint.
+     *
+     * Unlike `/_next/static`, these filenames are not content-hashed, so this
+     * is not `immutable`: a week balances load time against the cost of a
+     * stale asset. Replacing one of these files requires a new name (or a
+     * query string) to invalidate caches before then.
+     *
+     * Set here rather than in nginx on purpose — an nginx `location` block with
+     * its own `add_header` stops inheriting the server-level security headers,
+     * which would strip HSTS and friends from these responses.
+     */
+    const publicAssetCache = [
+      { key: "Cache-Control", value: "public, max-age=604800" },
+    ];
+
     return [
       {
         source: "/:path*",
@@ -65,6 +85,8 @@ const nextConfig: NextConfig = {
           { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=(), payment=()" },
         ],
       },
+      { source: "/images/:path*", headers: publicAssetCache },
+      { source: "/demo/:path*", headers: publicAssetCache },
     ];
   },
 };

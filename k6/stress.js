@@ -37,8 +37,8 @@ export default function () {
   check(healthRes, { 'health ok': (r) => r.status === 200 });
   errorRate.add(healthRes.status !== 200 ? 1 : 0);
 
-  // Agents list (load test)
-  const agentsRes = http.get(`${BASE_URL}/agents`);
+  // Auth-gated agents list (load test)
+  const agentsRes = http.get(`${BASE_URL}/workspaces/00000000-0000-4000-8000-000000000000/agents`);
   check(agentsRes, { 'agents ok': (r) => r.status < 500 });
   errorRate.add(agentsRes.status >= 500 ? 1 : 0);
 
@@ -53,7 +53,7 @@ export default function () {
     },
     input_schema: { type: 'object', properties: {}, required: [] },
   });
-  const postRes = http.post(`${BASE_URL}/tools`, payload, {
+  const postRes = http.post(`${BASE_URL}/workspaces/00000000-0000-4000-8000-000000000000/tools`, payload, {
     headers: { 'Content-Type': 'application/json' },
   });
   check(postRes, { 'post ok or 4xx': (r) => r.status < 500 });

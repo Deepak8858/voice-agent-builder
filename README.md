@@ -16,8 +16,7 @@ voice-agent-builder/
   apps/
     web/            Next.js 16 + React 19 + Tailwind 4 frontend
     api/            NestJS backend (Prisma + Postgres + BullMQ)
-    livekit-agent/  LiveKit voice agent worker
-    voice-edge/     Twilio Media Streams bridge (own voice pipeline)
+    livekit-agent/  LiveKit voice agent worker (OpenAI Realtime + in-house Azure pipeline)
   packages/
     shared/         Zod schemas, DTOs, types, template seed data
     ui/             Shared UI primitives
@@ -25,9 +24,10 @@ voice-agent-builder/
   infra/            Docker, nginx, and deployment assets
 ```
 
-Package manager: **pnpm workspaces** (Node >= 20.11). Workspace dependencies use
-the `workspace:*` protocol, so `npm install` will not resolve this repo — use
-`corepack` + `pnpm` (workflows pin `10.33.2`, `.github/workflows/ci-cd-ec2.yml:27`).
+Package manager: **pnpm workspaces** (Node `^20.20.0 || >=22.22.0`). Workspace
+dependencies use the `workspace:*` protocol, so `npm install` will not resolve this
+repo — use `corepack` + `pnpm` (root `package.json` and
+`.github/workflows/quality-gate.yml:29` pin `10.33.2`).
 
 ## Stack
 
@@ -38,7 +38,7 @@ the `workspace:*` protocol, so `npm install` will not resolve this repo — use
 | Database | Supabase Postgres via Prisma |
 | Queues | Redis/Valkey + BullMQ |
 | Auth | Supabase Auth, JWT verified with pinned algorithm, audience, and issuer (`apps/api/src/auth/supabase-auth.service.ts:119-123`) |
-| Voice | Vapi, Retell, OpenAI Realtime, and LiveKit adapters, plus a dev-only mock (`apps/api/src/voice/adapters/`) |
+| Voice | OpenAI Realtime and the in-house `standard` Azure pipeline via LiveKit, plus a dev-only mock (`apps/api/src/voice/adapters/`) |
 | LLM | Provider adapters under `apps/api/src/llm/` |
 | Validation | Shared Zod schemas at API and UI boundaries |
 
@@ -53,7 +53,7 @@ SIP and OpenAI Realtime. This is **implemented, not necessarily provisioned**: t
 LiveKit variables are optional in config (`apps/api/src/config/env.ts:52-59`), and
 the production deploy only starts the LiveKit profile when all three of
 `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` are present — a partial
-set aborts the deploy (`.github/workflows/deploy-azure-vm.yml:197-206`).
+set aborts the deploy (`.github/workflows/deploy-aws-ec2.yml:476-485`).
 
 Start with:
 
@@ -106,16 +106,15 @@ Required backend env vars are documented in `.env.example`.
 | ------- | ------------ |
 | `pnpm dev` | Runs `@voiceforge/api` and `@voiceforge/web` in parallel |
 | `pnpm build` | Builds shared, API, and web in order |
-| `pnpm typecheck` | Type-checks all six workspaces |
+| `pnpm typecheck` | Type-checks all five workspaces |
 | `pnpm lint` | Lints `@voiceforge/api` and `@voiceforge/web` |
-| `pnpm test` | Runs Vitest for shared, API, and livekit-agent |
+| `pnpm test` | Runs Vitest for shared, API, livekit-agent, and web |
 | `pnpm db:push` | Applies the Prisma schema through `DIRECT_URL` |
 | `pnpm db:seed` | Seeds the MVP agent templates |
 
-The root `test` script does **not** include `apps/web`, which has its own suite
-(`apps/web/package.json`, `apps/web/vitest.config.ts`). CI runs
-`pnpm -r --if-present run test`, which does include it. Run
-`pnpm --filter @voiceforge/web exec vitest run` locally to cover the web tests.
+The root `test` script covers every workspace that has a suite, so a local
+`pnpm test` matches what CI's `pnpm -r --if-present run test` runs. It previously
+omitted `apps/web`, which made a local green misleading.
 
 ## Status
 
@@ -126,10 +125,13 @@ replay-protected webhooks, evaluations, analytics, permissioned tools, calendar
 and CRM integrations with centralized SSRF protection, compliance and consent
 gates, audit logs, billing, and white-label features.
 
-Production runs on a single Azure VM. Deployment is operator-initiated only:
-there is no push- or PR-triggered pipeline in this repo — all three workflows are
-`workflow_dispatch`-gated (`ci-cd-ec2.yml:13-14`, `deploy-gcp.yml:5-6`,
-`deploy-azure-vm.yml:5-12`).
+Production runs on a single AWS EC2 instance in `us-east-1`. Deployment is
+operator-initiated through the sole production workflow,
+`.github/workflows/deploy-aws-ec2.yml`, which requires a full commit SHA and explicit
+confirmation, builds with Depot, pushes immutable images to ECR, and deploys the AWS
+Compose stack over SSH. Separately, `.github/workflows/quality-gate.yml` runs
+automatically on every pull request and push to `main`; branch protection must still
+be configured to make its jobs required merge checks.
 
 For the current evidence-based assessment, including what is configured in
 production versus merely implemented in code, see `ROADMAP.md` and `status.md`.

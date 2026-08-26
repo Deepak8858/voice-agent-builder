@@ -8,7 +8,7 @@ import {
 export interface PricingEstimateInput {
   agents: number;
   minutes: number;
-  outboundCalls: number;
+  concurrentCalls: number;
   tools: number;
   workspaces: number;
   contacts: number;
@@ -18,7 +18,7 @@ export interface PricingEstimate {
   planId: PlanType;
   planName: string;
   priceLabel: string;
-  monthlyPriceUsd: number | null;
+  monthlyPriceUsd: number;
   exceeded: Array<keyof PricingEstimateInput>;
 }
 
@@ -36,10 +36,10 @@ export function estimatePlan(input: PricingEstimateInput): PricingEstimate {
 
 export function formatEstimateReason(estimate: PricingEstimate): string {
   if (estimate.planId === 'enterprise') {
-    return 'Usage requires a custom Enterprise plan.';
+    return 'Usage requires a sales-assisted Enterprise plan.';
   }
   if (estimate.planId === 'free') {
-    return 'Usage fits the Free trial limits.';
+    return 'Usage fits the Free browser-test entitlement.';
   }
   return `Usage fits the ${estimate.planName} plan limits.`;
 }
@@ -48,7 +48,7 @@ function normalizeInput(input: PricingEstimateInput): PricingEstimateInput {
   return {
     agents: nonNegativeInt(input.agents),
     minutes: nonNegativeInt(input.minutes),
-    outboundCalls: nonNegativeInt(input.outboundCalls),
+    concurrentCalls: nonNegativeInt(input.concurrentCalls),
     tools: nonNegativeInt(input.tools),
     workspaces: nonNegativeInt(input.workspaces),
     contacts: nonNegativeInt(input.contacts),
@@ -60,7 +60,7 @@ function fitsPlan(planId: PlanType, input: PricingEstimateInput): boolean {
   return (
     within(input.agents, limits.agents) &&
     within(input.minutes, limits.minutes) &&
-    within(input.outboundCalls, limits.outboundCalls) &&
+    within(input.concurrentCalls, limits.concurrentCalls) &&
     within(input.tools, limits.tools) &&
     within(input.workspaces, limits.workspaces) &&
     within(input.contacts, limits.contacts)
@@ -73,7 +73,7 @@ function buildEstimate(planId: PlanType, input: PricingEstimateInput): PricingEs
   const exceeded = ([
     ['agents', limits.agents],
     ['minutes', limits.minutes],
-    ['outboundCalls', limits.outboundCalls],
+    ['concurrentCalls', limits.concurrentCalls],
     ['tools', limits.tools],
     ['workspaces', limits.workspaces],
     ['contacts', limits.contacts],
@@ -91,7 +91,7 @@ function buildEstimate(planId: PlanType, input: PricingEstimateInput): PricingEs
 }
 
 function within(value: number, limit: number): boolean {
-  return limit === -1 || value <= limit;
+  return value <= limit;
 }
 
 function nonNegativeInt(value: number): number {

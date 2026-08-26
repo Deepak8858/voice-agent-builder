@@ -28,7 +28,7 @@
 | Auth | Clerk/Auth0/WorkOS | Teams/orgs/SSO path |
 
 ## Voice Runtime
-MVP: Mock provider → Vapi/Retell. Advanced: OpenAI Realtime + LiveKit + Twilio/Telnyx SIP.
+MVP: Mock provider → real adapters. Current: OpenAI Realtime (paid plans) and the in-house `standard` pipeline (Azure Speech STT → Azure OpenAI → Azure Speech TTS), both over LiveKit + Twilio/Telnyx SIP.
 
 ## Deployment
 MVP: Vercel + managed Postgres + Upstash + R2 + provider APIs.

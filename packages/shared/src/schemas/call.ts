@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { VoicePipelineSchema } from './billing';
 
 export const CallDirectionSchema = z.enum(['inbound', 'outbound', 'browser_test']);
 export type CallDirection = z.infer<typeof CallDirectionSchema>;
@@ -35,10 +36,25 @@ export const CallTurnSchema = z.object({
 });
 export type CallTurn = z.infer<typeof CallTurnSchema>;
 
+/**
+ * A browser test session is served by one of two transports depending on the
+ * pipeline the plan is entitled to:
+ *
+ * - `realtime`: `web_socket_url` + `token` address the speech-to-speech model
+ *   directly from the browser.
+ * - `standard`: the client joins a LiveKit room (`livekit_url` + `token`) where
+ *   the in-house pipeline worker is already dispatched.
+ *
+ * `pipeline` tells the client which transport to use instead of making it infer
+ * that from which fields happen to be populated.
+ */
 export const TestSessionResultSchema = z.object({
   call_id: z.string().uuid(),
   test_session_id: z.string(),
+  pipeline: VoicePipelineSchema,
   web_socket_url: z.string().nullable(),
+  livekit_url: z.string().nullable(),
+  room_name: z.string().nullable(),
   token: z.string().nullable(),
   expires_at: z.string(),
 });
@@ -52,6 +68,8 @@ export const CallSummarySchema = z.object({
   direction: CallDirectionSchema,
   status: CallStatusSchema,
   provider: z.string(),
+  /** Null only for calls created before pipeline routing existed. */
+  pipeline: VoicePipelineSchema.nullable(),
   from_number: z.string().nullable(),
   to_number: z.string().nullable(),
   contact_name: z.string().nullable(),

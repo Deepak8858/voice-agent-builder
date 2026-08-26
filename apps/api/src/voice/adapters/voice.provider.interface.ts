@@ -1,4 +1,4 @@
-import type { AgentSpec } from '@voiceforge/shared';
+import type { AgentSpec, VoicePipeline } from '@voiceforge/shared';
 
 export interface CreateRuntimeAgentInput {
   workspaceId: string;
@@ -34,6 +34,7 @@ export interface StartOutboundCallInput {
   fromNumber?: string;
   contactName?: string;
   metadata?: Record<string, unknown>;
+  pipeline?: VoicePipeline;
 }
 export interface StartOutboundCallResult {
   provider_call_id: string;
@@ -67,9 +68,7 @@ export interface VoiceRuntimeProvider {
   readonly name: string;
   createAgent(input: CreateRuntimeAgentInput): Promise<CreateRuntimeAgentResult>;
   updateAgent(input: UpdateRuntimeAgentInput): Promise<void>;
-  createBrowserTestSession(
-    input: CreateBrowserTestSessionInput,
-  ): Promise<BrowserTestSessionResult>;
+  createBrowserTestSession(input: CreateBrowserTestSessionInput): Promise<BrowserTestSessionResult>;
   startOutboundCall(input: StartOutboundCallInput): Promise<StartOutboundCallResult>;
   transferCall(input: TransferCallInput): Promise<void>;
   endCall(input: EndCallInput): Promise<void>;

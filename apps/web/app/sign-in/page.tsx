@@ -1,22 +1,28 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
+import { safeRedirectPath } from '@/lib/safe-redirect';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
 import { PostHogIdentityBoundary } from '@/components/analytics/posthog-identity-boundary';
 
-export default function SignInPage() {
-  const router = useRouter();
+function SignInInner() {
+  const search = useSearchParams();
   const supabase = createBrowserSupabaseClient();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const postAuthRedirect = useMemo(
+    () => safeRedirectPath(search?.get('next')),
+    [search],
+  );
 
   async function handleEmailSignIn(e: React.FormEvent) {
     e.preventDefault();
@@ -31,8 +37,10 @@ export default function SignInPage() {
       return;
     }
 
-    router.push('/dashboard');
-    router.refresh();
+    // Full-page navigation so the freshly written Supabase auth cookies are
+    // guaranteed visible to middleware and server components. Client-side
+    // router.push raced the cookie write and left users stranded on /sign-in.
+    window.location.assign(postAuthRedirect);
   }
 
   async function handleGoogleSignIn() {
@@ -40,7 +48,7 @@ export default function SignInPage() {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(postAuthRedirect)}`,
       },
     });
 
@@ -86,7 +94,15 @@ export default function SignInPage() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password">Password</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">Password</Label>
+              <Link
+                href="/forgot-password"
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Forgot password?
+              </Link>
+            </div>
             <Input
               id="password"
               type="password"
@@ -129,5 +145,19 @@ export default function SignInPage() {
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-background">
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        </div>
+      }
+    >
+      <SignInInner />
+    </Suspense>
   );
 }

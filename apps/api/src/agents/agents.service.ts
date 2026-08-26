@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentDetail,
@@ -15,15 +15,20 @@ import { AgentSpecSchema } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { KnowledgeService } from '../knowledge/knowledge.service';
-import { AgentNotFoundError, AgentSpecInvalidError } from '../common/errors';
+import { AgentNotFoundError, AgentSpecInvalidError, AppError } from '../common/errors';
 import { CacheInvalidator } from '../common/cache-invalidator';
 import { CacheService } from '../cache/cache.service';
+import { ResponseCacheService } from '../cache/response-cache.service';
 import { LLM_PROVIDER_TOKEN, type LlmAgentGenerator } from '../llm/llm.provider.interface';
 import { VOICE_PROVIDER_TOKEN } from '../voice/voice.module';
 import type { VoiceRuntimeProvider } from '../voice/adapters/voice.provider.interface';
 import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 import { BillingService } from '../billing/billing.service';
 import { PostHogService } from '../posthog/posthog.service';
+import { GOOGLE_TOOL_PRESETS } from '../google-connection/google-tool-presets';
+
+/** Short enough that a stale list self-heals even if invalidation is missed. */
+const AGENTS_LIST_TTL_SECONDS = 60;
 
 export interface ListAgentsResult {
   agents: AgentSummary[];
@@ -34,6 +39,7 @@ export type FlowSaveNode = {
   id: string;
   type: string;
   data: unknown;
+  position?: { x: number; y: number };
 };
 
 export type FlowSaveEdge = {
@@ -66,6 +72,7 @@ export class AgentsService {
     private readonly billing: BillingService,
     @Optional() private readonly voiceRegistry?: VoiceProviderRegistry,
     @Optional() private readonly posthog?: PostHogService,
+    @Optional() private readonly responseCache?: ResponseCacheService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -74,28 +81,58 @@ export class AgentsService {
       requested.length > 0
         ? await this.knowledge.resolveReferencedSourceIds(workspaceId, null, requested)
         : [];
-    return this.generator.generate({ ...dto, knowledge_source_ids: validIds });
-  }
-
-  getStreamingGenerator(): ((input: GenerateAgentDto) => AsyncGenerator<string>) | null {
-    if (typeof this.generator.generateStream === 'function') {
-      return this.generator.generateStream as (input: GenerateAgentDto) => AsyncGenerator<string>;
+    try {
+      return await this.generator.generate({ ...dto, knowledge_source_ids: validIds });
+    } catch (err) {
+      // Adapters abort via AbortSignal.timeout, which throws a DOMException
+      // named TimeoutError. Surface it as a 504 envelope instead of a 500.
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new AppError(
+          'LLM_PROVIDER_ERROR',
+          'Agent generation timed out. Please try again.',
+          HttpStatus.GATEWAY_TIMEOUT,
+        );
+      }
+      throw err;
     }
-    return null;
   }
 
-  async list(workspaceId: string): Promise<ListAgentsResult> {
+  /**
+   * The agents list is the single hottest authenticated read: it backs the
+   * dashboard home, the agents page, and the sidebar counts, so one navigation
+   * can request it several times.
+   *
+   * When a `userId` is supplied the result is served from the tenant-scoped
+   * response cache (`ws:{workspaceId}:user:{userId}:agents`), which cannot be
+   * shared across workspaces or users. Without one it falls back to the older
+   * workspace-wide list key, which holds the same workspace-scoped rows.
+   */
+  async list(workspaceId: string, userId?: string): Promise<ListAgentsResult> {
+    const load = async (): Promise<AgentSummary[]> => {
+      const agents = await this.prisma.agent.findMany({
+        where: { workspaceId },
+        orderBy: { updatedAt: 'desc' },
+      });
+      return agents.map((a) => this.toSummary(a));
+    };
+
+    if (this.responseCache && userId) {
+      const result = await this.responseCache.readThroughWithStatus(
+        { workspaceId, userId },
+        'agents',
+        AGENTS_LIST_TTL_SECONDS,
+        load,
+      );
+      return { agents: result.value, fromCache: result.fromCache };
+    }
+
     const key = `agents:list:${workspaceId}`;
     const cached = await this.cache.get<AgentSummary[]>(key);
     if (cached !== null) {
       return { agents: cached, fromCache: true };
     }
-    const agents = await this.prisma.agent.findMany({
-      where: { workspaceId },
-      orderBy: { updatedAt: 'desc' },
-    });
-    const summaries = agents.map((a) => this.toSummary(a));
-    await this.cache.set(key, summaries, 60);
+    const summaries = await load();
+    await this.cache.set(key, summaries, AGENTS_LIST_TTL_SECONDS);
     return { agents: summaries, fromCache: false };
   }
 
@@ -311,7 +348,7 @@ export class AgentsService {
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
 
     let versionToPublish = latest;
-    if (agent.specJson && (!latest || !jsonValuesEqual(parsed.data, latest.specJson))) {
+    if (!latest || !jsonValuesEqual(parsed.data, latest.specJson)) {
       const nextNumber = (latest?.versionNumber ?? 0) + 1;
       versionToPublish = await this.prisma.agentVersion.create({
         data: {
@@ -368,6 +405,7 @@ export class AgentsService {
     await this.prisma.agent.update({
       where: { id: agentId },
       data: {
+        specJson: parsed.data as unknown as Prisma.InputJsonValue,
         status: deploymentStatus === 'deployed' ? 'published' : agent.status,
         activeVersionId: deploymentStatus === 'deployed' ? versionToPublish.id : agent.activeVersionId,
       },
@@ -473,6 +511,12 @@ export class AgentsService {
       resourceType: 'agent',
       resourceId: agentId,
     });
+
+    // A flow save changes the agent row (specJson and updatedAt), which the
+    // cached list reflects; without this the list could serve pre-save data
+    // for the rest of the TTL. Every other agent mutation already does this.
+    await this.cacheInvalidator.invalidateAgentList(workspaceId);
+
     return this.get(workspaceId, agentId);
   }
 
@@ -496,33 +540,41 @@ export class AgentsService {
     spec: AgentSpec | Record<string, unknown>,
   ): Promise<AgentSpec | Record<string, unknown>> {
     const flow = (spec as AgentSpec).flow;
-    const toolNames = new Set(
+    const referencedNames = new Set(
       (flow?.nodes ?? [])
         .filter((node) => node.type === 'tool_call')
         .map((node) => (node.type === 'tool_call' ? node.tool_name.trim() : ''))
         .filter(Boolean),
     );
-    if (toolNames.size === 0) return spec;
+    const googleToolNames = new Set(GOOGLE_TOOL_PRESETS.map((preset) => preset.name));
+    const candidateNames = new Set([...referencedNames, ...googleToolNames]);
 
     const rows = await this.prisma.integrationTool.findMany({
       where: {
         workspaceId,
         enabled: true,
-        name: { in: [...toolNames] },
+        name: { in: [...candidateNames] },
         OR: [{ agentId: null }, { agentId }],
       },
       orderBy: { createdAt: 'desc' },
     });
-    if (rows.length === 0) return spec;
+    const eligibleRows = rows.filter(
+      (row) =>
+        referencedNames.has(row.name) ||
+        (row.agentId === null && googleToolNames.has(row.name)),
+    );
 
     const merged = new Map<string, AgentTool>();
     const existingTools = Array.isArray((spec as AgentSpec).tools)
       ? ((spec as AgentSpec).tools as AgentTool[])
       : [];
     for (const tool of existingTools) {
-      merged.set(tool.name, tool);
+      // Provisioned Google tools are reconciled from enabled database rows.
+      // This removes stale declarations when OAuth is disconnected and the
+      // corresponding IntegrationTools are disabled.
+      if (!googleToolNames.has(tool.name)) merged.set(tool.name, tool);
     }
-    for (const row of rows) {
+    for (const row of eligibleRows) {
       merged.set(row.name, {
         name: row.name,
         description: row.description,
@@ -587,6 +639,7 @@ function toAgentFlowNode(
   const base = {
     id: node.id,
     ...(label ? { label } : {}),
+    ...(node.position ? { position: node.position } : {}),
   };
 
   switch (normalizeFlowType(node.type)) {

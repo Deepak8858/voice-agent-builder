@@ -1,1 +1,1 @@
-export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter, Badge, badgeVariants, Input, Textarea, Label, Separator, Skeleton } from '@voiceforge/ui'
+export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter, Badge, badgeVariants, Input, Textarea, Label, Separator, Skeleton } from '@voiceforge/ui/primitives'

@@ -44,6 +44,146 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_PROVIDER=mock/);
   });
 
+  it('normalizes a supported voice provider value before returning it', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      VOICE_PROVIDER: '  OPENAI-REALTIME  ',
+    });
+
+    const mod = await import('./env');
+    expect(mod.env.VOICE_PROVIDER).toBe('openai-realtime');
+  });
+
+  /**
+   * Removing the Vapi/Retell variables must not break an existing deployment
+   * that still sets them: a boot failure here would take the whole API down on
+   * upgrade. Zod strips unknown keys, so the contract is "boot, then warn".
+   */
+  it('boots with stale Vapi/Retell variables and reports them as ignored', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'vapi',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      VAPI_API_KEY: 'stale-vapi-key',
+      RETELL_VOICE_ID: '11labs-Adrian',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const mod = await import('./env');
+
+      // A retired selection resolves to the supported Realtime adapter rather
+      // than aborting boot on a value the operator cannot yet change.
+      expect(mod.env.VOICE_PROVIDER).toBe('openai-realtime');
+      expect(mod.env).not.toHaveProperty('VAPI_API_KEY');
+      expect(mod.findRemovedVoiceEnvVars()).toEqual([
+        'VAPI_API_KEY',
+        'RETELL_VOICE_ID',
+        'VOICE_PROVIDER',
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('VAPI_API_KEY'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('RETELL_VOICE_ID'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays quiet about removed voice variables when none are set', async () => {
+    vi.resetModules();
+    restoreEnv();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('VAPI_') || key.startsWith('RETELL_')) delete process.env[key];
+    }
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    });
+
+    const mod = await import('./env');
+    expect(mod.findRemovedVoiceEnvVars()).toEqual([]);
+  });
+
+  describe('in-house standard pipeline configuration', () => {
+    const productionBase = {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    };
+    const azureBase = {
+      AZURE_OPENAI_ENDPOINT: 'https://voiceforge.openai.azure.com',
+      AZURE_OPENAI_API_KEY: 'azure-openai-key',
+      AZURE_VOICE_LLM_DEPLOYMENT: 'voice-brain',
+      AZURE_SPEECH_KEY: 'azure-speech-key',
+      AZURE_SPEECH_REGION: 'eastus',
+    };
+
+    it('defaults off so no plan is routed to an unconfigured pipeline', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(false);
+      expect(mod.env.AZURE_TTS_VOICE).toBe('en-US-AvaMultilingualNeural');
+    });
+
+    it.each(Object.keys(azureBase))(
+      'fails production boot when %s is missing but the pipeline is enabled',
+      async (missing) => {
+        vi.resetModules();
+        restoreEnv();
+        const azure = { ...azureBase } as Record<string, string>;
+        delete azure[missing];
+        Object.assign(process.env, productionBase, azure, {
+          VOICE_STANDARD_PIPELINE_ENABLED: 'true',
+        });
+
+        await expect(import('./env')).rejects.toThrow(new RegExp(missing));
+      },
+    );
+
+    it('accepts a fully configured pipeline in production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, azureBase, {
+        VOICE_STANDARD_PIPELINE_ENABLED: 'true',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(true);
+      expect(mod.env.AZURE_VOICE_LLM_DEPLOYMENT).toBe('voice-brain');
+    });
+
+    it('does not require Azure credentials while the pipeline is disabled', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, { VOICE_STANDARD_PIPELINE_ENABLED: 'false' });
+
+      const mod = await import('./env');
+      expect(mod.env.VOICE_STANDARD_PIPELINE_ENABLED).toBe(false);
+      expect(mod.env.AZURE_SPEECH_KEY).toBeUndefined();
+    });
+  });
+
   it('does not reject a malformed optional PostHog host while analytics is disabled', async () => {
     vi.resetModules();
     restoreEnv();
@@ -100,16 +240,20 @@ describe('env validation', () => {
 
   /**
    * WEB_BASE_URL defaults to localhost and is what Stripe redirects customers
-   * back to after checkout. A live deployment that forgets to set it takes real
-   * payments and then sends the customer to a dead address — a failure no boot
-   * or health check would surface.
+   * back to after checkout. A deployment with working Stripe credentials that
+   * forgets to set it takes real payments and then sends the customer to a dead
+   * address — a failure no boot or health check would surface.
    */
-  describe('live billing requires a reachable public URL', () => {
-    const liveBase = {
+  describe('configured Stripe Checkout requires a reachable public URL', () => {
+    const configuredBase = {
       NODE_ENV: 'development',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'development-jwt-secret-with-32-chars',
-      BILLING_MODE: 'live',
+      STRIPE_SECRET_KEY: 'configured-test-value',
+      STRIPE_WEBHOOK_SECRET: 'whsec_configured',
+      STRIPE_STARTER_PRICE_ID: 'price_starter',
+      STRIPE_GROWTH_PRICE_ID: 'price_growth',
+      STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
     };
 
     it.each([
@@ -118,25 +262,40 @@ describe('env validation', () => {
       ['a loopback IP', 'https://127.0.0.1:3000'],
       ['plain HTTP on a real domain', 'http://app.voiceforge.example'],
       ['a non-absolute value', 'app.voiceforge.example'],
-    ])('rejects %s when BILLING_MODE=live', async (_label, webBaseUrl) => {
+    ])('rejects %s when Stripe Checkout is configured', async (_label, webBaseUrl) => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, liveBase);
+      Object.assign(process.env, configuredBase);
       if (webBaseUrl !== undefined) process.env.WEB_BASE_URL = webBaseUrl;
 
       await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
     });
 
-    it('accepts an absolute HTTPS URL when BILLING_MODE=live', async () => {
+    it('accepts an absolute HTTPS URL when Stripe Checkout is configured', async () => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, liveBase, { WEB_BASE_URL: 'https://deep-ak.dev' });
+      Object.assign(process.env, configuredBase, { WEB_BASE_URL: 'https://incfrog.ai' });
 
       const mod = await import('./env');
-      expect(mod.env.WEB_BASE_URL).toBe('https://deep-ak.dev');
+      expect(mod.env.WEB_BASE_URL).toBe('https://incfrog.ai');
     });
 
-    it('leaves the localhost default alone in demo mode', async () => {
+    /**
+     * A half-configured deployment must not be treated as live. It cannot take
+     * payments at all, so localhost redirects are harmless and must not block
+     * boot for the rest of the product.
+     */
+    it('leaves the localhost default alone when the minute-pack price is missing', async () => {
+      vi.resetModules();
+      restoreEnv();
+      const { STRIPE_MINUTE_PACK_PRICE_ID: _omitted, ...partial } = configuredBase;
+      Object.assign(process.env, partial);
+
+      const mod = await import('./env');
+      expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    it('defaults Stripe Tax off so launch never collects tax by accident', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, {
@@ -146,8 +305,68 @@ describe('env validation', () => {
       });
 
       const mod = await import('./env');
-      expect(mod.env.BILLING_MODE).toBe('demo');
+      expect(mod.env.STRIPE_TAX_ENABLED).toBe(false);
       expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
+    });
+  });
+
+  describe('Google OAuth redirect URI', () => {
+    const googleBase = {
+      REDIS_URL: 'redis://localhost:6379',
+      GOOGLE_CLIENT_ID: 'google-client-id',
+      GOOGLE_CLIENT_SECRET: 'google-client-secret',
+    };
+    const productionBase = {
+      ...googleBase,
+      NODE_ENV: 'production',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    };
+
+    it.each([
+      ['a localhost HTTP URL', 'http://localhost:3000/integrations/google/callback'],
+      ['a localhost HTTPS URL', 'https://localhost:3000/integrations/google/callback'],
+      ['a loopback IP', 'https://127.0.0.1/integrations/google/callback'],
+      ['the unspecified IPv4 address', 'https://0.0.0.0/integrations/google/callback'],
+      ['the unspecified IPv6 address', 'https://[::]/integrations/google/callback'],
+      ['plain HTTP on a real domain', 'http://app.voiceforge.example/callback'],
+    ])('rejects %s in production', async (_label, uri) => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, { GOOGLE_OAUTH_REDIRECT_URI: uri });
+
+      await expect(import('./env')).rejects.toThrow(/GOOGLE_OAUTH_REDIRECT_URI/);
+    });
+
+    it('accepts a non-local HTTPS URL in production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, {
+        GOOGLE_OAUTH_REDIRECT_URI: 'https://app.voiceforge.example/integrations/google/callback',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.GOOGLE_OAUTH_REDIRECT_URI).toBe(
+        'https://app.voiceforge.example/integrations/google/callback',
+      );
+    });
+
+    it('accepts a localhost HTTP URL outside production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, googleBase, {
+        NODE_ENV: 'development',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        GOOGLE_OAUTH_REDIRECT_URI: 'http://localhost:3000/integrations/google/callback',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.GOOGLE_OAUTH_REDIRECT_URI).toBe(
+        'http://localhost:3000/integrations/google/callback',
+      );
     });
   });
 

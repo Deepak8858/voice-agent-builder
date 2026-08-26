@@ -3,12 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 const envState = vi.hoisted(() => ({
   NODE_ENV: 'test',
 } as {
-  VOICE_PROVIDER?: 'mock' | 'vapi' | 'twilio' | 'openai-realtime' | 'retell';
+  VOICE_PROVIDER?: 'mock' | 'twilio' | 'openai-realtime';
   NODE_ENV: 'development' | 'test' | 'production';
-  VAPI_API_KEY?: string;
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
-  RETELL_API_KEY?: string;
+  OPENAI_API_KEY?: string;
 }));
 
 vi.mock('../config/env', () => ({ env: envState }));
@@ -20,28 +19,38 @@ describe('VoiceModule provider selection', () => {
     envState.VOICE_PROVIDER = 'openai-realtime';
 
     const provider = resolveVoiceProviderForTest(
-      { name: 'vapi' } as never,
       { name: 'twilio' } as never,
       { name: 'openai-realtime' } as never,
-      { name: 'retell' } as never,
       { name: 'mock' } as never,
     );
 
     expect(provider.name).toBe('openai-realtime');
   });
 
-  it('selects the Retell adapter when credentials are configured', () => {
-    envState.VOICE_PROVIDER = 'retell';
-    envState.RETELL_API_KEY = 'retell-key';
+  it('selects the Twilio adapter when credentials are configured', () => {
+    envState.VOICE_PROVIDER = 'twilio';
+    envState.TWILIO_ACCOUNT_SID = 'AC_test';
+    envState.TWILIO_AUTH_TOKEN = 'token';
 
     const provider = resolveVoiceProviderForTest(
-      { name: 'vapi' } as never,
       { name: 'twilio' } as never,
       { name: 'openai-realtime' } as never,
-      { name: 'retell' } as never,
       { name: 'mock' } as never,
     );
 
-    expect(provider.name).toBe('retell');
+    expect(provider.name).toBe('twilio');
+  });
+
+  it('falls back to the mock adapter outside production when nothing is configured', () => {
+    envState.VOICE_PROVIDER = undefined;
+    envState.NODE_ENV = 'test';
+
+    const provider = resolveVoiceProviderForTest(
+      { name: 'twilio' } as never,
+      { name: 'openai-realtime' } as never,
+      { name: 'mock' } as never,
+    );
+
+    expect(provider.name).toBe('mock');
   });
 });

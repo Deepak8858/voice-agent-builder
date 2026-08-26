@@ -1,1 +1,1 @@
-export { Tabs, TabsList, TabsTrigger, TabsContent } from '@voiceforge/ui'
+export { Tabs, TabsList, TabsTrigger, TabsContent } from '@voiceforge/ui/tabs'

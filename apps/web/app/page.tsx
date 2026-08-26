@@ -3,6 +3,8 @@ import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DemoAudioPlayer } from '@/components/demo-audio-player';
+import { JsonLd } from '@/lib/seo';
+import { siteUrl } from '@/lib/site-url';
 import {
   ArrowRight,
   AudioLines,
@@ -34,10 +36,12 @@ type IconItem = {
 };
 
 const heroStats = [
-  { value: '5 min', label: 'from plain prompt to mock call' },
+  { value: '5 min', label: 'from plain prompt to a tested call' },
   { value: 'Spec', label: 'Agent JSON before every publish' },
-  { value: '0', label: 'outbound calls before compliance checks' },
-  { value: 'Multi', label: 'provider adapter runtime path' },
+  // Stated as a rule rather than a count: "0 outbound calls" read as "no calls
+  // are made at all", which is the opposite of the product claim.
+  { value: '100%', label: 'of outbound calls pass compliance gates first' },
+  { value: '2', label: 'voice pipelines: in-house Azure and OpenAI Realtime' },
 ];
 
 const workflowSteps = [
@@ -56,8 +60,8 @@ const workflowSteps = [
   {
     step: '03',
     icon: PhoneCall,
-    title: 'Run the mock call lab',
-    body: 'Test a realistic call, transcript, event stream, and outcome before connecting any live telephony provider.',
+    title: 'Test the call before it ships',
+    body: 'Run a full call in the browser with live transcript, event stream, and outcome before you point real telephony at it.',
   },
   {
     step: '04',
@@ -93,8 +97,8 @@ const proofPoints: IconItem[] = [
   },
   {
     icon: SlidersHorizontal,
-    title: 'Provider adapters',
-    body: 'Mock runtime comes first, with the same product surface ready for Vapi, Retell, Twilio, and future providers.',
+    title: 'Two voice pipelines, one contract',
+    body: 'Our own Azure speech-to-speech pipeline and OpenAI Realtime run behind one runtime interface, so the pipeline your plan uses never changes how the agent is built.',
   },
 ];
 
@@ -117,22 +121,27 @@ const productionControls: IconItem[] = [
 ];
 
 const transcriptLines = [
-  { speaker: 'Agent', text: 'Thanks for calling Smile Dental. Are you calling to book, reschedule, or ask about an emergency?' },
+  {
+    speaker: 'Agent',
+    text: 'Thanks for calling Smile Dental. Are you calling to book, reschedule, or ask about an emergency?',
+  },
   { speaker: 'Caller', text: 'I need a cleaning next week, preferably morning.' },
-  { speaker: 'Agent', text: 'I can help with that. I found two morning openings and can confirm the best one.' },
+  {
+    speaker: 'Agent',
+    text: 'I can help with that. I found two morning openings and can confirm the best one.',
+  },
 ];
 
 const integrationRows = [
   ['Supabase', 'PostgreSQL', 'Zod schemas'],
-  ['Mock voice runtime', 'Vapi adapter', 'Retell-ready'],
+  ['Azure AI Speech', 'Azure AI Foundry', 'OpenAI Realtime'],
+  ['Twilio', 'LiveKit / BYO telephony', 'In-house voice pipeline'],
   ['Audit logs', 'Compliance checks', 'White-label workspaces'],
 ];
 
 function Eyebrow({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${className}`}>
-      {children}
-    </p>
+    <p className={`text-xs font-semibold uppercase tracking-[0.22em] ${className}`}>{children}</p>
   );
 }
 
@@ -157,7 +166,9 @@ function SectionHeading({
       >
         {title}
       </h2>
-      <p className={`mt-5 break-words text-lg leading-8 ${dark ? 'text-[#cdd8cf]' : 'text-[#51615a]'}`}>
+      <p
+        className={`mt-5 break-words text-lg leading-8 ${dark ? 'text-[#cdd8cf]' : 'text-[#51615a]'}`}
+      >
         {body}
       </p>
     </div>
@@ -165,8 +176,25 @@ function SectionHeading({
 }
 
 export default function Home() {
+  const softwareApplication = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: 'VoiceForge AI',
+    applicationCategory: 'BusinessApplication',
+    operatingSystem: 'Web',
+    url: siteUrl,
+    description:
+      'A spec-first voice AI operating system for building, testing, governing, and white-labeling client voice-agent deployments.',
+    offers: [
+      { '@type': 'Offer', name: 'Free', price: '0', priceCurrency: 'USD' },
+      { '@type': 'Offer', name: 'Starter', price: '49', priceCurrency: 'USD' },
+      { '@type': 'Offer', name: 'Growth', price: '149', priceCurrency: 'USD' },
+      { '@type': 'Offer', name: 'Enterprise', price: '499', priceCurrency: 'USD' },
+    ],
+  };
   return (
     <div className="flex flex-1 flex-col overflow-x-hidden bg-[#f3efe5] text-[#07130f]">
+      <JsonLd data={softwareApplication} />
       <section className="relative isolate overflow-hidden bg-[#06130f] text-[#fbf5e7]">
         <Image
           src="/images/voiceforge-builder-preview.png"
@@ -192,9 +220,9 @@ export default function Home() {
             </h1>
 
             <p className="mt-6 max-w-3xl text-xl leading-8 text-[#dfe8dd] md:text-2xl md:leading-9">
-              Build voice agents from natural language, govern every behavior with
-              Agent Spec JSON, test the call before it goes live, and hand clients a
-              branded workspace they can trust.
+              Build voice agents from natural language, govern every behavior with Agent Spec JSON,
+              test the call before it goes live, and hand clients a branded workspace they can
+              trust.
             </p>
 
             <div className="mt-8 flex w-full max-w-[23rem] flex-col gap-3 sm:max-w-none sm:flex-row">
@@ -221,7 +249,6 @@ export default function Home() {
               </Button>
             </div>
           </div>
-
         </div>
       </section>
 
@@ -244,7 +271,7 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-2 text-sm font-medium text-[#394840] sm:grid-cols-5">
               <span>Prompt</span>
               <span>Spec JSON</span>
-              <span>Mock call</span>
+              <span>Test call</span>
               <span>Analytics</span>
               <span>White label</span>
             </div>
@@ -252,11 +279,14 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="workflow" className="scroll-mt-32 px-6 pb-20 pt-8 md:scroll-mt-24 md:px-8 md:pb-28">
+      <section
+        id="workflow"
+        className="scroll-mt-32 px-6 pb-20 pt-8 md:scroll-mt-24 md:px-8 md:pb-28"
+      >
         <div className="mx-auto w-full max-w-7xl">
           <SectionHeading
             eyebrow="From brief to live workflow"
-            title="A landing page that shows the product moving."
+            title="Four steps from brief to a monitored live agent."
             body="VoiceForge is not a prompt wrapper. It is a controlled build, test, publish, and monitor loop for teams that need voice agents to survive real customer calls."
           />
 
@@ -280,7 +310,10 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="product" className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28">
+      <section
+        id="product"
+        className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28"
+      >
         <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
           <div className="relative min-w-0">
             <div className="absolute -left-4 -top-4 hidden h-28 w-28 border-l border-t border-[#bfff4a]/40 md:block" />
@@ -308,7 +341,7 @@ export default function Home() {
             <SectionHeading
               eyebrow="Product surface"
               title="Show the builder, then prove the guardrails."
-              body="The page now leads with the working system: prompt generation, versioned specs, mock calls, publish controls, transcripts, analytics, and client branding."
+              body="One system covers the whole lifecycle: prompt generation, versioned specs, test calls, publish controls, transcripts, analytics, and client branding."
               dark
             />
             <ul className="mt-8 space-y-4">
@@ -323,17 +356,23 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="compliance" className="scroll-mt-32 bg-[#f3efe5] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28">
+      <section
+        id="compliance"
+        className="scroll-mt-32 bg-[#f3efe5] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28"
+      >
         <div className="mx-auto w-full max-w-7xl">
           <div className="grid gap-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-end">
             <SectionHeading
               eyebrow="Real-world controls"
               title="Built for calls that have legal, brand, and revenue consequences."
-              body="Every promise on the page maps back to an engineering rule: validated specs, scoped data, permissioned tools, adapter boundaries, audit logs, and compliance checks before outbound execution."
+              body="Every promise here maps back to an engineering rule: validated specs, scoped data, permissioned tools, adapter boundaries, audit logs, and compliance checks before outbound execution."
             />
             <div className="grid gap-3 sm:grid-cols-2">
               {proofPoints.map((point) => (
-                <div key={point.title} className="rounded-lg border border-[#d7d0c3] bg-[#fffaf0] p-5">
+                <div
+                  key={point.title}
+                  className="rounded-lg border border-[#d7d0c3] bg-[#fffaf0] p-5"
+                >
                   <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#07130f] text-[#bfff4a]">
                     <point.icon className="h-5 w-5" />
                   </div>
@@ -356,13 +395,16 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="demo-call" className="scroll-mt-32 bg-[#fbf6ea] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28">
+      <section
+        id="demo-call"
+        className="scroll-mt-32 bg-[#fbf6ea] px-6 py-20 md:scroll-mt-24 md:px-8 md:py-28"
+      >
         <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
           <div className="min-w-0">
             <SectionHeading
               eyebrow="Public demo"
               title="Let prospects hear the product before they read the docs."
-              body="The demo call section connects the marketing story to the same WAV asset used by published public agents, then frames the transcript and outcome signals buyers expect."
+              body="Play a real 30-second call from a published agent, then read the transcript and the outcome signals your buyers will ask about."
             />
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Button
@@ -409,7 +451,10 @@ export default function Home() {
 
             <div className="mt-8 space-y-3">
               {transcriptLines.map((line) => (
-                <div key={`${line.speaker}-${line.text}`} className="grid gap-2 rounded-md border border-[#e1dacd] bg-[#fbf6ea] p-4 sm:grid-cols-[5rem_1fr]">
+                <div
+                  key={`${line.speaker}-${line.text}`}
+                  className="grid gap-2 rounded-md border border-[#e1dacd] bg-[#fbf6ea] p-4 sm:grid-cols-[5rem_1fr]"
+                >
                   <span className="font-mono text-xs font-medium uppercase text-[#23594f]">
                     {line.speaker}
                   </span>
@@ -421,7 +466,10 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="agencies" className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28">
+      <section
+        id="agencies"
+        className="scroll-mt-32 bg-[#07130f] px-6 py-20 text-[#fbf5e7] md:scroll-mt-24 md:px-8 md:py-28"
+      >
         <div className="mx-auto grid w-full max-w-7xl gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
           <SectionHeading
             eyebrow="Agency-ready"
@@ -435,16 +483,16 @@ export default function Home() {
               <Paintbrush className="h-6 w-6 text-[#bfff4a]" />
               <h3 className="mt-5 text-lg font-semibold text-[#fbf5e7]">White-label control</h3>
               <p className="mt-3 text-sm leading-6 text-[#cdd8cf]">
-                Configure logos, colors, workspace settings, and client-facing pages without
-                forking the product.
+                Configure logos, colors, workspace settings, and client-facing pages without forking
+                the product.
               </p>
             </div>
             <div className="rounded-lg border border-white/15 bg-white/[0.06] p-6">
               <Building2 className="h-6 w-6 text-[#72e4ff]" />
               <h3 className="mt-5 text-lg font-semibold text-[#fbf5e7]">Client isolation</h3>
               <p className="mt-3 text-sm leading-6 text-[#cdd8cf]">
-                Client users only see their workspace, calls, agents, knowledge, analytics,
-                and settings.
+                Client users only see their workspace, calls, agents, knowledge, analytics, and
+                settings.
               </p>
             </div>
             <div className="rounded-lg border border-white/15 bg-white/[0.06] p-6 sm:col-span-2">
@@ -511,17 +559,23 @@ export default function Home() {
             <Link href="/#product" className="transition hover:text-[#23594f]">
               Product
             </Link>
-            <Link href="/#workflow" className="transition hover:text-[#23594f]">
+            <Link href="/how-it-works" className="transition hover:text-[#23594f]">
               Workflow
             </Link>
-            <Link href="/#compliance" className="transition hover:text-[#23594f]">
+            <Link href="/compliance" className="transition hover:text-[#23594f]">
               Compliance
             </Link>
-            <Link href="/#demo-call" className="transition hover:text-[#23594f]">
-              Demo call
+            <Link href="/templates" className="transition hover:text-[#23594f]">
+              Templates
             </Link>
-            <Link href="/#agencies" className="transition hover:text-[#23594f]">
+            <Link href="/for-agencies" className="transition hover:text-[#23594f]">
               Agencies
+            </Link>
+            <Link href="/integrations" className="transition hover:text-[#23594f]">
+              Integrations
+            </Link>
+            <Link href="/resources" className="transition hover:text-[#23594f]">
+              Resources
             </Link>
             <Link href="/pricing" className="transition hover:text-[#23594f]">
               Pricing
@@ -534,6 +588,18 @@ export default function Home() {
             </Link>
             <Link href="/sign-in" className="transition hover:text-[#23594f]">
               Sign in
+            </Link>
+            <Link href="/services" className="transition hover:text-[#23594f]">
+              Services
+            </Link>
+            <Link href="/support" className="transition hover:text-[#23594f]">
+              Support
+            </Link>
+            <Link href="/refund" className="transition hover:text-[#23594f]">
+              Refunds
+            </Link>
+            <Link href="/privacypolicy" className="transition hover:text-[#23594f]">
+              Privacy
             </Link>
           </nav>
           <p className="text-sm text-[#66736c]">&copy; 2026 VoiceForge AI</p>

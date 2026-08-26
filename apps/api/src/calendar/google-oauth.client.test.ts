@@ -1,5 +1,9 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { GoogleOAuthClient, GOOGLE_TOKEN_ENDPOINT } from './google-oauth.client';
+import {
+  GoogleOAuthClient,
+  GOOGLE_TOKEN_ENDPOINT,
+  GOOGLE_REAUTH_DETAILS_KEY,
+} from './google-oauth.client';
 
 const envMock = vi.hoisted(() => ({
   env: {
@@ -111,7 +115,41 @@ describe('GoogleOAuthClient.refreshAccessToken', () => {
     ).rejects.toMatchObject({
       errorCode: 'CRM_NOT_CONFIGURED',
       message: expect.stringContaining('re-connect required'),
+      details: { [GOOGLE_REAUTH_DETAILS_KEY]: true },
     });
+  });
+
+  it('does not flag a transient Google outage as a reauth condition', async () => {
+    makeFetchSpy(
+      new Response(JSON.stringify({ error: 'internal_failure' }), { status: 500 }),
+    );
+
+    let thrown: unknown;
+    try {
+      await new GoogleOAuthClient().refreshAccessToken('stored-refresh');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toMatchObject({
+      errorCode: 'CRM_NOT_CONFIGURED',
+      message: expect.stringContaining('try again shortly'),
+    });
+    expect(
+      (thrown as { details?: Record<string, unknown> }).details?.[GOOGLE_REAUTH_DETAILS_KEY],
+    ).toBeUndefined();
+  });
+
+  it('does not flag a rate-limited refresh as a reauth condition', async () => {
+    makeFetchSpy(new Response(JSON.stringify({ error: 'rate_limit_exceeded' }), { status: 429 }));
+
+    let thrown: unknown;
+    try {
+      await new GoogleOAuthClient().refreshAccessToken('stored-refresh');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as { details?: Record<string, unknown> }).details?.[GOOGLE_REAUTH_DETAILS_KEY]).toBeUndefined();
   });
 
   it('surfaces an error when the network request throws', async () => {

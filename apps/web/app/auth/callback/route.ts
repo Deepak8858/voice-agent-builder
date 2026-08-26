@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { safeRedirectPath } from '@/lib/safe-redirect';
+import { publicRedirectUrl } from '@/lib/public-origin';
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
@@ -11,14 +12,14 @@ export async function GET(req: NextRequest) {
   const errorDescription = searchParams.get('error_description');
 
   if (error) {
-    const redirect = new URL('/sign-in', req.url);
+    const redirect = publicRedirectUrl('/sign-in', req);
     redirect.searchParams.set('error', error);
     redirect.searchParams.set('error_description', errorDescription ?? '');
     return NextResponse.redirect(redirect);
   }
 
   if (!code) {
-    return NextResponse.redirect(new URL('/sign-in', req.url));
+    return NextResponse.redirect(publicRedirectUrl('/sign-in', req));
   }
 
   const supabase = await createServerSupabaseClient();
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest) {
   const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
 
   if (sessionError || !data.user) {
-    const redirect = new URL('/sign-in', req.url);
+    const redirect = publicRedirectUrl('/sign-in', req);
     redirect.searchParams.set('error', 'session_error');
     redirect.searchParams.set('error_description', sessionError?.message ?? 'Failed to create session');
     return NextResponse.redirect(redirect);
@@ -58,7 +59,7 @@ export async function GET(req: NextRequest) {
     // New user or no org — push to onboarding and preserve the post-signup
     // redirect target (e.g. /checkout/start?plan=starter) so paid plan
     // intent survives org creation.
-    const onboarding = new URL('/onboarding', req.url);
+    const onboarding = publicRedirectUrl('/onboarding', req);
     if (next && next !== '/dashboard') {
       onboarding.searchParams.set('next', next);
     }
@@ -66,5 +67,5 @@ export async function GET(req: NextRequest) {
   }
 
   // Already has org — go to dashboard (or the explicit `next` target).
-  return NextResponse.redirect(new URL(next, req.url));
+  return NextResponse.redirect(publicRedirectUrl(next, req));
 }

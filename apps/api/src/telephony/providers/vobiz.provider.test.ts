@@ -2,65 +2,113 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { VobizProviderAdapter } from './vobiz.provider';
 
+const NUMBERS_RESPONSE = {
+  items: [
+    {
+      id: 'aabbccdd-1234-5678-90ab-cdef12345678',
+      account_id: 'MA_customer',
+      e164: '+912271264217',
+      country: 'IN',
+      region: 'Mumbai',
+      capabilities: { voice: true, sms: false },
+      status: 'active',
+      application_id: '20577609616603585',
+      voice_enabled: true,
+    },
+  ],
+  page: 1,
+  per_page: 100,
+  total: 1,
+};
+
+function jsonResponse(body: unknown) {
+  return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+}
+
+function errorResponse(status: number, body = '') {
+  return { ok: false, status, json: async () => ({}), text: async () => body };
+}
+
 describe('VobizProviderAdapter', () => {
-  it('lists account phone numbers using the documented partner number inventory endpoint', async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        data: [
-          {
-            number: '+912271264217',
-            trunk_id: 'trunk-1',
-            status: 'active',
-            application_name: 'Main IVR',
-          },
-        ],
-      }),
-    }));
+  it('lists owned numbers from the documented account numbers endpoint', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse(NUMBERS_RESPONSE));
     const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
 
     const numbers = await adapter.listPhoneNumbers({
       provider: 'vobiz',
-      authId: 'partner-id',
-      authToken: 'partner-token',
-      customerAuthId: 'MA_customer',
+      authId: 'MA_customer',
+      authToken: 'auth-token',
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.vobiz.ai/api/v1/partner/accounts/MA_customer/numbers?page=1&per_page=100',
+      'https://api.vobiz.ai/api/v1/Account/MA_customer/numbers?page=1&per_page=100',
       expect.objectContaining({
         headers: expect.objectContaining({
-          'X-Auth-ID': 'partner-id',
-          'X-Auth-Token': 'partner-token',
+          'X-Auth-ID': 'MA_customer',
+          'X-Auth-Token': 'auth-token',
           Accept: 'application/json',
         }),
       }),
     );
     expect(numbers).toEqual([
       expect.objectContaining({
-        providerNumberId: 'trunk-1',
+        providerNumberId: '+912271264217',
         phoneNumberE164: '+912271264217',
-        friendlyName: 'Main IVR',
         capabilities: expect.objectContaining({ voice: true, inbound: true }),
+        metadata: expect.objectContaining({
+          providerNumberUuid: 'aabbccdd-1234-5678-90ab-cdef12345678',
+          accountId: 'MA_customer',
+          applicationId: '20577609616603585',
+          requiresPhoneNumber: false,
+        }),
       }),
     ]);
   });
 
-  it('lists account trunks without treating the trunk ID as an E.164 phone number', async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        objects: [
-          {
-            trunk_id: 'trunk-console-1',
-            name: 'Console trunk',
-            trunk_domain: 'trunk-console-1.sip.vobiz.ai',
-            trunk_status: 'active',
-            trunk_direction: 'inbound',
-          },
-        ],
-      }),
-    }));
+  it('falls back to the account numbers endpoint when the partner inventory is not accessible', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, '{"error":{"code":403,"message":"Partner access disabled"}}'))
+      .mockResolvedValueOnce(jsonResponse(NUMBERS_RESPONSE));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'PA_partner',
+      authToken: 'partner-token',
+      customerAuthId: 'MA_customer',
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://api.vobiz.ai/api/v1/partner/accounts/MA_customer/numbers?page=1&per_page=100',
+      expect.anything(),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.vobiz.ai/api/v1/Account/MA_customer/numbers?page=1&per_page=100',
+      expect.anything(),
+    );
+    expect(numbers).toHaveLength(1);
+  });
+
+  it('falls back to trunks when the account owns no API-visible numbers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [], page: 1, per_page: 100, total: 0 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          objects: [
+            {
+              trunk_id: 'trunk-console-1',
+              name: 'Console trunk',
+              trunk_domain: 'trunk-console-1.sip.vobiz.ai',
+              trunk_status: 'active',
+              trunk_direction: 'inbound',
+            },
+          ],
+        }),
+      );
     const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
 
     const numbers = await adapter.listPhoneNumbers({
@@ -69,6 +117,11 @@ describe('VobizProviderAdapter', () => {
       authToken: 'auth-token',
     });
 
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.vobiz.ai/api/v1/Account/auth-id/trunks?limit=100',
+      expect.anything(),
+    );
     expect(numbers).toEqual([
       expect.objectContaining({
         providerNumberId: 'trunk-console-1',
@@ -82,6 +135,214 @@ describe('VobizProviderAdapter', () => {
         }),
       }),
     ]);
+  });
+
+  it('reads trunks from the customer account when Partner credentials select one', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(errorResponse(403, 'Partner access disabled'))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'customer-trunk' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'PA_partner',
+      authToken: 'partner-token',
+      customerAuthId: 'MA_customer',
+    });
+
+    // The partner account authenticates the request, but the trunks of interest
+    // belong to the customer sub-account being synced.
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'https://api.vobiz.ai/api/v1/Account/MA_customer/trunks?limit=100',
+      expect.anything(),
+    );
+    expect(numbers).toEqual([expect.objectContaining({ providerNumberId: 'customer-trunk' })]);
+  });
+
+  it('falls through to the next source when a request rejects outright', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-network-error' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-network-error' }),
+    ]);
+  });
+
+  it('falls through to the next source when a response is not valid JSON', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON at position 0');
+        },
+        text: async () => '<html>gateway</html>',
+      })
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-json' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-json' }),
+    ]);
+  });
+
+  it('treats a non-list numbers payload as a failed source instead of throwing', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: { e164: '+912271264217' } }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-shape' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-shape' }),
+    ]);
+  });
+
+  it('reports every failure, including malformed payloads, when no source yields numbers', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValueOnce(jsonResponse({ objects: 'not-a-list' }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).rejects.toThrow(/socket hang up[\s\S]*trunks were not a list/);
+  });
+
+  it('skips trunks that have no usable trunk ID', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ objects: [{ name: 'no id' }, { trunk_id: 'trunk-usable' }] }),
+      );
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([expect.objectContaining({ providerNumberId: 'trunk-usable' })]);
+  });
+
+  it('falls back to trunks when a number entry has an unexpected field type', async () => {
+    const fetchMock = vi
+      .fn()
+      // `e164` as a number would throw inside the E.164 check if entries were
+      // trusted, aborting the sync before the trunk fallback ran.
+      .mockResolvedValueOnce(jsonResponse({ items: [{ e164: 42, capabilities: 'nope' }] }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [{ trunk_id: 'trunk-after-bad-entry' }] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: 'trunk-after-bad-entry' }),
+    ]);
+  });
+
+  it('skips number entries that carry no usable identifier', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [
+          { id: '   ', e164: '' },
+          { e164: '+912271264217' },
+        ],
+      }),
+    );
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    const numbers = await adapter.listPhoneNumbers({
+      provider: 'vobiz',
+      authId: 'auth-id',
+      authToken: 'auth-token',
+    });
+
+    expect(numbers).toEqual([
+      expect.objectContaining({ providerNumberId: '+912271264217' }),
+    ]);
+  });
+
+  it('treats a response with no recognised list field as a failed source', async () => {
+    // `{}` is not an empty inventory: it is a shape we cannot read, so it must be
+    // reported rather than reported as "this account has no numbers".
+    const fetchMock = vi.fn(async () => jsonResponse({}));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).rejects.toThrow(/numbers were not a list[\s\S]*trunks were not a list/);
+  });
+
+  it('accepts a documented empty inventory and moves on to trunks', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ items: [], total: 0 }))
+      .mockResolvedValueOnce(jsonResponse({ objects: [] }));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    // An explicit empty list is a valid answer, so the sync succeeds with nothing
+    // to import rather than raising a provider error.
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('surfaces the upstream Vobiz error body when every number source fails', async () => {
+    const fetchMock = vi.fn(async () => errorResponse(401, '{"error":{"code":401,"message":"Invalid authentication credentials"}}'));
+    const adapter = new VobizProviderAdapter({ fetch: fetchMock as never });
+
+    await expect(
+      adapter.listPhoneNumbers({
+        provider: 'vobiz',
+        authId: 'auth-id',
+        authToken: 'auth-token',
+      }),
+    ).rejects.toThrow(/Invalid authentication credentials/);
   });
 
   it('updates a Vobiz inbound trunk destination to the LiveKit SIP host without the sip prefix', async () => {

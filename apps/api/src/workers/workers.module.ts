@@ -1,12 +1,18 @@
 import { Module } from '@nestjs/common';
+import { AgentGenWorker } from './agent-gen.worker';
+import { BillingReconciliationWorker } from './billing-reconciliation.worker';
+import { CallLeaseRenewalWorker } from './call-lease-renewal.worker';
 import { EvaluationWorker } from './evaluation.worker';
+import { FreeCreditGrantWorker } from './free-credit-grant.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
 import { EmbeddingsWorker } from './embeddings.worker';
 import { DigestWorker } from './digest.worker';
 import { OutboundCallWorker } from '../outbound-campaign/workers/outbound-call.worker';
 import { OrchestratorWorker } from './orchestrator.worker';
+import { AgentGenModule } from '../agent-gen/agent-gen.module';
 import { AnalyticsModule } from '../analytics/analytics.module';
+import { BillingModule } from '../billing/billing.module';
 import { EmailModule } from '../email/email.module';
 import { LlmModule } from '../llm/llm.module';
 import { QueueModule } from '../queue/queue.module';
@@ -19,6 +25,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
 
 @Module({
   imports: [
+    AgentGenModule,
     AnalyticsModule,
     LlmModule,
     QueueModule,
@@ -29,8 +36,10 @@ import { TelephonyModule } from '../telephony/telephony.module';
     CrmRoutingModule,
     TelephonyModule,
     EmailModule,
+    BillingModule,
   ],
   providers: [
+    AgentGenWorker,
     EvaluationWorker,
     AnalyticsWorker,
     AuditWorker,
@@ -38,8 +47,12 @@ import { TelephonyModule } from '../telephony/telephony.module';
     DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
+    BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
+    FreeCreditGrantWorker,
   ],
   exports: [
+    AgentGenWorker,
     EvaluationWorker,
     AnalyticsWorker,
     AuditWorker,
@@ -47,6 +60,9 @@ import { TelephonyModule } from '../telephony/telephony.module';
     DigestWorker,
     OutboundCallWorker,
     OrchestratorWorker,
+    BillingReconciliationWorker,
+    CallLeaseRenewalWorker,
+    FreeCreditGrantWorker,
   ],
 })
 export class WorkersModule {}

@@ -1,0 +1,15 @@
+-- Provider-scoped call uniqueness, built without blocking writes on `calls`.
+--
+-- This file deliberately contains exactly one statement. Prisma sends a
+-- multi-statement migration as a single simple query, which Postgres executes
+-- inside an implicit transaction block, and `CREATE INDEX CONCURRENTLY` is
+-- rejected there (`25001`). A single-statement migration is executed in
+-- autocommit, which is what a concurrent build requires. Do not add anything
+-- else to this file, including comments' worth of DDL or a duplicate preflight:
+-- the duplicate check lives in 20260724090000_production_billing and already
+-- runs before this migration.
+--
+-- If this build is interrupted, Postgres leaves an INVALID index behind and
+-- `IF NOT EXISTS` will then skip the retry. See the billing runbook for the
+-- detect-and-drop procedure before re-running `prisma migrate deploy`.
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "calls_provider_call_uidx" ON "calls"("provider", "provider_call_id");

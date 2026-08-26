@@ -1,10 +1,10 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { isDemoCheckoutFallback, type DemoCheckoutFallback } from '@/lib/billing-mode';
+import { isCheckoutUnavailable, type CheckoutUnavailable } from '@/lib/checkout-availability';
 import { CheckoutPlanSchema } from '@voiceforge/shared';
 
 /**
@@ -36,7 +36,8 @@ function CheckoutStartInner() {
     parsedPlan.success ? null : 'Missing or invalid plan id.',
   );
   const [pending, setPending] = useState(parsedPlan.success);
-  const [demoFallback, setDemoFallback] = useState<DemoCheckoutFallback | null>(null);
+  const [unavailable, setUnavailable] = useState<CheckoutUnavailable | null>(null);
+  const checkoutAttemptId = useRef(crypto.randomUUID());
 
   useEffect(() => {
     if (!parsedPlan.success) return;
@@ -47,20 +48,20 @@ function CheckoutStartInner() {
         const res = await fetch('/api/billing/checkout', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ plan }),
+          body: JSON.stringify({ plan, idempotencyKey: checkoutAttemptId.current }),
           credentials: 'include',
         });
         const data = (await res.json().catch(() => null)) as {
           url?: string;
           error?: string;
-        } | DemoCheckoutFallback | null;
+        } | CheckoutUnavailable | null;
         if (cancelled) return;
         if (res.status === 401) {
           router.replace(`/sign-in?next=/checkout/start?plan=${plan}`);
           return;
         }
-        if (isDemoCheckoutFallback(data)) {
-          setDemoFallback(data);
+        if (isCheckoutUnavailable(data)) {
+          setUnavailable(data);
           setPending(false);
           return;
         }
@@ -89,25 +90,22 @@ function CheckoutStartInner() {
   return (
     <div className="mx-auto flex min-h-[60dvh] max-w-md flex-col items-center justify-center px-6 py-16 text-center">
       <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">
-        {demoFallback ? 'Checkout is paused for demo' : 'Taking you to checkout'}
+        {unavailable ? unavailable.title : 'Taking you to checkout'}
       </h1>
       {pending && !error ? (
         <p className="mt-3 text-sm text-muted-foreground">
           Redirecting you to Stripe to complete your purchase…
         </p>
       ) : null}
-      {demoFallback ? (
+      {unavailable ? (
         <>
-          <p className="mt-3 text-sm text-muted-foreground">{demoFallback.message}</p>
+          <p className="mt-3 text-sm text-muted-foreground">{unavailable.message}</p>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <Button asChild>
-              <Link href={demoFallback.fallbackHref}>{demoFallback.fallbackLabel}</Link>
-            </Button>
-            <Button asChild variant="outline">
               <Link href="/pricing">Compare plans</Link>
             </Button>
-            <Button asChild variant="ghost">
-              <a href={demoFallback.salesHref}>Contact sales</a>
+            <Button asChild variant="outline">
+              <a href={unavailable.salesHref}>Contact sales</a>
             </Button>
           </div>
         </>

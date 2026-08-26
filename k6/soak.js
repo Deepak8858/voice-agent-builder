@@ -12,17 +12,14 @@
  *   GET  /workspaces/:workspaceId/agents/:agentId — single-agent fetch
  *
  * Auth:
- *   Set AUTH_TOKEN for Bearer auth, or AUTH_EMAIL + AUTH_PASSWORD for
- *   session-cookie auth. Without auth the workspace-scoped endpoints
- *   will return 401 and the threshold will breach.
+ *   Set AUTH_TOKEN to a Supabase access token. The suite fails before load
+ *   starts when it is missing.
  *
  * Environment variables:
  *   BASE_URL      API root (default: http://localhost:4000/api/v1)
  *   WORKSPACE_ID  Target workspace UUID (optional; resolved in setup)
  *   AGENT_ID      Specific agent UUID to fetch (optional; first agent used otherwise)
- *   AUTH_TOKEN    Bearer token (optional)
- *   AUTH_EMAIL    Session auth email (optional)
- *   AUTH_PASSWORD Session auth password (optional)
+ *   AUTH_TOKEN    Supabase bearer token (required)
  *
  * Thresholds:
  *   http_req_duration.p(95) < 1 s  — 95th-percentile latency under 1 second
@@ -33,13 +30,12 @@
  *   k6 run k6/soak.js -e BASE_URL=https://api.yourdomain.com -e AUTH_TOKEN=xxx
  */
 import http from 'k6/http';
-import { check, sleep } from 'k6';
+import { check, sleep, fail } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
+import { apiData, apiItems } from './lib/api-response.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:4000/api/v1';
 const AUTH_TOKEN = __ENV.AUTH_TOKEN;
-const AUTH_EMAIL = __ENV.AUTH_EMAIL || `k6-soak-${Date.now()}@voiceforge.test`;
-const AUTH_PASSWORD = __ENV.AUTH_PASSWORD || 'LoadTest123!';
 const WORKSPACE_ID = __ENV.WORKSPACE_ID;
 const AGENT_ID = __ENV.AGENT_ID;
 
@@ -70,50 +66,22 @@ function makeHeaders() {
 }
 
 export function setup() {
-  if (AUTH_TOKEN && WORKSPACE_ID) {
-    return { workspaceId: WORKSPACE_ID, agentId: AGENT_ID, cookies: null };
+  if (!AUTH_TOKEN) {
+    fail('AUTH_TOKEN is required; obtain a Supabase access token through the web sign-in flow.');
   }
 
-  const jar = new http.CookieJar();
-  const jsonHeaders = { 'Content-Type': 'application/json' };
-
-  const signupRes = http.post(
-    `${BASE_URL}/auth/signup`,
-    JSON.stringify({
-      email: AUTH_EMAIL,
-      password: AUTH_PASSWORD,
-      name: 'k6 Soak Test',
-      organization_name: 'k6 Test Org',
-    }),
-    { headers: jsonHeaders, jar }
-  );
-
-  if (signupRes.status !== 200 && signupRes.status !== 201) {
-    const loginRes = http.post(
-      `${BASE_URL}/auth/login`,
-      JSON.stringify({ email: AUTH_EMAIL, password: AUTH_PASSWORD }),
-      { headers: jsonHeaders, jar }
-    );
-    check(loginRes, { 'setup: login ok': (r) => r.status === 200 });
-  }
-
-  const cookies = jar.cookiesForURL(BASE_URL);
+  const jsonHeaders = makeHeaders();
   let workspaceId = WORKSPACE_ID;
   let agentId = AGENT_ID;
 
   if (!workspaceId) {
     const wsRes = http.get(`${BASE_URL}/workspaces`, {
       headers: jsonHeaders,
-      jar,
     });
     if (wsRes.status === 200) {
-      try {
-        const body = JSON.parse(wsRes.body);
-        if (body.items && body.items.length > 0) {
-          workspaceId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(wsRes);
+      if (items && items.length > 0) {
+        workspaceId = items[0].id;
       }
     }
   }
@@ -121,47 +89,38 @@ export function setup() {
   if (workspaceId && !agentId) {
     const agentsRes = http.get(
       `${BASE_URL}/workspaces/${workspaceId}/agents`,
-      { headers: jsonHeaders, jar }
+      { headers: jsonHeaders }
     );
     if (agentsRes.status === 200) {
-      try {
-        const body = JSON.parse(agentsRes.body);
-        if (body.items && body.items.length > 0) {
-          agentId = body.items[0].id;
-        }
-      } catch (_e) {
-        /* ignore */
+      const items = apiItems(agentsRes);
+      if (items && items.length > 0) {
+        agentId = items[0].id;
       }
     }
   }
 
-  return { workspaceId, agentId, cookies };
-}
-
-function buildJar(data) {
-  if (AUTH_TOKEN) return undefined;
-  const jar = new http.CookieJar();
-  if (data && data.cookies) {
-    for (const name of Object.keys(data.cookies)) {
-      for (const value of data.cookies[name]) {
-        jar.set(BASE_URL, name, value);
-      }
-    }
+  if (!workspaceId) {
+    fail('WORKSPACE_ID was not supplied and no workspace could be resolved for AUTH_TOKEN.');
   }
-  return jar;
+  // Fail closed for the same reason as the workspace check above: an
+  // unresolved agent leaves `data.agentId` undefined, the single-agent fetch is
+  // skipped for the whole 30-minute run, and the soak silently exercises only
+  // half the endpoints it claims to cover.
+  if (!agentId) {
+    fail('AGENT_ID was not supplied and no agent could be resolved in the workspace.');
+  }
+
+  return { workspaceId, agentId, cookies: null };
 }
 
-function baseConfig(data) {
-  const jar = buildJar(data);
-  const cfg = { headers: makeHeaders() };
-  if (jar) cfg.jar = jar;
-  return cfg;
+function baseConfig() {
+  return { headers: makeHeaders() };
 }
 
 export default function (data) {
   const ws = data.workspaceId || WORKSPACE_ID;
   const agentId = data.agentId || AGENT_ID;
-  const cfg = baseConfig(data);
+  const cfg = baseConfig();
 
   // ── 1. Health probe ──
   // Repeated every iteration for 30 minutes: any DB connection leak or
@@ -169,13 +128,8 @@ export default function (data) {
   const healthRes = http.get(`${BASE_URL}/health`);
   check(healthRes, {
     'health returns 200': (r) => r.status === 200,
-    'health db still ok': (r) => {
-      try {
-        return JSON.parse(r.body).db === 'ok';
-      } catch {
-        return false;
-      }
-    },
+    'health db still ok': (r) => apiData(r)?.checks?.db === 'ok',
+    'health redis still ok': (r) => apiData(r)?.checks?.redis === 'ok',
   });
   customErrorRate.add(healthRes.status >= 400 ? 1 : 0);
 
@@ -189,13 +143,7 @@ export default function (data) {
   const agentsRes = http.get(`${BASE_URL}/workspaces/${ws}/agents`, cfg);
   check(agentsRes, {
     'GET agents returns 200': (r) => r.status === 200,
-    'GET agents returns items': (r) => {
-      try {
-        return Array.isArray(JSON.parse(r.body).items);
-      } catch {
-        return false;
-      }
-    },
+    'GET agents returns items': (r) => apiItems(r) !== null,
   });
   customErrorRate.add(agentsRes.status >= 400 ? 1 : 0);
 
@@ -212,12 +160,8 @@ export default function (data) {
     check(agentRes, {
       'GET agent by id returns 200': (r) => r.status === 200,
       'GET agent by id returns agent JSON': (r) => {
-        try {
-          const b = JSON.parse(r.body);
-          return b.id !== undefined && b.name !== undefined;
-        } catch {
-          return false;
-        }
+        const b = apiData(r);
+        return b !== null && b.id !== undefined && b.name !== undefined;
       },
     });
     customErrorRate.add(agentRes.status >= 400 ? 1 : 0);

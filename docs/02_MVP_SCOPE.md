@@ -17,7 +17,7 @@ AI receptionist, dental receptionist, real estate lead qualifier, appointment re
 Manual FAQ, PDF upload, CSV upload, embeddings with pgvector, agent-scoped retrieval.
 
 ### Voice
-Mock provider first, Vapi/Retell adapter after mock, browser test session, inbound call support, transcript and call events.
+Mock provider first, then real adapters (OpenAI Realtime and the in-house Azure pipeline), browser test session, inbound call support, transcript and call events.
 
 ### Compliance
 Consent records, DNC/DND entries, opt-out, call window, AI disclosure, recording notice, audit logs.

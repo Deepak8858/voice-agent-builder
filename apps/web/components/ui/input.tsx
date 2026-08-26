@@ -1,1 +1,1 @@
-export { Input } from '@voiceforge/ui'
+export { Input } from '@voiceforge/ui/input'

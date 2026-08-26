@@ -1,7 +1,7 @@
 // load-tests/k6/common.ts
 // Shared configuration and helpers for k6 load tests
 
-export const BASE_URL = __ENV.BASE_URL || 'https://vocal.devdeepak.me/api/v1';
+export const BASE_URL = __ENV.BASE_URL || 'https://incfrog.ai/api/v1';
 export const API_KEY = __ENV.API_KEY || '';
 
 // Default thresholds for API endpoints

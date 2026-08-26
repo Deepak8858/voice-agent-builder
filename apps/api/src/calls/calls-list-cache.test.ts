@@ -9,7 +9,7 @@ const callRow = {
   agentVersionId: 'version-1',
   direction: 'browser_test',
   status: 'completed',
-  provider: 'vapi',
+  provider: 'openai-realtime',
   fromNumber: null,
   toNumber: null,
   contactName: 'Tester',
@@ -43,6 +43,8 @@ function makeService(cacheOverrides?: Record<string, unknown>) {
     {} as never,
     {} as never,
     cache as never,
+    {} as never,
+    {} as never,
   );
 
   return { service, prisma, cache };
@@ -58,7 +60,8 @@ describe('CallsService.list cache', () => {
         agent_version_id: 'version-1',
         direction: 'browser_test',
         status: 'completed',
-        provider: 'vapi',
+        provider: 'openai-realtime',
+        pipeline: 'realtime',
         from_number: null,
         to_number: null,
         contact_name: 'Cached tester',

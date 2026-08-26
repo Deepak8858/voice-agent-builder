@@ -1,1 +1,1 @@
-export { Button, buttonVariants } from '@voiceforge/ui'
+export { Button, buttonVariants } from '@voiceforge/ui/button'

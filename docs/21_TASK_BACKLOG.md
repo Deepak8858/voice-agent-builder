@@ -16,7 +16,7 @@ TASK-017 Template table; TASK-018 Seed MVP templates; TASK-019 Template selector
 TASK-021 Knowledge tables; TASK-022 Manual FAQ; TASK-023 File upload; TASK-024 Chunking; TASK-025 Embeddings.
 
 ## Epic 6 — Voice
-TASK-026 Provider adapter interface; TASK-027 Mock provider; TASK-028 Test session API/UI; TASK-029 Webhook endpoint; TASK-030 Vapi/Retell adapter.
+TASK-026 Provider adapter interface; TASK-027 Mock provider; TASK-028 Test session API/UI; TASK-029 Webhook endpoint; TASK-030 Real adapters (OpenAI Realtime + in-house Azure pipeline).
 
 ## Epic 7 — Calls
 TASK-031 Calls tables; TASK-032 Calls APIs; TASK-033 Calls UI; TASK-034 Call detail UI; TASK-035 Post-call eval.

@@ -67,7 +67,7 @@ export function CallLiveMonitor({
       if (event.type === 'call.started') setStatus('in_progress');
       if (event.type === 'call.ended') setStatus('completed');
 
-      // Extract transcript segments from Vapi-style payload
+      // Extract transcript segments from the runtime webhook payload
       const data = event.data ?? {};
       const segments: TranscriptSegment[] | undefined =
         (data.segments as TranscriptSegment[]) ??
@@ -76,7 +76,7 @@ export function CallLiveMonitor({
 
       if (segments?.length) {
         setTurns((prev) => {
-          // Deduplicate by at_ms — Vapi may send same segment multiple times
+          // Deduplicate by at_ms — a runtime may send the same segment multiple times
           const prevKeys = new Set(prev.map((t) => `${t.speaker}:${t.at_ms}`));
           const newSegs = segments.filter(
             (s) => !prevKeys.has(`${s.speaker}:${s.at_ms}`),

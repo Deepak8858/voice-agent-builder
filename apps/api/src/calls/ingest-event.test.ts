@@ -3,6 +3,8 @@ import { createHmac } from 'crypto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { CallsService } from './calls.service';
 import { VoiceWebhookController } from './voice-webhook.controller';
+import type { CallAdmissionService } from '../billing/call-admission.service';
+import type { EntitlementService } from '../billing/entitlement.service';
 import { env } from '../config/env';
 
 interface CallRow {
@@ -63,7 +65,7 @@ function makeService(opts: {
     },
   };
   const audit = { log: vi.fn() };
-  const voice = { name: 'vapi' };
+  const voice = { name: 'openai-realtime' };
   const evaluations = { evaluateCall: evals, getForCall: vi.fn() };
   const compliance = {
     check: vi.fn(),
@@ -78,6 +80,31 @@ function makeService(opts: {
     publish: vi.fn(async () => undefined),
     del: vi.fn(async () => undefined),
   };
+  // `ingestEvent` does not admit calls or read entitlements, but both are
+  // required constructor dependencies. Typed mocks keep this factory honest if
+  // that ever changes, instead of hiding a new call behind `{} as never`.
+  const admission: Pick<CallAdmissionService, 'admitCall' | 'compensate' | 'toError'> = {
+    admitCall: vi.fn(async () => {
+      throw new Error('ingestEvent must not admit calls');
+    }),
+    compensate: vi.fn(async () => {
+      throw new Error('ingestEvent must not compensate admissions');
+    }),
+    toError: vi.fn(() => {
+      throw new Error('ingestEvent must not deny calls');
+    }),
+  };
+  const entitlements: Pick<EntitlementService, 'check' | 'assertAllowed' | 'getEffectivePlan'> = {
+    check: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+    assertAllowed: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+    getEffectivePlan: vi.fn(async () => {
+      throw new Error('ingestEvent must not evaluate entitlements');
+    }),
+  };
   const service = new CallsService(
     prisma as never,
     audit as never,
@@ -89,6 +116,8 @@ function makeService(opts: {
     queue as never,
     retention as never,
     cache as never,
+    admission as never,
+    entitlements as never,
   );
   return { service, prisma, created, updates, events, evals, queue };
 }
@@ -98,7 +127,7 @@ describe('CallsService.ingestEvent', () => {
 
   it('no-op when payload missing provider_call_id', async () => {
     const { service, prisma } = makeService({});
-    await service.ingestEvent('vapi', { event_type: 'call.started' });
+    await service.ingestEvent('openai-realtime', { event_type: 'call.started' });
     expect(prisma.call.findFirst).not.toHaveBeenCalled();
     expect(prisma.call.create).not.toHaveBeenCalled();
   });
@@ -108,7 +137,7 @@ describe('CallsService.ingestEvent', () => {
       callByProviderCallId: null,
       versionByRuntimeId: null,
     });
-    await service.ingestEvent('vapi', {
+    await service.ingestEvent('openai-realtime', {
       event_type: 'call.started',
       provider_call_id: 'call_xyz',
       data: { provider_runtime_id: 'unknown_rt' },
@@ -119,7 +148,7 @@ describe('CallsService.ingestEvent', () => {
 
   it('no-op for non-call.started events with unknown call', async () => {
     const { service, created, events } = makeService({ callByProviderCallId: null });
-    await service.ingestEvent('vapi', {
+    await service.ingestEvent('openai-realtime', {
       event_type: 'call.transcript_partial',
       provider_call_id: 'call_xyz',
     });
@@ -136,7 +165,7 @@ describe('CallsService.ingestEvent', () => {
         agent: { workspaceId: 'w1' },
       },
     });
-    await service.ingestEvent('vapi', {
+    await service.ingestEvent('openai-realtime', {
       event_type: 'call.started',
       provider_call_id: 'call_xyz',
       data: {
@@ -151,7 +180,7 @@ describe('CallsService.ingestEvent', () => {
     expect(created[0]).toMatchObject({
       direction: 'inbound',
       status: 'in_progress',
-      provider: 'vapi',
+      provider: 'openai-realtime',
       workspaceId: 'w1',
       agentId: 'a1',
       agentVersionId: 'v1',
@@ -175,7 +204,7 @@ describe('CallsService.ingestEvent', () => {
         providerCallId: 'call_xyz',
       },
     });
-    await service.ingestEvent('vapi', {
+    await service.ingestEvent('openai-realtime', {
       event_type: 'call.ended',
       provider_call_id: 'call_xyz',
       data: {
@@ -212,7 +241,7 @@ describe('CallsService.ingestEvent', () => {
         throw new Error('eval boom');
       };
     await expect(
-      service.ingestEvent('vapi', {
+      service.ingestEvent('openai-realtime', {
         event_type: 'call.ended',
         provider_call_id: 'call_xyz',
         data: {},
@@ -233,7 +262,7 @@ describe('CallsService.ingestEvent', () => {
         providerCallId: 'call_xyz',
       },
     });
-    await service.ingestEvent('vapi', {
+    await service.ingestEvent('openai-realtime', {
       event_type: 'agent.booking_created',
       provider_call_id: 'call_xyz',
       data: { booking_id: 'b1' },
@@ -261,8 +290,8 @@ describe('CallsService.ingestEvent', () => {
       provider_event_id: 'evt_provider_1',
     };
 
-    await service.ingestEvent('vapi', payload);
-    await service.ingestEvent('vapi', payload);
+    await service.ingestEvent('openai-realtime', payload);
+    await service.ingestEvent('openai-realtime', payload);
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ providerEventId: 'evt_provider_1' });
@@ -333,7 +362,7 @@ describe('Webhook security', () => {
 
     try {
       await expect(
-        controller.receive('vapi', signature, {} as never, body),
+        controller.receive('openai-realtime', signature, {} as never, body),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(callsService.ingestEvent).not.toHaveBeenCalled();
     } finally {
@@ -355,7 +384,7 @@ describe('Webhook security', () => {
     try {
       await expect(
         controller.receive(
-          'vapi',
+          'openai-realtime',
           signature,
           { rawBody } as never,
           { event_type: 'call.started' },
@@ -388,9 +417,9 @@ describe('Webhook security', () => {
 
     try {
       await expect(
-        controller.receive('vapi', signature, { rawBody } as never, parsedBody),
+        controller.receive('openai-realtime', signature, { rawBody } as never, parsedBody),
       ).resolves.toEqual({ received: true });
-      expect(callsService.ingestEvent).toHaveBeenCalledWith('vapi', {
+      expect(callsService.ingestEvent).toHaveBeenCalledWith('openai-realtime', {
         event_type: 'call.started',
         provider_call_id: 'call_raw_ok',
         data: { provider_runtime_id: 'runtime_1' },

@@ -25,7 +25,7 @@ docs             product/build documentation
 ```
 
 ## Toolchain
-The repo is pnpm-native. Use `corepack` + `pnpm` (workflows pin `10.33.2`, see `.github/workflows/ci-cd-ec2.yml:27`). Do not use `npm install` at the root: workspace dependencies are declared with the `workspace:*` protocol, which npm cannot resolve. Do not convert them.
+The repo is pnpm-native. Use `corepack` + `pnpm` (the root `package.json` and `.github/workflows/quality-gate.yml:29` pin `10.33.2`). Do not use `npm install` at the root: workspace dependencies are declared with the `workspace:*` protocol, which npm cannot resolve. Do not convert them.
 When changing `pnpm.overrides` in the root `package.json`, regenerate `pnpm-lock.yaml` in the same commit. CI installs with `--frozen-lockfile` and fails with `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` if the two drift.
 ## Build Order
 Build order 1-13 below is the historical MVP sequence and is complete. It is retained for context only; new work is tracked in `ROADMAP.md`.
@@ -41,7 +41,15 @@ Build order 1-13 below is the historical MVP sequence and is complete. It is ret
 10. Compliance engine
 11. White-label settings
 12. Billing
-13. Real Vapi/Retell adapters
+13. Real voice runtime adapters
+
+Since the MVP sequence closed, Vapi and Retell were removed entirely. The two
+supported runtimes are OpenAI Realtime (paid plans) and the in-house `standard`
+pipeline (Azure Speech STT → Azure OpenAI chat → Azure Speech TTS) in
+`apps/livekit-agent`, which is the only runtime the free plan may use. Rule 4
+still holds: route through the adapter interface and `PipelineRouterService`
+rather than hard-coding either runtime.
+
 ## First Working Demo
 ```txt
 Sign up → create workspace → generate agent from prompt → view Agent Spec JSON → test call → publish agent → view call transcript → see analytics → configure white-label branding

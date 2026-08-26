@@ -38,6 +38,7 @@ model User {
   createdKnowledge     KnowledgeSource[]     @relation("KnowledgeSourceCreatedBy")
   referralsMade        Referral[]            @relation("ReferrerUser")
   referralsJoined      Referral[]            @relation("ReferredUser")
+  trialRedemptions     TrialRedemption[]
 
   @@map("users")
 }
@@ -53,16 +54,27 @@ model Organization {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  owner         User           @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
-  createdBy     User?          @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id])
-  workspaces    Workspace[]
-  subscriptions Subscription[]
-  usageRecords  UsageRecord[]
-  invites       OrgInvite[]
-  agents        Agent[]
+  owner                        User                          @relation("OrganizationOwner", fields: [ownerUserId], references: [id])
+  createdBy                    User?                         @relation("OrganizationCreatedBy", fields: [createdByUserId], references: [id])
+  workspaces                   Workspace[]
+  subscriptions                Subscription[]
+  usageRecords                 UsageRecord[]
+  invites                      OrgInvite[]
+  agents                       Agent[]
+  calls                        Call[]
+  billingCreditBuckets         BillingCreditBucket[]
+  billingLedgerEntries         BillingLedgerEntry[]
+  creditBalance                OrganizationCreditBalance?
+  callUsages                   CallUsage[]
+  runtimeUsageEvents           RuntimeUsageEvent[]
+  trialRedemptions             TrialRedemption[]
+  agentProviderDeployments     AgentProviderDeployment[]
+  providerCostEvents           ProviderCostEvent[]
+  callConcurrencyLeases        CallConcurrencyLease[]
   telephonyProviderConnections TelephonyProviderConnection[]
   telephonyPhoneNumbers        TelephonyPhoneNumber[]
   liveKitTelephonyConfigs      LiveKitTelephonyConfig[]
+  googleConnections            GoogleOAuthConnection[]
 
   @@index([ownerUserId])
   @@map("organizations")
@@ -78,43 +90,48 @@ model Workspace {
   status            String   @default("active")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
-  retentionDays   Int      @default(365)         @map("retention_days")
+  retentionDays     Int      @default(365) @map("retention_days")
 
-  organization         Organization             @relation(fields: [organizationId], references: [id])
-  parent               Workspace?               @relation("WorkspaceParent", fields: [parentWorkspaceId], references: [id])
-  children             Workspace[]              @relation("WorkspaceParent")
-  memberships          Membership[]
-  workspaceMemberships WorkspaceMembership[]
-  agents               Agent[]
-  templates            AgentTemplate[]
-  auditLogs            AuditLog[]
-  knowledgeSources     KnowledgeSource[]
-  knowledgeChunks      KnowledgeChunk[]
-  calls                Call[]
-  callEvents           CallEvent[]
-  callEvaluations      CallEvaluation[]
-  tools                IntegrationTool[]
-  toolInvocations      ToolInvocation[]
-  contacts             Contact[]
-  consentRecords       ConsentRecord[]
-  dncEntries           DncEntry[]
-  complianceChecks     ComplianceCheck[]
-  analyticsEvents      AnalyticsEvent[]
-  whiteLabel           WhiteLabelSettings?
-  clientInvites        ClientInvite[]           @relation("InviteAgency")
-  invitesAccepted      ClientInvite[]           @relation("InviteClient")
-  usageRecords         UsageRecord[]
-  googleCalendarConfig GoogleCalendarConfig?
-  crmCredentials       WorkspaceCrmCredential[]
-  crmRoutingRules      CrmRoutingRule[]
-  twilioPhoneNumbers   TwilioPhoneNumber[]
+  organization                 Organization                  @relation(fields: [organizationId], references: [id])
+  parent                       Workspace?                    @relation("WorkspaceParent", fields: [parentWorkspaceId], references: [id])
+  children                     Workspace[]                   @relation("WorkspaceParent")
+  memberships                  Membership[]
+  workspaceMemberships         WorkspaceMembership[]
+  agents                       Agent[]
+  templates                    AgentTemplate[]
+  auditLogs                    AuditLog[]
+  knowledgeSources             KnowledgeSource[]
+  knowledgeChunks              KnowledgeChunk[]
+  calls                        Call[]
+  billingLedgerEntries         BillingLedgerEntry[]
+  callUsages                   CallUsage[]
+  agentProviderDeployments     AgentProviderDeployment[]
+  providerCostEvents           ProviderCostEvent[]
+  callEvents                   CallEvent[]
+  callEvaluations              CallEvaluation[]
+  tools                        IntegrationTool[]
+  toolInvocations              ToolInvocation[]
+  contacts                     Contact[]
+  consentRecords               ConsentRecord[]
+  dncEntries                   DncEntry[]
+  complianceChecks             ComplianceCheck[]
+  analyticsEvents              AnalyticsEvent[]
+  whiteLabel                   WhiteLabelSettings?
+  clientInvites                ClientInvite[]                @relation("InviteAgency")
+  invitesAccepted              ClientInvite[]                @relation("InviteClient")
+  usageRecords                 UsageRecord[]
+  googleCalendarConfig         GoogleCalendarConfig?
+  googleConnection             GoogleOAuthConnection?
+  crmCredentials               WorkspaceCrmCredential[]
+  crmRoutingRules              CrmRoutingRule[]
+  twilioPhoneNumbers           TwilioPhoneNumber[]
   telephonyProviderConnections TelephonyProviderConnection[]
   telephonyPhoneNumbers        TelephonyPhoneNumber[]
   liveKitTelephonyConfigs      LiveKitTelephonyConfig[]
   telephonyWebhookEvents       TelephonyWebhookEvent[]
-  outboundCampaigns    OutboundCampaign[]
-  referralsMade        Referral[]              @relation("ReferrerWorkspace")
-  referralsJoined      Referral[]              @relation("ReferredWorkspace")
+  outboundCampaigns            OutboundCampaign[]
+  referralsMade                Referral[]                    @relation("ReferrerWorkspace")
+  referralsJoined              Referral[]                    @relation("ReferredWorkspace")
 
   @@unique([organizationId, slug])
   @@index([parentWorkspaceId])
@@ -190,24 +207,24 @@ model Agent {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  workspace          Workspace           @relation(fields: [workspaceId], references: [id])
-  organization       Organization?       @relation(fields: [organizationId], references: [id])
-  creator            User?               @relation("AgentCreatedBy", fields: [createdBy], references: [id])
-  versions           AgentVersion[]
-  knowledgeSources   KnowledgeSource[]
-  knowledgeChunks    KnowledgeChunk[]
-  calls              Call[]
-  evaluations        CallEvaluation[]
-  tools              IntegrationTool[]
-  toolInvocations    ToolInvocation[]
-  complianceChecks   ComplianceCheck[]
-  analyticsEvents    AnalyticsEvent[]
-  crmRoutingRules    CrmRoutingRule[]
-  crmFanoutLogs      CrmFanoutLog[]
-  twilioPhoneNumbers TwilioPhoneNumber[]
-  telephonyPhoneNumbers TelephonyPhoneNumber[]
+  workspace               Workspace                @relation(fields: [workspaceId], references: [id])
+  organization            Organization?            @relation(fields: [organizationId], references: [id])
+  creator                 User?                    @relation("AgentCreatedBy", fields: [createdBy], references: [id])
+  versions                AgentVersion[]
+  knowledgeSources        KnowledgeSource[]
+  knowledgeChunks         KnowledgeChunk[]
+  calls                   Call[]
+  evaluations             CallEvaluation[]
+  tools                   IntegrationTool[]
+  toolInvocations         ToolInvocation[]
+  complianceChecks        ComplianceCheck[]
+  analyticsEvents         AnalyticsEvent[]
+  crmRoutingRules         CrmRoutingRule[]
+  crmFanoutLogs           CrmFanoutLog[]
+  twilioPhoneNumbers      TwilioPhoneNumber[]
+  telephonyPhoneNumbers   TelephonyPhoneNumber[]
   liveKitTelephonyConfigs LiveKitTelephonyConfig[]
-  outboundCampaigns  OutboundCampaign[]
+  outboundCampaigns       OutboundCampaign[]
 
   @@index([workspaceId])
   @@index([organizationId])
@@ -228,13 +245,39 @@ model AgentVersion {
   createdBy         String?  @map("created_by") @db.Uuid
   createdAt         DateTime @default(now()) @map("created_at")
 
-  agent   Agent @relation(fields: [agentId], references: [id])
-  creator User? @relation("AgentVersionCreatedBy", fields: [createdBy], references: [id])
+  agent               Agent                     @relation(fields: [agentId], references: [id])
+  creator             User?                     @relation("AgentVersionCreatedBy", fields: [createdBy], references: [id])
+  calls               Call[]
+  trialRedemptions    TrialRedemption[]
+  providerDeployments AgentProviderDeployment[]
 
   @@unique([agentId, versionNumber])
   @@index([organizationId])
   @@index([createdBy])
   @@map("agent_versions")
+}
+
+// Server-persisted chat-to-agent generation sessions. Survives page refreshes:
+// the client resumes the conversation and any in-flight generation by reloading
+// this row. Scoped to (workspace, user); never shared across users.
+model AgentGenSession {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  status         String    @default("awaiting_user") // awaiting_user | generating | finalizing | completed | failed
+  messages       Json      @default("[]") // [{role: 'user'|'assistant', content, at}]
+  currentSpec    Json?     @map("current_spec")
+  specValid      Boolean   @default(false) @map("spec_valid")
+  agentId        String?   @map("agent_id") @db.Uuid // set on finalize
+  lastError      String?   @map("last_error")
+  generatingAt   DateTime? @map("generating_at") // set when a job is enqueued; used by the stale sweep
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([workspaceId, userId, status])
+  @@index([status, generatingAt])
+  @@map("agent_gen_sessions")
 }
 
 model AgentTemplate {
@@ -317,62 +360,80 @@ model KnowledgeChunk {
 // --------------------------------------------------------------------------
 
 model Call {
-  id              String    @id @default(uuid()) @db.Uuid
-  workspaceId     String    @map("workspace_id") @db.Uuid
-  organizationId  String?   @map("organization_id") @db.Uuid
-  agentId         String    @map("agent_id") @db.Uuid
-  agentVersionId  String?   @map("agent_version_id") @db.Uuid
-  contactId       String?   @map("contact_id") @db.Uuid
-  direction       String // inbound | outbound | browser_test
-  status          String    @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
-  provider        String    @default("")
-  providerCallId  String?   @map("provider_call_id")
-  phoneNumberId   String?   @map("phone_number_id") @db.Uuid
-  livekitRoomName String?   @map("livekit_room_name")
-  livekitParticipantId String? @map("livekit_participant_id")
-  fromNumber      String?   @map("from_number")
-  toNumber        String?   @map("to_number")
-  contactName     String?   @map("contact_name")
-  startedAt       DateTime? @map("started_at")
-  endedAt         DateTime? @map("ended_at")
-  durationSeconds Int?      @map("duration_seconds")
-  recordingUrl    String?   @map("recording_url")
-  transcriptText  String?   @map("transcript_text")
-  outcome         String?
-  metadata        Json?
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-  expiresAt       DateTime? @map("expires_at")       @db.Timestamptz(6)
-  retentionDays   Int       @default(365)            @map("retention_days")
+  id                   String    @id @default(uuid()) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  organizationId       String    @map("organization_id") @db.Uuid
+  agentId              String    @map("agent_id") @db.Uuid
+  agentVersionId       String?   @map("agent_version_id") @db.Uuid
+  contactId            String?   @map("contact_id") @db.Uuid
+  direction            String // inbound | outbound | browser_test
+  status               String    @default("queued") // queued | ringing | in_progress | completed | failed | cancelled
+  provider             String    @default("")
+  // Runtime that served the call: realtime | standard. Nullable because calls
+  // created before pipeline routing existed have no truthful value; a default
+  // would silently attribute historical minutes to a runtime that did not run
+  // them, corrupting cost reconciliation.
+  pipeline             String?
+  providerCallId       String?   @map("provider_call_id")
+  phoneNumberId        String?   @map("phone_number_id") @db.Uuid
+  livekitRoomName      String?   @map("livekit_room_name")
+  livekitParticipantId String?   @map("livekit_participant_id")
+  fromNumber           String?   @map("from_number")
+  toNumber             String?   @map("to_number")
+  contactName          String?   @map("contact_name")
+  startedAt            DateTime? @map("started_at")
+  endedAt              DateTime? @map("ended_at")
+  durationSeconds      Int?      @map("duration_seconds")
+  recordingUrl         String?   @map("recording_url")
+  transcriptText       String?   @map("transcript_text")
+  outcome              String?
+  metadata             Json?
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  expiresAt            DateTime? @map("expires_at") @db.Timestamptz(6)
+  retentionDays        Int       @default(365) @map("retention_days")
 
-  workspace        Workspace         @relation(fields: [workspaceId], references: [id])
-  agent            Agent             @relation(fields: [agentId], references: [id])
-  phoneNumber      TelephonyPhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
-  contact          Contact?          @relation(fields: [contactId], references: [id])
-  events           CallEvent[]
-  evaluation       CallEvaluation?
-  toolInvocations  ToolInvocation[]
-  complianceChecks ComplianceCheck[]
-  analyticsEvents  AnalyticsEvent[]
-  crmFanoutLogs    CrmFanoutLog[]
+  workspace            Workspace             @relation(fields: [workspaceId], references: [id])
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent                Agent                 @relation(fields: [agentId], references: [id])
+  agentVersion         AgentVersion?         @relation(fields: [agentVersionId], references: [id], onDelete: SetNull)
+  phoneNumber          TelephonyPhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  contact              Contact?              @relation(fields: [contactId], references: [id])
+  events               CallEvent[]
+  evaluation           CallEvaluation?
+  toolInvocations      ToolInvocation[]
+  complianceChecks     ComplianceCheck[]
+  analyticsEvents      AnalyticsEvent[]
+  crmFanoutLogs        CrmFanoutLog[]
+  billingLedgerEntries BillingLedgerEntry[]
+  usage                CallUsage?
+  runtimeUsageEvents   RuntimeUsageEvent[]
+  trialRedemption      TrialRedemption?
+  providerCostEvents   ProviderCostEvent[]
+  concurrencyLease     CallConcurrencyLease?
 
+  @@unique([provider, providerCallId], map: "calls_provider_call_uidx")
   @@index([workspaceId, createdAt])
   @@index([organizationId])
   @@index([agentId, createdAt])
   @@index([phoneNumberId])
   @@index([contactId])
+  // Cost reconciliation and margin reporting are always "per runtime, per
+  // period", so the index leads with pipeline rather than relying on the
+  // organization index and filtering.
+  @@index([pipeline, createdAt])
   @@map("calls")
 }
 
 model CallEvent {
-  id             String   @id @default(uuid()) @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
   providerEventId String?  @unique @map("provider_event_id")
-  callId         String   @map("call_id") @db.Uuid
-  workspaceId    String   @map("workspace_id") @db.Uuid
-  organizationId String?  @map("organization_id") @db.Uuid
-  eventType      String   @map("event_type")
-  eventTime      DateTime @default(now()) @map("event_time")
-  payload        Json?
+  callId          String   @map("call_id") @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  organizationId  String?  @map("organization_id") @db.Uuid
+  eventType       String   @map("event_type")
+  eventTime       DateTime @default(now()) @map("event_time")
+  payload         Json?
 
   call      Call      @relation(fields: [callId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id])
@@ -440,12 +501,12 @@ model AuditReport {
   id             String   @id @default(uuid()) @db.Uuid
   token          String   @unique
   organizationId String   @map("organization_id") @db.Uuid
-  fromDate       DateTime @map("from_date")       @db.Timestamptz(6)
-  toDate         DateTime @map("to_date")         @db.Timestamptz(6)
+  fromDate       DateTime @map("from_date") @db.Timestamptz(6)
+  toDate         DateTime @map("to_date") @db.Timestamptz(6)
   auditorEmail   String   @map("auditor_email")
   contentHash    String   @map("content_hash")
-  content        String   // truncated JSON, max 10000 chars
-  expiresAt      DateTime @map("expires_at")       @db.Timestamptz(6)
+  content        String // truncated JSON, max 10000 chars
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz(6)
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([token])
@@ -497,6 +558,7 @@ model ToolInvocation {
   responseBody   Json?     @map("response_body")
   errorMessage   String?   @map("error_message")
   durationMs     Int?      @map("duration_ms")
+  idempotencyKey String?   @map("idempotency_key")
   startedAt      DateTime  @default(now()) @map("started_at")
   finishedAt     DateTime? @map("finished_at")
 
@@ -505,6 +567,7 @@ model ToolInvocation {
   agent     Agent?          @relation(fields: [agentId], references: [id])
   call      Call?           @relation(fields: [callId], references: [id], onDelete: SetNull)
 
+  @@unique([workspaceId, toolId, idempotencyKey], map: "tool_invocations_idempotency_uidx")
   @@index([workspaceId, startedAt])
   @@index([organizationId])
   @@index([toolId, startedAt])
@@ -678,24 +741,24 @@ model ClientInvite {
 // --------------------------------------------------------------------------
 
 model Referral {
-  id                   String    @id @default(uuid()) @db.Uuid
-  referrerUserId       String    @map("referrer_user_id") @db.Uuid
-  referredUserId       String?   @map("referred_user_id") @db.Uuid
-  referrerWorkspaceId  String    @map("referrer_workspace_id") @db.Uuid
-  referredWorkspaceId  String?   @map("referred_workspace_id") @db.Uuid
-  referrerOrganizationId String  @map("referrer_organization_id") @db.Uuid
-  referredOrganizationId String? @map("referred_organization_id") @db.Uuid
-  status               String    @default("pending") // pending | converted | expired | bonus_awarded
-  bonusMinutes         Int       @default(100) @map("bonus_minutes")
-  bonusAwardedAt       DateTime? @map("bonus_awarded_at")
-  inviteToken          String    @unique @map("invite_token")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+  id                     String    @id @default(uuid()) @db.Uuid
+  referrerUserId         String    @map("referrer_user_id") @db.Uuid
+  referredUserId         String?   @map("referred_user_id") @db.Uuid
+  referrerWorkspaceId    String    @map("referrer_workspace_id") @db.Uuid
+  referredWorkspaceId    String?   @map("referred_workspace_id") @db.Uuid
+  referrerOrganizationId String    @map("referrer_organization_id") @db.Uuid
+  referredOrganizationId String?   @map("referred_organization_id") @db.Uuid
+  status                 String    @default("pending") // pending | converted | expired | bonus_awarded
+  bonusMinutes           Int       @default(100) @map("bonus_minutes")
+  bonusAwardedAt         DateTime? @map("bonus_awarded_at")
+  inviteToken            String    @unique @map("invite_token")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  referrerUser       User       @relation("ReferrerUser", fields: [referrerUserId], references: [id])
-  referredUser       User?      @relation("ReferredUser", fields: [referredUserId], references: [id])
-  referrerWorkspace  Workspace  @relation("ReferrerWorkspace", fields: [referrerWorkspaceId], references: [id])
-  referredWorkspace  Workspace? @relation("ReferredWorkspace", fields: [referredWorkspaceId], references: [id])
+  referrerUser      User       @relation("ReferrerUser", fields: [referrerUserId], references: [id])
+  referredUser      User?      @relation("ReferredUser", fields: [referredUserId], references: [id])
+  referrerWorkspace Workspace  @relation("ReferrerWorkspace", fields: [referrerWorkspaceId], references: [id])
+  referredWorkspace Workspace? @relation("ReferredWorkspace", fields: [referredWorkspaceId], references: [id])
 
   @@index([referrerUserId, status])
   @@index([referredUserId])
@@ -708,20 +771,24 @@ model Referral {
 // --------------------------------------------------------------------------
 
 model Subscription {
-  id                   String    @id @default(uuid()) @db.Uuid
-  organizationId       String    @unique @map("organization_id") @db.Uuid
-  stripeSubscriptionId String?   @unique @map("stripe_subscription_id")
-  stripeCustomerId     String?   @map("stripe_customer_id")
-  stripePriceId        String?   @map("stripe_price_id")
-  plan                 String    @default("free") // free | starter | growth | enterprise
-  status               String    @default("active") // active | trialing | past_due | canceled
-  currentPeriodStart   DateTime? @map("current_period_start")
-  currentPeriodEnd     DateTime? @map("current_period_end")
-  cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
-  trialEnd             DateTime? @map("trial_end")
-  stripeMetadata       Json?     @map("stripe_metadata")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
+  id                          String    @id @default(uuid()) @db.Uuid
+  organizationId              String    @unique @map("organization_id") @db.Uuid
+  stripeSubscriptionId        String?   @unique @map("stripe_subscription_id")
+  stripeCustomerId            String?   @map("stripe_customer_id")
+  stripeProductId             String?   @map("stripe_product_id")
+  stripePriceId               String?   @map("stripe_price_id")
+  plan                        String    @default("free") // free | starter | growth | enterprise
+  catalogVersion              String    @default("legacy") @map("catalog_version")
+  status                      String    @default("active") // active | trialing | past_due | canceled
+  concurrentCallLimitOverride Int?      @map("concurrent_call_limit_override")
+  currentPeriodStart          DateTime? @map("current_period_start")
+  currentPeriodEnd            DateTime? @map("current_period_end")
+  cancelAtPeriodEnd           Boolean   @default(false) @map("cancel_at_period_end")
+  trialEnd                    DateTime? @map("trial_end")
+  stripeMetadata              Json?     @map("stripe_metadata")
+  webhookUpdatedAt            DateTime? @map("webhook_updated_at")
+  createdAt                   DateTime  @default(now()) @map("created_at")
+  updatedAt                   DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -729,6 +796,229 @@ model Subscription {
   @@index([stripeCustomerId])
   @@index([stripePriceId])
   @@map("subscriptions")
+}
+
+model BillingCreditBucket {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  sourceType       String   @map("source_type")
+  sourceId         String   @map("source_id")
+  originalSeconds  Int      @map("original_seconds")
+  remainingSeconds Int      @map("remaining_seconds")
+  validFrom        DateTime @map("valid_from")
+  expiresAt        DateTime @map("expires_at")
+  priority         Int
+  status           String   @default("active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ledgerEntries BillingLedgerEntry[]
+
+  @@unique([organizationId, sourceType, sourceId], map: "credit_bucket_source_uidx")
+  @@index([organizationId, status, expiresAt, priority], map: "credit_bucket_spend_idx")
+  @@map("billing_credit_buckets")
+}
+
+model BillingLedgerEntry {
+  id                  String   @id @default(uuid()) @db.Uuid
+  organizationId      String   @map("organization_id") @db.Uuid
+  bucketId            String?  @map("bucket_id") @db.Uuid
+  workspaceId         String?  @map("workspace_id") @db.Uuid
+  callId              String?  @map("call_id") @db.Uuid
+  entryType           String   @map("entry_type")
+  seconds             Int
+  balanceAfterSeconds Int      @map("balance_after_seconds")
+  actorType           String   @map("actor_type")
+  actorId             String?  @map("actor_id")
+  reasonCode          String   @map("reason_code")
+  idempotencyKey      String   @map("idempotency_key")
+  metadata            Json?
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  bucket       BillingCreditBucket? @relation(fields: [bucketId], references: [id], onDelete: SetNull)
+  workspace    Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  call         Call?                @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, createdAt])
+  @@index([bucketId])
+  @@index([workspaceId, createdAt])
+  @@index([callId])
+  @@map("billing_ledger_entries")
+}
+
+model OrganizationCreditBalance {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @unique @map("organization_id") @db.Uuid
+  availableSeconds Int      @default(0) @map("available_seconds")
+  reservedSeconds  Int      @default(0) @map("reserved_seconds")
+  status           String   @default("active")
+  reviewReason     String?  @map("review_reason")
+  version          Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_credit_balances")
+}
+
+model CallUsage {
+  id                         String    @id @default(uuid()) @db.Uuid
+  organizationId             String    @map("organization_id") @db.Uuid
+  workspaceId                String    @map("workspace_id") @db.Uuid
+  callId                     String    @unique @map("call_id") @db.Uuid
+  provider                   String
+  providerCallId             String?   @map("provider_call_id")
+  direction                  String
+  dispatchedAt               DateTime? @map("dispatched_at")
+  connectedAt                DateTime? @map("connected_at")
+  endedAt                    DateTime? @map("ended_at")
+  rawConnectedSeconds        Int       @default(0) @map("raw_connected_seconds")
+  billableSeconds            Int       @default(0) @map("billable_seconds")
+  reservedSeconds            Int       @default(0) @map("reserved_seconds")
+  debitedSeconds             Int       @default(0) @map("debited_seconds")
+  disposition                String?
+  finalizationState          String    @default("pending") @map("finalization_state")
+  finalizationIdempotencyKey String?   @unique @map("finalization_idempotency_key")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  call         Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, finalizationState])
+  @@index([workspaceId, createdAt])
+  @@index([provider, providerCallId])
+  @@map("call_usages")
+}
+
+model RuntimeUsageEvent {
+  id               String    @id @default(uuid()) @db.Uuid
+  organizationId   String    @map("organization_id") @db.Uuid
+  callId           String    @map("call_id") @db.Uuid
+  eventId          String    @map("event_id")
+  eventType        String    @map("event_type")
+  occurredAt       DateTime  @map("occurred_at")
+  validatedPayload Json      @map("validated_payload")
+  decision         Json?
+  claimedAt        DateTime? @map("claimed_at")
+  attemptCount     Int       @default(0) @map("attempt_count")
+  processedAt      DateTime? @map("processed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  call         Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, eventId])
+  @@index([callId, occurredAt])
+  @@index([organizationId, processedAt])
+  @@map("runtime_usage_events")
+}
+
+model TrialRedemption {
+  id                 String    @id @default(uuid()) @db.Uuid
+  organizationId     String    @unique @map("organization_id") @db.Uuid
+  initiatingUserId   String    @map("initiating_user_id") @db.Uuid
+  agentVersionId     String    @map("agent_version_id") @db.Uuid
+  callId             String?   @unique @map("call_id") @db.Uuid
+  providerAttempts   Json      @default("[]") @map("provider_attempts")
+  selectedProvider   String?   @map("selected_provider")
+  providerSessionId  String?   @map("provider_session_id")
+  startedAt          DateTime  @default(now()) @map("started_at")
+  expiresAt          DateTime  @map("expires_at")
+  endedAt            DateTime? @map("ended_at")
+  maxDurationSeconds Int       @default(180) @map("max_duration_seconds")
+  disposition        String    @default("claimed")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  initiatingUser User         @relation(fields: [initiatingUserId], references: [id])
+  agentVersion   AgentVersion @relation(fields: [agentVersionId], references: [id])
+  call           Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@index([initiatingUserId])
+  @@index([agentVersionId])
+  @@index([selectedProvider, providerSessionId])
+  @@map("trial_redemptions")
+}
+
+model AgentProviderDeployment {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  workspaceId       String   @map("workspace_id") @db.Uuid
+  agentVersionId    String   @map("agent_version_id") @db.Uuid
+  provider          String
+  providerRuntimeId String   @map("provider_runtime_id")
+  status            String   @default("active")
+  metadata          Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentVersion AgentVersion @relation(fields: [agentVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([agentVersionId, provider])
+  @@index([organizationId])
+  @@index([workspaceId])
+  @@index([provider, providerRuntimeId])
+  @@map("agent_provider_deployments")
+}
+
+model ProviderCostEvent {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  workspaceId     String?   @map("workspace_id") @db.Uuid
+  callId          String?   @map("call_id") @db.Uuid
+  provider        String
+  serviceCategory String    @map("service_category")
+  providerUsageId String?   @map("provider_usage_id")
+  idempotencyKey  String    @map("idempotency_key")
+  measuredUnit    String    @map("measured_unit")
+  quantity        Decimal   @db.Decimal(20, 6)
+  currency        String    @default("usd")
+  amount          Decimal   @db.Decimal(20, 6)
+  isEstimate      Boolean   @default(false) @map("is_estimate")
+  estimateVersion Int       @default(1) @map("estimate_version")
+  occurredAt      DateTime  @map("occurred_at")
+  reconciledAt    DateTime? @map("reconciled_at")
+  metadata        Json?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  workspace    Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  call         Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, idempotencyKey])
+  @@index([organizationId, occurredAt])
+  @@index([workspaceId, occurredAt])
+  @@index([callId])
+  @@index([provider, serviceCategory, occurredAt])
+  @@index([reconciledAt])
+  @@map("provider_cost_events")
+}
+
+model CallConcurrencyLease {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  callId         String   @unique @map("call_id") @db.Uuid
+  leaseToken     String   @unique @map("lease_token")
+  state          String   @default("active")
+  expiresAt      DateTime @map("expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  call         Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, state, expiresAt])
+  @@index([expiresAt])
+  @@map("call_concurrency_leases")
 }
 
 model UsageRecord {
@@ -750,21 +1040,24 @@ model UsageRecord {
 }
 
 model StripeEvent {
-  id              String    @id @default(uuid()) @db.Uuid
-  stripeEventId   String    @unique @map("stripe_event_id")
-  type            String
-  apiVersion      String?   @map("api_version")
-  created         DateTime
-  data            Json      @map("data")
-  livemode        Boolean   @default(false) @map("livemode")
-  pendingWebhooks Int       @default(0) @map("pending_webhooks")
-  requestContext  Json?     @map("request_context")
-  processedAt     DateTime? @map("processed_at")
-  errorMessage    String?   @map("error_message")
-  createdAt       DateTime  @default(now()) @map("created_at")
+  id                  String    @id @default(uuid()) @db.Uuid
+  stripeEventId       String    @unique @map("stripe_event_id")
+  type                String
+  apiVersion          String?   @map("api_version")
+  created             DateTime
+  data                Json      @map("data")
+  livemode            Boolean   @default(false) @map("livemode")
+  pendingWebhooks     Int       @default(0) @map("pending_webhooks")
+  requestContext      Json?     @map("request_context")
+  processingStartedAt DateTime? @map("processing_started_at")
+  attemptCount        Int       @default(0) @map("attempt_count")
+  processedAt         DateTime? @map("processed_at")
+  errorMessage        String?   @map("error_message")
+  createdAt           DateTime  @default(now()) @map("created_at")
 
   @@index([stripeEventId])
   @@index([type, created])
+  @@index([processedAt, processingStartedAt])
   @@map("stripe_events")
 }
 
@@ -796,6 +1089,30 @@ model GoogleCalendarConfig {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@map("google_calendar_configs")
+}
+
+// Unified Google Workspace OAuth connection (Calendar + Gmail send + Sheets).
+// One token set with granted scopes per workspace; tokens are stored as
+// JSON-serialized AES-256-GCM envelopes (same convention as GoogleCalendarConfig).
+model GoogleOAuthConnection {
+  id             String    @id @default(uuid()) @db.Uuid
+  workspaceId    String    @map("workspace_id") @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  accessToken    String    @map("access_token")
+  refreshToken   String    @map("refresh_token")
+  tokenExpiry    DateTime  @map("token_expiry")
+  scopes         Json      @default("[]") // granted OAuth scopes, string array
+  status         String    @default("connected") // connected | needs_reauth | invalid
+  lastVerifiedAt DateTime? @map("last_verified_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId])
+  @@index([organizationId])
+  @@map("google_oauth_connections")
 }
 
 // CRM Connections (workspace-level, encrypted credentials)
@@ -875,23 +1192,23 @@ model TwilioPhoneNumber {
 }
 
 model TelephonyProviderConnection {
-  id                   String   @id @default(uuid()) @db.Uuid
-  workspaceId          String   @map("workspace_id") @db.Uuid
-  organizationId       String   @map("organization_id") @db.Uuid
+  id                   String    @id @default(uuid()) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  organizationId       String    @map("organization_id") @db.Uuid
   provider             String
-  displayName          String   @map("display_name")
-  providerAccountId    String?  @map("provider_account_id")
-  encryptedCredentials Json     @map("encrypted_credentials")
-  credentialVersion    Int      @default(1) @map("credential_version")
-  status               String   @default("connected")
+  displayName          String    @map("display_name")
+  providerAccountId    String?   @map("provider_account_id")
+  encryptedCredentials Json      @map("encrypted_credentials")
+  credentialVersion    Int       @default(1) @map("credential_version")
+  status               String    @default("connected")
   lastVerifiedAt       DateTime? @map("last_verified_at")
   lastSyncAt           DateTime? @map("last_sync_at")
   metadata             Json?
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   phoneNumbers TelephonyPhoneNumber[]
 
   @@index([workspaceId, provider])
@@ -900,30 +1217,30 @@ model TelephonyProviderConnection {
 }
 
 model TelephonyPhoneNumber {
-  id                   String   @id @default(uuid()) @db.Uuid
-  workspaceId          String   @map("workspace_id") @db.Uuid
-  organizationId       String   @map("organization_id") @db.Uuid
-  providerConnectionId String?  @map("provider_connection_id") @db.Uuid
+  id                   String    @id @default(uuid()) @db.Uuid
+  workspaceId          String    @map("workspace_id") @db.Uuid
+  organizationId       String    @map("organization_id") @db.Uuid
+  providerConnectionId String?   @map("provider_connection_id") @db.Uuid
   provider             String
-  providerNumberId     String?  @map("provider_number_id")
-  phoneNumberE164      String   @unique @map("phone_number_e164")
-  friendlyName         String?  @map("friendly_name")
-  capabilities         Json?    @map("capabilities_json")
-  status               String   @default("pending_verification")
-  assignedAgentId      String?  @map("assigned_agent_id") @db.Uuid
-  inboundEnabled       Boolean  @default(true) @map("inbound_enabled")
-  outboundEnabled      Boolean  @default(false) @map("outbound_enabled")
+  providerNumberId     String?   @map("provider_number_id")
+  phoneNumberE164      String    @unique @map("phone_number_e164")
+  friendlyName         String?   @map("friendly_name")
+  capabilities         Json?     @map("capabilities_json")
+  status               String    @default("pending_verification")
+  assignedAgentId      String?   @map("assigned_agent_id") @db.Uuid
+  inboundEnabled       Boolean   @default(true) @map("inbound_enabled")
+  outboundEnabled      Boolean   @default(false) @map("outbound_enabled")
   lastSyncedAt         DateTime? @map("last_synced_at")
-  providerMetadata     Json?    @map("provider_metadata_json")
-  sipTrunkId           String?  @map("sip_trunk_id")
-  verificationToken    String?  @map("verification_token")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  providerMetadata     Json?     @map("provider_metadata_json")
+  sipTrunkId           String?   @map("sip_trunk_id")
+  verificationToken    String?   @map("verification_token")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace          Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization       Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   providerConnection TelephonyProviderConnection? @relation(fields: [providerConnectionId], references: [id], onDelete: SetNull)
-  assignedAgent      Agent? @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
+  assignedAgent      Agent?                       @relation(fields: [assignedAgentId], references: [id], onDelete: SetNull)
   livekitConfig      LiveKitTelephonyConfig?
   calls              Call[]
   webhookEvents      TelephonyWebhookEvent[]
@@ -936,27 +1253,27 @@ model TelephonyPhoneNumber {
 }
 
 model LiveKitTelephonyConfig {
-  id                         String   @id @default(uuid()) @db.Uuid
-  workspaceId                String   @map("workspace_id") @db.Uuid
-  organizationId             String   @map("organization_id") @db.Uuid
-  phoneNumberId              String   @unique @map("phone_number_id") @db.Uuid
-  agentId                    String   @map("agent_id") @db.Uuid
-  livekitRoomPrefix          String   @map("livekit_room_prefix")
-  livekitSipHost             String   @map("livekit_sip_host")
-  inboundTrunkId             String?  @map("inbound_trunk_id")
-  outboundTrunkId            String?  @map("outbound_trunk_id")
-  dispatchRuleId             String?  @map("dispatch_rule_id")
-  sipAuthUsernameEncrypted   Json?    @map("sip_auth_username_encrypted")
-  sipAuthPasswordEncrypted   Json?    @map("sip_auth_password_encrypted")
-  status                     String   @default("pending")
-  errorMessage               String?  @map("error_message")
-  createdAt                  DateTime @default(now()) @map("created_at")
-  updatedAt                  DateTime @updatedAt @map("updated_at")
+  id                       String   @id @default(uuid()) @db.Uuid
+  workspaceId              String   @map("workspace_id") @db.Uuid
+  organizationId           String   @map("organization_id") @db.Uuid
+  phoneNumberId            String   @unique @map("phone_number_id") @db.Uuid
+  agentId                  String   @map("agent_id") @db.Uuid
+  livekitRoomPrefix        String   @map("livekit_room_prefix")
+  livekitSipHost           String   @map("livekit_sip_host")
+  inboundTrunkId           String?  @map("inbound_trunk_id")
+  outboundTrunkId          String?  @map("outbound_trunk_id")
+  dispatchRuleId           String?  @map("dispatch_rule_id")
+  sipAuthUsernameEncrypted Json?    @map("sip_auth_username_encrypted")
+  sipAuthPasswordEncrypted Json?    @map("sip_auth_password_encrypted")
+  status                   String   @default("pending")
+  errorMessage             String?  @map("error_message")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
 
-  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace    Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   phoneNumber  TelephonyPhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
-  agent        Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agent        Agent                @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, status])
   @@index([organizationId])
@@ -965,22 +1282,22 @@ model LiveKitTelephonyConfig {
 }
 
 model TelephonyWebhookEvent {
-  id              String    @id @default(uuid()) @db.Uuid
-  provider        String
-  eventId         String    @map("event_id")
-  eventType       String    @map("event_type")
-  phoneNumberId   String?   @map("phone_number_id") @db.Uuid
-  callId          String?   @map("call_id") @db.Uuid
-  rawPayloadJson  Json      @map("raw_payload_json")
-  signatureValid  Boolean   @default(false) @map("signature_valid")
-  processedAt     DateTime? @map("processed_at")
-  status          String    @default("received")
-  errorMessage    String?   @map("error_message")
-  workspaceId     String?   @map("workspace_id") @db.Uuid
-  createdAt       DateTime  @default(now()) @map("created_at")
+  id             String    @id @default(uuid()) @db.Uuid
+  provider       String
+  eventId        String    @map("event_id")
+  eventType      String    @map("event_type")
+  phoneNumberId  String?   @map("phone_number_id") @db.Uuid
+  callId         String?   @map("call_id") @db.Uuid
+  rawPayloadJson Json      @map("raw_payload_json")
+  signatureValid Boolean   @default(false) @map("signature_valid")
+  processedAt    DateTime? @map("processed_at")
+  status         String    @default("received")
+  errorMessage   String?   @map("error_message")
+  workspaceId    String?   @map("workspace_id") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   phoneNumber TelephonyPhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  workspace   Workspace?            @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
 
   @@unique([provider, eventId])
   @@index([phoneNumberId])

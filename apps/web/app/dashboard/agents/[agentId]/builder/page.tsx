@@ -149,16 +149,13 @@ export default async function AgentBuilderPage({ params }: PageProps) {
               Conversation Flow
             </CardTitle>
             <CardDescription>
-              Map the live phone conversation, then inspect the generated Agent Spec JSON when needed.
+              Review the call path here, then open the full-screen builder to edit it.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <AgentFlowTab
-              workspaceId={workspaceId}
               agentId={agent.id}
-              initialFlow={
-                builderFlow
-              }
+              initialFlow={builderFlow}
               jsonContent={agent.active_spec ? JSON.stringify(agent.active_spec, null, 2) : undefined}
             />
           </CardContent>

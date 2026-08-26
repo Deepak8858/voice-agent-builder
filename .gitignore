@@ -61,3 +61,6 @@ apps/web/next-env.d.ts
 .eslintcache
 
 /generated/prisma
+
+# CloudFront origin verification secret written by infra/aws/provision-cloudfront.sh
+origin-verify-secret.txt

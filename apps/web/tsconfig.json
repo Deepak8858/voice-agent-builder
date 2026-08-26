@@ -11,7 +11,9 @@
       "@/*": ["./*"],
       "@voiceforge/shared": ["../../packages/shared/src/index.ts"],
       "@voiceforge/shared/*": ["../../packages/shared/src/*"],
-      "@voiceforge/ui": ["../../packages/ui/src/index.ts"]
+      "@voiceforge/ui": ["../../packages/ui/src/index.ts"],
+      "@voiceforge/ui/lib/cn": ["../../packages/ui/src/lib/cn.ts"],
+      "@voiceforge/ui/*": ["../../packages/ui/src/*/index.tsx"]
     }
   },
   "include": [
