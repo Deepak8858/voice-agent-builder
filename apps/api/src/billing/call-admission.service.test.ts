@@ -277,6 +277,86 @@ describe('CallAdmissionService.admitCall', () => {
   });
 });
 
+describe('CallAdmissionService.reassertLease', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('re-takes the slot for an already-admitted call and audits the reassertion', async () => {
+    const { service, concurrency, audit } = makeService();
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(true);
+
+    expect(concurrency.acquire).toHaveBeenCalledWith({
+      callId: 'call-1',
+      organizationId: 'org-1',
+      organizationLimit: 2,
+    });
+    expect(audit.log).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      action: 'billing.call_lease_reasserted',
+      resourceType: 'call',
+      resourceId: 'call-1',
+      metadata: {
+        organizationLimit: 2,
+        leaseExpiresAt: new Date(2_000_000_000_000).toISOString(),
+      },
+    });
+  });
+
+  it('refuses and audits when the organization is back at its concurrency cap', async () => {
+    const { service, audit } = makeService({
+      lease: { allowed: false, reason: 'organization_concurrency_reached' },
+    });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+
+    expect(audit.log).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      action: 'billing.call_lease_reassertion_denied',
+      resourceType: 'call',
+      resourceId: 'call-1',
+      metadata: { reason: 'organization_concurrency_reached', organizationLimit: 2 },
+    });
+  });
+
+  it('refuses without consulting Redis when the plan has no concurrency contract', async () => {
+    const { service, concurrency, audit } = makeService({ concurrentCalls: 0 });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+
+    expect(concurrency.acquire).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.call_lease_reassertion_denied',
+        metadata: { reason: 'organization_concurrency_reached', organizationLimit: 0 },
+      }),
+    );
+  });
+
+  it('fails closed when the plan lookup throws', async () => {
+    const { service, entitlements, concurrency } = makeService();
+    entitlements.getEffectivePlan.mockRejectedValue(new Error('billing db down'));
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+
+    expect(concurrency.acquire).not.toHaveBeenCalled();
+  });
+
+  it('refuses the reassertion when the success audit cannot be written', async () => {
+    const { service } = makeService({ auditThrows: true });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+  });
+
+  it('still returns a clean refusal when the denial audit itself fails', async () => {
+    const { service } = makeService({
+      auditThrows: true,
+      lease: { allowed: false, reason: 'organization_concurrency_reached' },
+    });
+
+    await expect(service.reassertLease('org-1', 'call-1')).resolves.toBe(false);
+  });
+});
+
 describe('CallAdmissionService.compensate', () => {
   beforeEach(() => vi.clearAllMocks());
 

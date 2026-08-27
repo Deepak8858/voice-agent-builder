@@ -127,4 +127,33 @@ describe('updateSupabaseSession', () => {
   it('keeps the configured prefix lists free from exact duplicates', () => {
     expect(PUBLIC_PREFIXES.filter((prefix) => PROTECTED_PREFIXES.includes(prefix))).toStrictEqual([]);
   });
+
+  it('keeps the marketing pages that share a prefix with dashboard features public', async () => {
+    // Regression: both routes were in PROTECTED_PREFIXES while also being
+    // listed in sitemap.ts, so crawlers got a 307 to /sign-in and neither page
+    // could ever be indexed. The authenticated versions live under /dashboard.
+    for (const path of ['/compliance', '/integrations']) {
+      const res = await updateSupabaseSession(request(path));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('location')).toBeNull();
+    }
+  });
+
+  it('still protects the authenticated Google OAuth callback under /integrations', async () => {
+    // Making /integrations public must not widen access to the nested
+    // authenticated callback route.
+    const res = await updateSupabaseSession(request('/integrations/google/callback'));
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toBe(
+      'http://localhost/sign-in?next=%2Fintegrations%2Fgoogle%2Fcallback',
+    );
+  });
+
+  it('keeps the authenticated dashboard versions of the marketing routes protected', async () => {
+    for (const path of ['/dashboard/compliance', '/dashboard/integrations']) {
+      const res = await updateSupabaseSession(request(path));
+      expect(res.status).toBe(307);
+    }
+  });
 });

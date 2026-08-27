@@ -103,6 +103,15 @@ describe('LiveKit agent runtime helpers', () => {
     expect(metadata.pipeline).toBe('standard');
   });
 
+  it('accepts only a positive integer hard duration cap', () => {
+    expect(parseDispatchMetadata(JSON.stringify({ agentId: 'agent-1', maxDurationSeconds: 125 })))
+      .toMatchObject({ maxDurationSeconds: 125 });
+    expect(() => parseDispatchMetadata(JSON.stringify({ agentId: 'agent-1', maxDurationSeconds: 0 })))
+      .toThrow(/agentId/);
+    expect(() => parseDispatchMetadata(JSON.stringify({ agentId: 'agent-1', maxDurationSeconds: 1.5 })))
+      .toThrow(/agentId/);
+  });
+
   it('builds speaking instructions from Agent Spec JSON', () => {
     const instructions = buildVoiceForgeInstructions(spec, {
       workspaceId: 'ws-1',

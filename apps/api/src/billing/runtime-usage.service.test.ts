@@ -91,6 +91,14 @@ function makeService(overrides?: {
   replayDecision?: unknown;
   commitThrows?: boolean;
   nextMinuteAllowed?: boolean;
+  /**
+   * `connectedAt` on the stored usage row, which is what tells `call_ended`
+   * whether the reserved first minute was ever committed. `undefined` keeps the
+   * default connected row; `null` is a call that ended without connecting.
+   */
+  usageConnectedAt?: Date | null;
+  /** No usage row at all, e.g. an end arriving after the row was purged. */
+  usageMissing?: boolean;
 }) {
   const runtimeUsageEvent = makeEventStore(
     overrides?.replayDecision ? { decision: overrides.replayDecision } : undefined,
@@ -105,6 +113,16 @@ function makeService(overrides?: {
     },
     runtimeUsageEvent,
     callUsage: {
+      findFirst: vi.fn(async () =>
+        overrides?.usageMissing
+          ? null
+          : {
+              connectedAt:
+                overrides?.usageConnectedAt === undefined
+                  ? new Date('2026-06-07T10:00:00.000Z')
+                  : overrides.usageConnectedAt,
+            },
+      ),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
   };
@@ -309,6 +327,101 @@ describe('RuntimeUsageService.handleEvent', () => {
     expect(admission.releaseLease).toHaveBeenCalledWith('org-1', 'call-1');
     // A completed call keeps its committed credit.
     expect(admission.compensate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `call_ended` is not conditional on a successful `call_connected`: the
+   * meter's shutdown callback fires on any teardown, so an end can arrive for a
+   * call whose commit never happened. Finalizing that row without releasing the
+   * reservation strands the minute permanently — `finalized` is outside the
+   * window `finalizeStaleCalls` sweeps, and no reconciliation pass repairs
+   * `reservedSeconds`.
+   */
+  it('returns the reserved minute when the call ends without ever connecting', async () => {
+    const { service, prisma, admission } = makeService({ usageConnectedAt: null });
+
+    await expect(
+      service.handleEvent({
+        type: 'call_ended',
+        eventId: 'evt-3',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:00:04.000Z',
+        durationSeconds: 0,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    // compensate() is the only path that releases the reservation, frees the
+    // lease, and closes the usage row together.
+    expect(admission.compensate).toHaveBeenCalledWith(
+      'org-1',
+      'call-1',
+      'ended_without_connect',
+    );
+    // Nothing may mark this call completed: `finalized` is what hid the
+    // stranded reservation from the stale-call sweep.
+    expect(prisma.callUsage.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ finalizationState: 'finalized' }),
+      }),
+    );
+    expect(prisma.callUsage.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ disposition: 'completed' }),
+      }),
+    );
+    // The only write is the runtime-reported duration; compensation owns
+    // `endedAt` and the finalization state.
+    expect(prisma.callUsage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { rawConnectedSeconds: 0 } }),
+    );
+  });
+
+  it('does not compensate a connected call that reports a zero duration', async () => {
+    const { service, admission } = makeService({
+      usageConnectedAt: new Date('2026-06-07T10:00:00.000Z'),
+    });
+
+    await expect(
+      service.handleEvent({
+        type: 'call_ended',
+        eventId: 'evt-3',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:00:00.000Z',
+        durationSeconds: 0,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    // The first minute was committed at connect; a short call is still billed
+    // for it and must not be refunded.
+    expect(admission.compensate).not.toHaveBeenCalled();
+    expect(admission.releaseLease).toHaveBeenCalledWith('org-1', 'call-1');
+  });
+
+  it('falls back to finalizing when no usage row is found for the ended call', async () => {
+    const { service, prisma, admission } = makeService({ usageMissing: true });
+
+    await expect(
+      service.handleEvent({
+        type: 'call_ended',
+        eventId: 'evt-3',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:05:00.000Z',
+        durationSeconds: 305,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    // With no row there is no reservation state to reason about, so the
+    // idempotent finalize runs and the lease is still freed.
+    expect(admission.compensate).not.toHaveBeenCalled();
+    expect(prisma.callUsage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ finalizationState: 'finalized' }),
+      }),
+    );
+    expect(admission.releaseLease).toHaveBeenCalledWith('org-1', 'call-1');
   });
 
   it('refunds the reserved minute when the call never connected', async () => {

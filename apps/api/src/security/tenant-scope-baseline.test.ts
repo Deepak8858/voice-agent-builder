@@ -145,8 +145,13 @@ const REVIEWED_BASELINE: readonly string[] = [
   'workspace-crm/workspace-crm.service.ts:workspaceCrmCredential.delete',
   'workspace-crm/workspace-crm.service.ts:workspaceCrmCredential.update',
   'agents/agents.controller.ts:agent.findFirst',
-  'tools/livekit-tools.controller.ts:agent.findUnique',
-  'voice/livekit-knowledge.controller.ts:agent.findUnique',
+  // The internal LiveKit routes establish tenancy from the admitted call row:
+  // the call id is sent by our own runtime (@InternalOnly), and the handler
+  // refuses the request unless call.agentId matches the path agent before any
+  // tenant-scoped work happens. The lookup is the mechanism that establishes
+  // tenancy, like webhook ingress above.
+  'tools/livekit-tools.controller.ts:call.findUnique',
+  'voice/livekit-knowledge.controller.ts:call.findUnique',
 
   // -- User-scoped or workspace-root queries ------------------------------
   // Keyed on the authenticated user id, or on the Workspace/Organization row
@@ -245,7 +250,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'telephony/telephony.service.ts:telephonyPhoneNumber.update': 1,
   'templates/templates.service.ts:agentTemplate.findMany': 1,
   'templates/templates.service.ts:agentTemplate.findUnique': 1,
-  'tools/livekit-tools.controller.ts:agent.findUnique': 1,
+  'tools/livekit-tools.controller.ts:call.findUnique': 1,
   'tools/tools.service.ts:toolInvocation.update': 3,
   'twilio-adapter/twilio-webhook.controller.ts:call.findUnique': 2,
   'twilio-adapter/twilio-webhook.controller.ts:call.update': 2,
@@ -256,7 +261,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'voice/adapters/mock.adapter.ts:agentVersion.update': 1,
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.findUnique': 1,
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.update': 1,
-  'voice/livekit-knowledge.controller.ts:agent.findUnique': 1,
+  'voice/livekit-knowledge.controller.ts:call.findUnique': 1,
   'webhooks/stripe-webhook.service.ts:auditLog.findMany': 1,
   'webhooks/stripe-webhook.service.ts:subscription.findFirst': 4,
   'webhooks/stripe-webhook.service.ts:subscription.findMany': 1,

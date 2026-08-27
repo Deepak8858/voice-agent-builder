@@ -1,9 +1,22 @@
 # VoiceForge AI
 
+**Live product: [incfrog.ai](https://incfrog.ai)**
+
 A multi-tenant AI voice calling agent builder for agencies and appointment-based
 businesses. Users describe their need in natural language; VoiceForge generates a
 full agent (voice persona, call flow, knowledge base, tools, compliance settings,
 analytics, and white-label client dashboards).
+
+Every agent is governed by a reviewable **Agent Spec JSON** contract rather than
+loose prompt strings, runs a **test call in the browser** before real telephony is
+attached, and passes a **hard compliance gate** before any outbound call: no
+outbound call runs unless the engine returns `passed`.
+
+- [How it works](https://incfrog.ai/how-it-works) — spec → test call → publish
+- [Compliance controls](https://incfrog.ai/compliance) — consent, DNC, call windows, AI disclosure
+- [Agent templates](https://incfrog.ai/templates) — receptionist, dental, real estate, reminders, order confirmation
+- [For agencies](https://incfrog.ai/for-agencies) — white-label client workspaces
+- [Pricing](https://incfrog.ai/pricing)
 
 > Authoritative product docs live under `docs/`. `AGENTS.md` holds the build
 > rules. `ROADMAP.md` holds the current, evidence-based assessment of what is

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceGuard } from './workspace.guard';
-import { ForbiddenError } from './errors';
+import { ForbiddenError, UnauthorizedError } from './errors';
 import { IS_SESSION_SCOPED_KEY } from './decorators/session-scoped.decorator';
 import { env } from '../config/env';
 
@@ -202,6 +202,35 @@ describe('WorkspaceGuard', () => {
     await expect(guard.canActivate(contextFor(req) as never)).rejects.toBeInstanceOf(
       ForbiddenError,
     );
+  });
+
+  /**
+   * The bearer-token fallback compares `x-internal-key` itself, and that
+   * comparison is now constant-time. Timing is not observable from a test, so
+   * this pins the part that is: a wrong key of the *same length* — the case a
+   * naive length-only or truthiness check would wave through — is still
+   * refused, and the token is never resolved for it.
+   */
+  it('refuses a same-length wrong internal key on the bearer-token fallback', async () => {
+    const auth = { getSessionUser: vi.fn() };
+    const req = {
+      params: { workspaceId: 'workspace-1' },
+      headers: {
+        authorization: 'Bearer token',
+        'x-internal-key': 'y'.repeat(32),
+      },
+    };
+
+    const guard = new WorkspaceGuard(
+      { workspace: { findUnique: vi.fn() }, membership: { findUnique: vi.fn() } } as never,
+      auth as never,
+      { get: vi.fn(), set: vi.fn() } as never,
+    );
+
+    await expect(guard.canActivate(contextFor(req) as never)).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+    expect(auth.getSessionUser).not.toHaveBeenCalled();
   });
 
   it('allows a param-less route that explicitly opts in with @SessionScoped()', async () => {

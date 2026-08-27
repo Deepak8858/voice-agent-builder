@@ -54,6 +54,7 @@ describe('LiveKit knowledge retrieval', () => {
     expect(createKnowledgeTool({
       spec: makeSpec({ retrieval_mode: 'none', max_chunks: 5, source_ids: [] }),
       agentId: 'agent-1',
+      callId: 'call-1',
       search: vi.fn(),
     })).toBeUndefined();
   });
@@ -63,6 +64,7 @@ describe('LiveKit knowledge retrieval', () => {
     const tool = createKnowledgeTool({
       spec: makeSpec({ retrieval_mode: 'agent_scoped', max_chunks: 1, source_ids: [] }),
       agentId: 'trusted-agent-id',
+      callId: 'call-1',
       search,
     });
 
@@ -71,6 +73,7 @@ describe('LiveKit knowledge retrieval', () => {
 
     expect(search).toHaveBeenCalledWith({
       agentId: 'trusted-agent-id',
+      callId: 'call-1',
       query: 'What is the refund policy?',
       maxChunks: 1,
       retrievalMode: 'agent_scoped',
@@ -87,6 +90,7 @@ describe('LiveKit knowledge retrieval', () => {
         fallback_message: 'Let me have the team follow up.',
       }),
       agentId: 'trusted-agent-id',
+      callId: 'call-1',
       search: vi.fn(async () => { throw new Error('unavailable'); }),
     });
 
@@ -96,7 +100,7 @@ describe('LiveKit knowledge retrieval', () => {
     });
   });
 
-  it('sends only query and server-selected retrieval configuration to the API', async () => {
+  it('sends query, server-selected retrieval configuration, and the bound call id to the API', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       success: true,
       data: { hits: [hit] },
@@ -110,6 +114,7 @@ describe('LiveKit knowledge retrieval', () => {
 
     await search({
       agentId: 'agent/one',
+      callId: 'call-1',
       query: 'refunds',
       maxChunks: 5,
       retrievalMode: 'workspace_scoped',
@@ -123,6 +128,7 @@ describe('LiveKit knowledge retrieval', () => {
           query: 'refunds',
           max_chunks: 5,
           retrieval_mode: 'workspace_scoped',
+          call_id: 'call-1',
         }),
       }),
     );

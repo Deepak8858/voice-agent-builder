@@ -27,7 +27,7 @@ import {
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
-import { CallMeter, createRuntimeUsageClient } from './runtime-usage.js';
+import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 
 const prisma = new PrismaClient();
@@ -56,6 +56,9 @@ function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter
     callId: metadata.callId,
     organizationId: metadata.organizationId,
     emit: createRuntimeUsageClient({ apiBaseUrl, internalApiKey }),
+    ...(metadata.maxDurationSeconds !== undefined
+      ? { maxDurationSeconds: metadata.maxDurationSeconds }
+      : {}),
     // Hanging up is the only enforcement the runtime has: a refused minute must
     // end the call rather than merely stop being recorded.
     terminate: async (reason) => {
@@ -150,6 +153,14 @@ async function runCall(
   const tools: llm.ToolContextEntry[] = [];
   const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
   const internalApiKey = process.env.INTERNAL_API_KEY;
+  // Attribution (entry) guarantees a call id before any session runs; the
+  // internal knowledge and tool routes require it to bind the agent to the
+  // admitted call's tenant, so a missing id fails here rather than as a 403
+  // mid-conversation.
+  const callId = metadata.callId;
+  if (!callId) {
+    throw new Error('[runtime] callId is required before knowledge or tools can be configured.');
+  }
   if (retrievalChunkLimit(spec) > 0) {
     const search = apiBaseUrl && internalApiKey
       ? createKnowledgeSearchClient({ apiBaseUrl, internalApiKey })
@@ -159,6 +170,7 @@ async function runCall(
     const knowledgeTool = createKnowledgeTool({
       spec,
       agentId: metadata.agentId,
+      callId,
       search,
     });
     if (knowledgeTool) tools.push(knowledgeTool);
@@ -174,7 +186,7 @@ async function runCall(
         apiBaseUrl,
         internalApiKey,
         agentId: metadata.agentId,
-        ...(metadata.callId ? { callId: metadata.callId } : {}),
+        callId,
       });
       tools.push(...createGoogleTools({ spec, invoke }));
     } else {
@@ -198,27 +210,29 @@ async function runCall(
         }),
       });
 
-  await session.start({
-    agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
-    room: ctx.room,
-  });
-
-  if (meter) {
-    // Registered before the first reply so a crash mid-conversation still
-    // settles the call instead of leaking its reservation and lease.
-    ctx.addShutdownCallback(async () => {
-      await meter.ended();
+  const startSession = async (): Promise<void> => {
+    await session.start({
+      agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
+      room: ctx.room,
     });
-    // Inbound attribution preserves Twilio's CallSid. Outbound calls already
-    // carry their provider identity in dispatch metadata when available.
-    await meter.connected(metadata.providerCallId ?? ctx.room.name ?? (metadata.callId as string));
-    if (meter.isSettled) return;
-    meter.start();
+    await session.generateReply({
+      instructions: firstReplyInstruction(spec),
+    });
+  };
+
+  if (!meter) {
+    await startSession();
+    return;
   }
 
-  await session.generateReply({
-    instructions: firstReplyInstruction(spec),
-  });
+  // Billing authorization must precede AgentSession.start(): both Realtime and
+  // standard sessions begin automatic turn handling as soon as they start.
+  await runWithMeteredCall(
+    meter,
+    metadata.providerCallId ?? ctx.room.name ?? callId,
+    (callback) => ctx.addShutdownCallback(callback),
+    startSession,
+  );
 }
 
 /**

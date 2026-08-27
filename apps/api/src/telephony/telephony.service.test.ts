@@ -11,6 +11,7 @@ function makeAdmission() {
       leaseExpiresAt: new Date('2026-06-07T10:01:00.000Z').toISOString(),
       reservedSeconds: 60,
     })),
+    reassertLease: vi.fn(async () => true),
     compensate: vi.fn(async () => undefined),
     releaseLease: vi.fn(async () => undefined),
     finalizeUsage: vi.fn(async () => undefined),
@@ -786,9 +787,44 @@ describe('TelephonyService', () => {
     );
 
     expect(admission.admitCall).not.toHaveBeenCalled();
+    // The retry does not reserve a second minute, but it must still hold a
+    // concurrency slot before it is bridged.
+    expect(admission.reassertLease).toHaveBeenCalledWith('org-1', 'call-1');
     // The retry still reaches the agent: the call was admitted on first delivery.
     expect(twilioFallback.buildLiveKitDialTwiml).toHaveBeenCalled();
     expect(twiml).toContain('<Dial>');
+  });
+
+  it('refuses a retried voice webhook whose concurrency lease cannot be re-asserted', async () => {
+    const { service, admission, prisma, twilioFallback } = makeInboundVoiceService({
+      existingCall: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      },
+      existingUsage: { finalizationState: 'pending' },
+    });
+    admission.reassertLease.mockResolvedValue(false);
+
+    const twiml = await service.handleTwilioVoice(
+      'number-1',
+      INBOUND_VOICE_PAYLOAD,
+      INBOUND_VOICE_REQUEST,
+    );
+
+    // The original lease expired and the organization is at capacity again:
+    // bridging now would exceed the concurrency cap, so the retry is refused.
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(twilioFallback.buildLiveKitDialTwiml).not.toHaveBeenCalled();
+    expect(twiml).toContain('<Hangup/>');
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'failed', outcome: 'billing_denied' }),
+      }),
+    );
   });
 
   it('rejects Vobiz status webhooks without a valid per-number signature before updating calls', async () => {
