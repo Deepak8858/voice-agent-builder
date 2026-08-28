@@ -26,7 +26,11 @@ voice minutes, published agents, seats, client workspaces, storage GB, premium i
 ```
 
 ## Stripe Webhooks
-checkout.session.completed, customer.subscription.created, customer.subscription.updated, customer.subscription.deleted, invoice.paid, invoice.payment_failed.
+checkout.session.completed, customer.subscription.created, customer.subscription.updated, customer.subscription.deleted, invoice.paid, invoice.payment_failed, charge.refunded, charge.dispute.closed.
+
+Subscribe to exactly that set, no more and no less. See
+[`operations/billing-runbook.md` §1.3](operations/billing-runbook.md) for why
+`charge.dispute.created` is not on it.
 
 ## Checkout API
 Clients call `POST /workspaces/:workspaceId/billing/checkout` with `{ "plan": "starter" | "growth" | "enterprise", "successPath"?: "/dashboard/billing", "cancelPath"?: "/dashboard/billing" }`.

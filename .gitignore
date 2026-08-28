@@ -64,3 +64,9 @@ apps/web/next-env.d.ts
 
 # CloudFront origin verification secret written by infra/aws/provision-cloudfront.sh
 origin-verify-secret.txt
+
+# Security audit reports. This repository is public, and these contain working
+# exploit paths for vulnerabilities that are still open in production. Committing
+# one publishes it. Share them out of band.
+voiceforge-*-report.md
+voiceforge-*-audit-report.md

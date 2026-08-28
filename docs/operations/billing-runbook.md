@@ -42,7 +42,9 @@ client-supplied price lets a caller buy minutes at a price of their choosing.
 ### 1.3 Webhook endpoint
 
 Point a Stripe webhook at the API's Stripe webhook route and store the signing
-secret in `STRIPE_WEBHOOK_SECRET`. Subscribe to at least:
+secret in `STRIPE_WEBHOOK_SECRET`. Subscribe to exactly these events — this is
+the set the dispatcher acts on, and `stripe-webhook.service.test.ts` asserts
+this list still matches the code:
 
 - `checkout.session.completed`
 - `customer.subscription.created`
@@ -51,7 +53,15 @@ secret in `STRIPE_WEBHOOK_SECRET`. Subscribe to at least:
 - `invoice.paid`
 - `invoice.payment_failed`
 - `charge.refunded`
-- `charge.dispute.created`
+- `charge.dispute.closed`
+
+`charge.dispute.created` is deliberately **not** in that list. Credit is
+reversed only when a dispute is *lost*, and that is known at
+`charge.dispute.closed`; subscribing to `.created` in its place means the
+reversal handler never runs and disputed minute-pack credit stays on the
+account permanently. Over-subscribing is not free either: an event we do not
+handle is still recorded in `stripe_events` and marked processed, so it reads
+afterwards as though it had been acted on.
 
 Entitlement changes are applied **only** from a signature-verified webhook. A
 `session_id` on a return URL is not proof of payment and must never activate a
@@ -291,7 +301,8 @@ enforced figure by more than a rounding minute. Only enforce once the two agree.
 
 ## 8. Refunds and Disputes
 
-Refunds and disputes are handled by a human, never automatically.
+Withdrawing the credit a reversed payment bought is automatic. Deciding what the
+customer is owed is not.
 
 - Refunding a subscription invoice does not remove included minutes already
   consumed. Decide explicitly whether to claw back a bucket, and record the
@@ -299,9 +310,12 @@ Refunds and disputes are handled by a human, never automatically.
 - Refunding a minute pack should zero the corresponding bucket if the minutes are
   unspent. If they are partly spent, adjust to the unspent remainder rather than
   zeroing, so the customer is not charged for a refunded balance they never used.
-- On `charge.dispute.created`, review before restricting service. Suspending an
-  organization mid-call is a worse outcome than carrying a disputed balance for a
-  few hours.
+- A dispute *opening* runs no code here — we do not subscribe to
+  `charge.dispute.created`, so work from Stripe's own dispute alert. Review
+  before restricting service: suspending an organization mid-call is a worse
+  outcome than carrying a disputed balance for a few hours.
+- A dispute *closing* as `lost` withdraws the pack credit automatically. A
+  dispute won or withdrawn changes nothing, by design.
 - Every manual adjustment must produce an audit record with the Stripe object id.
   A balance change without a traceable cause is indistinguishable from a bug.
 

@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Logger } from '@nestjs/common';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { StripeWebhookService } from './stripe-webhook.service';
@@ -794,5 +796,66 @@ describe('StripeWebhookService production webhook handling', () => {
       }),
     );
     expect(prisma.subscription.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Docs-vs-code drift guard.
+ *
+ * An operator configures the Stripe endpoint from the runbook, not from this
+ * file, so a wrong event name in the runbook is a production defect with no
+ * failing test anywhere: the endpoint is configured as documented, the handler
+ * never fires, and nothing complains. This happened — the runbook said
+ * `charge.dispute.created`, the code reverses on `charge.dispute.closed`, and
+ * the gap silently left disputed minute-pack credit on the account.
+ */
+describe('documented Stripe webhook subscription list', () => {
+  const root = ((): string => {
+    let dir = process.cwd();
+    for (let i = 0; i < 5; i += 1) {
+      if (existsSync(path.join(dir, 'docs/operations/billing-runbook.md'))) return dir;
+      dir = path.dirname(dir);
+    }
+    throw new Error(`could not locate repo root from ${process.cwd()}`);
+  })();
+  // Normalized: these files are CRLF on Windows checkouts and LF in CI.
+  const read = (rel: string): string =>
+    readFileSync(path.join(root, rel), 'utf8').replace(/\r\n/g, '\n');
+
+  /** The `case` labels of the `switch (event.type)` in `dispatch` — authoritative. */
+  const handled = ((): string[] => {
+    const src = read('apps/api/src/webhooks/stripe-webhook.service.ts');
+    const start = src.indexOf('switch (event.type) {');
+    const end = src.indexOf('default:', start);
+    if (start < 0 || end < 0) throw new Error('could not locate the dispatch switch');
+    return [...src.slice(start, end).matchAll(/case '([^']+)'/g)].map((m) => m[1] as string).sort();
+  })();
+
+  it('is a non-trivial set, so an empty parse cannot pass vacuously', () => {
+    expect(handled.length).toBeGreaterThan(5);
+  });
+
+  it('matches the bullet list in billing-runbook.md section 1.3', () => {
+    const doc = read('docs/operations/billing-runbook.md');
+    const section = doc.slice(doc.indexOf('### 1.3 Webhook endpoint'));
+    // Only the first contiguous run of bullets; later bullets in the section
+    // are prose, not event names.
+    const bullets = /(?:^- `[^`]+`\n)+/m.exec(section)?.[0] ?? '';
+    const documented = [...bullets.matchAll(/^- `([^`]+)`$/gm)].map((m) => m[1] as string).sort();
+    expect(documented).toEqual(handled);
+  });
+
+  it('matches the comma list in 16_BILLING.md', () => {
+    const doc = read('docs/16_BILLING.md');
+    const line = doc
+      .slice(doc.indexOf('## Stripe Webhooks'))
+      .split('\n')
+      .find((l, i) => i > 0 && l.trim().length > 0);
+    const documented = (line ?? '')
+      .replace(/\.$/, '')
+      .split(',')
+      .map((s) => s.trim())
+      .sort();
+    expect(documented).toEqual(handled);
   });
 });
