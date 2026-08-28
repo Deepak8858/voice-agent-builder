@@ -52,7 +52,14 @@ function makeHarness(clientOverrides: Partial<PostHogClientLike> = {}) {
     occurredAt: new Date('2026-01-01T00:00:00.000Z'),
   }));
   const organizationIdFor = vi.fn<() => Promise<string | null>>(async () => ORGANIZATION_ID);
-  const prisma = { organizationIdFor, analyticsEvent: { create } };
+  // recordEvent re-reads the client-supplied agent/call under the workspace
+  // predicate before writing; both are owned here.
+  const prisma = {
+    organizationIdFor,
+    analyticsEvent: { create },
+    agent: { findFirst: vi.fn(async () => ({ id: AGENT_ID })) },
+    call: { findFirst: vi.fn(async () => ({ id: CALL_ID })) },
+  };
 
   const service = new AnalyticsService(prisma as never, undefined, posthog);
   return { service, captures, create, organizationIdFor };
