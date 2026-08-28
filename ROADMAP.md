@@ -115,11 +115,14 @@ registers a repeatable BullMQ job on `WEEKLY_DIGEST_CRON` that fans out one job
 per active workspace, so a single tenant's failure cannot abort the run. It only
 runs where `WORKERS_ENABLED=true`.
 
-**Billing.** Implemented; `BILLING_MODE` defaults to `demo`
-(`apps/api/src/config/env.ts:111`) and the web client disables checkout in any
-non-`live` mode (`apps/web/lib/billing-mode.ts:22-30`). The AWS deploy requires
-`BILLING_MODE=live` and non-empty Stripe variables in `/opt/voiceforge/.env`
-(`.github/workflows/deploy-aws-ec2.yml:429-451`), so a successful deploy implies
+**Billing.** Implemented; live or unavailable, with no demo mode — `BILLING_MODE`
+no longer exists and missing configuration returns 503 rather than granting an
+allowance. Subscription checkout, minute-pack top-up and the customer portal are
+each gated on their own variable list (`apps/api/src/config/env.ts:425-471`), so
+one unset price ID disables one action rather than all three, and a production
+boot names the disabled actions (`env.ts:539-563`). The AWS deploy requires all
+five Stripe variables in `/opt/voiceforge/.env` plus a live-mode secret key
+(`.github/workflows/deploy-aws-ec2.yml:429-462`), so a successful deploy implies
 live billing.
 
 ## Open work, prioritized
