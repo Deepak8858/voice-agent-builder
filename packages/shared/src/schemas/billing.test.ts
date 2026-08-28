@@ -158,16 +158,37 @@ describe('billing DTO schemas', () => {
 
   it('has no demo billing mode in the checkout availability contract', () => {
     expect(BillingStatusDtoSchema.safeParse({
-      checkoutConfigured: false,
       liveCheckoutEnabled: false,
+      topUpEnabled: false,
+      portalEnabled: false,
       message: 'Billing is temporarily unavailable.',
     }).success).toBe(true);
     expect(BillingStatusDtoSchema.safeParse({
       mode: 'demo',
-      checkoutConfigured: false,
       liveCheckoutEnabled: false,
+      topUpEnabled: false,
+      portalEnabled: false,
       message: 'Demo',
     }).success).toBe(false);
+  });
+
+  /**
+   * Each entry point has its own configuration, so the contract has to be able
+   * to say "packs are unavailable, upgrades are not". A single flag could not.
+   */
+  it('reports each billing entry point separately', () => {
+    expect(BillingStatusDtoSchema.safeParse({
+      liveCheckoutEnabled: true,
+      portalEnabled: true,
+      message: 'Minute packs are temporarily unavailable.',
+    }).success).toBe(false);
+    const parsed = BillingStatusDtoSchema.safeParse({
+      liveCheckoutEnabled: true,
+      topUpEnabled: false,
+      portalEnabled: true,
+      message: 'Minute packs are temporarily unavailable.',
+    });
+    expect(parsed.success).toBe(true);
   });
 
   it('reports included, purchased, reserved, and expiring seconds separately', () => {

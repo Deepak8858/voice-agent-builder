@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const originalEnv = { ...process.env };
@@ -281,18 +284,55 @@ describe('env validation', () => {
     });
 
     /**
-     * A half-configured deployment must not be treated as live. It cannot take
-     * payments at all, so localhost redirects are harmless and must not block
-     * boot for the rest of the product.
+     * A deployment that can still charge somebody must be guarded, even when the
+     * rest of the Stripe configuration is incomplete: with both plan prices set
+     * and no minute-pack price, subscription Checkout takes real payments and
+     * would redirect the customer to localhost.
      */
-    it('leaves the localhost default alone when the minute-pack price is missing', async () => {
+    it('rejects the localhost default when only the minute-pack price is missing', async () => {
       vi.resetModules();
       restoreEnv();
       const { STRIPE_MINUTE_PACK_PRICE_ID: _omitted, ...partial } = configuredBase;
       Object.assign(process.env, partial);
 
+      await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
+    });
+
+    /**
+     * A half-configured deployment that cannot charge anyone at all must not
+     * block boot for the rest of the product: no complete price set means no
+     * Checkout session, so a localhost redirect is unreachable. This is the
+     * ordinary local-development configuration.
+     */
+    it('leaves the localhost default alone when no entry point is fully priced', async () => {
+      vi.resetModules();
+      restoreEnv();
+      const {
+        STRIPE_MINUTE_PACK_PRICE_ID: _pack,
+        STRIPE_GROWTH_PRICE_ID: _growth,
+        ...partial
+      } = configuredBase;
+      Object.assign(process.env, partial);
+
       const mod = await import('./env');
       expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    /**
+     * Selling only packs is a legitimate half-configured state and still takes
+     * money, so it is guarded too.
+     */
+    it('rejects the localhost default when only the minute pack is priced', async () => {
+      vi.resetModules();
+      restoreEnv();
+      const {
+        STRIPE_STARTER_PRICE_ID: _starter,
+        STRIPE_GROWTH_PRICE_ID: _growth,
+        ...partial
+      } = configuredBase;
+      Object.assign(process.env, partial);
+
+      await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
     });
 
     it('defaults Stripe Tax off so launch never collects tax by accident', async () => {
@@ -397,5 +437,191 @@ describe('env validation', () => {
 
       await expect(import('./env')).rejects.toThrow(/WEEKLY_DIGEST_CRON/);
     });
+  });
+
+  /**
+   * A test-mode Stripe key in production is a silent revenue outage: Checkout
+   * opens, the customer completes it, nothing settles, and live-mode webhook
+   * signatures never verify against a test secret. Boot succeeded and /health
+   * stayed green, so the only symptom was that no money arrived.
+   */
+  describe('Stripe configuration in production', () => {
+    const productionBase = {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    };
+
+    it.each([
+      ['a test secret key', 'sk_test_51abcdefghijklmnop'],
+      ['a test restricted key', 'rk_test_51abcdefghijklmnop'],
+    ])('refuses to boot on %s', async (_label, key) => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, { STRIPE_SECRET_KEY: key });
+
+      await expect(import('./env')).rejects.toThrow(/STRIPE_SECRET_KEY/);
+    });
+
+    it('accepts a live key', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase, {
+        STRIPE_SECRET_KEY: 'sk_live_51abcdefghijklmnop',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.STRIPE_SECRET_KEY).toBe('sk_live_51abcdefghijklmnop');
+    });
+
+    it('leaves a test key alone outside production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        STRIPE_SECRET_KEY: 'sk_test_51abcdefghijklmnop',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.STRIPE_SECRET_KEY).toBe('sk_test_51abcdefghijklmnop');
+    });
+
+    /**
+     * Every STRIPE_* field is optional, so an incomplete configuration boots
+     * clean and /health (db/redis/llm) stays green while a paying customer gets
+     * a 503 on their upgrade click. Boot has to say which actions are dead.
+     */
+    describe('reports which billing actions are disabled', () => {
+      const liveStripe = {
+        STRIPE_SECRET_KEY: 'sk_live_51abcdefghijklmnop',
+        STRIPE_WEBHOOK_SECRET: 'whsec_live',
+        WEB_BASE_URL: 'https://incfrog.ai',
+      };
+
+      async function warningsFrom(overrides: Record<string, string>): Promise<string[]> {
+        vi.resetModules();
+        restoreEnv();
+        Object.assign(process.env, productionBase, overrides);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+          await import('./env');
+          return warn.mock.calls.map((call) => String(call[0]));
+        } finally {
+          warn.mockRestore();
+        }
+      }
+
+      it('names the missing variable and the actions it disables', async () => {
+        const messages = await warningsFrom({
+          ...liveStripe,
+          STRIPE_STARTER_PRICE_ID: 'price_starter',
+          STRIPE_GROWTH_PRICE_ID: 'price_growth',
+        });
+
+        const stripeWarning = messages.find((message) => message.includes('return 503'));
+        expect(stripeWarning).toBeDefined();
+        expect(stripeWarning).toContain('minute-pack top-up');
+        expect(stripeWarning).toContain('STRIPE_MINUTE_PACK_PRICE_ID');
+        // Subscription checkout and the portal are configured; naming them here
+        // would make the warning noise an operator learns to ignore.
+        expect(stripeWarning).not.toContain('subscription checkout');
+        expect(stripeWarning).not.toContain('customer portal');
+      });
+
+      it('stays quiet once every entry point is configured', async () => {
+        const messages = await warningsFrom({
+          ...liveStripe,
+          STRIPE_STARTER_PRICE_ID: 'price_starter',
+          STRIPE_GROWTH_PRICE_ID: 'price_growth',
+          STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+        });
+
+        expect(messages.filter((message) => message.includes('return 503'))).toEqual([]);
+      });
+
+      it('stays quiet outside production, where no Stripe configuration is expected', async () => {
+        vi.resetModules();
+        restoreEnv();
+        Object.assign(process.env, {
+          NODE_ENV: 'development',
+          REDIS_URL: 'redis://localhost:6379',
+          JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+        try {
+          await import('./env');
+          const messages = warn.mock.calls.map((call) => String(call[0]));
+          expect(messages.filter((message) => message.includes('return 503'))).toEqual([]);
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    });
+  });
+});
+
+/**
+ * Deploy-gate-vs-code drift guard.
+ *
+ * The deploy workflow validates the host's hand-maintained /opt/voiceforge/.env
+ * against its own hardcoded list; it does not write that file. That list and the
+ * code's notion of "Stripe is configured" had drifted into mirror images — the
+ * workflow required STRIPE_ENTERPRISE_PRICE_ID and omitted
+ * STRIPE_MINUTE_PACK_PRICE_ID, while the code required the minute pack and never
+ * read enterprise. A deploy therefore passed every gate, went green on
+ * /api/v1/health (db/redis/llm only), and returned 503 from subscription
+ * checkout, top-up and the customer portal alike.
+ */
+describe('deploy gate covers every variable Stripe Checkout requires', () => {
+  const root = ((): string => {
+    let dir = process.cwd();
+    for (let i = 0; i < 5; i += 1) {
+      if (existsSync(path.join(dir, '.github/workflows/deploy-aws-ec2.yml'))) return dir;
+      dir = path.dirname(dir);
+    }
+    throw new Error(`could not locate repo root from ${process.cwd()}`);
+  })();
+
+  /** The names in the workflow's `required=( ... )` array — authoritative. */
+  const gateRequired = ((): string[] => {
+    // Normalized: this file is CRLF on Windows checkouts and LF in CI.
+    const src = readFileSync(
+      path.join(root, '.github/workflows/deploy-aws-ec2.yml'),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    const block = /^\s*required=\(\n([\s\S]*?)^\s*\)$/m.exec(src);
+    if (!block) throw new Error('could not locate the required=( ... ) list in the deploy workflow');
+    return (block[1] as string).split(/\s+/).filter(Boolean);
+  })();
+
+  afterEach(() => {
+    restoreEnv();
+    vi.resetModules();
+  });
+
+  it('is a non-trivial list, so an empty parse cannot pass vacuously', () => {
+    expect(gateRequired.length).toBeGreaterThan(20);
+  });
+
+  it('requires every variable the API requires for Checkout', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    });
+
+    const { STRIPE_CHECKOUT_REQUIRED_ENV } = await import('./env');
+    for (const name of STRIPE_CHECKOUT_REQUIRED_ENV) {
+      expect(gateRequired).toContain(name);
+    }
   });
 });

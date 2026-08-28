@@ -33,7 +33,14 @@ import {
 import type { ApiErrorCode } from '@voiceforge/shared';
 import { AppError } from '../common/errors';
 import { CacheService } from '../cache/cache.service';
-import { env } from '../config/env';
+import {
+  STRIPE_PORTAL_REQUIRED_ENV,
+  STRIPE_SUBSCRIPTION_REQUIRED_ENV,
+  STRIPE_TOPUP_REQUIRED_ENV,
+  type StripeEnvName,
+  env,
+  missingStripeEnv,
+} from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditLedgerService } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
@@ -123,11 +130,17 @@ export class BillingService {
   // -------------------------------------------------------------------------
 
   getBillingStatus(): BillingStatusDto {
-    const disabledMessage = this.liveBillingDisabledMessage();
+    const liveCheckoutEnabled = this.isStripeConfigured(STRIPE_SUBSCRIPTION_REQUIRED_ENV);
+    const topUpEnabled = this.isStripeConfigured(STRIPE_TOPUP_REQUIRED_ENV);
+    const portalEnabled = this.isStripeConfigured(STRIPE_PORTAL_REQUIRED_ENV);
     return {
-      checkoutConfigured: this.isCheckoutConfigured(),
-      liveCheckoutEnabled: !disabledMessage,
-      message: disabledMessage ?? 'Live Stripe checkout and customer portal actions are enabled.',
+      liveCheckoutEnabled,
+      topUpEnabled,
+      portalEnabled,
+      message:
+        liveCheckoutEnabled && topUpEnabled && portalEnabled
+          ? 'Live Stripe checkout and customer portal actions are enabled.'
+          : CHECKOUT_UNCONFIGURED_MESSAGE,
     };
   }
 
@@ -172,7 +185,7 @@ export class BillingService {
     organizationId: string,
     dto: CreateCheckoutSessionDto,
   ): Promise<{ url: string }> {
-    this.assertLiveBillingEnabled();
+    this.assertStripeConfigured(STRIPE_SUBSCRIPTION_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     // Enterprise is sales-assisted; it has no self-service Price and must never
     // be reachable from a client-supplied plan value.
@@ -225,7 +238,7 @@ export class BillingService {
     organizationId: string,
     dto: CreateTopUpCheckoutDto,
   ): Promise<{ url: string }> {
-    this.assertLiveBillingEnabled();
+    this.assertStripeConfigured(STRIPE_TOPUP_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const priceId = env.STRIPE_MINUTE_PACK_PRICE_ID;
     if (!priceId) {
@@ -294,7 +307,7 @@ export class BillingService {
     organizationId: string,
     dto: CreatePortalSessionDto,
   ): Promise<{ url: string }> {
-    this.assertLiveBillingEnabled();
+    this.assertStripeConfigured(STRIPE_PORTAL_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     const returnUrl = this.buildAppUrl(dto.returnPath);
@@ -321,32 +334,23 @@ export class BillingService {
     return priceId;
   }
 
-  private assertLiveBillingEnabled(): void {
-    const disabledMessage = this.liveBillingDisabledMessage();
-    if (disabledMessage) {
-      throw new BillingUnavailableError(disabledMessage);
+  /**
+   * Each entry point fails closed on its own configuration, and only its own: a
+   * deployment without STRIPE_MINUTE_PACK_PRICE_ID cannot sell packs but must
+   * still take subscription payments and open the portal, because one unset
+   * price ID used to 503 all three. Still fails closed — a partially configured
+   * deployment never sends a customer to Stripe it cannot then settle with, and
+   * never invents a free allowance. The lists live in config/env so these gates,
+   * the boot refinement and the deploy gate cannot drift apart.
+   */
+  private assertStripeConfigured(required: readonly StripeEnvName[]): void {
+    if (!this.isStripeConfigured(required)) {
+      throw new BillingUnavailableError(CHECKOUT_UNCONFIGURED_MESSAGE);
     }
   }
 
-  private liveBillingDisabledMessage(): string | null {
-    return this.isCheckoutConfigured() ? null : CHECKOUT_UNCONFIGURED_MESSAGE;
-  }
-
-  /**
-   * Checkout is only usable when every server-owned identifier is present.
-   * A partially configured deployment must fail closed rather than send a
-   * customer to Stripe and then be unable to grant what they paid for. The
-   * minute-pack price is included because top-up is part of the same revenue
-   * contract as the subscription plans.
-   */
-  private isCheckoutConfigured(): boolean {
-    return Boolean(
-      this.stripe &&
-        env.STRIPE_WEBHOOK_SECRET &&
-        env.STRIPE_STARTER_PRICE_ID &&
-        env.STRIPE_GROWTH_PRICE_ID &&
-        env.STRIPE_MINUTE_PACK_PRICE_ID,
-    );
+  private isStripeConfigured(required: readonly StripeEnvName[]): boolean {
+    return Boolean(this.stripe) && missingStripeEnv(required, env).length === 0;
   }
 
   private buildAppUrl(path: string): string {

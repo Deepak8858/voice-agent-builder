@@ -149,7 +149,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const topUp = useMutation({
     mutationFn: async () => {
-      if (billingStatus.data?.liveCheckoutEnabled === false) {
+      if (billingStatus.data?.topUpEnabled === false) {
         throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
       }
       // The pack price id is resolved server-side on purpose: a client-supplied
@@ -175,7 +175,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const portal = useMutation({
     mutationFn: async () => {
-      if (billingStatus.data?.liveCheckoutEnabled === false) {
+      if (billingStatus.data?.portalEnabled === false) {
         throw new Error(CHECKOUT_UNAVAILABLE_MESSAGE);
       }
       const data = RedirectResponseSchema.parse(await call<unknown>(
@@ -199,8 +199,15 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const planLabel = planEntry?.name ?? plan;
   const billingStatusLoading = billingStatus.isLoading;
+  // Each action has its own server-side configuration and fails independently:
+  // a deployment missing only the minute-pack price can still take upgrades.
+  // Gating all three on one flag turned one unset variable into zero revenue.
   const liveBillingEnabled = billingStatus.data?.liveCheckoutEnabled === true;
-  const billingActionsDisabled = billingStatusLoading || !liveBillingEnabled;
+  const topUpEnabled = billingStatus.data?.topUpEnabled === true;
+  const portalEnabled = billingStatus.data?.portalEnabled === true;
+  const checkoutDisabled = billingStatusLoading || !liveBillingEnabled;
+  const topUpDisabled = billingStatusLoading || !topUpEnabled;
+  const portalDisabled = billingStatusLoading || !portalEnabled;
   const buckets = summary.data ? toBalanceBuckets(summary.data) : null;
   // Packs top up an existing paid subscription; they are not a way to buy
   // telephony minutes without a plan.
@@ -274,7 +281,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             {upgradeTarget && upgradeEntry ? (
               <Button
                 onClick={() => checkout.mutate(upgradeTarget)}
-                disabled={checkout.isPending || billingActionsDisabled}
+                disabled={checkout.isPending || checkoutDisabled}
               >
                 {billingStatusLoading
                   ? 'Checking billing...'
@@ -289,12 +296,12 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
               <Button
                 variant="outline"
                 onClick={() => portal.mutate()}
-                disabled={portal.isPending || billingActionsDisabled}
+                disabled={portal.isPending || portalDisabled}
                 className="gap-2"
               >
                 {billingStatusLoading
                   ? 'Checking billing...'
-                  : !liveBillingEnabled
+                  : !portalEnabled
                   ? 'Portal unavailable'
                   : portal.isPending
                   ? 'Redirecting…'
@@ -365,12 +372,12 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
           <div className="flex flex-wrap items-center gap-3">
             <Button
               onClick={() => topUp.mutate()}
-              disabled={topUp.isPending || billingActionsDisabled || !topUpAllowed}
+              disabled={topUp.isPending || topUpDisabled || !topUpAllowed}
             >
               {billingStatusLoading
                 ? 'Checking billing...'
-                : !liveBillingEnabled
-                ? 'Checkout unavailable'
+                : !topUpEnabled
+                ? 'Packs unavailable'
                 : topUp.isPending
                 ? 'Redirecting…'
                 : MINUTE_PACK_LABEL}
@@ -404,7 +411,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
             <Button
               size="sm"
               onClick={() => checkout.mutate('starter')}
-              disabled={checkout.isPending || billingActionsDisabled}
+              disabled={checkout.isPending || checkoutDisabled}
             >
               {billingStatusLoading
                 ? 'Checking billing...'
