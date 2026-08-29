@@ -42,4 +42,39 @@ describe('workspace CRM credential schemas', () => {
       status: 'connected',
     }).success).toBe(false);
   });
+
+  it('accepts a status-only update without a provider', () => {
+    expect(UpdateWorkspaceCrmCredentialDtoSchema.safeParse({
+      status: 'active',
+    }).success).toBe(true);
+  });
+
+  it('rejects a credentials update that does not name its provider', () => {
+    expect(UpdateWorkspaceCrmCredentialDtoSchema.safeParse({
+      credentials: { api_key: 'token' },
+    }).success).toBe(false);
+  });
+
+  it('validates updated credentials against the named provider branch', () => {
+    // Missing base_url used to slip through the pipedrive/hubspot token branch.
+    const parsed = UpdateWorkspaceCrmCredentialDtoSchema.safeParse({
+      provider: 'salesforce',
+      credentials: { api_key: 'token' },
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error)).toContain('base_url');
+
+    expect(UpdateWorkspaceCrmCredentialDtoSchema.safeParse({
+      provider: 'salesforce',
+      credentials: { api_key: 'token', base_url: 'https://example.my.salesforce.com' },
+    }).success).toBe(true);
+  });
+
+  it('holds generic_webhook updates to the public HTTPS rule', () => {
+    expect(UpdateWorkspaceCrmCredentialDtoSchema.safeParse({
+      provider: 'generic_webhook',
+      credentials: { base_url: 'http://localhost:4000/hooks/crm' },
+    }).success).toBe(false);
+  });
 });

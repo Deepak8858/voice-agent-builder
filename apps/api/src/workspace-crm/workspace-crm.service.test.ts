@@ -113,6 +113,23 @@ describe('WorkspaceCrmService', () => {
     );
   });
 
+  it('rejects a credentials update labeled with a different provider', async () => {
+    const { service, prisma } = makeService();
+    prisma.workspaceCrmCredential.findFirst.mockResolvedValue({
+      id: 'cred-1',
+      workspaceId: 'ws-1',
+      provider: 'hubspot',
+      status: 'active',
+    });
+
+    await expect(service.update('ws-1', 'cred-1', 'user-1', {
+      provider: 'generic_webhook',
+      credentials: { base_url: 'https://crm.example.com/hooks' },
+    })).rejects.toMatchObject({ errorCode: 'VALIDATION_ERROR' });
+
+    expect(prisma.workspaceCrmCredential.update).not.toHaveBeenCalled();
+  });
+
   it('does not update credentials outside the current workspace', async () => {
     const { service, prisma } = makeService();
     prisma.workspaceCrmCredential.findFirst.mockResolvedValue(null);

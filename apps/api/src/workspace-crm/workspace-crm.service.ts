@@ -61,9 +61,20 @@ export class WorkspaceCrmService {
     actorUserId: string,
     dto: UpdateWorkspaceCrmCredentialDto,
   ) {
-    await this.getScopedCredential(workspaceId, credentialId);
+    const existing = await this.getScopedCredential(workspaceId, credentialId);
     const data: Record<string, unknown> = {};
     if (dto.credentials) {
+      // dto.provider names the schema branch the credentials were validated
+      // against; a mismatch would store credentials shaped for one provider
+      // on a row executed as another.
+      if (dto.provider !== existing.provider) {
+        throw new AppError(
+          'VALIDATION_ERROR',
+          'Provider does not match this credential.',
+          400,
+          { credentialId },
+        );
+      }
       data.credentials = this.encryption.encryptJson(dto.credentials) as unknown as Prisma.InputJsonValue;
     }
     if (dto.config) data.config = dto.config as Prisma.InputJsonValue;
