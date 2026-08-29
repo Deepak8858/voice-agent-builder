@@ -229,6 +229,7 @@ function makeService(
   };
   const providerCosts = {
     estimateMissingCallCosts: vi.fn(async () => 0),
+    recordNumberRentals: vi.fn(async () => 0),
     costCoverage: vi.fn(async () => ({
       finalizedCalls: 0,
       callsMissingCost: 0,
@@ -867,6 +868,22 @@ describe('ReconciliationService.reconcileProviderCosts', () => {
     expect(report.costEventsEstimated).toBe(7);
   });
 
+  it('books the monthly carrier number rentals and reports them', async () => {
+    const { service, providerCosts, metrics } = makeService();
+    providerCosts.recordNumberRentals.mockResolvedValueOnce(3);
+
+    const report = await service.reconcileProviderCosts(25);
+
+    // Every rental missing from the cost side is margin overstated by a
+    // recurring charge nobody sees, so the sweep has to run in this pass and be
+    // counted in this report.
+    expect(providerCosts.recordNumberRentals).toHaveBeenCalledWith(25);
+    expect(report.numberRentalsRecorded).toBe(3);
+    expect(metrics.billingReconciliationCorrectionsTotal.labels).toHaveBeenCalledWith(
+      'number_rental',
+    );
+  });
+
   it('alerts when more than one percent of calls have no provider cost', async () => {
     const { service, providerCosts } = makeService();
     providerCosts.costCoverage.mockResolvedValueOnce({
@@ -1062,6 +1079,15 @@ describe('ReconciliationService.runAll', () => {
     expect(report.stripePaidInvoicesWithoutCredit).toBe(3);
     expect(report.stripePaidPacksWithoutCredit).toBe(2);
     expect(report.stripeSubscriptionDrift).toBe(1);
+  });
+
+  it('carries the number-rental counter through the merge', async () => {
+    const { service, providerCosts } = makeService();
+    providerCosts.recordNumberRentals.mockResolvedValueOnce(5);
+
+    const report = await service.runAll();
+
+    expect(report.numberRentalsRecorded).toBe(5);
   });
 });
 
