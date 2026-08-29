@@ -4,6 +4,7 @@ import { AuditExportService } from './audit-export.service';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { OrganizationGuard } from '../common/organization.guard';
+import { RequiredOrgRole } from '../common/decorators/required-org-role.decorator';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 
 /**
@@ -26,9 +27,20 @@ export class AuditExportController {
    * straight into `where.organizationId`, so any authenticated user could read
    * any organization's full audit log (10k rows: actor ids, actions, resource
    * ids). `OrganizationGuard` verifies the caller actually belongs to `:orgId`.
+   *
+   * Belonging is not enough on its own, though, and that was left open when the
+   * tenant hole was closed: membership is per-workspace, so any `viewer` in any
+   * workspace of the org could read the org's entire audit log — actor ids,
+   * actions and resource ids across workspaces they are not a member of. Reading
+   * an audit log is an administrative capability, so the route is narrowed to an
+   * org-level seat with `@RequiredOrgRole`, which OrganizationGuard enforces
+   * against the same derivation (any workspace of the org, plus outright
+   * ownership). `@RequiredRole` + `RoleGuard` cannot be used here: RoleGuard
+   * refuses every `:orgId` route by design.
    */
   @Get('v1/orgs/:orgId/audit-logs')
   @UseGuards(OrganizationGuard)
+  @RequiredOrgRole('owner', 'admin')
   async getOrgAuditLogs(
     @Param('orgId') orgId: string,
     @Query('from') from?: string,
