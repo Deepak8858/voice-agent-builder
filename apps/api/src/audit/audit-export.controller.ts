@@ -1,8 +1,17 @@
 import { Controller, Get, Post, Param, Query, Body, UseGuards } from '@nestjs/common';
+import { z } from 'zod';
 import { AuditExportService } from './audit-export.service';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { OrganizationGuard } from '../common/organization.guard';
+import { ZodValidationPipe } from '../common/zod-validation.pipe';
+
+/**
+ * `org_id` is the export's only scope. `.trim()` before `.min(1)` so neither an
+ * absent param nor `?org_id=%20` reaches the service as a falsy-but-present
+ * organization.
+ */
+const OrgIdQuerySchema = z.string().trim().min(1);
 
 @Controller()
 export class AuditExportController {
@@ -42,11 +51,15 @@ export class AuditExportController {
   // without @InternalOnly() any tenant user could export every tenant's
   // audit log. @InternalOnly() refuses user-carrying requests, leaving the
   // route reachable only by an operator holding the bare key.
+  //
+  // `org_id` was optional, and the service only added `where.organizationId`
+  // when it was set, so `GET admin/audit/export` with no `org_id` returned
+  // 10k rows across every tenant. It is now required at both ends.
   @InternalOnly()
   @Get('admin/audit/export')
   @UseGuards(InternalAuthGuard)
   async adminExport(
-    @Query('org_id') orgId?: string,
+    @Query('org_id', new ZodValidationPipe(OrgIdQuerySchema)) orgId: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('action') action?: string,
