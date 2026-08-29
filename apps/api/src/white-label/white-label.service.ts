@@ -12,6 +12,7 @@ import type {
 } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { CacheInvalidator } from '../common/cache-invalidator';
 import { AppError, ForbiddenError, ValidationError } from '../common/errors';
 import { PostHogService } from '../posthog/posthog.service';
 
@@ -39,6 +40,7 @@ export class WhiteLabelService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly invalidator: CacheInvalidator,
     @Optional() private readonly posthog?: PostHogService,
   ) {}
 
@@ -196,6 +198,9 @@ export class WhiteLabelService {
       return child;
     });
 
+    // The actor's cached workspace list predates the new client workspace.
+    await this.invalidator.invalidateWorkspaceList(actorUserId);
+
     await this.audit.log({
       workspaceId: agencyWorkspaceId,
       actorUserId,
@@ -300,7 +305,11 @@ export class WhiteLabelService {
         agencyWorkspaceId,
         clientWorkspaceId: dto.client_workspace_id ?? null,
         email: dto.email,
-        role: dto.role ?? 'admin',
+        // Least privilege: an invite that names no role must not mint an
+        // admin. The validation pipe applies the same viewer default
+        // (CreateClientInviteDtoSchema); this fallback covers callers that
+        // construct the DTO without the pipe.
+        role: dto.role ?? 'viewer',
         token,
         status: 'pending',
         expiresAt,
@@ -317,7 +326,9 @@ export class WhiteLabelService {
       metadata: { email: dto.email, role: row.role },
     });
 
-    return this.toInviteDto(row);
+    // The raw token appears in exactly one response: this one, for the
+    // creator to hand to the invitee. Every other path returns it redacted.
+    return { ...this.toInviteDto(row), token: row.token };
   }
 
   async revokeInvite(
@@ -402,6 +413,13 @@ export class WhiteLabelService {
       });
     });
 
+    // The upsert's update branch silently overwrites an existing member's
+    // role; the cached access entry, workspace list and session snapshot
+    // would keep serving the old one for a full TTL otherwise.
+    await this.invalidator.invalidateWorkspaceAccess(invite.clientWorkspaceId, actorUserId);
+    await this.invalidator.invalidateWorkspaceList(actorUserId);
+    await this.invalidator.invalidateSession({ appUserId: actorUserId });
+
     await this.audit.log({
       workspaceId: invite.agencyWorkspaceId,
       actorUserId,
@@ -468,7 +486,10 @@ export class WhiteLabelService {
       client_workspace_id: row.clientWorkspaceId,
       email: row.email,
       role: row.role as 'admin' | 'viewer',
-      token: row.token,
+      // The token is a bearer secret in transit; acceptInvite also pins the
+      // invite to the caller's email, but a listable secret is still a
+      // secret. Only createInvite overlays the real value, once.
+      token: '',
       status: row.status as 'pending' | 'accepted' | 'revoked' | 'expired',
       expires_at: row.expiresAt.toISOString(),
       accepted_at: row.acceptedAt ? row.acceptedAt.toISOString() : null,

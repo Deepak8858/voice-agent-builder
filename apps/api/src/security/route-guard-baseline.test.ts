@@ -140,14 +140,6 @@ const ROLE_EXEMPT: Record<string, string> = {
     'not yet gated; consent/contact capture needs a tier decision before gating',
   'compliance/contacts.controller.ts:ContactsController.optOut':
     'not yet gated; consent/contact capture needs a tier decision before gating',
-  'white-label/white-label.controller.ts:WhiteLabelController.update':
-    'not yet gated, tracked as A-015; owner/admin when gated',
-  'white-label/white-label.controller.ts:ClientWorkspacesController.create':
-    'not yet gated, tracked as A-017b; owner/admin when gated',
-  'white-label/white-label.controller.ts:ClientInvitesController.create':
-    'not yet gated, tracked as A-020; owner/admin when gated',
-  'white-label/white-label.controller.ts:ClientInvitesController.revoke':
-    'not yet gated, tracked as A-020; owner/admin when gated',
 
   // Dead module still mounted in app.module.ts; unmounting is its own plan
   // item and the ground rules forbid touching it meanwhile.
@@ -173,7 +165,7 @@ describe('role coverage baseline', () => {
   });
 
   it('pins the exemption count and rejects stale entries', () => {
-    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(32);
+    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(28);
 
     // An exemption whose route was since gated or deleted must be removed, or
     // the list rots into cover for the next ungated route.

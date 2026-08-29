@@ -21,8 +21,10 @@ import {
   type UpdateWhiteLabelSettingsDto,
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { SessionScoped } from '../common/decorators/session-scoped.decorator';
 import { UnauthorizedError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { WhiteLabelService } from './white-label.service';
@@ -37,7 +39,11 @@ export class WhiteLabelController {
     return this.service.getSettings(workspaceId);
   }
 
+  // Branding is what every client of the agency sees; a viewer/editor seat
+  // must not be able to repaint or re-domain the whole tenant.
   @Patch()
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(UpdateWhiteLabelSettingsDtoSchema))
@@ -58,8 +64,12 @@ export class ClientWorkspacesController {
     return { items: await this.service.listClients(workspaceId) };
   }
 
+  // Creating a client mints the caller an owner seat on the new workspace,
+  // so the route itself must be owner/admin only.
   @Post()
   @HttpCode(201)
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async create(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateClientWorkspaceDtoSchema))
@@ -88,8 +98,12 @@ export class ClientInvitesController {
     return { items: await this.service.listInvites(workspaceId) };
   }
 
+  // An invite grants a seat (up to admin) on a client workspace, and revoking
+  // one destroys a pending grant: both are membership administration.
   @Post()
   @HttpCode(201)
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async create(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateClientInviteDtoSchema))
@@ -100,6 +114,8 @@ export class ClientInvitesController {
   }
 
   @Delete(':inviteId')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async revoke(
     @Param('workspaceId') workspaceId: string,
     @Param('inviteId') inviteId: string,
