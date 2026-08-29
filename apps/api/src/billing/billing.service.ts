@@ -508,8 +508,12 @@ export class BillingService {
     const records = await this.prisma.usageRecord.findMany({
       where: {
         workspaceId,
-        periodStart: { gte: start },
-        periodEnd: { lte: end },
+        // recordUsage stamps periodEnd at the end of the month, so every row for
+        // the period in progress ends after `end` and containment matched none of
+        // them: the panel read zero for every customer. A row counts when its
+        // period overlaps the requested window.
+        periodStart: { lte: end },
+        periodEnd: { gte: start },
       },
     });
 

@@ -875,6 +875,36 @@ describe('BillingService', () => {
       expect(result.usage.calls).toBe(5);
       expect(result.usage.minutes).toBe(60);
     });
+
+    /**
+     * The row shape recordUsage really writes ends at the end of the month, so it
+     * always ends after "now". Requiring the row's period to sit inside the
+     * requested window matched nothing and the panel read zero for everyone.
+     */
+    it('counts the in-progress period row that recordUsage writes', async () => {
+      const now = new Date();
+      const liveRow = {
+        billableMetric: 'minutes',
+        quantity: 42,
+        periodStart: new Date(now.getFullYear(), now.getMonth(), 1),
+        periodEnd: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59),
+      };
+      const prisma = makePrisma({ subscription: { plan: 'starter', status: 'active' } });
+      // findMany honours the period predicate here so this test defends that
+      // predicate rather than a stub's return value.
+      const inRange = (cond: { gte?: Date; lte?: Date } | undefined, value: Date) =>
+        (!cond?.gte || value >= cond.gte) && (!cond?.lte || value <= cond.lte);
+      prisma.usageRecord.findMany = vi.fn(async (args: unknown) => {
+        const where = (args as { where: Record<string, { gte?: Date; lte?: Date }> }).where;
+        return [liveRow].filter(
+          (r) => inRange(where.periodStart, r.periodStart) && inRange(where.periodEnd, r.periodEnd),
+        );
+      }) as never;
+      const svc = makeService(prisma);
+
+      const result = await svc.getWorkspaceUsage('ws-1');
+      expect(result.usage.minutes).toBe(42);
+    });
   });
 
   describe('canStartOutboundCall', () => {
