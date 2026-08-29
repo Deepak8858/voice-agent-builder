@@ -24,7 +24,7 @@ Billing: Stripe abstraction
 ```
 
 First implementation target:
-1. Auth placeholder or Clerk setup
+1. Supabase Auth setup (`@supabase/ssr` in the web app; the API verifies the Supabase JWT)
 2. Workspace CRUD
 3. Agent CRUD
 4. Agent Spec JSON schema

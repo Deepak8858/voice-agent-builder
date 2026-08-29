@@ -82,6 +82,11 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Named explicitly rather than relying on gitleaks auto-detecting
+          # `.gitleaks.toml`, so a future action version that changes its
+          # discovery rules cannot silently drop the allowlist and fail the gate
+          # on the same test fixtures again.
+          GITLEAKS_CONFIG: .gitleaks.toml
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
