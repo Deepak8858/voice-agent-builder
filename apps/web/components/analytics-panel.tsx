@@ -17,7 +17,9 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useApi } from '@/lib/use-api';
+import { getPlanLimitRedirect } from '@/lib/plan-limit';
 import { BarChart3, TrendingUp, ShieldCheck, Calendar } from 'lucide-react';
+import Link from 'next/link';
 import { useState } from 'react';
 
 /**
@@ -125,6 +127,15 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
       call<TimeseriesResponse>(appendQuery(`/workspaces/${workspaceId}/analytics/timeseries`, queryRange)),
   });
 
+  // The API gates all four of these reads on the `analytics` feature, so a Free
+  // workspace gets four 403s. Without this the page renders as four broken
+  // panels; the plan refusal is a sales moment, not an error.
+  const planLimit =
+    getPlanLimitRedirect(overview.error) ??
+    getPlanLimitRedirect(agents.error) ??
+    getPlanLimitRedirect(compliance.error) ??
+    getPlanLimitRedirect(timeseries.error);
+
   // derive chart data
   const outcomeData = overview.data?.outcomes.map((o) => ({
     name: o.outcome.replace(/_/g, ' '),
@@ -148,6 +159,28 @@ export function AnalyticsPanel({ workspaceId }: AnalyticsPanelProps) {
     success: d.success,
     failed: d.failed,
   }));
+
+  if (planLimit) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-primary" />
+            Analytics is a paid feature
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col items-start gap-4">
+          <p className="text-sm text-muted-foreground">{planLimit.message}</p>
+          <Link
+            href={planLimit.upgradePath}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            View plans
+          </Link>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">
