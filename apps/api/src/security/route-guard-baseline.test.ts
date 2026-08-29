@@ -105,18 +105,6 @@ const ROLE_EXEMPT: Record<string, string> = {
 
   // Hand-rolled owner/admin(/editor) checks still in the handlers; the
   // decorator conversion for these controllers has not landed yet.
-  'billing/billing.controller.ts:BillingController.createCheckout':
-    'assertBillingAdmin in handler; @RequiredRole conversion not yet landed',
-  'billing/billing.controller.ts:BillingController.createTopUpCheckout':
-    'assertBillingAdmin in handler; @RequiredRole conversion not yet landed',
-  'billing/billing.controller.ts:BillingController.createPortal':
-    'assertBillingAdmin in handler; @RequiredRole conversion not yet landed',
-  'google-connection/google-connection.controller.ts:GoogleConnectionController.callbackPost':
-    'assertCanManageConnection (owner/admin/editor) in handler; conversion not yet landed',
-  'google-connection/google-connection.controller.ts:GoogleConnectionController.disconnect':
-    'assertCanManageConnection (owner/admin/editor) in handler; conversion not yet landed',
-  'workspaces/workspaces.controller.ts:WorkspacesController.update':
-    'inline owner/admin check in handler; @RequiredRole conversion not yet landed',
 
   // Not yet gated — outside the 2026-08-28 retrofit wave. No hand-rolled
   // check either: today any member can call these.
@@ -185,7 +173,7 @@ describe('role coverage baseline', () => {
   });
 
   it('pins the exemption count and rejects stale entries', () => {
-    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(38);
+    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(32);
 
     // An exemption whose route was since gated or deleted must be removed, or
     // the list rots into cover for the next ungated route.
