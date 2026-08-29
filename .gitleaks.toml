@@ -1,0 +1,47 @@
+# Gitleaks configuration for the quality gate.
+#
+# This replaces a `.gitleaksignore` that pinned each allowed finding to a
+# COMMIT SHA (`<sha>:<file>:<rule>:<line>`). Those fingerprints die the moment a
+# branch is rebased or the line moves, which is why the gate started failing on
+# every PR in the remediation stack while the flagged lines had not changed at
+# all. An allowlist matched on the VALUE survives a rebase; a fingerprint does
+# not.
+#
+# The allowlist is deliberately keyed on content only, with no `paths` entry.
+# Allowing a path would mean a real credential pasted into any test file ships
+# silently — the exact thing this gate exists to catch. Only these specific
+# non-secret sentinels are exempt, wherever they appear.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Non-secret sentinels required by tests that assert on credential shape"
+regexTarget = "match"
+regexes = [
+  # `apps/api/src/config/env.test.ts` asserts that boot REFUSES a Stripe test
+  # key in production and accepts a live one. The check is on the mode prefix,
+  # so the fixture has to carry a real `sk_`/`rk_` prefix; the body is the
+  # literal placeholder `51abcdefghijklmnop`.
+  '''(?:sk|rk|pk)_(?:test|live)_51abcdefghijklmnop''',
+
+  # The InternalAuthGuard trust-boundary tests (`internal-auth.guard.test.ts`,
+  # `security/admin-internal-only.test.ts`) need a key that satisfies the 32-char
+  # minimum. Self-describing and never valid anywhere.
+  '''test-internal-api-key-with-32-chars''',
+  '''development-jwt-secret-with-32-chars''',
+  '''test-jwt-secret-that-is-long-enough-\d+''',
+
+  # An EMPTY env assignment followed by the next variable's name. `.env` samples
+  # list keys with no value, and gitleaks' multiline match runs past the newline
+  # and scores the following variable NAME as the secret
+  # (`docs/24_ENVIRONMENT_VARIABLES.md`). A real credential is never another
+  # variable name, so this cannot mask one.
+  '''[A-Z0-9_]+=\s*[A-Z0-9_]+_(?:API_KEY|SECRET|TOKEN|KEY)=''',
+
+  # A bare UUID is not a credential format for any provider we use, but
+  # `generic-api-key` scores one as high entropy. Stripe idempotency keys,
+  # organization ids and workspace ids are UUIDs and appear in hundreds of
+  # fixtures, so leaving this to fingerprints guarantees a broken gate.
+  '''[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}''',
+]

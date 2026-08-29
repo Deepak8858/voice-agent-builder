@@ -263,7 +263,10 @@ Builder → /dashboard/agents/[agentId]/builder
 
 ### Authentication
 
-All endpoints require Clerk session cookie. Webhook endpoints use verification.
+All endpoints require a Supabase Auth session. The browser holds the Supabase
+session cookie; the Next.js server extracts the access token and sends it to the
+API as `Authorization: Bearer` plus `x-internal-key`, and the API verifies the
+JWT. Webhook endpoints use signature verification instead.
 
 ### Workspace Guard
 
@@ -296,8 +299,10 @@ Standard pagination with `skip`/`take` query params.
 | `DIRECT_URL` | Supabase direct connection | Yes |
 | `REDIS_URL` | Redis for BullMQ queues | No |
 | `SUPABASE_URL` | Supabase project URL | Yes |
-| `SUPABASE_ANON_KEY` | Supabase anon key | Yes |
-| `SUPABASE_JWT_SECRET` | Supabase JWT secret | Yes |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (web app) | Yes |
+| `INTERNAL_API_KEY` | Shared secret the web app sends as `x-internal-key` | Yes |
+| `SUPABASE_JWT_SECRET` | Verifies session JWTs locally | One of this or `SUPABASE_SERVICE_ROLE_KEY` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role ops; also the remote token-verification fallback | One of this or `SUPABASE_JWT_SECRET` |
 | `STRIPE_SECRET_KEY` | Stripe billing | No |
 | `OPENAI_API_KEY` | OpenAI Realtime runtime (all growth/enterprise calls and the Realtime half of starter) | No |
 | `VOICE_STANDARD_PIPELINE_ENABLED` | Enables the in-house Azure pipeline used by every free-plan call and roughly half of starter-plan calls | No |
@@ -319,7 +324,7 @@ Standard pagination with `skip`/`take` query params.
 
 ## Database Models
 
-- **User** — Auth users linked to Clerk
+- **User** — Auth users linked to a Supabase Auth user via `auth_user_id`
 - **Organization** — Tenant org with plan/subscription
 - **Workspace** — Agency/client workspace (direct/agency/client type)
 - **Membership** — User-workspace roles
