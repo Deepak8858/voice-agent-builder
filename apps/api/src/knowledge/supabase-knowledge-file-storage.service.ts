@@ -30,11 +30,10 @@ export class SupabaseKnowledgeFileStorage implements KnowledgeFileStorage {
   private bucketReady = false;
 
   constructor() {
-    const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
     this.bucket = env.SUPABASE_KNOWLEDGE_BUCKET ?? env.SUPABASE_STORAGE_BUCKET ?? DEFAULT_BUCKET;
-    this.client = supabaseUrl && serviceRoleKey
-      ? createClient(supabaseUrl, serviceRoleKey, {
+    this.client = serviceRoleKey
+      ? createClient(env.SUPABASE_URL, serviceRoleKey, {
         auth: { persistSession: false, autoRefreshToken: false },
         realtime: { transport: WebSocket as never },
       })
@@ -90,13 +89,10 @@ export class SupabaseKnowledgeFileStorage implements KnowledgeFileStorage {
   private requireClient(): SupabaseClient {
     if (!this.client) {
       throw new KnowledgeIngestFailedError(
-        'Supabase Storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.',
+        'Supabase Storage is not configured. Set SUPABASE_SERVICE_ROLE_KEY.',
         {
           provider: 'supabase',
-          missing: {
-            SUPABASE_URL: !(env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL),
-            SUPABASE_SERVICE_ROLE_KEY: !env.SUPABASE_SERVICE_ROLE_KEY,
-          },
+          missing: { SUPABASE_SERVICE_ROLE_KEY: !env.SUPABASE_SERVICE_ROLE_KEY },
         },
       );
     }

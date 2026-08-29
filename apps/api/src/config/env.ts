@@ -138,7 +138,19 @@ const EnvSchema = z
       .default('knowledge'),
 
     // Supabase (used by backend for service-role operations)
-    SUPABASE_URL: z.string().optional(),
+    //
+    // Required, not optional: supabase-auth.service.ts binds the JWT `issuer`
+    // claim only when this value is present, so an absent one silently
+    // downgrades token verification to "trust any issuer". Accepts
+    // NEXT_PUBLIC_SUPABASE_URL as the source because deployments that only set
+    // the frontend variable booted fine before this became required.
+    SUPABASE_URL: z.preprocess(
+      (value) =>
+        typeof value === 'string' && value.trim() !== ''
+          ? value
+          : process.env.NEXT_PUBLIC_SUPABASE_URL,
+      z.string().min(1, 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) is required'),
+    ),
     SUPABASE_JWT_SECRET: z.string().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
     SUPABASE_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
@@ -146,8 +158,11 @@ const EnvSchema = z
 
     // Shared secret between Next.js frontend and this NestJS API. The
     // frontend is the only legitimate caller; it forwards the Supabase
-    // bearer token and the API derives user context server-side.
-    INTERNAL_API_KEY: z.string().min(32).optional(),
+    // bearer token and the API derives user context server-side. Required:
+    // internal-auth.guard.ts compares every request against it, so leaving it
+    // unset does not disable the check — it makes the comparison unsatisfiable
+    // while the API keeps serving, which is a configuration bug, not a mode.
+    INTERNAL_API_KEY: z.string().min(32),
 
     GITHUB_TOKEN: z.string().optional(),
     LLM_MODEL: z.string().optional(),
@@ -158,13 +173,10 @@ const EnvSchema = z
     ANTHROPIC_API_KEY: z.string().optional(),
     ANTHROPIC_MODEL: z.string().optional(),
 
-    JWT_SECRET: z
-      .string()
-      .min(32)
-      .refine(
-        (v) => process.env.NODE_ENV !== 'production' || v !== 'change-me-in-development',
-        'JWT_SECRET must be a secure 32+ character string in production',
-      ),
+    // The .min(32) subsumes the old 'change-me-in-development' check: that
+    // literal is 24 characters, so it was already rejected before the refine
+    // could run. Its twin in main.ts was dead for the same reason.
+    JWT_SECRET: z.string().min(32),
     ENCRYPTION_KEY: z.string().optional(),
 
     GOOGLE_CLIENT_ID: z.string().optional(),
@@ -238,7 +250,13 @@ const EnvSchema = z
     // sweep on the next read, so the UI can offer a retry.
     AGENT_GEN_STALE_AFTER_SECONDS: z.coerce.number().int().min(60).default(180),
 
-    METRICS_SCRAPE_TOKEN: z.string().optional(),
+    // Optional — metrics.controller.ts already fails closed (401) when it is
+    // absent — but a short value is worse than none, so enforce a length when
+    // set. Empty string counts as absent: the .env.example entry ships blank.
+    METRICS_SCRAPE_TOKEN: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+      z.string().min(32).optional(),
+    ),
     VOICE_WEBHOOK_SECRET: z.string().optional(),
     WORKERS_ENABLED: BooleanEnvSchema.default(false),
 
