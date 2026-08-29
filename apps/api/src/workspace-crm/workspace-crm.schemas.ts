@@ -77,15 +77,57 @@ export const CreateWorkspaceCrmCredentialDtoSchema = z.discriminatedUnion('provi
 ]);
 export type CreateWorkspaceCrmCredentialDto = z.infer<typeof CreateWorkspaceCrmCredentialDtoSchema>;
 
+const CREDENTIALS_SCHEMA_BY_PROVIDER: Record<WorkspaceCrmProvider, z.ZodTypeAny> = {
+  pipedrive: TokenCredentialsSchema,
+  hubspot: TokenCredentialsSchema,
+  salesforce: SalesforceCredentialsSchema,
+  generic_webhook: GenericWebhookCredentialsSchema,
+};
+
+// The credential schemas share no literal field, so a bare union of them
+// cannot tell WHICH provider's shape a payload was aiming for — a salesforce
+// payload missing its required base_url used to slip through the token branch,
+// and every malformed payload got another branch's error. Replacing
+// credentials therefore requires naming the provider, which is dispatched
+// (rather than z.discriminatedUnion-ed with a provider-less branch alongside:
+// zod's union then reports the provider-less branch's unrecognized-key error
+// instead of the credential one) to the one schema to validate against. The
+// service rejects a provider that does not match the stored row.
 export const UpdateWorkspaceCrmCredentialDtoSchema = z
   .object({
-    credentials: z.union([
-      TokenCredentialsSchema,
-      SalesforceCredentialsSchema,
-      GenericWebhookCredentialsSchema,
-    ]).optional(),
+    provider: WorkspaceCrmProviderSchema.optional(),
+    credentials: z.record(z.string(), z.unknown()).optional(),
     config: z.record(z.string(), z.unknown()).optional(),
     status: WorkspaceCrmStatusSchema.optional(),
   })
-  .strict();
+  .strict()
+  .transform((value, ctx) => {
+    if (value.credentials === undefined) {
+      if (value.provider !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['provider'],
+          message: 'provider is only accepted alongside replacement credentials.',
+        });
+        return z.NEVER;
+      }
+      return value;
+    }
+    if (value.provider === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['provider'],
+        message: 'Name the provider the replacement credentials belong to.',
+      });
+      return z.NEVER;
+    }
+    const parsed = CREDENTIALS_SCHEMA_BY_PROVIDER[value.provider].safeParse(value.credentials);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        ctx.addIssue({ ...issue, path: ['credentials', ...issue.path] });
+      }
+      return z.NEVER;
+    }
+    return { ...value, credentials: parsed.data as Record<string, unknown> };
+  });
 export type UpdateWorkspaceCrmCredentialDto = z.infer<typeof UpdateWorkspaceCrmCredentialDtoSchema>;
