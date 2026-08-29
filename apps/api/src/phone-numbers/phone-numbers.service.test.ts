@@ -84,12 +84,16 @@ describe('PhoneNumbersService plan gates', () => {
   });
 
   it('refuses provision on an unpaid plan before any Twilio call is made', async () => {
-    const { service } = makeService({ gateAllows: false });
+    const { service, billing } = makeService({ gateAllows: false });
 
     await expect(service.provision('workspace-1', '415')).rejects.toMatchObject({
       errorCode: 'PLAN_LIMIT_EXCEEDED',
+      // The refusal names the capability that was actually refused; the upgrade
+      // modal renders this string.
+      details: { limitType: 'managed_telephony' },
     });
 
+    expect(billing.checkFeatureGate).toHaveBeenCalledWith('org-1', 'managed_telephony');
     // The whole point of gating here: no search, no purchase, no money spent.
     expect(fetchMock).not.toHaveBeenCalled();
   });

@@ -145,16 +145,13 @@ export class PhoneNumbersService {
 
     // Before the credential check and long before the purchase: this route buys
     // a number on VoiceForge's own Twilio account, so a plan that is not paying
-    // for PSTN must be refused before any money leaves.
-    //
-    // ponytail: `outbound` is the nearest existing gate ("may this org use paid
-    // PSTN at all"), and every paid plan in the catalog has outboundPstn: true
-    // so nobody is over-blocked today. A dedicated `managed_telephony` gate
-    // belongs in packages/shared + BillingService.checkFeatureGate; this route
-    // should move to it when that lands.
+    // for PSTN must be refused before any money leaves. `managed_telephony`
+    // rather than `outbound` because the two answer different questions and the
+    // refusal's `limitType` is customer-visible: this is a recurring carrier
+    // rental on the platform's card, not permission to dial out.
     await this.assertPlanAllows(
       workspaceId,
-      'outbound',
+      'managed_telephony',
       'Provisioning a phone number requires a paid plan.',
     );
 

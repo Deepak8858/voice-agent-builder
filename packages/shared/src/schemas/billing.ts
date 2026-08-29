@@ -246,6 +246,14 @@ export interface EffectivePlan {
   catalogVersion: string;
   entitlements: PlanEntitlements;
   paidAccess: boolean;
+  /**
+   * A paid subscription that would otherwise fund usage, whose billing period
+   * ended and was never renewed. `status` stays `active` and `plan` is already
+   * downgraded to free in that case, so without this flag a missed renewal
+   * webhook is indistinguishable from "never subscribed" — and the customer is
+   * told to subscribe when what they need is a payment fix.
+   */
+  periodExpired?: boolean;
 }
 
 export const PAID_CALL_MINIMUM_SECONDS = 60 as const;
@@ -415,5 +423,13 @@ export const FeatureGateSchema = z.enum([
   'multiple_workspaces',
   'tools',
   'byo_telephony',
+  /**
+   * Buying a PSTN number on VoiceForge's own carrier account. Distinct from
+   * `outbound` (may this org place paid calls) and from `byo_telephony` (may it
+   * bind a number it already pays for): this one spends platform money on a
+   * recurring carrier rental, so it is the gate the provisioning route must
+   * name in its refusal.
+   */
+  'managed_telephony',
 ]);
 export type FeatureGate = z.infer<typeof FeatureGateSchema>;

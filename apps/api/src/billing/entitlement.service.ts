@@ -92,11 +92,10 @@ export class EntitlementService {
     // way back to Free so no downstream caller can read a paid entitlement from
     // a stale row. The period is only consulted for a row that would otherwise
     // have funded usage, so a long-canceled row does not log every time.
-    const paidAccess =
-      PAID_ACCESS_STATUSES.has(status) &&
-      !trialExpired &&
-      storedPlan !== 'free' &&
-      !this.isPeriodExpired(organizationId, subscription?.currentPeriodEnd);
+    const wouldFund = PAID_ACCESS_STATUSES.has(status) && !trialExpired && storedPlan !== 'free';
+    const periodExpired =
+      wouldFund && this.isPeriodExpired(organizationId, subscription?.currentPeriodEnd);
+    const paidAccess = wouldFund && !periodExpired;
     const plan: PlanType = paidAccess ? storedPlan : 'free';
 
     return {
@@ -106,6 +105,7 @@ export class EntitlementService {
       catalogVersion: BILLING_CATALOG_VERSION,
       entitlements: this.resolveEntitlements(plan, subscription?.concurrentCallLimitOverride),
       paidAccess,
+      periodExpired,
     };
   }
 
@@ -332,6 +332,11 @@ export class EntitlementService {
    */
   private unavailableReason(effective: EffectivePlan): EntitlementReason {
     if (effective.status === 'unknown') return 'billing_temporarily_unavailable';
+    // A lapsed period keeps `status` at `active` and downgrades `plan` to free,
+    // so neither field can tell it apart from an organization that never
+    // subscribed. Without this it reads as `subscription_required` — "subscribe
+    // to continue" shown to someone who is already paying.
+    if (effective.periodExpired) return 'subscription_inactive';
     return effective.status === 'active' || effective.status === 'none'
       ? 'subscription_required'
       : 'subscription_inactive';

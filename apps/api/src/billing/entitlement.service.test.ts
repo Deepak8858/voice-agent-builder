@@ -107,6 +107,33 @@ describe('EntitlementService', () => {
       expect(plan.plan).toBe('free');
     });
 
+    /**
+     * The refusal must not read as "subscribe to continue". A lapsed period
+     * leaves `status` at `active` and downgrades `plan` to free, so the reason is
+     * the only field left that can tell a missed renewal webhook apart from an
+     * organization that never subscribed — and the remedies differ: one is a
+     * payment fix, the other is a purchase.
+     */
+    it('reports a lapsed period as inactive rather than as never having subscribed', async () => {
+      const lapsed = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            currentPeriodEnd: new Date(Date.now() - 3 * 86_400_000),
+          },
+        }),
+      );
+      const neverSubscribed = makeService(makePrisma({ subscription: null }));
+
+      await expect(
+        lapsed.check('org-1', { kind: 'paid_call', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'subscription_inactive' });
+      await expect(
+        neverSubscribed.check('org-2', { kind: 'paid_call', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'subscription_required' });
+    });
+
     it('keeps paid access through the renewal window while the period-end webhook is in flight', async () => {
       const svc = makeService(
         makePrisma({

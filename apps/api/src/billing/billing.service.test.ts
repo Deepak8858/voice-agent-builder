@@ -94,6 +94,9 @@ describe('BillingService', () => {
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
       STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
       STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+      // Reset explicitly: `env` is the real singleton, so a test that sets this
+      // would otherwise leak it into every later portal assertion.
+      STRIPE_PORTAL_CONFIGURATION_ID: undefined,
       STRIPE_TAX_ENABLED: false,
       WEB_BASE_URL: 'https://app.voiceforge.test',
     });
@@ -655,6 +658,24 @@ describe('BillingService', () => {
         }),
       );
     });
+
+    /**
+     * With no configuration the portal renders Stripe's account default feature
+     * set — whatever was last saved in the dashboard — so what a customer can
+     * cancel or switch to is not under this product's control.
+     */
+    it('opens the portal against the configured feature set when one is set', async () => {
+      Object.assign(env, { STRIPE_PORTAL_CONFIGURATION_ID: 'bpc_123' });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
+
+      expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith(
+        expect.objectContaining({ configuration: 'bpc_123' }),
+      );
+    });
   });
 
   describe('getSubscription', () => {
@@ -778,6 +799,26 @@ describe('BillingService', () => {
       expect(await free.checkFeatureGate('org-fake', 'byo_telephony')).toBe(false);
       expect(await starter.checkFeatureGate('org-fake', 'tools')).toBe(true);
       expect(await starter.checkFeatureGate('org-fake', 'byo_telephony')).toBe(true);
+    });
+
+    /**
+     * Provisioning a carrier number spends platform money every month for as
+     * long as the number is held, so an unfunded organization must never reach
+     * the purchase. `paid_but_unfunded` is the case that matters: the plan name
+     * says growth, nothing is paying for it.
+     */
+    it('keeps managed telephony behind a funded paid plan', async () => {
+      const free = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+      const noSubscription = makeService(makePrisma({ subscription: null }));
+      const pastDue = makeService(
+        makePrisma({ subscription: { plan: 'growth', status: 'past_due' } }),
+      );
+      const starter = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      expect(await free.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await noSubscription.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await pastDue.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await starter.checkFeatureGate('org-fake', 'managed_telephony')).toBe(true);
     });
 
     it('treats expired trialing as free plan for feature gates', async () => {

@@ -335,9 +335,18 @@ export class BillingService {
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     const returnUrl = this.buildAppUrl(dto.returnPath);
+    // Without a configuration the portal shows Stripe's *account default*
+    // feature set, which is whatever was last clicked in the dashboard rather
+    // than something this product controls. Optional on purpose: an unset id
+    // must not disable the portal, because a customer locked out of the portal
+    // cannot fix a failing card, and that turns a config gap into churn. Hence
+    // it is also absent from STRIPE_PORTAL_REQUIRED_ENV.
     const session = await this.stripe.billingPortal.sessions.create({
       customer: customerId,
       return_url: returnUrl,
+      ...(env.STRIPE_PORTAL_CONFIGURATION_ID
+        ? { configuration: env.STRIPE_PORTAL_CONFIGURATION_ID }
+        : {}),
     });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no portal URL.');
     await this.logBillingAudit(organizationId, actorUserId, 'billing.portal_opened', {
@@ -633,11 +642,16 @@ export class BillingService {
         return entitlements.workspaces > 1;
       case 'tools':
         return entitlements.nangoConnections > 0;
+      // Both telephony gates are "paid plans only" rather than
+      // `entitlements.outboundPstn`: a carrier number is mainly an *inbound*
+      // capability, so deriving it from the outbound flag would refuse a plan
+      // sold inbound-only. No plan in the catalog differs today.
+      case 'byo_telephony':
+      case 'managed_telephony':
       case 'ai_insights':
       case 'api_access':
       case 'bulk_import':
       case 'analytics':
-      case 'byo_telephony':
         return plan !== 'free' && paidAccess;
       default:
         return false;

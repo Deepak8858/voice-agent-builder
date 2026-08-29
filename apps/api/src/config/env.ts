@@ -194,6 +194,12 @@ const EnvSchema = z
     STRIPE_GROWTH_PRICE_ID: z.string().optional(),
     STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
     STRIPE_MINUTE_PACK_PRICE_ID: z.string().optional(),
+    // Which Customer Portal feature set to open. Deliberately *not* in
+    // STRIPE_PORTAL_REQUIRED_ENV: unset means Stripe's account default, which
+    // still lets a customer fix a failing card. Requiring it would 503 the
+    // portal — and, because that list is spread into the subscription and
+    // top-up lists, would 503 both Checkout entry points too.
+    STRIPE_PORTAL_CONFIGURATION_ID: z.string().optional(),
     // Tax collection stays off until the tax registrations are confirmed.
     STRIPE_TAX_ENABLED: BooleanEnvSchema.default(false),
     BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
