@@ -1330,6 +1330,10 @@ model OutboundCampaign {
   contacts    Json     @default("[]")
   schedule    Json     @default("{\"max_calls_per_hour\": 10, \"max_concurrent\": 3}")
   status      String   @default("draft") // draft | running | paused | completed | failed
+  // Index of the next contact to dial. The dispatcher enqueues one contact at a
+  // time and advances this, so restarting a paused campaign resumes here instead
+  // of re-enqueueing the whole list and re-dialling everyone already called.
+  dispatchedCount Int  @default(0) @map("dispatched_count")
   stats       Json     @default("{\"total\": 0, \"completed\": 0, \"failed\": 0, \"in_progress\": 0}")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")

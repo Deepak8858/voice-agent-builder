@@ -5,7 +5,7 @@ import { EntitlementReasonSchema } from '@voiceforge/shared';
 import { AuditService } from '../../audit/audit.service';
 import { AppError } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
-import { OutboundCampaignService } from '../outbound-campaign.service';
+import { HOUR_MS, OutboundCampaignService } from '../outbound-campaign.service';
 import { CallsService } from '../../calls/calls.service';
 import { OUTBOUND_CAMPAIGN_QUEUE } from '../outbound-campaign.queue';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,7 +19,33 @@ interface OutboundCallJob {
   to: string;
   contactName?: string;
   customData?: Record<string, string>;
+  /**
+   * Position in the campaign's contact list. Optional because jobs enqueued by
+   * the previous batch-everything dispatcher are still in the queue across a
+   * deploy; those dial normally but drive no chaining or pacing.
+   */
+  contactIndex?: number;
+  dispatchToken?: number;
 }
+
+/**
+ * How long to wait before retrying a contact that could not be dialled *yet* -
+ * the campaign is at `max_concurrent`, or the organization is momentarily out of
+ * capacity. Re-queued rather than thrown, so a condition that outlasts the retry
+ * budget cannot end the dispatch chain and abandon the rest of the list.
+ */
+export const DEFER_MS = 30_000;
+
+/**
+ * A closed call window reopens on a clock boundary, not on capacity, so it is
+ * polled far less often. The contact is held rather than burned: the alternative
+ * is a campaign that spends the night recording the whole remaining list as
+ * failed dials.
+ */
+export const CALL_WINDOW_DEFER_MS = 15 * 60_000;
+
+/** Statuses in which a call still occupies a concurrency slot. */
+const LIVE_CALL_STATUSES = ['queued', 'ringing', 'in_progress'];
 
 /**
  * Admission denials that mean "not now" rather than "not ever". Retrying the
@@ -61,39 +87,189 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
   }
 
   async processor(job: { data: OutboundCallJob }): Promise<void> {
-    const { campaignId, agentId, workspaceId, actorUserId, to, contactName, customData } = job.data;
+    const {
+      campaignId,
+      agentId,
+      workspaceId,
+      actorUserId,
+      to,
+      contactIndex,
+      dispatchToken,
+    } = job.data;
+
+    const campaign = await this.campaigns.getCampaign(workspaceId, campaignId);
+    // A paused, completed or deleted campaign must not dial. The dispatcher
+    // enqueues one contact at a time, so returning here also ends the chain, and
+    // the persisted cursor is where a restart resumes from.
+    if (!campaign || campaign.status !== 'running') {
+      this.logger.log(
+        `Skipping campaign ${campaignId} dial to ${to}: status ${campaign?.status ?? 'missing'}`,
+      );
+      return;
+    }
+
+    const { maxCallsPerHour, maxConcurrent } = this.campaigns.readSchedule(campaign.schedule);
+    const index = contactIndex;
+    const token = dispatchToken ?? Date.now();
+
+    // A link left over from an earlier run of this campaign. Pausing does not
+    // remove jobs that are already delayed, so a restart can leave one of those
+    // behind the resumed chain; dialling it would repeat a call already made and
+    // then fork a second chain down the rest of the list.
+    //
+    // ponytail: two deliveries for the same index picked up in the same instant
+    // both pass this. The 60s outbound dedupe in CallsService stops the second
+    // dial; a generation column on the campaign would close it outright.
+    if (index !== undefined && index < campaign.dispatchedCount) {
+      this.logger.log(
+        `Dropping stale campaign ${campaignId} job for contact ${index}, cursor is at ${campaign.dispatchedCount}`,
+      );
+      return;
+    }
+
+    // `max_concurrent`: the campaign's own ceiling, checked before the dial
+    // because there is no undoing one.
+    if (index !== undefined && (await this.liveCallCount(workspaceId, agentId)) >= maxConcurrent) {
+      this.logger.warn(`Campaign ${campaignId} at max_concurrent ${maxConcurrent}, holding ${to}`);
+      await this.defer(campaign, index, actorUserId, token, DEFER_MS);
+      return;
+    }
 
     try {
-      const metadata = {
-        campaign_id: campaignId,
-        ...customData,
-        purpose: 'outbound_campaign',
-      };
-      const assignedByoNumber = await this.findAssignedByoOutboundNumber(workspaceId, agentId);
-      if (assignedByoNumber) {
-        const call = await this.telephony.startOutboundCall(workspaceId, actorUserId, {
-          phone_number_id: assignedByoNumber.id,
-          to_number: to,
-          contact_name: contactName,
-          metadata,
-        });
-
-        await this.campaigns.incrementStat(campaignId, 'in_progress');
-        this.logger.log(`Outbound campaign call queued via ${assignedByoNumber.provider}: ${call.call_id} to ${to}`);
+      await this.dial(job.data);
+    } catch (err) {
+      const deferral = index === undefined ? null : this.deferralReason(err);
+      if (deferral !== null && index !== undefined) {
+        this.logger.warn(`Campaign ${campaignId} holding ${to} (${deferral})`);
+        await this.defer(
+          campaign,
+          index,
+          actorUserId,
+          token,
+          deferral === 'outside_call_window' ? CALL_WINDOW_DEFER_MS : DEFER_MS,
+        );
         return;
       }
+      await this.handleDispatchFailure(campaignId, workspaceId, to, err);
+    }
 
-      const call = await this.calls.startOutboundCall(workspaceId, agentId, actorUserId, {
+    if (index === undefined) return;
+
+    // The next contact is enqueued only once this one is settled, spaced by
+    // `max_calls_per_hour`. No next link means this was the last contact.
+    const chained = await this.campaigns.dispatchContact(
+      campaign,
+      index + 1,
+      actorUserId,
+      Math.ceil(HOUR_MS / maxCallsPerHour),
+      token,
+    );
+    if (!chained) await this.campaigns.markCompleted(campaignId, workspaceId);
+    // Advanced last: until it moves, a retry of this job is still valid work.
+    // Advancing first would make the retry look like a stale link and drop it.
+    await this.campaigns.advanceCursor(campaignId, workspaceId, index + 1);
+  }
+
+  /**
+   * Re-queues the same contact under a fresh token. A new token is required
+   * because the job currently running still holds the id derived from the old
+   * one, and BullMQ would discard the replacement as a duplicate.
+   */
+  private async defer(
+    campaign: Parameters<OutboundCampaignService['dispatchContact']>[0],
+    contactIndex: number,
+    actorUserId: string,
+    token: number,
+    delayMs: number,
+  ): Promise<void> {
+    await this.campaigns.dispatchContact(
+      campaign,
+      contactIndex,
+      actorUserId,
+      delayMs,
+      token + 1,
+    );
+  }
+
+  /**
+   * "Not now" rather than "not ever": the contact was never actually called, so
+   * it is held and retried instead of being counted as a failed dial.
+   *
+   * Held by re-queueing rather than by rethrowing for BullMQ, because a
+   * condition that outlives the retry budget would otherwise end the dispatch
+   * chain and silently abandon every remaining contact.
+   */
+  private deferralReason(err: unknown): string | null {
+    const admission = this.admissionReason(err);
+    if (admission && RETRYABLE_ADMISSION_REASONS.has(admission)) return admission;
+
+    if (!(err instanceof AppError) || err.errorCode !== 'COMPLIANCE_BLOCKED') return null;
+    const reasons = (err.details as { reasons?: unknown } | undefined)?.reasons;
+    if (!Array.isArray(reasons)) return null;
+    const blocking = (reasons as Array<{ code?: unknown; severity?: unknown }>).filter(
+      (reason) => reason?.severity === 'blocking',
+    );
+    // Only a closed call window is temporary. A DNC hit, an opt-out or a missing
+    // consent record is permanent for this contact and must be recorded as a
+    // failure, never retried into a second unwanted call.
+    return blocking.length > 0 && blocking.every((r) => r.code === 'outside_call_window')
+      ? 'outside_call_window'
+      : null;
+  }
+
+  private async dial(data: OutboundCallJob): Promise<void> {
+    const { campaignId, agentId, workspaceId, actorUserId, to, contactName, customData } = data;
+    const metadata = {
+      campaign_id: campaignId,
+      ...customData,
+      purpose: 'outbound_campaign',
+    };
+    const assignedByoNumber = await this.findAssignedByoOutboundNumber(workspaceId, agentId);
+    if (assignedByoNumber) {
+      const call = await this.telephony.startOutboundCall(workspaceId, actorUserId, {
+        phone_number_id: assignedByoNumber.id,
         to_number: to,
         contact_name: contactName,
         metadata,
       });
 
       await this.campaigns.incrementStat(campaignId, 'in_progress');
-      this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
-    } catch (err) {
-      await this.handleDispatchFailure(campaignId, workspaceId, to, err);
+      this.logger.log(`Outbound campaign call queued via ${assignedByoNumber.provider}: ${call.call_id} to ${to}`);
+      return;
     }
+
+    const call = await this.calls.startOutboundCall(workspaceId, agentId, actorUserId, {
+      to_number: to,
+      contact_name: contactName,
+      metadata,
+    });
+
+    await this.campaigns.incrementStat(campaignId, 'in_progress');
+    this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
+  }
+
+  /**
+   * Live outbound calls for the campaign's agent.
+   *
+   * `max_concurrent` is a campaign setting, but `calls` carries no campaign
+   * column, so this counts per agent: a manual dial on the same agent is counted
+   * too, which under-dials the campaign rather than over-dialling it — the safe
+   * direction when the cost is money and a stranger's phone ringing. The
+   * one-hour floor stops a leaked `queued` row from wedging a campaign forever.
+   *
+   * ponytail: counted per agent; add a `campaign_id` column to `calls` if two
+   * campaigns on one agent ever need to pace independently.
+   */
+  private liveCallCount(workspaceId: string, agentId: string): Promise<number> {
+    return this.prisma.call.count({
+      where: {
+        workspaceId,
+        agentId,
+        direction: 'outbound',
+        status: { in: LIVE_CALL_STATUSES },
+        createdAt: { gt: new Date(Date.now() - HOUR_MS) },
+      },
+    });
   }
 
   /**
