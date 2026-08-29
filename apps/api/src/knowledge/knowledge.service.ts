@@ -290,16 +290,26 @@ export class KnowledgeService {
   }
 
   /**
-   * Reset embedding vectors to null for all chunks in a workspace.
-   * Used by the backfill endpoint before enqueueing the embeddings worker.
+   * Reset embedding vectors to null for a workspace, or for one source within
+   * it. Both the backfill and reindex endpoints call this before enqueueing the
+   * worker, because the worker only selects chunks whose vector IS NULL —
+   * without this it would find nothing, since processSource always writes a
+   * vector at insert time.
+   *
+   * Raw SQL, not updateMany: `embedding` is `Unsupported("vector(1536)")`, so
+   * Prisma omits it from KnowledgeChunkUpdateManyMutationInput and rejects
+   * `data: { embedding: null }` at runtime as an unknown argument. Every other
+   * write to this column goes through raw SQL for the same reason — see
+   * insertChunkWithVector.
    */
-  async clearEmbeddings(workspaceId: string): Promise<number> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (this.prisma.knowledgeChunk as any).updateMany({
-      where: { workspaceId },
-      data: { embedding: null },
-    });
-    return result.count;
+  async clearEmbeddings(workspaceId: string, sourceId?: string): Promise<number> {
+    return sourceId
+      ? this.prisma.$executeRaw`
+          UPDATE knowledge_chunks SET embedding = NULL
+          WHERE workspace_id = ${workspaceId}::uuid AND source_id = ${sourceId}::uuid`
+      : this.prisma.$executeRaw`
+          UPDATE knowledge_chunks SET embedding = NULL
+          WHERE workspace_id = ${workspaceId}::uuid`;
   }
 
   /**

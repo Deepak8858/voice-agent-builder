@@ -147,9 +147,8 @@ export class KnowledgeController {
   }
 
   /**
-   * Enqueue a background job to regenerate embeddings for all chunks under
-   * this source. Falls back to reindexing the full source if embedding vector
-   * is null. Idempotent — safe to call multiple times.
+   * Re-embed every chunk under this source. Idempotent — safe to call multiple
+   * times.
    */
   @Post('knowledge-sources/:sourceId/reindex')
   @HttpCode(202)
@@ -158,21 +157,26 @@ export class KnowledgeController {
     @Param('sourceId') sourceId: string,
     @CurrentUser() _user: SessionUser,
   ): Promise<{ jobId: string; message: string }> {
+    // `get` first: it is what proves the source belongs to this workspace, and
+    // clearEmbeddings must not run on someone else's source.
     await this.knowledge.get(workspaceId, sourceId);
+    // Clearing is not optional. The worker selects only chunks whose vector IS
+    // NULL, and ingest always writes a vector, so without this the job would
+    // select zero rows and reindex would return 202 having done nothing.
+    await this.knowledge.clearEmbeddings(workspaceId, sourceId);
     await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
+      workspaceId,
       sourceId,
-      force: false,
     });
     return {
       jobId: sourceId,
-      message: `Reindex job queued for source ${sourceId}. Embeddings will be regenerated for any chunk with a null vector.`,
+      message: `Reindex job queued for source ${sourceId}. Every chunk under it had its vector cleared and will be re-embedded.`,
     };
   }
 
   /**
-   * Enqueue a full backfill: regenerate embeddings for ALL chunks across the
-   * entire workspace, including chunks that already have a vector.
-   * Admin use only.
+   * Enqueue a full backfill for THIS workspace only: clear every vector, then
+   * let the worker re-embed them. Admin use only.
    */
   @Post('knowledge-sources/backfill')
   @HttpCode(202)
@@ -180,14 +184,15 @@ export class KnowledgeController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() _user: SessionUser,
   ): Promise<{ jobId: string; message: string }> {
-    // Mark all existing embeddings as null so the worker processes everything.
+    // Mark all existing embeddings as null so the worker — which only embeds
+    // null vectors — picks up the whole workspace.
     await this.knowledge.clearEmbeddings(workspaceId);
     await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
-      force: false,
+      workspaceId,
     });
     return {
       jobId: `backfill-${workspaceId}`,
-      message: `Backfill job queued. All chunks in workspace ${workspaceId} will have their embeddings regenerated where null.`,
+      message: `Backfill job queued. Every chunk in workspace ${workspaceId} had its vector cleared and will be re-embedded.`,
     };
   }
 }
