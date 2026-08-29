@@ -21,21 +21,29 @@ DIRECT_URL=postgresql://user:password@localhost:5432/voiceforge
 REDIS_URL=redis://localhost:6379
 ENCRYPTION_KEY=
 JWT_SECRET=
+# Required. Boot fails without it, because it binds the `issuer` claim when the
+# API verifies a Supabase JWT. Falls back to NEXT_PUBLIC_SUPABASE_URL if unset.
+SUPABASE_URL=
+# At least one of these two is required in production and boot refuses without
+# either: they are the only two ways to establish a session's claims (local
+# HS256 verification, or token introspection). With neither, the API starts
+# healthy and then rejects every authenticated request.
 SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_JWT_SECRET=
 SUPABASE_KNOWLEDGE_BUCKET=knowledge-files
 AUTH_PROVIDER=supabase
+# Required, min 32 chars. Shared secret between the Next.js app and this API;
+# the web app is the only legitimate caller.
+INTERNAL_API_KEY=
 ```
 
 ## Auth
-```env
-CLERK_SECRET_KEY=
-CLERK_WEBHOOK_SECRET=
-AUTH0_DOMAIN=
-AUTH0_CLIENT_ID=
-AUTH0_CLIENT_SECRET=
-WORKOS_API_KEY=
-```
+Supabase Auth is the only provider — `AUTH_PROVIDER` accepts no other value. The
+browser holds the Supabase session cookie; the Next.js server forwards the access
+token to the API as a bearer token alongside `INTERNAL_API_KEY`, and the API
+verifies the JWT (locally with `SUPABASE_JWT_SECRET`, otherwise against
+`SUPABASE_URL/auth/v1/user`). Every auth variable is listed under Frontend or
+Backend above.
 
 ## LLM
 ```env
