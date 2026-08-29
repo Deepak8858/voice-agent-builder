@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CacheService } from '../cache/cache.service';
+import { CacheInvalidator } from '../common/cache-invalidator';
+import { workspaceListCacheKey } from '../common/cache-keys';
 import { WorkspaceNotFoundError } from '../common/errors';
 
 @Injectable()
@@ -10,11 +12,12 @@ export class WorkspacesService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly cache: CacheService,
+    private readonly invalidator: CacheInvalidator,
   ) {}
 
   async listForUser(userId: string) {
     return this.cache.readThrough(
-      `workspaces:user:${userId}`,
+      workspaceListCacheKey(userId),
       300,
       () => this.listForUserLoader(userId),
     );
@@ -72,7 +75,18 @@ export class WorkspacesService {
       resourceId: workspaceId,
       metadata: patch,
     });
-    await this.cache.del(`workspaces:user:${actorUserId}`);
+    // A rename is visible to every member, not just the actor: their sidebar
+    // list, the workspace:access entry WorkspaceGuard stamps into req.user,
+    // and the session:workspace snapshot all cache the old name.
+    const members = await this.prisma.membership.findMany({
+      where: { workspaceId },
+      select: { userId: true },
+    });
+    for (const { userId } of members) {
+      await this.invalidator.invalidateWorkspaceList(userId);
+      await this.invalidator.invalidateWorkspaceAccess(workspaceId, userId);
+      await this.invalidator.invalidateSession({ appUserId: userId });
+    }
     return ws;
   }
 }
