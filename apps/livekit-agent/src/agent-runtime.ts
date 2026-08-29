@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { AgentSpecSchema, VoicePipelineSchema, type AgentSpec } from '@voiceforge/shared';
+import {
+  AgentSpecSchema,
+  CallDirectionSchema,
+  VoicePipelineSchema,
+  type AgentSpec,
+} from '@voiceforge/shared';
 
 export const DispatchMetadataSchema = z
   .object({
@@ -12,7 +17,12 @@ export const DispatchMetadataSchema = z
     providerCallId: z.string().min(1).optional(),
     maxDurationSeconds: z.number().int().positive().optional(),
     phoneNumberId: z.string().min(1).optional(),
-    direction: z.enum(['inbound', 'outbound']).optional(),
+    // The API's own enum, not a second copy: `startTestSession` dispatches
+    // `direction: 'browser_test'`, and a narrower enum here rejects it —
+    // `.passthrough()` only tolerates *unknown* keys, not a known key with a
+    // value outside the enum — so every test session died in `entry()` before
+    // connecting.
+    direction: CallDirectionSchema.optional(),
     provider: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
     purpose: z.string().min(1).optional(),
