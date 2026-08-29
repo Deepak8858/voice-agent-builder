@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { createHash } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { SupabaseAuthService } from './supabase-auth.service';
 import { env } from '../config/env';
@@ -28,6 +29,7 @@ const mockPrisma = {
 const mockCache = {
   get: vi.fn(),
   set: vi.fn(),
+  del: vi.fn(),
 };
 
 describe('Session validation edge cases', () => {
@@ -233,6 +235,47 @@ describe('Session validation edge cases', () => {
       await expect(service.getSessionUser(req as never)).resolves.toEqual(sessionUser);
       expect(fetchSpy).not.toHaveBeenCalled();
 
+      fetchSpy.mockRestore();
+    });
+  });
+
+  describe('logout', () => {
+    function logoutSetup(serviceRoleKey: string | undefined) {
+      Object.assign(env, {
+        SUPABASE_URL: 'https://voiceforge.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey,
+      });
+      const token = jwt.sign({ sub: 'auth-123' }, 'untrusted-test-secret', { expiresIn: '5m' });
+      const cache = { get: vi.fn(), set: vi.fn(), del: vi.fn(async () => undefined) };
+      const service = new SupabaseAuthService(mockPrisma as never, cache as never);
+      const req = { headers: { authorization: `Bearer ${token}` } };
+      return { token, cache, service, req };
+    }
+
+    it('revokes the cached claims and session for the presented token', async () => {
+      const { token, cache, service, req } = logoutSetup('service-role-key');
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: true } as never);
+
+      await service.logout(req as never, {} as never);
+
+      // Keyed exactly as resolveClaims/getSessionUser wrote them, or the
+      // logged-out token keeps authenticating until the TTLs run out.
+      const hash = createHash('sha256').update(token).digest('hex');
+      expect(cache.del).toHaveBeenCalledWith(`session:claims:${hash}`);
+      expect(cache.del).toHaveBeenCalledWith('session:user:auth-123');
+      fetchSpy.mockRestore();
+    });
+
+    it('still clears local caches when remote sign-out is unconfigured', async () => {
+      const { cache, service, req } = logoutSetup(undefined);
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('no remote call expected'));
+
+      await service.logout(req as never, {} as never);
+
+      expect(cache.del).toHaveBeenCalledWith('session:user:auth-123');
+      expect(fetchSpy).not.toHaveBeenCalled();
       fetchSpy.mockRestore();
     });
   });

@@ -157,6 +157,11 @@ const REVIEWED_BASELINE: readonly string[] = [
   // Keyed on the authenticated user id, or on the Workspace/Organization row
   // itself, where the id IS the tenant identifier.
   'auth/supabase-auth.service.ts:membership.findFirst',
+  // eraseUser() enumerates the user's memberships before deleteMany wipes
+  // them, so their workspace:access cache entries can be revoked. Keyed on
+  // the erased user's id — cross-workspace by design, like the deleteMany
+  // below it.
+  'compliance/erasure.service.ts:membership.findMany',
   'compliance/erasure.service.ts:membership.deleteMany',
   'compliance/erasure.service.ts:workspaceMembership.deleteMany',
   'workspaces/workspaces.service.ts:membership.findMany',
@@ -223,6 +228,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'compliance/erasure.service.ts:call.findMany': 1,
   'compliance/erasure.service.ts:callEvaluation.deleteMany': 1,
   'compliance/erasure.service.ts:membership.deleteMany': 1,
+  'compliance/erasure.service.ts:membership.findMany': 1,
   'compliance/erasure.service.ts:toolInvocation.deleteMany': 1,
   'compliance/erasure.service.ts:workspaceMembership.deleteMany': 1,
   'compliance/retention.service.ts:call.count': 2,

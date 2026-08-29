@@ -29,10 +29,12 @@ describe('ErasureService', () => {
   function makeService(opts: {
     contact?: { id: string; phone: string } | null;
     calls?: Array<{ id: string }>;
-    organization?: { id: string; name: string } | null;
+    organization?: { id: string; name: string; ownerUserId?: string } | null;
     workspaces?: Array<{ id: string }>;
     knowledgeSources?: KnowledgeRow[];
     deleteStoredFileImpl?: (file: unknown) => Promise<void>;
+    user?: { id: string; email: string; authUserId: string | null } | null;
+    memberships?: Array<{ workspaceId: string; userId: string }>;
   }) {
     const deletedContacts: string[] = [];
     const deletedWorkspaces: string[] = [];
@@ -83,8 +85,12 @@ describe('ErasureService', () => {
           return { count: 0 };
         }),
       },
-      user: { findUnique: vi.fn(async () => null) },
+      user: {
+        findUnique: vi.fn(async () => opts.user ?? null),
+        delete: vi.fn(async ({ where }: { where: { id: string } }) => ({ id: where.id })),
+      },
       membership: {
+        findMany: vi.fn(async () => opts.memberships ?? []),
         deleteMany: vi.fn(async () => {
           deleteOrder.push('membership');
           return { count: 0 };
@@ -123,11 +129,24 @@ describe('ErasureService', () => {
       }),
     };
 
+    const invalidator = {
+      invalidateWorkspaceList: vi.fn(async () => undefined),
+      invalidateWorkspaceAccess: vi.fn(async () => undefined),
+      invalidateSession: vi.fn(async () => undefined),
+      invalidateOrgAccess: vi.fn(async () => undefined),
+    };
+
     return {
-      service: new ErasureService(prisma as never, audit as never, fileStorage as never),
+      service: new ErasureService(
+        prisma as never,
+        audit as never,
+        fileStorage as never,
+        invalidator as never,
+      ),
       prisma,
       audit,
       fileStorage,
+      invalidator,
       deletedContacts,
       deletedWorkspaces,
       deletedOrganizations,
@@ -302,6 +321,58 @@ describe('ErasureService', () => {
       await expect(service.eraseOrganization('org-1')).rejects.toThrow('deadlock detected');
       // Customer files must survive a rolled-back erasure.
       expect(fileStorage.deleteStoredFile).not.toHaveBeenCalled();
+    });
+
+    it('revokes cached access for every membership and the org owner', async () => {
+      const { service, prisma, invalidator } = makeService({
+        organization: { id: 'org-1', name: 'Acme', ownerUserId: 'owner-1' },
+        workspaces: [{ id: 'ws-1' }],
+        memberships: [
+          { workspaceId: 'ws-1', userId: 'user-1' },
+          { workspaceId: 'ws-1', userId: 'user-2' },
+        ],
+      });
+
+      await service.eraseOrganization('org-1');
+
+      // Enumerated before deleteMany wipes the only record of who to revoke.
+      const findMany = (prisma.membership as { findMany: ReturnType<typeof vi.fn> }).findMany;
+      const deleteMany = (prisma.membership as { deleteMany: ReturnType<typeof vi.fn> }).deleteMany;
+      expect(findMany.mock.invocationCallOrder[0]).toBeLessThan(deleteMany.mock.invocationCallOrder[0]);
+      for (const userId of ['user-1', 'user-2']) {
+        expect(invalidator.invalidateWorkspaceAccess).toHaveBeenCalledWith('ws-1', userId);
+        expect(invalidator.invalidateWorkspaceList).toHaveBeenCalledWith(userId);
+        expect(invalidator.invalidateSession).toHaveBeenCalledWith({ appUserId: userId });
+        expect(invalidator.invalidateOrgAccess).toHaveBeenCalledWith('org-1', userId);
+      }
+      // OrganizationGuard grants by ownership too, without any membership row.
+      expect(invalidator.invalidateOrgAccess).toHaveBeenCalledWith('org-1', 'owner-1');
+    });
+  });
+
+  describe('eraseUser', () => {
+    it('revokes cached access for every workspace the user belonged to', async () => {
+      const { service, prisma, invalidator } = makeService({
+        user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
+        memberships: [
+          { workspaceId: 'ws-1', userId: 'user-1' },
+          { workspaceId: 'ws-2', userId: 'user-1' },
+        ],
+      });
+
+      const result = await service.eraseUser('user-1');
+
+      expect(result.success).toBe(true);
+      const findMany = (prisma.membership as { findMany: ReturnType<typeof vi.fn> }).findMany;
+      const deleteMany = (prisma.membership as { deleteMany: ReturnType<typeof vi.fn> }).deleteMany;
+      expect(findMany.mock.invocationCallOrder[0]).toBeLessThan(deleteMany.mock.invocationCallOrder[0]);
+      expect(invalidator.invalidateWorkspaceAccess).toHaveBeenCalledWith('ws-1', 'user-1');
+      expect(invalidator.invalidateWorkspaceAccess).toHaveBeenCalledWith('ws-2', 'user-1');
+      expect(invalidator.invalidateWorkspaceList).toHaveBeenCalledWith('user-1');
+      expect(invalidator.invalidateSession).toHaveBeenCalledWith({
+        appUserId: 'user-1',
+        supabaseUserId: 'auth-1',
+      });
     });
   });
 });
