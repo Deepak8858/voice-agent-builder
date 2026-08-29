@@ -1,5 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuntimeUsageService } from './runtime-usage.service';
+
+/**
+ * `onMinuteBoundary` compares the reported minute against the API's own clock,
+ * so a connect time in the fixtures has to be relative to now rather than a
+ * fixed timestamp. One minute ago puts the call in minute 2, which is the
+ * minute every boundary fixture below reports.
+ */
+const CONNECTED_ONE_MINUTE_AGO = () => new Date(Date.now() - 60_000);
 
 const BALANCE = {
   organizationId: 'org-1',
@@ -91,6 +100,10 @@ function makeService(overrides?: {
   replayDecision?: unknown;
   commitThrows?: boolean;
   nextMinuteAllowed?: boolean;
+  /** The ledger debit itself fails, so nothing was charged. */
+  debitThrows?: boolean;
+  /** The bookkeeping write fails after a committed debit. */
+  usageWriteThrows?: boolean;
   /**
    * `connectedAt` on the stored usage row, which is what tells `call_ended`
    * whether the reserved first minute was ever committed. `undefined` keeps the
@@ -119,11 +132,14 @@ function makeService(overrides?: {
           : {
               connectedAt:
                 overrides?.usageConnectedAt === undefined
-                  ? new Date('2026-06-07T10:00:00.000Z')
+                  ? CONNECTED_ONE_MINUTE_AGO()
                   : overrides.usageConnectedAt,
             },
       ),
-      updateMany: vi.fn(async () => ({ count: 1 })),
+      updateMany: vi.fn(async () => {
+        if (overrides?.usageWriteThrows) throw new Error('usage row unavailable');
+        return { count: 1 };
+      }),
     },
   };
 
@@ -143,6 +159,9 @@ function makeService(overrides?: {
   if (overrides?.commitThrows) {
     creditLedger.commitReservation.mockRejectedValue(new Error('ledger unavailable'));
   }
+  if (overrides?.debitThrows) {
+    creditLedger.reserveAndDebitNextMinute.mockRejectedValue(new Error('ledger unavailable'));
+  }
 
   const admission = {
     compensate: vi.fn(async () => undefined),
@@ -159,7 +178,13 @@ function makeService(overrides?: {
 }
 
 describe('RuntimeUsageService.handleEvent', () => {
-  beforeEach(() => vi.clearAllMocks());
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    errorSpy = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => errorSpy.mockRestore());
 
   it('refuses an event whose call does not belong to the claimed organization', async () => {
     const { service, prisma, creditLedger, admission } = makeService({ call: null });
@@ -282,6 +307,129 @@ describe('RuntimeUsageService.handleEvent', () => {
       }),
     );
     expect(prisma.callUsage.updateMany).toHaveBeenCalled();
+  });
+
+  /**
+   * The debit and the bookkeeping write are two failure domains. Once the debit
+   * has committed the customer has paid for the minute, so a failed write must
+   * not come back as a billing failure: the runtime hangs up on
+   * `metering_unavailable`, which would cut off a call that is funded and
+   * charged for.
+   */
+  it('keeps a paid-for minute allowed when the bookkeeping write fails after the debit', async () => {
+    const { service, prisma } = makeService({ usageWriteThrows: true });
+
+    await expect(
+      service.handleEvent({
+        type: 'minute_boundary',
+        eventId: 'evt-2',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:01:00.000Z',
+        minute: 2,
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'allowed', billableMinutes: 1 });
+
+    expect(prisma.callUsage.updateMany).toHaveBeenCalled();
+    // Loud enough to reconcile the missing row from the ledger: call, minute,
+    // and the underlying error.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('minute 2 was debited for call call-1'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('usage row unavailable'));
+  });
+
+  it('denies the minute when the debit itself fails', async () => {
+    const { service, prisma } = makeService({ debitThrows: true });
+
+    await expect(
+      service.handleEvent({
+        type: 'minute_boundary',
+        eventId: 'evt-2',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:01:00.000Z',
+        minute: 2,
+      }),
+    ).resolves.toMatchObject({ allowed: false, reason: 'billing_temporarily_unavailable' });
+
+    expect(prisma.callUsage.updateMany).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The minute number is only an idempotency key, so a caller that keeps
+   * reporting a minute it already paid for is deduped against its own debit and
+   * talks for free. Wall clock is what bounds it.
+   */
+  it('bills the elapsed minute when a stale minute number is replayed', async () => {
+    const { service, creditLedger } = makeService({
+      usageConnectedAt: new Date(Date.now() - 3_600_000),
+    });
+
+    await expect(
+      service.handleEvent({
+        type: 'minute_boundary',
+        eventId: 'evt-2',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:01:00.000Z',
+        minute: 2,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    // An hour in, the call is in minute 61 — a key that has not been debited
+    // yet, so the minute is actually charged.
+    expect(creditLedger.reserveAndDebitNextMinute).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'call:call-1:minute:61' }),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('reported minute 2 while wall clock puts it in minute 61'),
+    );
+  });
+
+  it('leaves a boundary that is merely late on the minute it reported', async () => {
+    // Two seconds into minute 3 while still reporting minute 2: a timer that
+    // fired late, not arrears.
+    const { service, creditLedger } = makeService({
+      usageConnectedAt: new Date(Date.now() - 122_000),
+    });
+
+    await expect(
+      service.handleEvent({
+        type: 'minute_boundary',
+        eventId: 'evt-2',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:01:00.000Z',
+        minute: 2,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    expect(creditLedger.reserveAndDebitNextMinute).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'call:call-1:minute:2' }),
+    );
+  });
+
+  it('bills the reported minute when the boundary arrives before the connect event', async () => {
+    // `call_connected` can be delivered after a boundary, so there is no
+    // elapsed time to bound the minute with; refusing here would drop a call
+    // purely on delivery order.
+    const { service, creditLedger } = makeService({ usageConnectedAt: null });
+
+    await expect(
+      service.handleEvent({
+        type: 'minute_boundary',
+        eventId: 'evt-2',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:01:00.000Z',
+        minute: 2,
+      }),
+    ).resolves.toMatchObject({ allowed: true });
+
+    expect(creditLedger.reserveAndDebitNextMinute).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'call:call-1:minute:2' }),
+    );
   });
 
   it('does not increment billed seconds when a minute is refused', async () => {

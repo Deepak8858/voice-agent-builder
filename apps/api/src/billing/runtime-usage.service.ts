@@ -19,6 +19,18 @@ const CLAIM_LEASE_MS = 60_000;
 const CONTENDED_POLL_INTERVAL_MS = 25;
 const CONTENDED_POLL_ATTEMPTS = 20;
 
+/**
+ * How far the reported minute may lag the minute wall clock says the call is
+ * in before it is treated as arrears rather than jitter.
+ *
+ * One minute, because everything legitimate that delays a boundary is smaller
+ * than that and they can stack: the runtime's timer fires late, the request
+ * spends time in flight and in retries, and `connectedAt` is stamped from the
+ * runtime's clock while the comparison uses the API's, so the two disagree by
+ * whatever their NTP skew is. Two full minutes behind is none of those.
+ */
+const MINUTE_DRIFT_TOLERANCE = 1;
+
 type EventClaim =
   | { status: 'claimed' }
   | { status: 'replay'; decision: RuntimeUsageDecision }
@@ -281,15 +293,33 @@ export class RuntimeUsageService {
     event: Extract<RuntimeUsageEvent, { type: 'minute_boundary' }>,
     workspaceId: string,
   ): Promise<RuntimeUsageDecision> {
+    const usage = await this.prisma.callUsage.findFirst({
+      where: { callId: event.callId, organizationId: event.organizationId },
+      select: { connectedAt: true },
+    });
+    const minute = this.billableMinute(event, usage === null ? null : usage.connectedAt);
+
+    let decision: RuntimeUsageDecision;
     try {
-      const decision = await this.creditLedger.reserveAndDebitNextMinute({
+      decision = await this.creditLedger.reserveAndDebitNextMinute({
         organizationId: event.organizationId,
         workspaceId,
         callId: event.callId,
         eventId: event.eventId,
-        idempotencyKey: `call:${event.callId}:minute:${event.minute}`,
+        idempotencyKey: `call:${event.callId}:minute:${minute}`,
       });
-      if (decision.allowed) {
+    } catch (err) {
+      // Nothing was charged, so the runtime is told to back off. This is the
+      // only failure here that may deny a minute.
+      this.logger.error(
+        `Minute debit failed for call ${event.callId}: ${(err as Error).message}`,
+      );
+      const balance = await this.creditLedger.getBalance(event.organizationId);
+      return this.decision(event, false, 'billing_temporarily_unavailable', 0, balance);
+    }
+
+    if (decision.allowed) {
+      try {
         await this.prisma.callUsage.updateMany({
           where: { callId: event.callId, organizationId: event.organizationId },
           data: {
@@ -297,15 +327,61 @@ export class RuntimeUsageService {
             debitedSeconds: { increment: SECONDS_PER_MINUTE },
           },
         });
+      } catch (err) {
+        // The debit is committed: the customer has paid for this minute, so
+        // reporting a billing failure would hang up on a call that is funded
+        // and charge for it anyway. Our own record of the minute is what is
+        // missing, so it is logged with everything reconciliation needs to
+        // rebuild the row from the ledger.
+        this.logger.error(
+          `Usage bookkeeping failed after minute ${minute} was debited for call ` +
+            `${event.callId} (org ${event.organizationId}, event ${event.eventId}): ` +
+            `${(err as Error).message}`,
+        );
       }
-      return decision;
-    } catch (err) {
-      this.logger.error(
-        `Minute debit failed for call ${event.callId}: ${(err as Error).message}`,
-      );
-      const balance = await this.creditLedger.getBalance(event.organizationId);
-      return this.decision(event, false, 'billing_temporarily_unavailable', 0, balance);
     }
+
+    return decision;
+  }
+
+  /**
+   * The minute to charge for, which is not always the minute reported.
+   *
+   * `minute` reaches the ledger only as an idempotency key, so a caller that
+   * keeps reporting the same low minute is deduped against its own first debit
+   * and talks for free. Wall clock is the bound: the minute a call is in at
+   * `now` is `floor(elapsed / 60) + 1`, and a report further behind than
+   * {@link MINUTE_DRIFT_TOLERANCE} is charged the minute the call is actually
+   * in. That puts every wall-clock minute on its own key, so the arrears cannot
+   * be replayed a second time.
+   *
+   * Billing the elapsed minute rather than denying is deliberate: a denial
+   * hangs up the customer, and lateness alone is not proof of abuse. A caller
+   * that reports once per real minute now pays for each of them, and one that
+   * reports less often than that is under-metered for a reason no single event
+   * can see — that is reconciliation's job.
+   *
+   * Only lateness is corrected. A minute *ahead* of wall clock is passed
+   * through: pulling it back would land on a key that was already debited and
+   * hand out exactly the free minute this bound exists to stop.
+   */
+  private billableMinute(
+    event: Extract<RuntimeUsageEvent, { type: 'minute_boundary' }>,
+    connectedAt: Date | null,
+  ): number {
+    // A boundary can be delivered before `call_connected`, so there may be no
+    // elapsed time to compare against yet.
+    if (connectedAt === null) return event.minute;
+
+    const elapsedMs = Date.now() - connectedAt.getTime();
+    const currentMinute = Math.floor(elapsedMs / (SECONDS_PER_MINUTE * 1_000)) + 1;
+    if (event.minute >= currentMinute - MINUTE_DRIFT_TOLERANCE) return event.minute;
+
+    this.logger.error(
+      `Call ${event.callId} reported minute ${event.minute} while wall clock puts it in ` +
+        `minute ${currentMinute} (event ${event.eventId}); billing minute ${currentMinute}.`,
+    );
+    return currentMinute;
   }
 
   /**
