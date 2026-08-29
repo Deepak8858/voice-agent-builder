@@ -15,7 +15,11 @@ function makeController() {
   };
   const prisma = {
     workspace: {
-      findUnique: vi.fn(async () => ({ organizationId: 'org-1' })),
+      findUnique: vi.fn(async () => ({
+        organizationId: 'org-1',
+        parentWorkspaceId: null,
+        type: 'direct',
+      })),
     },
   };
   return {
@@ -124,7 +128,7 @@ describe('BillingController authorization', () => {
 
     expect(prisma.workspace.findUnique).toHaveBeenCalledWith({
       where: { id: 'ws-1' },
-      select: { organizationId: true },
+      select: { organizationId: true, parentWorkspaceId: true, type: true },
     });
     expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto);
   });
@@ -134,5 +138,72 @@ describe('BillingController authorization', () => {
 
     await expect(controller.getSummary('ws-1')).resolves.toEqual({ organizationId: 'org-1' });
     expect(billing.getBillingSummary).toHaveBeenCalledWith('org-1');
+  });
+});
+
+/**
+ * A white-label client workspace carries its parent agency's organizationId
+ * (`white-label.service.ts:179`), so being `owner` of the client workspace used
+ * to be enough to reach the agency's organization billing. `owner` is the role
+ * the client's own creator gets, and the Stripe portal it unlocked can cancel
+ * the agency's plan for every client on it — so this is checked for every route
+ * that resolves an organization, not only the mutating ones.
+ */
+describe('BillingController client-workspace escalation', () => {
+  function clientWorkspaceController(
+    overrides: { parentWorkspaceId?: string | null; type?: string } = {},
+  ) {
+    const made = makeController();
+    made.prisma.workspace.findUnique = vi.fn(async () => ({
+      organizationId: 'org-agency',
+      parentWorkspaceId: 'ws-agency',
+      type: 'client',
+      ...overrides,
+    }));
+    return made;
+  }
+
+  it.each([
+    ['subscription', (c: BillingController) => c.getSubscription('ws-client')],
+    ['summary', (c: BillingController) => c.getSummary('ws-client')],
+    ['checkout', (c: BillingController) => c.createCheckout('ws-client', request('owner'), checkoutDto)],
+    ['top-up checkout', (c: BillingController) =>
+      c.createTopUpCheckout('ws-client', request('owner'), topUpDto)],
+    ['portal', (c: BillingController) => c.createPortal('ws-client', request('owner'), portalDto)],
+    ['invoices', (c: BillingController) => c.getInvoices('ws-client', request('owner'))],
+  ])("denies a client workspace owner the agency's %s", async (_name, invoke) => {
+    const { controller, billing } = clientWorkspaceController();
+
+    await expect(invoke(controller)).rejects.toBeInstanceOf(ForbiddenError);
+    expect(billing.getSubscription).not.toHaveBeenCalled();
+    expect(billing.getBillingSummary).not.toHaveBeenCalled();
+    expect(billing.createCheckoutSession).not.toHaveBeenCalled();
+    expect(billing.createTopUpCheckoutSession).not.toHaveBeenCalled();
+    expect(billing.createPortalSession).not.toHaveBeenCalled();
+    expect(billing.getInvoices).not.toHaveBeenCalled();
+  });
+
+  // Each half of the predicate has to stand alone: today the two fields are
+  // written in the same statement, so a test that set both would pass even if
+  // one condition were dropped.
+  it.each([
+    ['a parent but no client type', { type: 'direct' }],
+    ['a client type but no parent', { parentWorkspaceId: null }],
+  ])('denies a workspace with %s', async (_name, overrides) => {
+    const { controller } = clientWorkspaceController(overrides);
+
+    await expect(controller.getSubscription('ws-client')).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('still serves the agency workspace that owns the organization', async () => {
+    const { controller, billing } = clientWorkspaceController({
+      parentWorkspaceId: null,
+      type: 'agency',
+    });
+
+    await expect(controller.getSubscription('ws-agency')).resolves.toEqual({
+      stripeCustomerId: 'cus_123',
+    });
+    expect(billing.getSubscription).toHaveBeenCalledWith('org-agency');
   });
 });

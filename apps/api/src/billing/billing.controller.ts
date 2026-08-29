@@ -42,12 +42,33 @@ export class BillingController {
     }
   }
 
+  /**
+   * The single place a workspace the caller has access to becomes the
+   * organization whose money is at stake, so it is the one place the
+   * organization/workspace scope mismatch can be closed.
+   *
+   * A white-label client workspace is created with its parent agency's
+   * `organizationId` (`white-label.service.ts:179`) and its creator's chosen
+   * user as `owner`. Without this predicate that client owner reached the
+   * AGENCY's subscription, invoices, checkout and Stripe portal — and the
+   * portal alone lets them change or cancel the agency's plan for every other
+   * client on it. Only a billing root may speak for the organization: no
+   * parent, and not marked as someone else's client.
+   */
   private async getOrgId(workspaceId: string): Promise<string> {
     const ws = await this.prisma.workspace.findUnique({
       where: { id: workspaceId },
-      select: { organizationId: true },
+      select: { organizationId: true, parentWorkspaceId: true, type: true },
     });
     if (!ws) throw new BadRequestException('Workspace not found');
+    // Both conditions are checked, not just the one that implies the other:
+    // they are written together today, and a future path that sets only one
+    // must not silently reopen this.
+    if (ws.parentWorkspaceId !== null || ws.type === 'client') {
+      throw new ForbiddenError(
+        'Billing is managed on the parent workspace, not on a client workspace.',
+      );
+    }
     return ws.organizationId;
   }
 
