@@ -1,10 +1,8 @@
 import { Module, OnApplicationShutdown } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
 // Import and start OpenTelemetry before any instrumented modules (Prisma, Express, etc.).
 import { otel } from './tracing';
 otel.start();
 import { logger } from './logging';
-import { RateLimitGuard } from './common/rate-limit.guard';
 import { MetricsModule } from './common/metrics.module';
 import { AgentGenModule } from './agent-gen/agent-gen.module';
 import { AgentsModule } from './agents/agents.module';
@@ -56,8 +54,12 @@ import { env } from './config/env';
     AuditModule,
     QueueModule,
     CacheModule,
-    RateLimitModule,
     AuthModule,
+    // Must stay AFTER AuthModule: Nest resolves global guards in this array's
+    // order (root module first), and RateLimitGuard keys on req.user, which
+    // InternalAuthGuard sets. See rate-limit.guard.ts for what breaks if it
+    // moves earlier.
+    RateLimitModule,
     SecurityModule,
     HealthModule,
     WorkspacesModule,
@@ -91,12 +93,9 @@ import { env } from './config/env';
     CalendarModule,
     GoogleConnectionModule,
   ],
-  providers: [
-    {
-      provide: APP_GUARD,
-      useClass: RateLimitGuard,
-    },
-  ],
+  // No APP_GUARD here. RateLimitGuard used to be registered both here and in
+  // RateLimitModule, so both instances ran and every request was counted
+  // twice, halving the effective RATE_LIMIT_MAX. RateLimitModule owns it.
 })
 export class AppModule implements OnApplicationShutdown {
   constructor(private readonly posthog: PostHogService) {}
