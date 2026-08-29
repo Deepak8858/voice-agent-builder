@@ -18,6 +18,7 @@ export const BILLING_RECONCILIATION_JOBS = {
   leases: 'billing.reconcile.leases',
   costs: 'billing.reconcile.costs',
   margins: 'billing.reconcile.margins',
+  stripeDrift: 'billing.reconcile.stripe_drift',
 } as const;
 
 export type BillingReconciliationJobName =
@@ -31,6 +32,7 @@ const SCHEDULER_KEYS: Record<BillingReconciliationJobName, string> = {
   [BILLING_RECONCILIATION_JOBS.leases]: 'billing-reconcile-leases',
   [BILLING_RECONCILIATION_JOBS.costs]: 'billing-reconcile-costs',
   [BILLING_RECONCILIATION_JOBS.margins]: 'billing-reconcile-margins',
+  [BILLING_RECONCILIATION_JOBS.stripeDrift]: 'billing-reconcile-stripe-drift',
 };
 
 const SCHEDULER_REGISTRATION_ATTEMPTS = 5;
@@ -147,6 +149,25 @@ export class BillingReconciliationWorker
       }
       case BILLING_RECONCILIATION_JOBS.margins: {
         await this.reconciliation.publishMarginMetrics();
+        return;
+      }
+      case BILLING_RECONCILIATION_JOBS.stripeDrift: {
+        const report = await this.reconciliation.reportStripeDrift(limit);
+        const drift =
+          report.stripePaidInvoicesWithoutCredit +
+          report.stripePaidPacksWithoutCredit +
+          report.stripeSubscriptionDrift;
+        if (drift === 0) {
+          this.log('stripe drift', 0, report.stripeObjectsCompared);
+          return;
+        }
+        // Warn, not log: nothing was repaired, so this needs a human to look.
+        this.logger.warn(
+          `[BillingReconciliation] Stripe drift across ${report.stripeObjectsCompared} Stripe ` +
+            `object(s): ${report.stripePaidInvoicesWithoutCredit} paid invoice(s) with no credit, ` +
+            `${report.stripePaidPacksWithoutCredit} paid pack(s) with no credit, ` +
+            `${report.stripeSubscriptionDrift} subscription mismatch(es) — reported only, nothing repaired`,
+        );
         return;
       }
       default:
