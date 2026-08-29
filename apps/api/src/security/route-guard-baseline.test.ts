@@ -61,12 +61,31 @@ describe('route guard baseline', () => {
     // Without this, a broken analyzer would report zero findings and the test
     // above would pass for the wrong reason.
     const findings = findUnguardedRoutes(SRC_DIR, {
-      guardCoverage: { WorkspaceGuard: ['workspaceId'], InternalAuthGuard: ['workspaceId'] },
+      guardCoverage: { WorkspaceGuard: ['workspaceId'] },
     });
 
     const keys = findings.map(routeKey);
     expect(keys).toContain('audit/audit-export.controller.ts:AuditExportController.getOrgAuditLogs');
-    expect(keys).toContain('compliance/erasure.controller.ts:ErasureController.eraseOrganization');
+  });
+
+  it('detects an operator-only route when @InternalOnly stops counting', () => {
+    // The other half of the coverage rule, and the reason it needs its own
+    // test: `DELETE admin/orgs/:orgId` is authorized by @InternalOnly() alone,
+    // so shrinking guardCoverage cannot make it reappear — the decorator skips
+    // it before coverage is consulted. Pretend no decorator confers
+    // operator-only status and it must be reported.
+    //
+    // This replaced an assertion that leaned on `InternalAuthGuard` appearing
+    // in @UseGuards. That guard is the GLOBAL auth guard: every authenticated
+    // user passes it, so listing it restricted nothing and counting it as
+    // tenant coverage was a coverage lie.
+    const findings = findUnguardedRoutes(SRC_DIR, {
+      internalOnlyDecorator: 'NoSuchDecorator',
+    });
+
+    expect(findings.map(routeKey)).toContain(
+      'compliance/erasure.controller.ts:ErasureController.eraseOrganization',
+    );
   });
 });
 
