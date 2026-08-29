@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { logger } from '../logging';
+import { stripQuery } from './strip-query';
 import { env, isProduction } from '../config/env';
 import type { ApiError, ApiErrorCode } from '@voiceforge/shared';
 import type { PostHogService } from '../posthog/posthog.service';
@@ -64,7 +65,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         };
       }
     } else if (exception instanceof Error) {
-      logger.error({ err: exception, correlationId, method: req.method, url: req.url }, exception.message);
+      logger.error({ err: exception, correlationId, method: req.method, url: stripQuery(req.url) }, exception.message);
       error.message = isProduction()
         ? 'Unexpected server error.'
         : exception.message;
@@ -80,13 +81,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ...(correlationId ? { correlationId } : {}),
       };
     } else {
-      logger.error({ correlationId, method: req.method, url: req.url }, 'Unhandled non-Error exception');
+      logger.error({ correlationId, method: req.method, url: stripQuery(req.url) }, 'Unhandled non-Error exception');
       error.details = correlationId ? { correlationId } : undefined;
     }
 
     // Warn on 5xx — these are bugs, not client errors
     if (status >= 500) {
-      logger.error({ correlationId, method: req.method, url: req.url, status }, 'HTTP 5xx response');
+      logger.error({ correlationId, method: req.method, url: stripQuery(req.url), status }, 'HTTP 5xx response');
     }
 
     if (this.shouldCapture(status)) {

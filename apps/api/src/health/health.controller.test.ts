@@ -32,9 +32,13 @@ describe('HealthController', () => {
       checks: {
         db: 'error',
         redis: 'ok',
-        llm: { provider: 'test-llm', status: 'unavailable' },
+        llm: { status: 'unavailable' },
       },
     });
+    // The route is @Public(), so the payload is anonymous disclosure.
+    // toMatchObject ignores extra keys, so assert these two are gone.
+    expect(result).not.toHaveProperty('uptime');
+    expect(result).not.toHaveProperty('checks.llm.provider');
     expect(llm.healthCheck).not.toHaveBeenCalled();
 
     vi.useRealTimers();
@@ -67,7 +71,7 @@ describe('HealthController', () => {
       checks: {
         db: 'ok',
         redis: 'ok',
-        llm: { provider: 'test-llm', status: 'unavailable' },
+        llm: { status: 'unavailable' },
       },
     });
     expect(llm.healthCheck).not.toHaveBeenCalled();
