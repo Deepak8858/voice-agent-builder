@@ -1,5 +1,117 @@
+import 'reflect-metadata';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
+import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
+import { ForbiddenError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
+import { WorkspaceGuard } from '../common/workspace.guard';
 import { CallsController } from './calls.controller';
+
+const handler = (name: string) =>
+  (CallsController.prototype as unknown as Record<string, (...args: never[]) => unknown>)[name];
+
+/**
+ * Exercises RoleGuard against the REAL @RequiredRole metadata on the named
+ * handler (real Reflector, real class), so these tests fail if someone removes
+ * a decorator or widens a role set. The membership role comes from the stubbed
+ * database row, exactly where the guard is required to read it from.
+ */
+function roleGuard(handlerName: string, membershipRole: string | null) {
+  const prisma = {
+    membership: {
+      findUnique: vi.fn(async () => (membershipRole ? { role: membershipRole } : null)),
+    },
+  };
+  const cache = { get: vi.fn(async () => null), set: vi.fn(async () => undefined) };
+  const ctx = {
+    switchToHttp: () => ({
+      getRequest: () => ({ params: { workspaceId: 'ws-1' }, user: { id: 'user-1' } }),
+    }),
+    getHandler: () => handler(handlerName),
+    getClass: () => CallsController,
+  };
+  return { guard: new RoleGuard(prisma as never, cache as never, new Reflector()), ctx };
+}
+
+describe('CallsController authorization', () => {
+  it.each(['startTestSession', 'end'] as const)('gates %s to owner/admin/editor', (name) => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler(name))).toEqual([RoleGuard]);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler(name))).toEqual({
+      roles: ['owner', 'admin', 'editor'],
+      fresh: false,
+    });
+  });
+
+  it('gates startOutbound to owner/admin with a fresh role read', () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler('startOutbound'))).toEqual([RoleGuard]);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler('startOutbound'))).toEqual({
+      roles: ['owner', 'admin'],
+      fresh: true,
+    });
+  });
+
+  it.each(['list', 'get', 'live'] as const)('leaves %s open to every member', (name) => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler(name)) ?? []).not.toContain(RoleGuard);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler(name))).toBeUndefined();
+  });
+
+  it.each(['startTestSession', 'end'] as const)('denies a viewer on %s', async (name) => {
+    const { guard, ctx } = roleGuard(name, 'viewer');
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it.each(['startTestSession', 'end'] as const)('allows an editor on %s', async (name) => {
+    const { guard, ctx } = roleGuard(name, 'editor');
+
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+
+  it('denies an editor on startOutbound', async () => {
+    const { guard, ctx } = roleGuard('startOutbound', 'editor');
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('allows an admin on startOutbound', async () => {
+    const { guard, ctx } = roleGuard('startOutbound', 'admin');
+
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+
+  /**
+   * Reads the guard list off the class and method the way Nest composes them
+   * and runs the request through it: drop RoleGuard from the decorator and the
+   * handler gets reached, which is the regression to catch.
+   */
+  it('cannot be reached as an editor through the guards the controller binds', async () => {
+    const startOutboundCall = vi.fn();
+    const controller = new CallsController({ startOutboundCall } as never, {} as never);
+    const bound = [
+      ...((Reflect.getMetadata(GUARDS_METADATA, CallsController) ?? []) as unknown[]),
+      ...((Reflect.getMetadata(GUARDS_METADATA, handler('startOutbound')) ?? []) as unknown[]),
+    ];
+
+    expect(bound).toEqual([WorkspaceGuard, RoleGuard]);
+
+    const { guard, ctx } = roleGuard('startOutbound', 'editor');
+    const request = async () => {
+      for (const Bound of bound) {
+        const instance = Bound === RoleGuard ? guard : { canActivate: async () => true };
+        if (!(await instance.canActivate(ctx as never))) {
+          throw new ForbiddenError('guard returned false');
+        }
+      }
+      return controller.startOutbound('ws-1', 'agent-1', { to_number: '+15550100' } as never, {
+        id: 'user-1',
+      } as never);
+    };
+
+    await expect(request()).rejects.toBeInstanceOf(ForbiddenError);
+    expect(startOutboundCall).not.toHaveBeenCalled();
+  });
+});
 
 describe('CallsController.live', () => {
   it('streams live call events through the injected cache service', async () => {
