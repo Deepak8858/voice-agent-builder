@@ -17,6 +17,8 @@ import {
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { RoleGuard } from '../common/role.guard';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { ComplianceService } from './compliance.service';
 
@@ -46,7 +48,12 @@ export class ComplianceController {
     return { items: await this.compliance.listDnc(workspaceId) };
   }
 
+  // The DNC list is a compliance control, not content: removing an entry
+  // re-authorizes calling someone who opted out. Owner/admin only, both ways,
+  // so the list can't be quietly edited by whoever authors campaigns.
   @Post('dnc')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async addDnc(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(AddDncDtoSchema)) dto: AddDncDto,
@@ -57,6 +64,8 @@ export class ComplianceController {
 
   @Delete('dnc/:phone')
   @HttpCode(204)
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async removeDnc(
     @Param('workspaceId') workspaceId: string,
     @Param('phone') phone: string,

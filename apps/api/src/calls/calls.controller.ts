@@ -18,6 +18,8 @@ import {
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { RoleGuard } from '../common/role.guard';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { UuidParamPipe } from '../common/uuid-param.pipe';
 import { AgentNotFoundError, CallNotFoundError } from '../common/errors';
@@ -35,7 +37,11 @@ export class CallsController {
     private readonly cache: CacheService,
   ) {}
 
+  // Part of the agent-building loop, so editors are admitted like the rest of
+  // agent authoring.
   @Post('agents/:agentId/test-session')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async startTestSession(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -45,7 +51,11 @@ export class CallsController {
     return this.calls.startTestSession(workspaceId, agentId, user.id, dto);
   }
 
+  // Dials a real, metered call — same bar as campaign start, and `fresh` for
+  // the same reason: money must not move on a 300s-stale role.
   @Post('agents/:agentId/calls/outbound')
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   async startOutbound(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -71,7 +81,11 @@ export class CallsController {
     return this.calls.get(workspaceId, callId);
   }
 
+  // Editors are admitted: anyone who can start a test session needs to be able
+  // to kill it, and ending a call only ever stops spend.
   @Post('calls/:callId/end')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async end(
     @Param('workspaceId') workspaceId: string,
     @Param('callId', callIdPipe) callId: string,
