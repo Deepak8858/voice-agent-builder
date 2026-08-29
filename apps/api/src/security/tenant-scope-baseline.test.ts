@@ -98,8 +98,6 @@ const REVIEWED_BASELINE: readonly string[] = [
   'compliance/retention.service.ts:call.findUnique',
   'compliance/retention.service.ts:call.update',
   'workers/digest.worker.ts:workspace.findMany',
-  'workers/embeddings.worker.ts:knowledgeChunk.count',
-  'workers/embeddings.worker.ts:knowledgeChunk.findMany',
 
   // -- Background jobs keyed on an internal id ----------------------------
   // Enqueued by an already-authorized request; the job id is server-issued and
@@ -178,8 +176,10 @@ const REVIEWED_BASELINE: readonly string[] = [
 
   // -- Audit log reads -----------------------------------------------------
   // audit.controller.ts builds `where` as a typed local that already carries
-  // workspaceId; audit-export.service.ts scopes by organizationId. The
-  // analyzer reports them because the predicate is assembled before the call.
+  // workspaceId; audit-export.service.ts initializes `where` with
+  // organizationId from a REQUIRED orgId and throws before the query when it is
+  // missing or blank, so no call can reach findMany unscoped. The analyzer
+  // reports them because the predicate is assembled before the call.
   'audit/audit.controller.ts:auditLog.findMany',
   'audit/audit-export.service.ts:auditLog.findMany',
 ];
@@ -277,8 +277,6 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'white-label/white-label.service.ts:workspace.findUnique': 1,
   'white-label/white-label.service.ts:workspace.findUniqueOrThrow': 2,
   'workers/digest.worker.ts:workspace.findMany': 1,
-  'workers/embeddings.worker.ts:knowledgeChunk.count': 1,
-  'workers/embeddings.worker.ts:knowledgeChunk.findMany': 1,
   'workers/orchestrator.worker.ts:agent.update': 7,
   'workspace-crm/workspace-crm.service.ts:workspaceCrmCredential.delete': 1,
   'workspace-crm/workspace-crm.service.ts:workspaceCrmCredential.update': 3,

@@ -94,6 +94,58 @@ describe('KnowledgeService.remove', () => {
   });
 });
 
+/**
+ * `embedding` is `Unsupported("vector(1536)")`, so Prisma omits it from
+ * KnowledgeChunkUpdateManyMutationInput and rejects `data: { embedding: null }`
+ * at runtime as an unknown argument — an `as any` cast silences the compiler but
+ * not the client. Since the worker now selects only chunks whose vector IS NULL,
+ * a clear that throws makes backfill and reindex hard failures, so pin the raw
+ * SQL and pin that updateMany is never used for this column.
+ */
+describe('KnowledgeService.clearEmbeddings', () => {
+  function createService() {
+    const prisma = {
+      // Typed with the tagged-template signature so `mock.calls[0]` destructures
+      // without a cast.
+      $executeRaw: vi.fn(async (_strings: string[], ..._values: unknown[]) => 4),
+      knowledgeChunk: { updateMany: vi.fn() },
+    };
+    const service = new KnowledgeService(
+      prisma as never,
+      { log: vi.fn(async () => undefined) } as never,
+      { name: 'test', dimensions: 3, embed: vi.fn() },
+      new FileParser(),
+      { saveUploadedFile: vi.fn(), deleteStoredFile: vi.fn() } as never,
+    );
+    return { prisma, service };
+  }
+
+  it('clears a whole workspace with raw SQL, never updateMany', async () => {
+    const { prisma, service } = createService();
+
+    await expect(service.clearEmbeddings('ws-1')).resolves.toBe(4);
+
+    expect(prisma.knowledgeChunk.updateMany).not.toHaveBeenCalled();
+    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    expect(strings.join('?')).toContain('SET embedding = NULL');
+    expect(values).toEqual(['ws-1']);
+  });
+
+  it('scopes a single-source clear by workspace as well as source', async () => {
+    const { prisma, service } = createService();
+
+    await service.clearEmbeddings('ws-1', 'source-9');
+
+    // Both predicates, in this order. Source id alone would let a caller who
+    // guessed an id wipe another tenant's vectors.
+    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    const sql = strings.join('?');
+    expect(sql).toContain('workspace_id =');
+    expect(sql).toContain('source_id =');
+    expect(values).toEqual(['ws-1', 'source-9']);
+  });
+});
+
 describe('cosineSim', () => {
   it('returns 1 for identical vectors', () => {
     expect(cosineSim([1, 2, 3], [1, 2, 3])).toBeCloseTo(1, 6);
