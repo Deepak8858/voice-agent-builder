@@ -469,8 +469,16 @@ export class CreditLedgerService {
             bucket.sourceId === input.invoiceId &&
             bucket.originalSeconds === seconds &&
             bucket.expiresAt.getTime() === input.periodEnd.getTime() &&
-            bucket.priority === 10 &&
-            bucket.status === 'active',
+            // Deliberately no live `bucket.status` term. A mid-cycle invoice runs
+            // `supersedeIncludedBuckets`, which expires this invoice's bucket — so
+            // when Stripe redelivers *this* invoice's event for days afterwards, a
+            // superseded bucket is a legitimate replay target, not a conflict.
+            // Asserting it threw `idempotency_conflict`, and that rolled the
+            // transaction back including `markStripeEventProcessed`, so the event
+            // never cleared and the retries never stopped. The recorded
+            // `metadata.operation.status` above is the immutable identity check;
+            // the live row is allowed to move on.
+            bucket.priority === 10,
         });
         await this.markStripeEventProcessed(tx, input.stripeEventId);
         return this.buildCreditBalance(tx, lockedBalance);
@@ -854,13 +862,17 @@ export class CreditLedgerService {
             bucket.sourceId === input.checkoutSessionId &&
             bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
             bucket.priority === 20 &&
+            // No live `bucket.status` term either, for the same reason as the
+            // subscription grant: `reversePurchasedCredits` marks this bucket
+            // `refunded` and reconciliation expires it at term, both of which a
+            // redelivery of the original Checkout can legitimately arrive after.
+            //
             // A bucket predating the payment-intent column carries null, and a
             // replay of its Checkout must still be recognised as the same
             // purchase rather than reported as a conflict. A bucket that *does*
             // name a payment intent must name this one.
             (bucket.stripePaymentIntentId === null ||
-              bucket.stripePaymentIntentId === (input.paymentIntentId ?? null)) &&
-            bucket.status === 'active',
+              bucket.stripePaymentIntentId === (input.paymentIntentId ?? null)),
         });
         await this.markStripeEventProcessed(tx, input.stripeEventId);
         return this.buildCreditBalance(tx, lockedBalance);

@@ -1131,6 +1131,74 @@ describe('CreditLedgerService', () => {
     ]);
   });
 
+  /**
+   * The redelivery the supersede sweep used to trap. Invoice A grants, invoice B
+   * expires A's bucket, and Stripe then redelivers A's event — as it does, for
+   * days. Asserting the *live* bucket status on replay made that an
+   * `idempotency_conflict`, which rolled back the acknowledgement with it, so the
+   * event never cleared and Stripe retried forever. It must settle instead: no
+   * second grant, and the event marked processed.
+   */
+  it('settles a redelivered invoice whose bucket a later invoice superseded', async () => {
+    const { prisma, service } = makeService();
+    const invoiceA = {
+      organizationId: 'org-redelivery',
+      invoiceId: 'in_redelivered',
+      includedMinutes: 200,
+      periodEnd: PERIOD_END,
+    };
+    await service.grantSubscriptionCredits(invoiceA);
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-redelivery',
+      invoiceId: 'in_supersedes',
+      includedMinutes: 1_000,
+      periodEnd: PERIOD_END,
+    });
+    expect(prisma.buckets[0]).toMatchObject({ sourceId: 'in_redelivered', status: 'expired' });
+    prisma.seedStripeEvent('evt_redelivered');
+    const stateBeforeReplay = snapshotCreditState(prisma);
+
+    const replay = await service.grantSubscriptionCredits({
+      ...invoiceA,
+      stripeEventId: 'evt_redelivered',
+    });
+
+    expectExactSeconds(replay, { available: 60_000, reserved: 0, totalOwned: 60_000 });
+    expect(prisma.stripeEvents.get('evt_redelivered')?.processedAt).toBeInstanceOf(Date);
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeReplay);
+  });
+
+  /**
+   * The same shape on a pack: a refund marks the bucket `refunded` well inside
+   * the window in which Stripe is still redelivering the Checkout event.
+   */
+  it('settles a redelivered checkout whose pack was refunded', async () => {
+    const { prisma, service } = makeService();
+    const purchase = {
+      organizationId: 'org-refund-redelivery',
+      checkoutSessionId: 'cs_refund_redelivery',
+      purchasedAt: NOW,
+    };
+    await service.grantPurchasedCredits(purchase);
+    await service.reversePurchasedCredits({
+      organizationId: 'org-refund-redelivery',
+      checkoutSessionId: 'cs_refund_redelivery',
+      refundId: 're_redelivery',
+    });
+    expect(prisma.buckets[0]).toMatchObject({ status: 'refunded' });
+    prisma.seedStripeEvent('evt_refunded_checkout');
+
+    await service.grantPurchasedCredits({
+      ...purchase,
+      stripeEventId: 'evt_refunded_checkout',
+    });
+
+    expect(prisma.stripeEvents.get('evt_refunded_checkout')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.buckets).toHaveLength(1);
+    const balance = await service.getBalance('org-refund-redelivery');
+    expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
+  });
+
   it('grants the free monthly allowance once per organization per month', async () => {
     const { prisma, service } = makeService();
     const input = { organizationId: 'org-free', monthKey: CURRENT_MONTH_KEY };
@@ -2959,7 +3027,6 @@ describe('CreditLedgerService', () => {
       ({ bucket }) => (bucket.expiresAt = new Date('2026-08-26T12:00:00.000Z')),
     ],
     ['the bucket priority differs', ({ bucket }) => (bucket.priority = 11)],
-    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
     [
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
@@ -3013,7 +3080,6 @@ describe('CreditLedgerService', () => {
       ({ bucket }) => (bucket.expiresAt = new Date('2027-07-26T12:00:00.000Z')),
     ],
     ['the bucket priority differs', ({ bucket }) => (bucket.priority = 21)],
-    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
     [
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
