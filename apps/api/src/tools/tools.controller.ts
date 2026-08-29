@@ -20,6 +20,8 @@ import {
   type UpdateToolDto,
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
+import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { ToolsService } from './tools.service';
@@ -37,7 +39,13 @@ export class ToolsController {
     return { items: await this.tools.list(workspaceId, agentId ?? undefined) };
   }
 
+  // Tool definitions carry integration endpoints and credential references —
+  // tenant configuration, not content — so CRUD is owner/admin. Invoke only
+  // fires an already-configured tool, so editors keep the test button; reads
+  // stay open to every member.
   @Post('tools')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async create(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateToolDtoSchema)) dto: CreateToolDto,
@@ -55,6 +63,8 @@ export class ToolsController {
   }
 
   @Patch('tools/:toolId')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Param('toolId') toolId: string,
@@ -66,6 +76,8 @@ export class ToolsController {
 
   @Delete('tools/:toolId')
   @HttpCode(204)
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async remove(
     @Param('workspaceId') workspaceId: string,
     @Param('toolId') toolId: string,
@@ -75,6 +87,8 @@ export class ToolsController {
   }
 
   @Post('tools/:toolId/invoke')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async invoke(
     @Param('workspaceId') workspaceId: string,
     @Param('toolId') toolId: string,
