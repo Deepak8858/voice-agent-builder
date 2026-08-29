@@ -332,6 +332,38 @@ describe('EntitlementService', () => {
       ).resolves.toMatchObject({ allowed: false, reason: 'integration_limit_reached' });
     });
 
+    /**
+     * A provisioned number is recurring carrier rent on the platform's own
+     * Twilio account, so the switch must answer this kind with a real quota
+     * rather than falling through and returning undefined - which would read as
+     * "no decision" at the one call site that spends money.
+     */
+    it('answers a phone_number_create request from the plan quota', async () => {
+      const svc = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 1 }),
+      ).resolves.toMatchObject({ allowed: true, reason: 'allowed', current: 1, limit: 2 });
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 2 }),
+      ).resolves.toMatchObject({
+        allowed: false,
+        reason: 'phone_number_limit_reached',
+        current: 2,
+        limit: 2,
+      });
+    });
+
+    it('allows Free no phone numbers at all', async () => {
+      // Free is refused managed_telephony and byo_telephony outright, so a
+      // non-zero limit here would contradict the capability gate.
+      const svc = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 0 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'phone_number_limit_reached', limit: 0 });
+    });
+
     it('blocks Free outbound PSTN even when legacy UsageRecord rows exist', async () => {
       const svc = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
 

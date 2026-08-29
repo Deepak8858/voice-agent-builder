@@ -41,6 +41,22 @@ export interface PlanEntitlements {
   maximumContractConcurrentCalls: number;
   contacts: number;
   /**
+   * Phone numbers an organization may hold at once, counting both provisioned
+   * carrier numbers and registered BYO numbers.
+   *
+   * Deliberately equal to `concurrentCalls` on every paid plan: a number is an
+   * inbound call lane, so holding more numbers than the plan can answer
+   * concurrently buys nothing. Free is 0 rather than 1 because Free is refused
+   * `managed_telephony` and `byo_telephony` outright, and a non-zero number here
+   * would read as a telephony entitlement it does not have.
+   *
+   * Unlike the other quotas this one bounds *recurring platform spend*: a
+   * provisioned number is rented on VoiceForge's own Twilio account at ~$1.15 a
+   * month, so without a cap one paying Starter owner can loop `POST /provision`
+   * and accrue unbounded carrier charges on the platform's card.
+   */
+  phoneNumbers: number;
+  /**
    * Runtime split for this plan. Free is entirely in-house; Starter is split
    * evenly; Growth and Enterprise are entirely realtime.
    */
@@ -68,6 +84,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     concurrentCalls: 1,
     maximumContractConcurrentCalls: 1,
     contacts: 50,
+    phoneNumbers: 0,
     pipelineMix: { realtime: 0, standard: 100 },
     outboundPstn: false,
     campaigns: false,
@@ -82,6 +99,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     concurrentCalls: 2,
     maximumContractConcurrentCalls: 2,
     contacts: 500,
+    phoneNumbers: 2,
     pipelineMix: { realtime: 50, standard: 50 },
     outboundPstn: true,
     campaigns: true,
@@ -96,6 +114,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     concurrentCalls: 10,
     maximumContractConcurrentCalls: 10,
     contacts: 5_000,
+    phoneNumbers: 10,
     pipelineMix: { realtime: 100, standard: 0 },
     outboundPstn: true,
     campaigns: true,
@@ -110,6 +129,7 @@ const PLAN_ENTITLEMENTS: Readonly<Record<PlanType, PlanEntitlements>> = {
     concurrentCalls: 25,
     maximumContractConcurrentCalls: 50,
     contacts: 25_000,
+    phoneNumbers: 25,
     pipelineMix: { realtime: 100, standard: 0 },
     outboundPstn: true,
     campaigns: true,

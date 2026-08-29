@@ -157,6 +157,14 @@ export class EntitlementService {
           effective.entitlements.nangoConnections,
           'integration_limit_reached',
         );
+      case 'phone_number_create':
+        return this.checkQuota(
+          effective,
+          correlationId,
+          request.current,
+          effective.entitlements.phoneNumbers,
+          'phone_number_limit_reached',
+        );
       case 'white_label':
         return this.checkFeature(effective, correlationId, effective.entitlements.whiteLabel);
       case 'campaign_launch':

@@ -187,6 +187,13 @@ export const EntitlementReasonSchema = z.enum([
   'agent_limit_reached',
   'workspace_limit_reached',
   'integration_limit_reached',
+  /**
+   * The organization already holds every phone number its plan allows. Counted
+   * across both doors that add one — a provisioned carrier number and a
+   * registered BYO number — because both leave a live inbound route behind and
+   * only one of them is free.
+   */
+  'phone_number_limit_reached',
   'organization_concurrency_reached',
   'platform_concurrency_reached',
   'billing_temporarily_unavailable',
@@ -277,6 +284,12 @@ export type EntitlementRequest =
   | { kind: 'agent_create'; current: number }
   | { kind: 'workspace_create'; current: number }
   | { kind: 'integration_connect'; current: number }
+  /**
+   * Adding a phone number to the organization, whether by renting one from the
+   * carrier on the platform's account or by registering one the customer
+   * already owns. One kind for both because the quota is on numbers *held*.
+   */
+  | { kind: 'phone_number_create'; current: number }
   | { kind: 'white_label' }
   | { kind: 'campaign_launch' };
 
