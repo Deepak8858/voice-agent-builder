@@ -1,8 +1,10 @@
-import { Controller, Patch, Body } from '@nestjs/common';
+import { Body, Controller, Patch, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
 import type { SessionUser } from '@voiceforge/shared';
 import { RetentionService } from '../compliance/retention.service';
 import { CurrentUser } from '../common/current-user.decorator';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
+import { RoleGuard } from '../common/role.guard';
 import { SessionScoped } from '../common/decorators/session-scoped.decorator';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { ForbiddenError, UnauthorizedError } from '../common/errors';
@@ -40,9 +42,17 @@ export class SettingsController {
    * `active_workspace_id` is nullable, and the previous signature typed it as a
    * plain `string`, so a session with no active workspace would have written
    * retention against `undefined`.
+   *
+   * Shortening the window destroys recordings on the next sweep, so the write
+   * is owner/admin — and `fresh`, because a just-demoted admin keeping the
+   * cached role for 300s is exactly the caller this gate exists for. With no
+   * `:workspaceId` param, RoleGuard resolves the seat in `active_workspace_id`,
+   * the same workspace the handler writes below.
    */
   @Patch('me/retention')
   @SessionScoped()
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   async updateRetention(
     @CurrentUser() user: SessionUser | undefined,
     @Body(new ZodValidationPipe(UpdateRetentionSchema)) body: UpdateRetentionDto,
