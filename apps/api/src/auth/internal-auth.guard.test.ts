@@ -148,6 +148,37 @@ describe('InternalAuthGuard internal-only routes', () => {
     expect(authService.getSessionUser).toHaveBeenCalled();
   });
 
+  /**
+   * The mirror image of the proxy case above: the bare key must not be a
+   * universal credential either. WorkspaceGuard cannot be the backstop for
+   * userless requests because @SessionScoped() routes pass it before req.user
+   * is read, so the guard itself refuses key-only traffic everywhere except
+   * the routes explicitly declared machine-only.
+   */
+  it('refuses a key-only request on a route that is not internal-only', async () => {
+    const reflector = makeReflector({ [IS_INTERNAL_ONLY_KEY]: false });
+    const authService = { getSessionUser: vi.fn() };
+    const guard = new InternalAuthGuard(reflector as never, authService as never);
+    const { ctx } = makeContext({
+      'x-internal-key': 'test-internal-api-key-with-32-chars',
+    });
+
+    await expect(guard.canActivate(ctx)).rejects.toThrow();
+    expect(authService.getSessionUser).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing or wrong internal key even on an internal-only route', async () => {
+    const reflector = makeReflector({ [IS_INTERNAL_ONLY_KEY]: true });
+    const authService = { getSessionUser: vi.fn() };
+    const guard = new InternalAuthGuard(reflector as never, authService as never);
+
+    const { ctx: noKey } = makeContext({});
+    await expect(guard.canActivate(noKey)).rejects.toThrow();
+
+    const { ctx: wrongKey } = makeContext({ 'x-internal-key': 'not-the-real-key' });
+    await expect(guard.canActivate(wrongKey)).rejects.toThrow();
+  });
+
   it('leaves public routes open without consulting the internal-only flag', async () => {
     const reflector = makeReflector({
       [IS_PUBLIC_KEY]: true,
