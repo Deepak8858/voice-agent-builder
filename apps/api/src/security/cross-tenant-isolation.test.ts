@@ -350,6 +350,11 @@ describe('cross-tenant isolation: CRM fan-out (transcript read by bare call id)'
 
     const result = await service.fanOutContact(WS_A, 'agent-a', 'call-a', { full_name: 'Someone' });
     expect(result.primary).toMatchObject({ contact_id: 'c1' });
+
+    // The audit row must carry its own tenant column. call_id/agent_id are both
+    // ON DELETE SET NULL, so without this the row becomes unattributable the
+    // moment the call or agent is deleted.
+    expect(prisma.rowsOf('crmFanoutLog')[0]?.['workspaceId']).toBe(WS_A);
   });
 });
 
