@@ -244,12 +244,29 @@ export class RuntimeUsageService {
   private async onConnected(
     event: Extract<RuntimeUsageEvent, { type: 'call_connected' }>,
   ): Promise<RuntimeUsageDecision> {
+    let balance: CreditBalance;
     try {
-      const balance = await this.creditLedger.commitReservation({
+      balance = await this.creditLedger.commitReservation({
         organizationId: event.organizationId,
         callId: event.callId,
         idempotencyKey: `call:${event.callId}:reservation_commit`,
       });
+    } catch (err) {
+      // Nothing was committed, so refusing is honest and the runtime backs off.
+      this.logger.error(
+        `Commit failed for connected call ${event.callId}: ${(err as Error).message}`,
+      );
+      const unchanged = await this.creditLedger.getBalance(event.organizationId);
+      return this.decision(event, false, 'billing_temporarily_unavailable', 0, unchanged);
+    }
+
+    // Past this point the reserved minute IS revenue, so the bookkeeping write
+    // gets its own catch — the same split `onMinuteBoundary` already makes.
+    // Sharing one catch with the commit reported
+    // `billing_temporarily_unavailable` for a call whose first minute had
+    // already been charged: the runtime hung up on a funded call and the
+    // customer paid for it anyway.
+    try {
       // `connectedAt` is the first-minute marker, not `finalizationState`.
       //
       // A `minute_boundary` can be delivered before `call_connected`; it debits
@@ -274,14 +291,17 @@ export class RuntimeUsageService {
           finalizationState: 'connected',
         },
       });
-      return this.decision(event, true, 'allowed', 1, balance);
     } catch (err) {
+      // Logged with everything reconciliation needs to rebuild the row from the
+      // ledger, which is where the committed minute actually lives.
       this.logger.error(
-        `Commit failed for connected call ${event.callId}: ${(err as Error).message}`,
+        `Usage bookkeeping failed after the first minute was committed for call ` +
+          `${event.callId} (org ${event.organizationId}, event ${event.eventId}): ` +
+          `${(err as Error).message}`,
       );
-      const balance = await this.creditLedger.getBalance(event.organizationId);
-      return this.decision(event, false, 'billing_temporarily_unavailable', 0, balance);
     }
+
+    return this.decision(event, true, 'allowed', 1, balance);
   }
 
   /**

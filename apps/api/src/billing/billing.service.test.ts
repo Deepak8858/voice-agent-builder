@@ -6,6 +6,9 @@ import { CreditLedgerService } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
 import { env } from '../config/env';
 
+/** The signed-in owner/admin whose id every money route must audit. */
+const ACTOR = 'user-1';
+
 function makePrisma(overrides?: {
   subscription?: unknown;
   agentCount?: number;
@@ -184,7 +187,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      })).rejects.toMatchObject({
+      }, ACTOR)).rejects.toMatchObject({
         errorCode: 'BILLING_UNAVAILABLE',
       });
 
@@ -208,7 +211,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      })).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+      }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
     });
 
     it('maps plan to server-owned price and enables production Checkout defaults', async () => {
@@ -221,7 +224,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      });
+      }, ACTOR);
 
       expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -254,6 +257,9 @@ describe('BillingService', () => {
           data: expect.objectContaining({
             action: 'billing.checkout_started',
             resourceType: 'subscription',
+            // The row was written with a null actor, so the audit log could not
+            // say who started a payment. It comes from the session, never the body.
+            actorUserId: ACTOR,
           }),
         }),
       );
@@ -274,8 +280,8 @@ describe('BillingService', () => {
         cancelPath: '/dashboard/billing?checkout=cancel',
       };
 
-      await svc.createCheckoutSession('org-1', dto);
-      await svc.createCheckoutSession('org-1', dto);
+      await svc.createCheckoutSession('org-1', dto, ACTOR);
+      await svc.createCheckoutSession('org-1', dto, ACTOR);
 
       const [first, second] = mockStripe.checkout.sessions.create.mock.calls.map(
         (call) => (call[0] as { metadata: Record<string, string> }).metadata.integration_identifier,
@@ -295,7 +301,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: 'https://evil.example/success',
         cancelPath: '/dashboard/billing',
-      })).rejects.toBeInstanceOf(BadRequestException);
+      }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
 
@@ -313,7 +319,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing',
         cancelPath: '/dashboard/billing',
-      })).rejects.toBeInstanceOf(BadRequestException);
+      }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
 
@@ -338,7 +344,7 @@ describe('BillingService', () => {
           idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
           successPath: '/dashboard/billing',
           cancelPath: '/dashboard/billing',
-        })).rejects.toBeInstanceOf(BadRequestException);
+        }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
         expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
       },
     );
@@ -362,7 +368,7 @@ describe('BillingService', () => {
           idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
           successPath: '/dashboard/billing',
           cancelPath: '/dashboard/billing',
-        })).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+        }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
       },
     );
   });
@@ -387,7 +393,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await svc.createTopUpCheckoutSession('org-1', topUpDto);
+      await svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR);
 
       expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -432,7 +438,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         BillingUnavailableError,
       );
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
@@ -456,7 +462,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         ForbiddenPlanError,
       );
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
@@ -599,7 +605,7 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       await expect(
-        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
       ).rejects.toMatchObject({
         errorCode: 'BILLING_UNAVAILABLE',
       });
@@ -625,7 +631,7 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       await expect(
-        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
       ).resolves.toEqual({ url: 'https://billing.stripe.com/session' });
     });
 
@@ -634,7 +640,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' });
+      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
 
       expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith({
         customer: 'cus_123',

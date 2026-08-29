@@ -55,8 +55,18 @@ function makePrisma(overrides?: {
   fundedBucket?: unknown;
   /** Rows the stuck-event sweep should find still holding a processing lease. */
   stuckEvents?: unknown[];
+  /**
+   * Makes `stripe_events` behave like the real table across two deliveries of
+   * the same event: the second `create` collides on the unique index, and once
+   * `markProcessed` has run the row reports itself processed. Without this the
+   * mock is stateless, so a second `handleWebhook` sails past the claim and a
+   * replay test would silently prove nothing.
+   */
+  replayable?: boolean;
 }) {
   const uniqueError = Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+  let claimed = false;
+  let processed = false;
   const tx = {
     stripeEvent: {
       findUnique: vi.fn(async () => overrides?.processedEvent ?? null),
@@ -72,14 +82,23 @@ function makePrisma(overrides?: {
     stripeEvent: {
       create: vi.fn(async () => {
         if (overrides?.processedEvent) throw uniqueError;
+        if (overrides?.replayable && claimed) throw uniqueError;
+        claimed = true;
         return { id: 'stripe-event-row' };
       }),
-      findUnique: vi.fn(async () => overrides?.processedEvent ?? null),
+      findUnique: vi.fn(async () =>
+        overrides?.replayable && processed
+          ? { processedAt: new Date() }
+          : (overrides?.processedEvent ?? null),
+      ),
       findMany: vi.fn(
         async (_input: { where: { processingStartedAt: { lte: Date } } }) =>
           overrides?.stuckEvents ?? [],
       ),
-      update: vi.fn(async () => ({ id: 'stripe-event-row' })),
+      update: vi.fn(async () => {
+        processed = true;
+        return { id: 'stripe-event-row' };
+      }),
       updateMany: vi.fn(async () => ({ count: overrides?.reclaimedCount ?? 1 })),
       upsert: vi.fn(async () => ({ id: 'stripe-event-row' })),
     },
@@ -90,6 +109,7 @@ function makePrisma(overrides?: {
     subscription: {
       update: vi.fn(async () => ({ id: 'sub-local' })),
       updateMany: vi.fn(async () => ({ count: 1 })),
+      upsert: vi.fn(async () => ({ id: 'sub-local' })),
       // `null` is meaningful here (no such subscription), so it must not fall
       // through to the default row the way `??` would.
       findFirst: vi.fn(async () =>
@@ -454,7 +474,15 @@ describe('StripeWebhookService production webhook handling', () => {
     });
   });
 
-  it('marks invoice.payment_failed subscriptions past_due and queues dunning', async () => {
+  /**
+   * The dunning enqueue this used to assert targeted `'notifications'`, a queue
+   * no worker consumes, for a `dunning_email` job `EmailService` has no template
+   * for: the job sat in Redis forever while the log claimed an email had been
+   * queued. Marking the subscription `past_due` and auditing it is what actually
+   * happens, so that is what is asserted — and no job is left behind for a
+   * consumer that does not exist.
+   */
+  it('marks invoice.payment_failed subscriptions past_due and enqueues nothing', async () => {
     const event = {
       ...makeSubscriptionEvent('invoice.payment_failed'),
       data: { object: { customer: 'cus_123' } },
@@ -472,10 +500,12 @@ describe('StripeWebhookService production webhook handling', () => {
         data: expect.objectContaining({ status: 'past_due' }),
       }),
     );
-    expect(queue.enqueue).toHaveBeenCalledWith('notifications', 'dunning_email', expect.objectContaining({
-      organizationId: 'org-1',
-      customerId: 'cus_123',
-    }));
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'billing.payment_failed' }),
+      }),
+    );
+    expect(queue.enqueue).not.toHaveBeenCalled();
   });
 
   it('syncs checkout.session.completed customer and subscription ids', async () => {
@@ -788,6 +818,60 @@ describe('StripeWebhookService production webhook handling', () => {
       await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
       expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The metadata organization is not proof of ownership. When the named
+     * organization had no `stripeCustomerId` yet, the conflict check fell through
+     * and the PAYING customer's id was written onto that organization's row: from
+     * then on the payer's invoices granted credit to a balance that was not
+     * theirs. A customer already held by another organization is refused.
+     */
+    it('refuses to link a customer another organization already holds', async () => {
+      const prisma = makePrisma() as ReturnType<typeof makePrisma> & {
+        subscription: ReturnType<typeof makePrisma>['subscription'] & {
+          upsert: ReturnType<typeof vi.fn>;
+        };
+      };
+      prisma.subscription.upsert = vi.fn(async () => ({ id: 'sub-local' }));
+      // The victim organization has no subscription row at all yet...
+      prisma.subscription.findUnique = vi.fn(async () => null);
+      // ...but the paying customer is already on the attacker's row.
+      prisma.subscription.findFirst = vi.fn(async () => ({ organizationId: 'org-attacker' }));
+      const event = {
+        ...makeSubscriptionEvent('checkout.session.completed'),
+        data: {
+          object: {
+            id: 'cs_takeover',
+            customer: 'cus_attacker',
+            subscription: 'sub_attacker',
+            metadata: { organizationId: 'org-victim' },
+          },
+        },
+      };
+      const svc = makeService(prisma, event);
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+      // Organization-scoped, so the ownership check is not a cross-tenant scan.
+      expect(prisma.subscription.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { stripeCustomerId: 'cus_attacker', organizationId: { not: 'org-victim' } },
+        }),
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.subscription_link_conflict',
+            metadata: expect.objectContaining({
+              field: 'stripeCustomerId',
+              current: 'held by organization org-attacker',
+            }),
+          }),
+        }),
+      );
     });
 
     it('still links an organization that carries the same ids', async () => {
@@ -1412,6 +1496,186 @@ describe('StripeWebhookService production webhook handling', () => {
 });
 
 /**
+ * Deliver-twice idempotency, one case per handled event type.
+ *
+ * Stripe redelivers: on a timeout, on a 5xx, and by hand from the dashboard —
+ * and `reclaimStuckEvents` re-dispatches a stored payload of its own accord. So
+ * "the same event twice" is normal traffic, not an edge case, and every handler
+ * has to make its effect happen exactly once. The `replayable` prisma mock makes
+ * the event row behave like the real unique index across the two deliveries, so
+ * these tests exercise the actual claim rather than a stateless stub that lets
+ * both deliveries through.
+ *
+ * The second delivery must also be ACKNOWLEDGED (200). A 5xx there keeps Stripe
+ * retrying work that is already done, and eventually disables the endpoint.
+ */
+interface ReplayCase {
+  /** The Stripe event type, cross-checked against `dispatch`'s switch below. */
+  type: string;
+  name: string;
+  event: () => unknown;
+  prisma?: Parameters<typeof makePrisma>[0];
+  /** The single write or grant that must happen exactly once. */
+  effect: (
+    prisma: ReturnType<typeof makePrisma>,
+    ledger: ReturnType<typeof makeCreditLedger>,
+  ) => ReturnType<typeof vi.fn>;
+}
+
+const REPLAY_CASES: ReplayCase[] = [
+  {
+    type: 'customer.subscription.created',
+    name: 'customer.subscription.created syncs once',
+    event: () => makeSubscriptionEvent('customer.subscription.created'),
+    effect: (prisma) => prisma.subscription.updateMany,
+  },
+  {
+    type: 'customer.subscription.updated',
+    name: 'customer.subscription.updated syncs once',
+    event: () => makeSubscriptionEvent('customer.subscription.updated'),
+    effect: (prisma) => prisma.subscription.updateMany,
+  },
+  {
+    type: 'customer.subscription.deleted',
+    name: 'customer.subscription.deleted cancels once',
+    event: () => makeSubscriptionEvent('customer.subscription.deleted'),
+    effect: (prisma) => prisma.subscription.updateMany,
+  },
+  {
+    type: 'checkout.session.completed',
+    name: 'checkout.session.completed links the subscription once',
+    event: () => ({
+      ...makeSubscriptionEvent('checkout.session.completed'),
+      data: {
+        object: {
+          id: 'cs_sub_replay',
+          customer: 'cus_123',
+          subscription: 'sub_123',
+          metadata: { organizationId: 'org-1' },
+        },
+      },
+    }),
+    effect: (prisma) => prisma.subscription.upsert,
+  },
+  {
+    type: 'checkout.session.completed',
+    name: 'checkout.session.completed grants a minute pack once',
+    event: () => ({
+      ...makeSubscriptionEvent('checkout.session.completed'),
+      data: {
+        object: {
+          id: 'cs_pack_replay',
+          customer: 'cus_123',
+          payment_status: 'paid',
+          payment_intent: 'pi_pack_replay',
+          amount_total: 3900,
+          currency: 'usd',
+          metadata: { organizationId: 'org-1', purchaseType: 'minute_pack' },
+        },
+      },
+    }),
+    effect: (_prisma, ledger) => ledger.grantPurchasedCredits,
+  },
+  {
+    type: 'invoice.paid',
+    name: 'invoice.paid grants included credit once',
+    event: () => ({
+      ...makeSubscriptionEvent('invoice.paid'),
+      data: {
+        object: {
+          id: 'in_replay',
+          customer: 'cus_123',
+          amount_paid: 4900,
+          currency: 'usd',
+          lines: {
+            data: [
+              {
+                price: { id: 'price_starter' },
+                period: { start: 1_800_000_000, end: 1_802_592_000 },
+              },
+            ],
+          },
+        },
+      },
+    }),
+    effect: (_prisma, ledger) => ledger.grantSubscriptionCredits,
+  },
+  {
+    type: 'invoice.payment_failed',
+    name: 'invoice.payment_failed marks past_due once',
+    event: () => ({
+      ...makeSubscriptionEvent('invoice.payment_failed'),
+      data: { object: { customer: 'cus_123' } },
+    }),
+    effect: (prisma) => prisma.subscription.updateMany,
+  },
+  {
+    type: 'charge.refunded',
+    name: 'charge.refunded reverses credit once',
+    prisma: { includedBucket: { organizationId: 'org-1' } },
+    event: () => ({
+      ...makeSubscriptionEvent('charge.refunded'),
+      data: {
+        object: {
+          id: 're_replay',
+          customer: 'cus_123',
+          invoice: 'in_replay',
+          amount: 4900,
+          amount_refunded: 4900,
+        },
+      },
+    }),
+    effect: (_prisma, ledger) => ledger.reversePurchasedCredits,
+  },
+  {
+    type: 'charge.dispute.closed',
+    name: 'charge.dispute.closed reverses pack credit once',
+    prisma: {
+      fundedBucket: { organizationId: 'org-1', sourceType: 'purchased', sourceId: 'cs_pack_1' },
+    },
+    event: () => ({
+      ...makeSubscriptionEvent('charge.dispute.closed'),
+      data: { object: { id: 'dp_replay', payment_intent: 'pi_pack_1', status: 'lost' } },
+    }),
+    effect: (_prisma, ledger) => ledger.reversePurchasedCredits,
+  },
+];
+
+describe('StripeWebhookService duplicate delivery', () => {
+  beforeEach(() => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    Object.assign(env, {
+      STRIPE_SECRET_KEY: 'rk_test_123',
+      STRIPE_WEBHOOK_SECRET: 'whsec_test',
+      STRIPE_STARTER_PRICE_ID: 'price_starter',
+      STRIPE_GROWTH_PRICE_ID: 'price_growth',
+      STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(REPLAY_CASES)('$name across two deliveries', async (replay) => {
+    const prisma = makePrisma({ ...replay.prisma, replayable: true });
+    const creditLedger = makeCreditLedger();
+    const svc = makeService(prisma, replay.event(), { creditLedger });
+
+    const first = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+    const second = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    expect(first).toMatchObject({ handled: true, statusCode: 200 });
+    // Acknowledged, not retried: the work is done and Stripe must stop.
+    expect(second).toMatchObject({ handled: true, statusCode: 200 });
+    expect(replay.effect(prisma, creditLedger)).toHaveBeenCalledTimes(1);
+    // Proof the second delivery went through the claim rather than the mock
+    // simply forgetting the first one.
+    expect(prisma.stripeEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.stripeEvent.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * Docs-vs-code drift guard.
  *
  * An operator configures the Stripe endpoint from the runbook, not from this
@@ -1445,6 +1709,15 @@ describe('documented Stripe webhook subscription list', () => {
 
   it('is a non-trivial set, so an empty parse cannot pass vacuously', () => {
     expect(handled.length).toBeGreaterThan(5);
+  });
+
+  /**
+   * Every handled type also needs a deliver-twice test, and a hand-kept list
+   * would rot the moment a ninth `case` is added. Parsed from the switch, so a
+   * new handler with no replay test fails here instead of in production.
+   */
+  it('has a duplicate-delivery test for every handled event type', () => {
+    expect([...new Set(REPLAY_CASES.map((c) => c.type))].sort()).toEqual([...new Set(handled)]);
   });
 
   it('matches the bullet list in billing-runbook.md section 1.3', () => {
