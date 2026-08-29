@@ -825,14 +825,7 @@ export class TelephonyService {
       if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
       await this.assertTwilioWebhookSignature(number, payload, request, 'call.status');
     } else {
-      const number = await this.prisma.telephonyPhoneNumber.findUnique({
-        where: { id: phoneNumberId },
-        include: { providerConnection: true },
-      });
-      if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
-      if (number.provider !== 'vobiz') {
-        throw new AppError('TELEPHONY_NOT_FOUND', 'Vobiz phone number not found.', 404);
-      }
+      const number = await this.vobizNumber(phoneNumberId);
       await this.assertVobizWebhookSignature(number, payload, request, 'call.status');
     }
     const normalized = this.normalizeStatus(provider, payload);
@@ -861,6 +854,120 @@ export class TelephonyService {
       });
     }
     return { processed: true };
+  }
+
+  /**
+   * Handles a Vobiz inbound-call webhook.
+   *
+   * Vobiz media never transits this API: `configureInboundRouting` points the
+   * trunk's `inbound_destination` straight at the LiveKit SIP URI, so by the time
+   * this fires the caller is already being bridged and no response here can
+   * refuse the call. Admission is therefore evaluated and recorded but never
+   * enforced — a denied call is audited and still proceeds, so an existing Vobiz
+   * customer does not lose inbound calls without notice.
+   *
+   * ponytail: advisory admission only, and no metering. Refusal and minute
+   * debiting have to be driven from the LiveKit side, which is the only place
+   * that sees the media; billing minutes from here would report usage that
+   * nothing on this path can finalize.
+   */
+  async handleVobizInboundWebhook(
+    phoneNumberId: string,
+    payload: Record<string, unknown>,
+    request?: WebhookRequestContext,
+  ) {
+    const number = await this.vobizNumber(phoneNumberId);
+    await this.assertVobizWebhookSignature(number, payload, request, 'call.inbound');
+
+    const { providerCallId } = this.normalizeStatus('vobiz', payload);
+    await this.recordWebhookEvent(
+      'vobiz',
+      this.providerWebhookEventId('vobiz', payload, 'call.inbound', number.id),
+      'call.inbound',
+      number.id,
+      payload,
+      true,
+    );
+    // Without a provider call id there is no call identity to key admission on,
+    // and an unassigned number has no agent to attribute the call to.
+    if (!providerCallId || !number.assignedAgentId) {
+      return { processed: true, admitted: null };
+    }
+
+    const call = await this.ensureInboundCall({
+      workspaceId: number.workspaceId,
+      organizationId: number.organizationId,
+      agentId: number.assignedAgentId,
+      phoneNumberId: number.id,
+      provider: 'vobiz',
+      providerCallId,
+      fromNumber: stringValue(payload.from ?? payload.from_number ?? payload.caller_id),
+      toNumber: stringValue(payload.to ?? payload.to_number) ?? number.phoneNumberE164,
+    });
+    // `livekit` is the usage provider, matching the Twilio inbound path: the
+    // media is carried by LiveKit even though the call row belongs to Vobiz.
+    const admitted = await this.admitInboundCall({
+      organizationId: number.organizationId,
+      workspaceId: number.workspaceId,
+      callId: call.id,
+      provider: 'livekit',
+      providerCallId,
+    });
+    if (!admitted) {
+      // The denial itself is already audited by the admission service. This
+      // records the part that is specific to Vobiz: the call was let through
+      // anyway, because this webhook cannot stop it.
+      await Promise.resolve(
+        this.audit.log({
+          workspaceId: number.workspaceId,
+          organizationId: number.organizationId,
+          action: 'telephony.inbound_call.admission_not_enforced',
+          resourceType: 'call',
+          resourceId: call.id,
+          metadata: { provider: 'vobiz', phone_number_id: number.id, enforcement: 'advisory' },
+        }),
+      ).catch(() => undefined);
+    }
+    return { processed: true, call_id: call.id, admitted };
+  }
+
+  /**
+   * Handles a Vobiz number-verification webhook.
+   *
+   * Verifying the signature and recording the delivery under its own event type
+   * is the whole job. It deliberately does not mark the number verified: the
+   * signing secret is supplied by the workspace during manual setup, so a valid
+   * signature proves the tenant signed the payload, not that the tenant controls
+   * the phone number.
+   */
+  async handleVobizVerifyWebhook(
+    phoneNumberId: string,
+    payload: Record<string, unknown>,
+    request?: WebhookRequestContext,
+  ) {
+    const number = await this.vobizNumber(phoneNumberId);
+    await this.assertVobizWebhookSignature(number, payload, request, 'number.verify');
+    await this.recordWebhookEvent(
+      'vobiz',
+      this.providerWebhookEventId('vobiz', payload, 'number.verify', number.id),
+      'number.verify',
+      number.id,
+      payload,
+      true,
+    );
+    return { processed: true };
+  }
+
+  private async vobizNumber(phoneNumberId: string) {
+    const number = await this.prisma.telephonyPhoneNumber.findUnique({
+      where: { id: phoneNumberId },
+      include: { providerConnection: true },
+    });
+    if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
+    if (number.provider !== 'vobiz') {
+      throw new AppError('TELEPHONY_NOT_FOUND', 'Vobiz phone number not found.', 404);
+    }
+    return number;
   }
 
   async handleLiveKitWebhook(rawBody: string, authorization: string | undefined) {
@@ -1508,13 +1615,23 @@ export class TelephonyService {
     );
   }
 
-  private findRecentOutboundDuplicate(
+  /**
+   * Finds a call from the last minute that a repeated request should be answered
+   * with instead of placing a second call.
+   *
+   * Only a call that is still in flight, or one that genuinely completed, counts.
+   * A call that failed terminally (failed, busy, no-answer, cancelled, including
+   * a billing denial) must not suppress the retry: the caller replays the row to
+   * the API client as a placed call, so returning a dead call reports success for
+   * a call that never happened.
+   */
+  private async findRecentOutboundDuplicate(
     workspaceId: string,
     agentId: string,
     phoneNumberId: string,
     toNumber: string,
   ) {
-    return this.prisma.call.findFirst({
+    const recent = await this.prisma.call.findMany({
       where: {
         workspaceId,
         agentId,
@@ -1522,7 +1639,12 @@ export class TelephonyService {
         toNumber,
         createdAt: { gt: new Date(Date.now() - 60000) },
       },
+      orderBy: { createdAt: 'desc' },
     });
+    return (
+      recent.find((call) => !this.isTerminalStatus(call.status) || call.status === 'completed') ??
+      null
+    );
   }
 }
 

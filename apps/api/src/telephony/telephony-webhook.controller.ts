@@ -57,7 +57,7 @@ export class TelephonyWebhookController {
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body, {
+    return this.telephony.handleVobizInboundWebhook(phoneNumberId, body, {
       headers,
       rawBody: req.rawBody?.toString('utf8'),
       url: externalRequestUrl(req),
@@ -87,7 +87,7 @@ export class TelephonyWebhookController {
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Req() req: Request & { rawBody?: Buffer },
   ) {
-    return this.telephony.handleStatusWebhook('vobiz', phoneNumberId, body, {
+    return this.telephony.handleVobizVerifyWebhook(phoneNumberId, body, {
       headers,
       rawBody: req.rawBody?.toString('utf8'),
       url: externalRequestUrl(req),
