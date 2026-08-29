@@ -119,6 +119,133 @@ function makeInboundVoiceService(overrides?: {
   return { service, prisma, admission, twilioFallback };
 }
 
+/**
+ * A workspace whose outbound path is fully permitted, so a duplicate-window test
+ * only has to vary what the last 60 seconds of calls look like.
+ */
+function makeOutboundDuplicateService(recentCalls: Record<string, unknown>[]) {
+  const prisma = makePrisma();
+  prisma.call.findMany.mockResolvedValue(recentCalls);
+  const livekit = {
+    createOutboundCall: vi.fn(async () => ({
+      providerCallId: 'participant-1',
+      roomName: 'room-1',
+      status: 'queued',
+    })),
+    livekitSipHost: 'tenant.sip.livekit.cloud',
+  };
+  const service = new TelephonyService(
+    prisma as never,
+    livekit as never,
+    { adapterFor: vi.fn() } as never,
+    { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+    { log: vi.fn(async () => undefined) } as never,
+    { checkFeatureGate: vi.fn(async () => true) } as never,
+    {
+      check: vi.fn(async () => ({
+        id: 'check-1',
+        status: 'passed',
+        reasons: [],
+        contact_id: null,
+      })),
+      attachCheckToCall: vi.fn(async () => undefined),
+    } as never,
+    {} as never,
+    makeAdmission() as never,
+  );
+
+  return { service, prisma, livekit };
+}
+
+const VOBIZ_INBOUND_PAYLOAD = {
+  call_id: 'vobiz-call-1',
+  event_id: 'evt-1',
+  from: '+14155559876',
+  to: '+14155551234',
+};
+const VOBIZ_INBOUND_REQUEST = {
+  headers: { 'x-vobiz-signature': 'good-signature' },
+  rawBody: '{"call_id":"vobiz-call-1"}',
+  url: 'https://vocal.devdeepak.me/api/v1/telephony/vobiz/inbound/number-1',
+};
+
+/**
+ * A Vobiz number with a stored webhook secret and an assigned agent, so each
+ * test only has to vary the signature verdict and the billing decision.
+ */
+function makeVobizWebhookService(overrides?: { admitted?: boolean; signatureValid?: boolean }) {
+  const prisma = {
+    telephonyPhoneNumber: {
+      findUnique: vi.fn(async () => ({
+        id: 'number-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        provider: 'vobiz',
+        phoneNumberE164: '+14155551234',
+        assignedAgentId: 'agent-1',
+        providerMetadata: { webhookSecretEncrypted: { encrypted: true } },
+        providerConnection: null,
+      })),
+    },
+    telephonyWebhookEvent: {
+      create: vi.fn(async () => ({ id: 'event-1' })),
+    },
+    call: {
+      upsert: vi.fn(async () => ({
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      })),
+      findFirst: vi.fn(),
+      update: vi.fn(async () => ({ id: 'call-1' })),
+    },
+    callUsage: {
+      findUnique: vi.fn(async () => null),
+    },
+  };
+  const admitted = overrides?.admitted ?? true;
+  const admission = {
+    ...makeAdmission(),
+    admitCall: vi.fn(async () =>
+      admitted
+        ? {
+            admitted: true as const,
+            leaseToken: 'lease-1',
+            leaseExpiresAt: new Date('2026-06-07T10:01:00.000Z').toISOString(),
+            reservedSeconds: 60,
+          }
+        : {
+            admitted: false as const,
+            reason: 'credit_insufficient' as const,
+            message: 'No credit.',
+          },
+    ),
+  };
+  const audit = { log: vi.fn(async () => undefined) };
+  const service = new TelephonyService(
+    prisma as never,
+    {} as never,
+    {
+      adapterFor: vi.fn(() => ({
+        validateWebhookSignature: vi.fn(async () => overrides?.signatureValid ?? true),
+      })),
+    } as never,
+    {
+      encryptJson: vi.fn(),
+      decryptJson: vi.fn(() => ({ secret: 'vobiz-webhook-secret' })),
+    } as never,
+    audit as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    admission as never,
+  );
+
+  return { service, prisma, admission, audit };
+}
+
 function makePrisma() {
   return {
     workspace: {
@@ -151,6 +278,7 @@ function makePrisma() {
         ...data,
       })),
       findFirst: vi.fn(),
+      findMany: vi.fn(async (): Promise<Record<string, unknown>[]> => []),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: 'call-1',
         ...data,
@@ -400,6 +528,52 @@ describe('TelephonyService', () => {
         }),
       }),
     );
+  });
+
+  it('places a new call when the only recent call to the same number failed terminally', async () => {
+    const { service, prisma, livekit } = makeOutboundDuplicateService([
+      { id: 'dead-call', status: 'failed', providerCallId: null, livekitRoomName: null },
+    ]);
+
+    const result = await service.startOutboundCall('workspace-1', 'user-1', {
+      phone_number_id: 'number-1',
+      to_number: '+14155559876',
+    });
+
+    // Replaying a failed call would tell the caller a call was placed when none
+    // was, and would silently swallow the retry.
+    expect(prisma.call.create).toHaveBeenCalled();
+    expect(livekit.createOutboundCall).toHaveBeenCalled();
+    expect(result.call_id).toBe('call-1');
+  });
+
+  it('reuses a recent in-flight call to the same number instead of placing a second one', async () => {
+    const { service, prisma, livekit } = makeOutboundDuplicateService([
+      { id: 'live-call', status: 'ringing', providerCallId: 'p-1', livekitRoomName: 'room-old' },
+    ]);
+
+    const result = await service.startOutboundCall('workspace-1', 'user-1', {
+      phone_number_id: 'number-1',
+      to_number: '+14155559876',
+    });
+
+    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ call_id: 'live-call', room_name: 'room-old' });
+  });
+
+  it('reuses a recent completed call to the same number rather than dialling it again', async () => {
+    const { service, livekit } = makeOutboundDuplicateService([
+      { id: 'done-call', status: 'completed', providerCallId: 'p-1', livekitRoomName: 'room-old' },
+    ]);
+
+    const result = await service.startOutboundCall('workspace-1', 'user-1', {
+      phone_number_id: 'number-1',
+      to_number: '+14155559876',
+    });
+
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+    expect(result.call_id).toBe('done-call');
   });
 
   it('uses the same routed pipeline for persistence, admission, and LiveKit dispatch', async () => {
@@ -894,6 +1068,116 @@ describe('TelephonyService', () => {
         action: 'telephony.webhook.invalid_signature',
         metadata: expect.objectContaining({ provider: 'vobiz' }),
       }),
+    );
+  });
+
+  it('creates and evaluates admission for an inbound Vobiz call instead of only recording a status event', async () => {
+    const { service, prisma, admission } = makeVobizWebhookService();
+
+    const result = await service.handleVobizInboundWebhook(
+      'number-1',
+      VOBIZ_INBOUND_PAYLOAD,
+      VOBIZ_INBOUND_REQUEST,
+    );
+
+    expect(prisma.call.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { provider_providerCallId: { provider: 'vobiz', providerCallId: 'vobiz-call-1' } },
+        create: expect.objectContaining({
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          agentId: 'agent-1',
+          phoneNumberId: 'number-1',
+          direction: 'inbound',
+          provider: 'vobiz',
+          providerCallId: 'vobiz-call-1',
+          fromNumber: '+14155559876',
+          toNumber: '+14155551234',
+        }),
+      }),
+    );
+    expect(admission.admitCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        workspaceId: 'workspace-1',
+        callId: 'call-1',
+        direction: 'inbound',
+      }),
+    );
+    expect(prisma.telephonyWebhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'call.inbound', signatureValid: true }),
+      }),
+    );
+    expect(result).toMatchObject({ processed: true, call_id: 'call-1', admitted: true });
+  });
+
+  it('lets a billing-denied inbound Vobiz call proceed and records that admission was not enforced', async () => {
+    const { service, prisma, audit } = makeVobizWebhookService({ admitted: false });
+
+    const result = await service.handleVobizInboundWebhook(
+      'number-1',
+      VOBIZ_INBOUND_PAYLOAD,
+      VOBIZ_INBOUND_REQUEST,
+    );
+
+    // Vobiz media goes straight to LiveKit, so this webhook cannot refuse the
+    // call: the denial is recorded, and the call is not killed.
+    expect(result).toMatchObject({ admitted: false });
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'telephony.inbound_call.admission_not_enforced',
+        resourceId: 'call-1',
+        metadata: expect.objectContaining({ provider: 'vobiz', enforcement: 'advisory' }),
+      }),
+    );
+  });
+
+  it('rejects an inbound Vobiz webhook with an invalid signature before creating a call', async () => {
+    const { service, prisma, admission } = makeVobizWebhookService({ signatureValid: false });
+
+    await expect(
+      service.handleVobizInboundWebhook(
+        'number-1',
+        VOBIZ_INBOUND_PAYLOAD,
+        VOBIZ_INBOUND_REQUEST,
+      ),
+    ).rejects.toMatchObject({ errorCode: 'UNAUTHORIZED' });
+
+    expect(prisma.call.upsert).not.toHaveBeenCalled();
+    expect(admission.admitCall).not.toHaveBeenCalled();
+  });
+
+  it('records a Vobiz verification webhook under its own event type without admitting a call', async () => {
+    const { service, prisma, admission } = makeVobizWebhookService();
+
+    const result = await service.handleVobizVerifyWebhook(
+      'number-1',
+      { event_id: 'evt-verify-1' },
+      { ...VOBIZ_INBOUND_REQUEST, rawBody: '{"event_id":"evt-verify-1"}' },
+    );
+
+    expect(prisma.telephonyWebhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ eventType: 'number.verify', signatureValid: true }),
+      }),
+    );
+    expect(prisma.call.upsert).not.toHaveBeenCalled();
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(result).toEqual({ processed: true });
+  });
+
+  it('rejects a Vobiz verification webhook with an invalid signature', async () => {
+    const { service, prisma } = makeVobizWebhookService({ signatureValid: false });
+
+    await expect(
+      service.handleVobizVerifyWebhook('number-1', { event_id: 'evt-verify-1' }, VOBIZ_INBOUND_REQUEST),
+    ).rejects.toMatchObject({ errorCode: 'UNAUTHORIZED' });
+
+    expect(prisma.telephonyWebhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ signatureValid: false }) }),
     );
   });
 
