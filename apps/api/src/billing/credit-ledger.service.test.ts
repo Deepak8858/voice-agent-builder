@@ -1199,6 +1199,61 @@ describe('CreditLedgerService', () => {
     expect(balance.includedMinutesRemaining).toBe(10);
   });
 
+  /**
+   * The mirror of the supersede sweep. An organization that paid for the period
+   * and then lapsed reads as Free, so the monthly sweep offered it the free
+   * allowance on top of the invoice bucket it still holds for that same period —
+   * two included allowances in one month, which is exactly what the upgrade
+   * direction forfeits a bucket to prevent. Spending the paid allowance first
+   * must not turn a cancellation into a refill.
+   */
+  it('withholds the free allowance while a paid period still covers the month', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-lapsed',
+      invoiceId: 'in_lapsed',
+      includedMinutes: 20,
+      periodEnd: new Date('2026-07-28T00:00:00.000Z'),
+    });
+    // Burned to zero: the allowance was received, so there is nothing left to
+    // top up even though the bucket is empty.
+    prisma.buckets[0]!.remainingSeconds = 0;
+
+    const balance = await service.grantFreeMonthlyCredits({
+      organizationId: 'org-lapsed',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual(['in_lapsed']);
+    expect(prisma.ledger.map((entry) => entry.entryType)).toEqual(['subscription_grant']);
+    expect(balance.availableSeconds).toBe(1_200);
+  });
+
+  /**
+   * The withholding is scoped to the period that overlaps, not to having ever
+   * paid: once the invoice bucket's period ends the organization is a free
+   * customer and must receive the allowance again.
+   */
+  it('grants the free allowance for a month no paid period covers', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-lapsed-later',
+      invoiceId: 'in_lapsed_later',
+      includedMinutes: 20,
+      periodEnd: MONTH_START,
+    });
+
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-lapsed-later',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual([
+      'in_lapsed_later',
+      'free_grant_org-lapsed-later_2026-07',
+    ]);
+  });
+
   it('rolls a December allowance into the following January', async () => {
     const { prisma, service } = makeService();
     await service.grantFreeMonthlyCredits({

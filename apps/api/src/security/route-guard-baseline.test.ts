@@ -112,9 +112,9 @@ const ROLE_EXEMPT: Record<string, string> = {
   'white-label/white-label.controller.ts:InviteAcceptController.accept':
     'the invite token is the authorization, verified against the caller email in acceptInvite',
   'referral/referral.controller.ts:ReferralController.createReferral':
-    'per-user action on own session workspace; credit tier decision pending before any gate',
+    'per-user action on own session workspace; records a referral, grants no credit (see ReferralService)',
   'referral/referral.controller.ts:ReferralController.acceptReferral':
-    'per-user action on own session workspace; credit tier decision pending before any gate',
+    'per-user action on own session workspace; records a referral, grants no credit (see ReferralService)',
 
   // Internal runtime caller holds no membership row; a role gate breaks it.
   'calendar/calendar.controller.ts:CalendarController.connect':
