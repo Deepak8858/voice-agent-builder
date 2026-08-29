@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ReconciliationService } from './reconciliation.service';
+import { emptyReconciliationReport, ReconciliationService } from './reconciliation.service';
 
 const ORG = 'org-1';
+const CUSTOMER = 'cus_1';
 
 interface BalanceRow {
   organizationId: string;
@@ -34,6 +35,20 @@ interface LeaseRow {
   expiresAt: Date;
 }
 
+/** A `billing_credit_buckets` row as the Stripe drift comparison reads it. */
+interface GrantRow {
+  organizationId: string;
+  sourceType: 'included' | 'purchased';
+  sourceId: string;
+}
+
+interface SubscriptionRow {
+  organizationId: string;
+  stripeSubscriptionId: string | null;
+  status: string;
+  stripePriceId: string | null;
+}
+
 function makeService(
   opts: {
     balances?: BalanceRow[];
@@ -48,9 +63,43 @@ function makeService(
       matureReservedSeconds: number;
       freshReservationCount: number;
     };
+    // Stripe drift comparison fixtures.
+    stripeInvoices?: Array<{
+      id: string;
+      customer: unknown;
+      subscription: unknown;
+      amount_paid: number;
+    }>;
+    stripeSessions?: Array<{
+      id: string;
+      customer: unknown;
+      payment_status: string | null;
+      metadata: Record<string, string> | null;
+    }>;
+    stripeSubscriptions?: Array<{
+      id: string;
+      status: string;
+      items?: { data?: Array<{ price?: { id?: string | null } | null }> };
+    }>;
+    stripeSubscriptionsHasMore?: boolean;
+    /** Buckets the bulk pre-filter finds for the listed Stripe objects. */
+    grantedBuckets?: GrantRow[];
+    /** Buckets the locked re-check finds; defaults to `grantedBuckets`. */
+    confirmedBuckets?: GrantRow[];
+    /** Which organization owns each Stripe customer. */
+    subscriptionOwners?: Array<{ organizationId: string; stripeCustomerId: string | null }>;
+    /** Our rows for the subscriptions Stripe listed. */
+    linkedSubscriptions?: SubscriptionRow[];
+    /** Our rows that claim a live subscription, for the reverse check. */
+    locallyLiveSubscriptions?: SubscriptionRow[];
   } = {},
 ) {
   const balances = opts.balances ?? [];
+  const confirmedBuckets = opts.confirmedBuckets ?? opts.grantedBuckets ?? [];
+  const subscriptionRows = [
+    ...(opts.linkedSubscriptions ?? []),
+    ...(opts.locallyLiveSubscriptions ?? []),
+  ];
 
   const balanceUpdate = vi.fn(async (_args: unknown) => ({}));
   const balanceUpdateMany = vi.fn(async (_args: unknown) => ({ count: 1 }));
@@ -61,6 +110,29 @@ function makeService(
   const tx = {
     billingCreditBucket: {
       findMany: vi.fn(async () => opts.activeBuckets ?? []),
+      // The locked re-check of one Stripe object against one bucket.
+      findUnique: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { organizationId_sourceType_sourceId: GrantRow };
+        }) => {
+          const key = where.organizationId_sourceType_sourceId;
+          return (
+            confirmedBuckets.find(
+              (bucket) =>
+                bucket.organizationId === key.organizationId &&
+                bucket.sourceType === key.sourceType &&
+                bucket.sourceId === key.sourceId,
+            ) ?? null
+          );
+        },
+      ),
+    },
+    subscription: {
+      findUnique: vi.fn(async ({ where }: { where: { organizationId: string } }) => {
+        return subscriptionRows.find((row) => row.organizationId === where.organizationId) ?? null;
+      }),
     },
     organizationCreditBalance: {
       findUnique: vi.fn(async ({ where }: { where: { organizationId: string } }) => {
@@ -104,7 +176,13 @@ function makeService(
       })),
     },
     billingCreditBucket: {
-      findMany: vi.fn(async () => opts.expiringBuckets ?? []),
+      // Two callers: bucket expiry (by status) and the Stripe drift bulk
+      // pre-filter (by the Stripe IDs it just listed).
+      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
+        args?.where && 'sourceId' in args.where
+          ? (opts.grantedBuckets ?? [])
+          : (opts.expiringBuckets ?? []),
+      ),
       updateMany: bucketUpdateMany,
     },
     callUsage: {
@@ -117,9 +195,17 @@ function makeService(
       count: vi.fn(async () => 3),
     },
     subscription: {
-      findMany: vi.fn(
-        async (_args: { where: { plan: string } }) => opts.subscriptions ?? [],
-      ),
+      // One table, four callers: margin metrics (by plan), Stripe customer
+      // ownership, our rows for the subscriptions Stripe listed, and our rows
+      // that claim to be live. Dispatched on the filter each one uses.
+      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) => {
+        const where = args?.where ?? {};
+        if ('plan' in where) return opts.subscriptions ?? [];
+        if ('stripeCustomerId' in where) return opts.subscriptionOwners ?? [];
+        if ('status' in where) return opts.locallyLiveSubscriptions ?? [];
+        if ('stripeSubscriptionId' in where) return opts.linkedSubscriptions ?? [];
+        return opts.subscriptions ?? [];
+      }),
     },
     providerCostEvent: {
       aggregate: vi.fn(async () => ({ _sum: { amount: opts.costSum ?? 0 } })),
@@ -147,6 +233,36 @@ function makeService(
     releaseReservation: vi.fn(async () => undefined),
   };
 
+  // Only the list endpoints exist: any attempt to mutate Stripe from
+  // reconciliation is a TypeError rather than a silent success.
+  const stripe = {
+    invoices: {
+      list: vi.fn(async () => ({ data: opts.stripeInvoices ?? [], has_more: false })),
+    },
+    checkout: {
+      sessions: {
+        list: vi.fn(async () => ({ data: opts.stripeSessions ?? [], has_more: false })),
+      },
+    },
+    subscriptions: {
+      list: vi.fn(async () => ({
+        data: opts.stripeSubscriptions ?? [],
+        has_more: opts.stripeSubscriptionsHasMore ?? false,
+      })),
+    },
+  };
+
+  const service = new ReconciliationService(
+    prisma as never,
+    audit as never,
+    metrics as never,
+    providerCosts as never,
+    creditLedger as never,
+  );
+  // Same seam the rest of the billing tests use: the real client is built from
+  // STRIPE_SECRET_KEY in the constructor and replaced here.
+  Object.assign(service as unknown as { stripe: unknown }, { stripe });
+
   return {
     prisma,
     tx,
@@ -154,18 +270,13 @@ function makeService(
     metrics,
     providerCosts,
     creditLedger,
+    stripe,
     balanceUpdate,
     balanceUpdateMany,
     bucketUpdateMany,
     callUsageUpdateMany,
     leaseUpdateMany,
-    service: new ReconciliationService(
-      prisma as never,
-      audit as never,
-      metrics as never,
-      providerCosts as never,
-      creditLedger as never,
-    ),
+    service,
   };
 }
 
@@ -679,6 +790,181 @@ describe('ReconciliationService.reconcileProviderCosts', () => {
   });
 });
 
+describe('ReconciliationService.reportStripeDrift', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** A paid invoice, a paid minute pack and a subscription, all for one org. */
+  function driftFixture() {
+    return {
+      stripeInvoices: [
+        { id: 'in_1', customer: CUSTOMER, subscription: 'sub_1', amount_paid: 9_900 },
+      ],
+      stripeSessions: [
+        {
+          id: 'cs_1',
+          customer: CUSTOMER,
+          payment_status: 'paid',
+          metadata: { purchaseType: 'minute_pack' },
+        },
+      ],
+      stripeSubscriptions: [
+        { id: 'sub_1', status: 'past_due', items: { data: [{ price: { id: 'price_growth' } }] } },
+      ],
+      subscriptionOwners: [{ organizationId: ORG, stripeCustomerId: CUSTOMER }],
+      linkedSubscriptions: [
+        {
+          organizationId: ORG,
+          stripeSubscriptionId: 'sub_1',
+          // Stripe says past_due; we are still serving them as active.
+          status: 'active',
+          stripePriceId: 'price_growth',
+        },
+      ],
+      locallyLiveSubscriptions: [
+        {
+          organizationId: ORG,
+          stripeSubscriptionId: 'sub_1',
+          status: 'active',
+          stripePriceId: 'price_growth',
+        },
+      ],
+    };
+  }
+
+  it('counts money Stripe collected that bought no credit, and subscription state drift', async () => {
+    const { service } = makeService({ ...driftFixture(), grantedBuckets: [] });
+
+    const report = await service.reportStripeDrift();
+
+    expect(report.stripeObjectsCompared).toBe(3);
+    expect(report.stripePaidInvoicesWithoutCredit).toBe(1);
+    expect(report.stripePaidPacksWithoutCredit).toBe(1);
+    expect(report.stripeSubscriptionDrift).toBe(1);
+  });
+
+  it('never writes to our database or mutates Stripe when it finds drift', async () => {
+    const {
+      service,
+      audit,
+      balanceUpdate,
+      balanceUpdateMany,
+      bucketUpdateMany,
+      callUsageUpdateMany,
+      leaseUpdateMany,
+    } = makeService({ ...driftFixture(), grantedBuckets: [] });
+
+    const report = await service.reportStripeDrift();
+
+    // Guard: without confirmed drift the assertions below would pass trivially.
+    expect(report.stripePaidInvoicesWithoutCredit + report.stripeSubscriptionDrift).toBeGreaterThan(
+      0,
+    );
+    // Report-only. Healing from a comparison this young would double-grant
+    // credit or claw back credit the customer owns, so not one write is made —
+    // not even an audit row, which records corrections that actually happened.
+    expect(balanceUpdate).not.toHaveBeenCalled();
+    expect(balanceUpdateMany).not.toHaveBeenCalled();
+    expect(bucketUpdateMany).not.toHaveBeenCalled();
+    expect(callUsageUpdateMany).not.toHaveBeenCalled();
+    expect(leaseUpdateMany).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing, and locks nothing, when the credit was granted', async () => {
+    const { service, prisma, tx } = makeService({
+      ...driftFixture(),
+      // Both payments produced their bucket, and Stripe agrees with our row.
+      grantedBuckets: [
+        { organizationId: ORG, sourceType: 'included', sourceId: 'in_1' },
+        { organizationId: ORG, sourceType: 'purchased', sourceId: 'cs_1' },
+      ],
+      stripeSubscriptions: [
+        { id: 'sub_1', status: 'active', items: { data: [{ price: { id: 'price_growth' } }] } },
+      ],
+    });
+
+    const report = await service.reportStripeDrift();
+
+    expect(report.stripePaidInvoicesWithoutCredit).toBe(0);
+    expect(report.stripePaidPacksWithoutCredit).toBe(0);
+    expect(report.stripeSubscriptionDrift).toBe(0);
+    // An organization with nothing suspicious is never locked, so this pass
+    // cannot make the real repairs skip it.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.billingCreditBucket.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('skips the cancellation check when the Stripe subscription list is incomplete', async () => {
+    const { service, prisma } = makeService({
+      stripeSubscriptionsHasMore: true,
+      stripeSubscriptions: [
+        { id: 'sub_1', status: 'active', items: { data: [{ price: { id: 'price_growth' } }] } },
+      ],
+      linkedSubscriptions: [
+        {
+          organizationId: ORG,
+          stripeSubscriptionId: 'sub_1',
+          status: 'active',
+          stripePriceId: 'price_growth',
+        },
+      ],
+      // Absent from the (truncated) Stripe listing. A partial list is not
+      // evidence of cancellation, so this must not be reported as drift.
+      locallyLiveSubscriptions: [
+        {
+          organizationId: 'org-2',
+          stripeSubscriptionId: 'sub_missing',
+          status: 'active',
+          stripePriceId: 'price_growth',
+        },
+      ],
+    });
+
+    const report = await service.reportStripeDrift(2);
+
+    expect(report.stripeSubscriptionDrift).toBe(0);
+    expect(prisma.subscription.findMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: expect.anything() }) }),
+    );
+  });
+
+  it('no-ops cleanly when Stripe is not configured', async () => {
+    const { service, prisma, stripe } = makeService({ ...driftFixture(), grantedBuckets: [] });
+    Object.assign(service as unknown as { stripe: unknown }, { stripe: null });
+
+    const report = await service.reportStripeDrift();
+
+    expect(report).toEqual(emptyReconciliationReport());
+    expect(stripe.invoices.list).not.toHaveBeenCalled();
+    expect(prisma.billingCreditBucket.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReconciliationService.runAll', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('carries the Stripe drift counters through the merge', async () => {
+    const { service } = makeService();
+    // The merge is a hand-written reducer: a counter the report type gained but
+    // the reducer did not is silently dropped, and the drift would never
+    // surface from a full pass.
+    vi.spyOn(service, 'reportStripeDrift').mockResolvedValue({
+      ...emptyReconciliationReport(),
+      stripeObjectsCompared: 42,
+      stripePaidInvoicesWithoutCredit: 3,
+      stripePaidPacksWithoutCredit: 2,
+      stripeSubscriptionDrift: 1,
+    });
+
+    const report = await service.runAll();
+
+    expect(report.stripeObjectsCompared).toBe(42);
+    expect(report.stripePaidInvoicesWithoutCredit).toBe(3);
+    expect(report.stripePaidPacksWithoutCredit).toBe(2);
+    expect(report.stripeSubscriptionDrift).toBe(1);
+  });
+});
+
 describe('ReconciliationService.publishMarginMetrics', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -697,8 +983,8 @@ describe('ReconciliationService.publishMarginMetrics', () => {
     const { service, metrics, prisma } = makeService({ costSum: 99 });
     metrics.planContributionMarginRatio.labels.mockReturnValue({ set });
     // One Starter subscription at $99/month against $99 of provider cost.
-    prisma.subscription.findMany.mockImplementation(async ({ where }) =>
-      where.plan === 'starter' ? [{ organizationId: ORG }] : [],
+    prisma.subscription.findMany.mockImplementation(async (args) =>
+      args?.where?.['plan'] === 'starter' ? [{ organizationId: ORG }] : [],
     );
 
     await service.publishMarginMetrics();

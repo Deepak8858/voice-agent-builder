@@ -216,7 +216,17 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'billing/reconciliation.service.ts:callUsage.updateMany': 2,
   'billing/reconciliation.service.ts:organizationCreditBalance.aggregate': 1,
   'billing/reconciliation.service.ts:organizationCreditBalance.findMany': 1,
-  'billing/reconciliation.service.ts:subscription.findMany': 1,
+  // 4 sites, all cross-tenant by design and reachable only from the scheduled
+  // billing-reconciliation worker, never from a tenant-facing route:
+  // publishMarginMetrics() counts subscriptions per plan across every tenant,
+  // and the three added by the Stripe drift comparison must each observe every
+  // tenant to do their job — organizationsByStripeCustomer() and the
+  // stripeSubscriptionId lookup resolve which organization owns a Stripe object
+  // (an organizationId predicate would be circular, exactly like the Stripe
+  // webhook lookups above), and the locally-live sweep enumerates every
+  // organization claiming a live subscription so Stripe can be asked whether it
+  // still is. The comparison is strictly read-only: it writes nothing.
+  'billing/reconciliation.service.ts:subscription.findMany': 4,
   'calls/calls.service.ts:agentVersion.findFirst': 1,
   'calls/calls.service.ts:agentVersion.findUnique': 1,
   'calls/calls.service.ts:call.findFirst': 1,
