@@ -243,6 +243,17 @@ class MemoryPrisma {
       );
       return structuredClone(filtered);
     },
+    findFirst: async (input: {
+      where: { organizationId: string; stripePaymentIntentId?: string | null };
+      select?: { id: true };
+    }): Promise<BucketRecord | null> => {
+      const bucket = this.buckets.find(
+        (candidate) =>
+          candidate.organizationId === input.where.organizationId &&
+          candidate.stripePaymentIntentId === (input.where.stripePaymentIntentId ?? null),
+      );
+      return bucket ? structuredClone(bucket) : null;
+    },
     findUnique: async (input: {
       where: {
         organizationId_sourceType_sourceId: {
@@ -471,6 +482,10 @@ class MemoryPrisma {
       findMany: async (input) => {
         this.assertLockedAccess(context, 'bucket.findMany', input.where.organizationId);
         return this.billingCreditBucket.findMany(input);
+      },
+      findFirst: async (input) => {
+        this.assertLockedAccess(context, 'bucket.findFirst', input.where.organizationId);
+        return this.billingCreditBucket.findFirst(input);
       },
       findUnique: async (input) => {
         const organizationId = input.where.organizationId_sourceType_sourceId.organizationId;
@@ -890,10 +905,13 @@ describe('CreditLedgerService', () => {
    * The Checkout session id is the only thing keying this grant, and Stripe can
    * deliver the same payment under a second session id (a recovered session, a
    * replay after a session was recreated). The idempotency key does not catch
-   * that; the unique index does, which is why it has to exist in the database
-   * rather than as a lookup this transaction could race.
+   * that. Granting once is the money property and it held before, by way of the
+   * unique index — but the rejection rolled the transaction back including the
+   * acknowledgement, so Stripe redelivered the same event until it gave up. The
+   * second delivery must settle instead: no second pack, and the event marked
+   * processed.
    */
-  it('refuses a second pack funded by a payment intent that already bought one', async () => {
+  it('acknowledges a second pack funded by a payment intent that already bought one', async () => {
     const { prisma, service } = makeService();
     await service.grantPurchasedCredits({
       organizationId: 'org-pi-replay',
@@ -901,18 +919,49 @@ describe('CreditLedgerService', () => {
       purchasedAt: NOW,
       paymentIntentId: 'pi_once',
     });
+    prisma.seedStripeEvent('evt_pi_replay');
+
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-replay',
+      checkoutSessionId: 'cs_pi_second',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_once',
+      stripeEventId: 'evt_pi_replay',
+    });
+
+    expect(prisma.buckets).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant')).toHaveLength(1);
+    expect(prisma.stripeEvents.get('evt_pi_replay')?.processedAt).toBeInstanceOf(Date);
+    const balance = await service.getBalance('org-pi-replay');
+    expectExactSeconds(balance, { available: 6_000, reserved: 0, totalOwned: 6_000 });
+  });
+
+  /**
+   * The acknowledgement above is scoped to the organization, so it can never
+   * hand another tenant's purchase to this one. A payment intent that funded a
+   * different organization's pack has to fall through to the create and be
+   * rejected by the index — one payment, one pack, whoever asks.
+   */
+  it('refuses a pack funded by another organization payment intent', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-owner',
+      checkoutSessionId: 'cs_pi_owner',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_owned',
+    });
 
     await expect(
       service.grantPurchasedCredits({
-        organizationId: 'org-pi-replay',
-        checkoutSessionId: 'cs_pi_second',
+        organizationId: 'org-pi-thief',
+        checkoutSessionId: 'cs_pi_thief',
         purchasedAt: NOW,
-        paymentIntentId: 'pi_once',
+        paymentIntentId: 'pi_owned',
       }),
     ).rejects.toMatchObject({ code: 'P2002' });
     expect(prisma.buckets).toHaveLength(1);
-    const balance = await service.getBalance('org-pi-replay');
-    expectExactSeconds(balance, { available: 6_000, reserved: 0, totalOwned: 6_000 });
+    const balance = await service.getBalance('org-pi-thief');
+    expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
   });
 
   it('replays a checkout naming the same payment intent without granting twice', async () => {

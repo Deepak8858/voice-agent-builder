@@ -833,6 +833,32 @@ export class CreditLedgerService {
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
+      // The idempotency key above is the Checkout session, but Stripe can deliver
+      // the same payment under a second session id. That replay misses the key and
+      // used to collide with `credit_bucket_payment_intent_uidx` — which rolled the
+      // whole transaction back, acknowledgement included, so Stripe retried the
+      // event until it gave up. Recognising the already-funded pack keeps the money
+      // decision identical and lets the event settle.
+      //
+      // Scoped to the organization, so a payment intent belonging to another tenant
+      // is never acknowledged here — it falls through to the create and the unique
+      // index rejects it. The index stays as the backstop for anything this lookup
+      // cannot see, and the `FOR UPDATE` in `withLockedBalance` serialises same-org
+      // deliveries, so the lookup cannot race one.
+      if (input.paymentIntentId) {
+        const funded = await tx.billingCreditBucket.findFirst({
+          where: {
+            organizationId: input.organizationId,
+            stripePaymentIntentId: input.paymentIntentId,
+          },
+          select: { id: true },
+        });
+        if (funded) {
+          await this.markStripeEventProcessed(tx, input.stripeEventId);
+          return this.buildCreditBalance(tx, lockedBalance);
+        }
+      }
+
       const expiresAt = new Date(input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS);
       const bucket = await tx.billingCreditBucket.create({
         data: {
