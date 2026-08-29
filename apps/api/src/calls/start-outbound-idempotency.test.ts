@@ -20,7 +20,7 @@ const existingCall = {
   createdAt: new Date('2026-05-26T12:00:00.000Z'),
 };
 
-function makeService(options?: { routeFailure?: Error }) {
+function makeService(options?: { routeFailure?: Error; windowCall?: { status: string } }) {
   const prisma = {
     workspace: {
       findUniqueOrThrow: vi.fn(async () => ({
@@ -29,9 +29,17 @@ function makeService(options?: { routeFailure?: Error }) {
       })),
     },
     call: {
-      findFirst: options?.routeFailure
-        ? vi.fn(async () => null)
-        : vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(existingCall),
+      // `windowCall` applies the real `status` predicate to one row inside the
+      // 60s window, so a test can tell "no duplicate found" apart from "a
+      // duplicate was found and returned".
+      findFirst: options?.windowCall
+        ? vi.fn(async ({ where }: { where: { status?: { notIn?: string[] } } }) => {
+            const row = { ...existingCall, status: options.windowCall!.status };
+            return (where.status?.notIn ?? []).includes(row.status) ? null : row;
+          })
+        : options?.routeFailure
+          ? vi.fn(async () => null)
+          : vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(existingCall),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
         id: 'call-new',
         workspaceId: 'ws-1',
@@ -52,9 +60,13 @@ function makeService(options?: { routeFailure?: Error }) {
         ...data,
       })),
       update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...existingCall,
         id: 'call-new',
         ...data,
       })),
+    },
+    callUsage: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     agent: {
       findFirst: vi.fn(async () => ({
@@ -96,7 +108,7 @@ function makeService(options?: { routeFailure?: Error }) {
   };
   const queue = { enqueue: vi.fn(async () => undefined) };
   const cache = {
-    acquireLock: vi.fn(async () => (options?.routeFailure ? true : false)),
+    acquireLock: vi.fn(async () => Boolean(options?.routeFailure || options?.windowCall)),
     publish: vi.fn(async () => undefined),
     del: vi.fn(async () => undefined),
   };
@@ -188,5 +200,34 @@ describe('CallsService.startOutboundCall idempotency', () => {
     expect(admission.admitCall).not.toHaveBeenCalled();
     expect(admission.compensate).not.toHaveBeenCalled();
     expect(prisma.call.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A call that never connected is not a duplicate. Without a status predicate
+   * the failed row is returned as if the dial had succeeded, so the caller is
+   * told a call was placed that nobody is on, and cannot retry for a minute.
+   */
+  it('does not let a failed call in the window suppress a retry', async () => {
+    const { service, voice, prisma } = makeService({ windowCall: { status: 'failed' } });
+
+    const result = await service.startOutboundCall('ws-1', 'agent-1', 'user-1', {
+      to_number: '+15551234567',
+    });
+
+    expect(voice.startOutboundCall).toHaveBeenCalledTimes(1);
+    expect(prisma.call.create).toHaveBeenCalledTimes(1);
+    expect(result.id).toBe('call-new');
+  });
+
+  it('still suppresses a retry while an in_progress call to the same number is live', async () => {
+    const { service, voice, prisma } = makeService({ windowCall: { status: 'in_progress' } });
+
+    const result = await service.startOutboundCall('ws-1', 'agent-1', 'user-1', {
+      to_number: '+15551234567',
+    });
+
+    expect(voice.startOutboundCall).not.toHaveBeenCalled();
+    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(result.id).toBe('call-existing');
   });
 });

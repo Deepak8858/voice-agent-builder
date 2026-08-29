@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { validate as isUuid } from 'uuid';
 import type {
@@ -41,6 +41,16 @@ import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 const CALL_LIST_TTL_SECONDS = 15;
 
 /**
+ * `Call.status` values a call can never leave (see the column comment in
+ * schema.prisma). Deliberately only the canonical column values: raw provider
+ * spellings like `busy` or `no-answer` are mapped to these by
+ * `TelephonyService.statusMap` before they are ever written here, so
+ * `TelephonyService.isTerminalStatus` — which runs on the un-mapped provider
+ * status — keeps a wider list on purpose.
+ */
+const TERMINAL_CALL_STATUSES: readonly string[] = ['completed', 'failed', 'cancelled'];
+
+/**
  * Single spelling of the live-event Pub/Sub channel, shared by the publisher
  * here and the SSE subscriber in the controller — two spellings of one channel
  * is how the stream silently goes dark. The workspace id is part of the channel
@@ -53,6 +63,8 @@ export function liveCallChannel(workspaceId: string, callId: string): string {
 
 @Injectable()
 export class CallsService {
+  private readonly logger = new Logger(CallsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
@@ -700,6 +712,15 @@ export class CallsService {
     const call = await this.prisma.call.findFirst({ where: { id: callId, workspaceId } });
     if (!call) throw new CallNotFoundError(callId);
 
+    // Ending an already-ended call is a no-op, not a second end. Re-running the
+    // body would re-derive `durationSeconds` as `now - startedAt` (a call that
+    // ended an hour ago becomes an hour long), launder a `failed` call into
+    // `completed`, and record its usage a second time — and this route is a
+    // plain POST, so a retry or a double-click is enough to trigger it.
+    // Idempotent rather than a 409: the caller's intent ("this call is over")
+    // is already satisfied, so it gets 200 with the true final state.
+    if (TERMINAL_CALL_STATUSES.includes(call.status)) return this.toSummary(call);
+
     if (call.providerCallId) {
       try {
         const voice = this.voiceForProviderName(call.provider);
@@ -1024,8 +1045,15 @@ export class CallsService {
         const minutes = Math.max(1, Math.ceil(durationSeconds / 60));
         await this.billing.recordUsage(workspaceId, 'minutes', minutes);
       }
-    } catch {
-      // usage recording is best-effort; never fail a call end
+    } catch (err) {
+      // Usage recording is best-effort; never fail a call end. It still has to
+      // be visible: this writes the reporting table, so swallowing it silently
+      // makes minutes vanish from the usage panel with no trace anywhere.
+      this.logger.error(
+        `Failed to record usage for call ${callId} in workspace ${workspaceId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
@@ -1040,6 +1068,14 @@ export class CallsService {
         agentId,
         toNumber,
         createdAt: { gt: new Date(Date.now() - 60000) },
+        // Only a call that is still in flight (or actually connected) may
+        // suppress a new dial. A `failed`/`cancelled` row — a provider reject, a
+        // routing failure, a billing denial — would otherwise be replayed to the
+        // caller as a successful placement and lock the number out for a minute,
+        // so the retry that is exactly the right response becomes impossible.
+        // `notIn` rather than `in`: an unrecognised status is assumed live,
+        // because double-dialling a real person costs more than one extra retry.
+        status: { notIn: ['failed', 'cancelled'] },
       },
     });
   }
