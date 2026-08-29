@@ -1,5 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The erasure path drives the real PhoneNumbersService.release, which reads these
+// at call time and throws TWILIO_NOT_CONFIGURED without them. Mirrors
+// phone-numbers.service.test.ts.
+const envState = vi.hoisted(() => ({
+  TWILIO_ACCOUNT_SID: 'ACtest',
+  TWILIO_AUTH_TOKEN: 'token',
+}));
+vi.mock('../config/env', () => ({ env: envState }));
+
 import { ErasureService } from './erasure.service';
+import { PhoneNumbersService } from '../phone-numbers/phone-numbers.service';
 
 // Every workspace-scoped model the erasure path must clear. Mirrors the
 // non-CASCADE foreign keys pointing at `workspaces`.
@@ -26,6 +37,15 @@ interface KnowledgeRow {
   metadata: unknown;
 }
 
+interface PhoneNumberRow {
+  id: string;
+  workspaceId: string;
+  phoneNumber: string;
+  type: string;
+  twilioSid: string | null;
+  agentId?: string | null;
+}
+
 describe('ErasureService', () => {
   function makeService(opts: {
     contact?: { id: string; phone: string } | null;
@@ -41,6 +61,7 @@ describe('ErasureService', () => {
       stripeSubscriptionId: string | null;
       status: string;
     } | null;
+    phoneNumbers?: PhoneNumberRow[];
   }) {
     const deletedContacts: string[] = [];
     const deletedWorkspaces: string[] = [];
@@ -49,6 +70,8 @@ describe('ErasureService', () => {
     // Records the order in which models were cleared so we can assert that
     // child rows are removed before the parents they reference.
     const deleteOrder: string[] = [];
+    const deletedNumbers: string[] = [];
+    const liveNumbers: PhoneNumberRow[] = [...(opts.phoneNumbers ?? [])];
 
     const prisma: Record<string, unknown> = {
       contact: {
@@ -112,6 +135,25 @@ describe('ErasureService', () => {
           return { count: 0 };
         }),
       },
+      // Not in WORKSPACE_SCOPED_MODELS: the workspace foreign key is ON DELETE
+      // CASCADE, which is exactly the problem -- the rows go away carrying the
+      // only copy of `twilioSid`. Erasure must hand each number back first.
+      twilioPhoneNumber: {
+        findMany: vi.fn(async () => opts.phoneNumbers ?? []),
+        findFirst: vi.fn(async ({ where }: { where: { id: string; workspaceId: string } }) =>
+          liveNumbers.find((n) => n.id === where.id && n.workspaceId === where.workspaceId) ?? null,
+        ),
+        deleteMany: vi.fn(async ({ where }: { where: { id: string; workspaceId: string } }) => {
+          const idx = liveNumbers.findIndex(
+            (n) => n.id === where.id && n.workspaceId === where.workspaceId,
+          );
+          if (idx === -1) return { count: 0 };
+          liveNumbers.splice(idx, 1);
+          deleteOrder.push(`twilioPhoneNumber:${where.id}`);
+          deletedNumbers.push(where.id);
+          return { count: 1 };
+        }),
+      },
     };
 
     for (const model of WORKSPACE_SCOPED_MODELS) {
@@ -151,12 +193,19 @@ describe('ErasureService', () => {
       invalidateOrgAccess: vi.fn(async () => undefined),
     };
 
+    // The real service, not a stub: skipping `type === 'byo'`, calling the
+    // carrier before dropping the row and refusing on a carrier error all live
+    // in there, and this is also what pins the argument order of the call.
+    // `billing` is unused by release().
+    const phoneNumbers = new PhoneNumbersService(prisma as never, audit as never, undefined);
+
     return {
       service: new ErasureService(
         prisma as never,
         audit as never,
         fileStorage as never,
         invalidator as never,
+        phoneNumbers,
       ),
       prisma,
       audit,
@@ -166,6 +215,7 @@ describe('ErasureService', () => {
       deletedWorkspaces,
       deletedOrganizations,
       deletedFiles,
+      deletedNumbers,
       deleteOrder,
       auditLogs,
     };
@@ -460,6 +510,133 @@ describe('ErasureService', () => {
       }
       // OrganizationGuard grants by ownership too, without any membership row.
       expect(invalidator.invalidateOrgAccess).toHaveBeenCalledWith('org-1', 'owner-1');
+    });
+
+    /**
+     * `twilio_phone_numbers.workspace_id` is ON DELETE CASCADE, so erasing the
+     * workspace deletes the number rows and with them `twilioSid` -- the only
+     * handle that can ever release the number. The number then bills monthly on
+     * VoiceForge's own Twilio account forever, unreachable from this product.
+     */
+    describe('carrier release', () => {
+      let fetchMock: ReturnType<typeof vi.fn>;
+
+      function number(over: Partial<PhoneNumberRow> & { id: string }): PhoneNumberRow {
+        return {
+          workspaceId: 'ws-1',
+          phoneNumber: `+1415555${over.id.slice(-4).padStart(4, '0')}`,
+          type: 'local',
+          twilioSid: `PN${over.id}`,
+          agentId: null,
+          ...over,
+        };
+      }
+
+      beforeEach(() => {
+        fetchMock = vi.fn(async () => ({ ok: true, status: 204 }));
+        vi.stubGlobal('fetch', fetchMock);
+      });
+
+      it('releases every non-BYO number at the carrier before the cascade deletes it', async () => {
+        const { service, prisma, deleteOrder, deletedNumbers } = makeService({
+          organization: { id: 'org-1', name: 'Acme' },
+          workspaces: [{ id: 'ws-1' }, { id: 'ws-2' }],
+          phoneNumbers: [
+            number({ id: '0001' }),
+            number({ id: '0002', workspaceId: 'ws-2', type: 'tollfree' }),
+          ],
+        });
+
+        const result = await service.eraseOrganization('org-1');
+
+        expect(result.success).toBe(true);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        for (const sid of ['PN0001', 'PN0002']) {
+          expect(fetchMock).toHaveBeenCalledWith(
+            expect.stringContaining(`/IncomingPhoneNumbers/${sid}.json`),
+            expect.objectContaining({ method: 'DELETE' }),
+          );
+        }
+        // Carrier first: a row dropped before a successful release is the orphan.
+        const workspaceDelete = (prisma.workspace as { delete: ReturnType<typeof vi.fn> }).delete;
+        expect(fetchMock.mock.invocationCallOrder[0])
+          .toBeLessThan(workspaceDelete.mock.invocationCallOrder[0]);
+        expect(deletedNumbers).toEqual(['0001', '0002']);
+        expect(deleteOrder.indexOf('twilioPhoneNumber:0001'))
+          .toBeLessThan(deleteOrder.indexOf('workspace:ws-1'));
+      });
+
+      it('does not send a BYO number to the carrier', async () => {
+        // A BYO number lives on the customer's own Twilio account, so releasing
+        // it would delete someone else's number. `addByo` still records a sid.
+        const { service, deletedOrganizations } = makeService({
+          organization: { id: 'org-1', name: 'Acme' },
+          workspaces: [{ id: 'ws-1' }],
+          phoneNumbers: [number({ id: '0003', type: 'byo' })],
+        });
+
+        const result = await service.eraseOrganization('org-1');
+
+        expect(result.success).toBe(true);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(deletedOrganizations).toEqual(['org-1']);
+      });
+
+      it('aborts the erasure with nothing deleted when the carrier refuses', async () => {
+        fetchMock.mockResolvedValue({ ok: false, status: 500 });
+        const { service, prisma, deletedOrganizations, deletedWorkspaces, deletedNumbers, audit } =
+          makeService({
+            organization: { id: 'org-1', name: 'Acme' },
+            workspaces: [{ id: 'ws-1' }],
+            phoneNumbers: [number({ id: '0004' })],
+          });
+
+        const result = await service.eraseOrganization('org-1');
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('+14155550004');
+        // Nothing may be destroyed: the sid must stay resolvable for the retry.
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(deletedNumbers).toEqual([]);
+        expect(deletedWorkspaces).toEqual([]);
+        expect(deletedOrganizations).toEqual([]);
+        expect(audit.log).not.toHaveBeenCalled();
+      });
+
+      it('keeps the numbers it already released when a later one refuses', async () => {
+        // Partial failure is the least-bad outcome available: the released rows
+        // are gone, so a retry re-enumerates only what is still held, and the
+        // one that refused keeps the sid needed to release it by hand.
+        const { service, deletedNumbers, deletedOrganizations } = makeService({
+          organization: { id: 'org-1', name: 'Acme' },
+          workspaces: [{ id: 'ws-1' }],
+          phoneNumbers: [number({ id: '0005' }), number({ id: '0006' })],
+        });
+        fetchMock
+          .mockResolvedValueOnce({ ok: true, status: 204 })
+          .mockResolvedValueOnce({ ok: false, status: 502 });
+
+        const result = await service.eraseOrganization('org-1');
+
+        expect(result.success).toBe(false);
+        expect(deletedNumbers).toEqual(['0005']);
+        expect(deletedOrganizations).toEqual([]);
+      });
+
+      it('erases a workspace with no numbers without touching the carrier', async () => {
+        const { service, deletedOrganizations, deletedWorkspaces } = makeService({
+          organization: { id: 'org-1', name: 'Acme' },
+          workspaces: [{ id: 'ws-1' }],
+          phoneNumbers: [],
+        });
+
+        const result = await service.eraseOrganization('org-1');
+
+        expect(result.success).toBe(true);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(deletedWorkspaces).toEqual(['ws-1']);
+        expect(deletedOrganizations).toEqual(['org-1']);
+      });
     });
   });
 

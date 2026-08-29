@@ -4,6 +4,7 @@ import { hasLiveSubscription } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CacheInvalidator } from '../common/cache-invalidator';
+import { PhoneNumbersService } from '../phone-numbers/phone-numbers.service';
 import {
   KNOWLEDGE_FILE_STORAGE_TOKEN,
   type KnowledgeFileStorage,
@@ -26,6 +27,7 @@ export class ErasureService {
     @Inject(KNOWLEDGE_FILE_STORAGE_TOKEN)
     private readonly fileStorage: KnowledgeFileStorage,
     private readonly invalidator: CacheInvalidator,
+    private readonly phoneNumbers: PhoneNumbersService,
   ) {}
 
   async eraseContact(workspaceId: string, contactId: string): Promise<ErasureResult> {
@@ -105,6 +107,51 @@ export class ErasureService {
       };
     }
 
+    const workspaces = await this.prisma.workspace.findMany({
+      where: { organizationId: orgId },
+      select: { id: true },
+    });
+    const workspaceIds = workspaces.map((ws) => ws.id);
+
+    // The same ordering rule as the Stripe refusal above, applied to the
+    // carrier. `twilio_phone_numbers.workspace_id` is ON DELETE CASCADE, so the
+    // workspace delete below drops every number row -- and with it `twilioSid`,
+    // the only handle that can ever release the number -- while the number keeps
+    // billing monthly on VoiceForge's own Twilio account. Release-then-delete is
+    // recoverable (retry; the number is already off the account);
+    // delete-then-release is unrecoverable through this product. Enumerated
+    // before the delete for the same reason as the memberships below: afterwards
+    // there is nothing left to say which numbers existed. Outside the
+    // transaction deliberately -- an external HTTP call must not hold one open,
+    // and Postgres aborts the whole transaction on the first failed statement,
+    // so a refusal could not be recovered from inside it.
+    const numbers = workspaceIds.length === 0
+      ? []
+      : await this.prisma.twilioPhoneNumber.findMany({
+          where: { workspaceId: { in: workspaceIds } },
+          select: { id: true, workspaceId: true, phoneNumber: true },
+        });
+    for (const number of numbers) {
+      // PhoneNumbersService.release already calls the carrier first and only
+      // then drops the row, skips `type === 'byo'`, tolerates a concurrent
+      // release and writes the `phone_number.release` audit entry.
+      try {
+        await this.phoneNumbers.release(number.workspaceId, number.id);
+      } catch (err) {
+        // Numbers released before this one stay released, which is the intended
+        // end state for them; their rows are gone so a retry will not revisit
+        // them. Refusing here leaves the rest of the tenant's data intact and
+        // erasable on retry, whereas proceeding would strand this number.
+        return {
+          success: false,
+          error:
+            `Organization ${orgId} still holds phone number ${number.phoneNumber} at the carrier: `
+            + `${err instanceof Error ? err.message : String(err)}. Release it, then retry: `
+            + `deleting the workspace removes the only record of its Twilio SID.`,
+        };
+      }
+    }
+
     await this.audit.log({
       organizationId: orgId,
       action: 'gdpr.organization_deleted',
@@ -121,12 +168,6 @@ export class ErasureService {
         stripeSubscriptionStatus: subscription?.status ?? null,
       },
     });
-
-    const workspaces = await this.prisma.workspace.findMany({
-      where: { organizationId: orgId },
-      select: { id: true },
-    });
-    const workspaceIds = workspaces.map((ws) => ws.id);
 
     // Collect the stored objects before the rows are deleted; afterwards the
     // metadata that tells us which bucket/key to remove is gone forever.
