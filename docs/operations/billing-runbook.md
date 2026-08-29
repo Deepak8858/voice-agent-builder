@@ -39,6 +39,18 @@ The pack terms come from `MINUTE_PACK` in the catalog. The price id is resolved
 server-side during top-up checkout. Never accept a price id from a client: a
 client-supplied price lets a caller buy minutes at a price of their choosing.
 
+The pack session is created with `payment_method_types: ['card']` and must stay
+that way. A delayed-notification method (ACH, SEPA debit, Bacs) completes
+Checkout with `payment_status: 'unpaid'` and settles days later on
+`checkout.session.async_payment_succeeded`, which is deliberately not in the
+subscribed set in §1.3 — so the customer would pay and never receive the
+minutes. A subscription is safe with delayed methods because its credit is
+granted from `invoice.paid`, which only fires once the money has cleared; a
+one-time pack has no equivalent later proof. Enabling extra payment methods for
+the pack in the Stripe dashboard changes nothing, because the session pins the
+list. If a pack session ever does complete unpaid, it is recorded as
+`billing.pack_checkout_unpaid_review` (see §4.2) and must be resolved by hand.
+
 ### 1.3 Webhook endpoint
 
 Point a Stripe webhook at the API's Stripe webhook route and store the signing
@@ -62,6 +74,12 @@ reversal handler never runs and disputed minute-pack credit stays on the
 account permanently. Over-subscribing is not free either: an event we do not
 handle is still recorded in `stripe_events` and marked processed, so it reads
 afterwards as though it had been acted on.
+
+`checkout.session.async_payment_succeeded` is deliberately absent for the same
+reason. It is the event that would settle a delayed-notification pack payment,
+and the pack Checkout is pinned to card (§1.2) precisely so that case cannot
+arise. Subscribing to it without also writing a grant handler would record it as
+processed and grant nothing, which is worse than not receiving it.
 
 Entitlement changes are applied **only** from a signature-verified webhook. A
 `session_id` on a return URL is not proof of payment and must never activate a
@@ -222,6 +240,40 @@ Resolve by hand: establish what the call actually consumed from
 `call_usages` and `billing_ledger_entries`, apply an explicit adjustment entry,
 then clear `status` and `review_reason`. Never clear the flag without an
 adjustment entry — the flag is the only record that a human looked at it.
+
+The Stripe webhook flags three more conditions it refuses to guess at. None of
+them blocks calling; each one is a payer whose commercial state is wrong until
+someone acts.
+
+```sql
+SELECT action, organization_id, metadata, created_at
+FROM audit_logs
+WHERE action IN (
+  'billing.subscription_price_unrecognized',
+  'billing.subscription_link_conflict',
+  'billing.pack_checkout_unpaid_review'
+)
+ORDER BY created_at DESC;
+```
+
+- `billing.subscription_price_unrecognized` — a subscription arrived on a price
+  id that is not in `STRIPE_{STARTER,GROWTH,ENTERPRISE}_PRICE_ID`. The plan and
+  price on the row were left as they were, so a paying customer keeps their
+  entitlements; a brand-new subscription stays on Free. Almost always a price
+  rotated in Stripe before the environment was redeployed. Fix the environment
+  variable, then resend the event from the Stripe dashboard. Do not edit the plan
+  column by hand — the redelivered event is the audited path.
+- `billing.subscription_link_conflict` — a Checkout session tried to point an
+  organization at a different Stripe customer or subscription than the one
+  already stored. The stored link was kept. Usually a customer who reached
+  Checkout twice, which means **two live Stripe subscriptions and double
+  billing**: cancel the surplus one in Stripe, refund it, and only then decide
+  which id belongs on the row.
+- `billing.pack_checkout_unpaid_review` — a minute-pack Checkout completed with
+  `payment_status: 'unpaid'`, so no credit was granted (see §1.2). Confirm in
+  Stripe whether the payment ever settled. If it did, grant the pack with an
+  explicit adjustment entry referencing the Checkout session id; if it did not,
+  no action is needed beyond closing the record.
 
 ### 4.3 Running a repair out of band
 

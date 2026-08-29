@@ -316,6 +316,55 @@ describe('BillingService', () => {
       })).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
+
+    /**
+     * Stripe will happily create a second subscription for the same customer.
+     * The customer is then billed twice, and `checkout.session.completed` can
+     * only record one subscription id — the other keeps billing with nothing
+     * here able to resolve, refund, or cancel it. Plan changes belong in the
+     * Customer Portal, which mutates the subscription in place.
+     */
+    it.each(['active', 'trialing', 'past_due', 'unpaid', 'paused'])(
+      'refuses a second subscription checkout while one is %s',
+      async (status) => {
+        const prisma = makePrisma({
+          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_live', status },
+        });
+        const svc = makeService(prisma);
+        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+        await expect(svc.createCheckoutSession('org-1', {
+          plan: 'growth',
+          idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+          successPath: '/dashboard/billing',
+          cancelPath: '/dashboard/billing',
+        })).rejects.toBeInstanceOf(BadRequestException);
+        expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      },
+    );
+
+    /**
+     * An abandoned or cancelled attempt leaves the subscription id on the row
+     * with nothing live behind it, so a fresh Checkout is the normal recovery
+     * path and must stay open.
+     */
+    it.each(['incomplete', 'incomplete_expired', 'canceled'])(
+      'still allows checkout when the recorded subscription is %s',
+      async (status) => {
+        const prisma = makePrisma({
+          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_dead', status },
+        });
+        const svc = makeService(prisma);
+        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+        await expect(svc.createCheckoutSession('org-1', {
+          plan: 'growth',
+          idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+          successPath: '/dashboard/billing',
+          cancelPath: '/dashboard/billing',
+        })).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+      },
+    );
   });
 
   describe('createTopUpCheckoutSession', () => {
@@ -344,6 +393,10 @@ describe('BillingService', () => {
         expect.objectContaining({
           customer: 'cus_123',
           mode: 'payment',
+          // Card only: a delayed-notification method completes Checkout with
+          // `payment_status: 'unpaid'` and settles days later on an event we do
+          // not subscribe to, so the pack would be paid for and never granted.
+          payment_method_types: ['card'],
           line_items: [{ price: 'price_minute_pack', quantity: 1 }],
           metadata: expect.objectContaining({
             organizationId: 'org-1',
@@ -415,8 +468,12 @@ describe('BillingService', () => {
       id: '5f7d4d3a-9a1f-4a2f-8f1a-2b3c4d5e6f70',
       plan: 'growth',
       status: 'active',
-      currentPeriodStart: new Date('2026-08-01T00:00:00.000Z'),
-      currentPeriodEnd: new Date('2026-09-01T00:00:00.000Z'),
+      // Relative on purpose. The summary asserts a funded `growth` plan, and
+      // paid access now requires a period that has not already ended, so a
+      // hard-coded date would turn this suite red on a calendar day rather than
+      // on a code change.
+      currentPeriodStart: new Date(Date.now() - 5 * 24 * 60 * 60 * 1_000),
+      currentPeriodEnd: new Date(Date.now() + 25 * 24 * 60 * 60 * 1_000),
       cancelAtPeriodEnd: false,
       trialEnd: null,
       concurrentCallLimitOverride: null,
@@ -455,7 +512,7 @@ describe('BillingService', () => {
         status: 'active',
         paidAccess: true,
         catalogVersion: BILLING_CATALOG_VERSION,
-        currentPeriodEnd: '2026-09-01T00:00:00.000Z',
+        currentPeriodEnd: growthSubscription.currentPeriodEnd.toISOString(),
         cancelAtPeriodEnd: false,
         includedSeconds: 3_000,
         purchasedSeconds: 6_000,

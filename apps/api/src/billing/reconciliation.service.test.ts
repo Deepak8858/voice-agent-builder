@@ -8,6 +8,9 @@ interface BalanceRow {
   organizationId: string;
   availableSeconds: number;
   reservedSeconds: number;
+  /** Only the clearing tests care; the rest of the suite leaves these unset. */
+  status?: string;
+  reviewReason?: string | null;
 }
 
 interface BucketRow {
@@ -991,5 +994,112 @@ describe('ReconciliationService.publishMarginMetrics', () => {
 
     expect(metrics.planContributionMarginRatio.labels).toHaveBeenCalledWith('starter');
     expect(set).toHaveBeenCalledWith(0);
+  });
+});
+
+describe('ReconciliationService.clearBalanceReview', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const stuck = (status: string, reviewReason: string | null): BalanceRow[] => [
+    { organizationId: ORG, availableSeconds: 300, reservedSeconds: 0, status, reviewReason },
+  ];
+
+  // Both writers that push the status out of `active` have to be clearable:
+  // `flagForReview` above writes `review`, and the partial-refund path in
+  // credit-ledger writes `blocked`. entitlement.service refuses calls on any
+  // non-`active` status, so either one is a total calling outage.
+  it.each([
+    ['review', 'stale_call_with_debits'],
+    ['blocked', 'refund_manual_review:cs_123:120s'],
+  ])('clears a %s balance and resets reviewReason', async (status, reason) => {
+    const { service, prisma, balanceUpdateMany, audit } = makeService({
+      balances: stuck(status, reason),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: true,
+      previousStatus: status,
+      previousReviewReason: reason,
+    });
+    expect(balanceUpdateMany).toHaveBeenCalledWith({
+      // Compare-and-set on the values just read, so a concurrent flag or a
+      // second operator loses the race rather than being overwritten.
+      where: { organizationId: ORG, status, reviewReason: reason },
+      data: { status: 'active', reviewReason: null, version: { increment: 1 } },
+    });
+    expect(audit.log).toHaveBeenCalledWith({
+      organizationId: ORG,
+      action: 'billing.manual_review_cleared',
+      resourceType: 'organization_credit_balance',
+      resourceId: ORG,
+      metadata: {
+        clearedBy: 'ops@voiceforge.ai',
+        previousStatus: status,
+        previousReviewReason: reason,
+      },
+    });
+    // Restores permission to call; it does not hand out credit. Nothing but
+    // the two status columns may move, and no other row may be touched.
+    expect(prisma.organizationCreditBalance.update).not.toHaveBeenCalled();
+    expect(prisma.billingCreditBucket.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('clears a stale reviewReason left on an already-active balance', async () => {
+    // reviewReason: null IS flagForReview's dedupe guard, so a non-null reason
+    // on an active balance leaves review permanently disarmed for this org.
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('active', 'stale_call_with_debits'),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result.cleared).toBe(true);
+    expect(balanceUpdateMany).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op on a balance that is already active and unflagged', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('active', null),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: false,
+      previousStatus: 'active',
+      previousReviewReason: null,
+    });
+    expect(balanceUpdateMany).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('does not invent a balance row for an organization that has none', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({ balances: [] });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: false,
+      previousStatus: null,
+      previousReviewReason: null,
+    });
+    expect(balanceUpdateMany).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('reports not-cleared and writes no audit entry when the compare-and-set loses', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('review', 'stale_call_with_debits'),
+    });
+    balanceUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    // An audit entry for a write that did not happen is worse than none.
+    expect(result.cleared).toBe(false);
+    expect(audit.log).not.toHaveBeenCalled();
   });
 });

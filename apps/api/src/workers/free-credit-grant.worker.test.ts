@@ -7,6 +7,11 @@ import {
   FREE_CREDIT_GRANT_SWEEP_JOB,
   type FreeCreditGrantJob,
 } from './free-credit-grant.worker';
+import {
+  FREE_CREDIT_HOLD_STATUS,
+  selectFarmedOrganizations,
+  type OrganizationFacts,
+} from '../../scripts/flag-farmed-organizations';
 
 vi.mock('bullmq', () => ({
   Worker: vi.fn().mockImplementation(() => ({
@@ -25,6 +30,10 @@ vi.mock('../config/env', () => ({
   env: envMock.env,
   isProduction: () => false,
 }));
+
+// The remediation script is imported for its pure selection logic only; its
+// dotenv bootstrap must not push the repo .env into this test process.
+vi.mock('../../scripts/load-env', () => ({}));
 
 const mockQueueHandle = {
   upsertJobScheduler: vi.fn(),
@@ -203,6 +212,22 @@ describe('FreeCreditGrantWorker', () => {
       );
     });
 
+    /**
+     * A farmed organization has no subscription at all, so it resolves to
+     * `'none'` (not `'unknown'`) and would be granted forever. The status filter
+     * is the only lever that stops it, and `flag-farmed-organizations.ts` pulls
+     * that lever — so the hold status has to fall outside the filter.
+     */
+    it('excludes organizations the remediation script put on credit hold', async () => {
+      await build().processor(sweepJob({ monthKey: MONTH_KEY }));
+
+      const where = (
+        mockPrisma.organization.findMany.mock.calls[0]![0] as { where: Record<string, unknown> }
+      ).where;
+      expect(where).toEqual({ status: 'active' });
+      expect(FREE_CREDIT_HOLD_STATUS).not.toBe('active');
+    });
+
     it('does not grant inline, so one tenant cannot abort the run', async () => {
       mockPrisma.organization.findMany.mockResolvedValueOnce([{ id: 'org-1' }]);
 
@@ -325,5 +350,132 @@ describe('FreeCreditGrantWorker', () => {
         mockCreditLedger.grantFreeMonthlyCredits.mock.calls[1],
       );
     });
+  });
+});
+
+/**
+ * Selection logic of `scripts/flag-farmed-organizations.ts` — the remediation
+ * for organizations minted before onboarding capped one org per identity.
+ */
+describe('selectFarmedOrganizations', () => {
+  let clock = 0;
+
+  /**
+   * A real capped slug: `user-` plus 24 hex, the shape both provisioning paths
+   * derive from the Supabase user id. The literal shape matters — the script
+   * matches it exactly rather than on the `user-` prefix.
+   */
+  const cappedSlug = 'user-a1b2c3d4e5f60718293a4b5c';
+
+  function facts(overrides: Partial<OrganizationFacts> = {}): OrganizationFacts {
+    clock += 1;
+    return {
+      id: `org-${clock}`,
+      ownerUserId: 'user-a',
+      slug: `acme-${clock}`,
+      name: 'Acme',
+      status: 'active',
+      createdAt: new Date(2026, 0, clock),
+      hasStripeSubscription: false,
+      hasPurchasedCredits: false,
+      hasOtherMembers: false,
+      activityScore: 0,
+      ...overrides,
+    };
+  }
+
+  it('never flags anything for an owner who holds a single organization', () => {
+    const { farmed, spared } = selectFarmedOrganizations([facts({ slug: 'solo' })]);
+
+    expect(farmed).toEqual([]);
+    expect(spared).toEqual([]);
+  });
+
+  /**
+   * The shape of a legitimate pre-cap signup: an auto-provisioned personal
+   * organization plus the one organization onboarding created.
+   */
+  it('never flags a user whose only duplicate is the capped personal organization', () => {
+    const personal = facts({ id: 'personal', slug: cappedSlug, createdAt: new Date(2026, 0, 1) });
+    const real = facts({ id: 'real', slug: 'acme-1234', createdAt: new Date(2026, 0, 2) });
+
+    const { farmed, spared } = selectFarmedOrganizations([personal, real]);
+
+    expect(farmed).toEqual([]);
+    expect(spared).toEqual([]);
+  });
+
+  it('flags the duplicates and never the capped-path organization', () => {
+    const personal = facts({ id: 'personal', slug: cappedSlug });
+    const farm1 = facts({ id: 'farm-1' });
+    const farm2 = facts({ id: 'farm-2' });
+    const farm3 = facts({ id: 'farm-3' });
+
+    const { farmed } = selectFarmedOrganizations([farm1, personal, farm2, farm3]);
+
+    // farm-1 is kept as the owner's working organization (oldest, no activity).
+    expect(farmed.map((organization) => organization.id)).toEqual(['farm-2', 'farm-3']);
+  });
+
+  it.each([`user-${'f'.repeat(24)}`, 'user-0a1b2c3d'])(
+    'treats %s as a capped slug',
+    (slug) => {
+      const { farmed } = selectFarmedOrganizations([
+        facts({ id: 'capped', slug }),
+        facts({ id: 'only-real-one' }),
+      ]);
+
+      // The capped organization is exempt, which leaves one organization in the
+      // owner's group — and a group of one flags nothing.
+      expect(farmed).toEqual([]);
+    },
+  );
+
+  /**
+   * A pre-cap onboarding slug was `${slugify(orgName)}-${suffix}`, so a farm of
+   * organizations named "User Portal" also starts with `user-`. A prefix test
+   * would exempt every one of them and drop them from the duplicate count too,
+   * letting the whole farm through.
+   */
+  it('flags duplicates whose names merely slugify to a user- prefix', () => {
+    const kept = facts({ id: 'kept', slug: 'user-portal-a1b2c3d4' });
+    const duplicate = facts({ id: 'duplicate', slug: 'user-portal-e5f60718' });
+
+    const { farmed } = selectFarmedOrganizations([kept, duplicate]);
+
+    expect(farmed.map((organization) => organization.id)).toEqual(['duplicate']);
+  });
+
+  it('keeps the duplicate that holds the work, not merely the oldest', () => {
+    const older = facts({ id: 'older', createdAt: new Date(2026, 0, 1), activityScore: 0 });
+    const used = facts({ id: 'used', createdAt: new Date(2026, 0, 2), activityScore: 12 });
+
+    const { farmed } = selectFarmedOrganizations([older, used]);
+
+    expect(farmed.map((organization) => organization.id)).toEqual(['older']);
+  });
+
+  it('does not touch a second organization owned by another identity', () => {
+    const { farmed } = selectFarmedOrganizations([
+      facts({ id: 'a1', ownerUserId: 'user-a' }),
+      facts({ id: 'b1', ownerUserId: 'user-b' }),
+    ]);
+
+    expect(farmed).toEqual([]);
+  });
+
+  it.each([
+    ['has a Stripe subscription', { hasStripeSubscription: true }],
+    ['purchased minutes', { hasPurchasedCredits: true }],
+    ['has members besides the owner', { hasOtherMembers: true }],
+    ["status is already 'credit_hold'", { status: FREE_CREDIT_HOLD_STATUS }],
+  ])('spares a duplicate that %s', (reason, overrides) => {
+    const kept = facts({ id: 'kept', createdAt: new Date(2026, 0, 1) });
+    const duplicate = facts({ id: 'duplicate', createdAt: new Date(2026, 0, 2), ...overrides });
+
+    const { farmed, spared } = selectFarmedOrganizations([kept, duplicate]);
+
+    expect(farmed).toEqual([]);
+    expect(spared).toEqual([{ organization: duplicate, reason }]);
   });
 });

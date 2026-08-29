@@ -26,6 +26,30 @@ export const SubscriptionStatusSchema = z.enum([
 ]);
 export type SubscriptionStatus = z.infer<typeof SubscriptionStatusSchema>;
 
+/**
+ * Statuses in which Stripe still holds a live subscription object. Starting a
+ * second subscription Checkout in any of these creates a *second* Stripe
+ * subscription and bills the customer twice, while only one id can be stored
+ * locally — the other is orphaned and never cancelled. `canceled`,
+ * `incomplete` and `incomplete_expired` have nothing live to collide with, so a
+ * fresh Checkout there is the normal recovery path.
+ *
+ * Shared because the API refuses such a Checkout and the billing panel must
+ * hide the button that would attempt one. Two copies of this set drifting is
+ * how a paying customer gets a 400 from a button we rendered for them.
+ */
+const LIVE_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
+  'active',
+  'trialing',
+  'past_due',
+  'unpaid',
+  'paused',
+]);
+
+export function hasLiveSubscription(status: string): boolean {
+  return LIVE_SUBSCRIPTION_STATUSES.has(status);
+}
+
 export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 

@@ -26,6 +26,7 @@ import type {
 } from '@voiceforge/shared';
 import {
   BILLING_CATALOG_VERSION,
+  hasLiveSubscription,
   isCheckoutPlan,
   PAID_CALL_MINIMUM_SECONDS,
   PLAN_LIMITS as SHARED_PLAN_LIMITS,
@@ -192,6 +193,19 @@ export class BillingService {
     if (!isCheckoutPlan(dto.plan)) {
       throw new BadRequestException('This plan is not available for self-service checkout.');
     }
+    // Refuse to start a second subscription while one is live. Stripe would
+    // happily create it, the customer would be billed twice, and
+    // `checkout.session.completed` can only record one subscription id — the
+    // other keeps billing with nothing here able to resolve or cancel it.
+    const existing = await this.prisma.subscription.findUnique({
+      where: { organizationId },
+      select: { stripeSubscriptionId: true, status: true },
+    });
+    if (existing?.stripeSubscriptionId && hasLiveSubscription(existing.status)) {
+      throw new BadRequestException(
+        'This organization already has a subscription. Change or cancel it from the billing portal instead.',
+      );
+    }
     const customerId = await this.getOrCreateCustomer(organizationId);
     const priceId = this.getPriceIdForPlan(dto.plan);
     const successUrl = this.withCheckoutSessionId(this.buildAppUrl(dto.successPath));
@@ -265,6 +279,13 @@ export class BillingService {
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'payment',
+      // Card only, deliberately. A delayed-notification method (ACH, SEPA debit,
+      // Bacs) completes Checkout with `payment_status: 'unpaid'` and settles days
+      // later on `checkout.session.async_payment_succeeded`, which we do not
+      // subscribe to — so the pack would be paid for and never granted. Unlike a
+      // subscription, whose credit is granted from `invoice.paid` whenever the
+      // money actually clears, a one-time pack has no such later proof.
+      payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: this.withCheckoutSessionId(this.buildAppUrl(dto.successPath)),
       cancel_url: this.buildAppUrl(dto.cancelPath),

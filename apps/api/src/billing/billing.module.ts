@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { BillingAdminController } from './billing-admin.controller';
 import { BillingController } from './billing.controller';
 import { BillingService } from './billing.service';
 import { CallAdmissionService } from './call-admission.service';
@@ -11,7 +12,7 @@ import { RuntimeUsageController } from './runtime-usage.controller';
 import { RuntimeUsageService } from './runtime-usage.service';
 
 @Module({
-  controllers: [BillingController, RuntimeUsageController],
+  controllers: [BillingAdminController, BillingController, RuntimeUsageController],
   providers: [
     BillingService,
     CallAdmissionService,

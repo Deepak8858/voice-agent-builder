@@ -32,6 +32,49 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_WEBHOOK_SECRET/);
   });
 
+  /**
+   * Neither variable is individually required, and supabase-auth.service.ts
+   * treats both as optional, so a production deployment with neither boots
+   * clean, passes /health, and then rejects every authenticated request —
+   * resolveClaims() skips local verification and getSupabaseUser() returns null
+   * before it issues a request. Boot has to refuse instead.
+   */
+  it.each([
+    ['the JWT secret alone', { SUPABASE_JWT_SECRET: 'production-supabase-jwt-secret' }],
+    ['the service-role key alone', { SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key' }],
+  ])('accepts %s as a claims source in production', async (_label, claimsSource) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      ...claimsSource,
+    });
+
+    await expect(import('./env')).resolves.toBeDefined();
+  });
+
+  it('refuses to boot in production with no Supabase claims source at all', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_JWT_SECRET/);
+  });
+
   it('rejects the mock voice provider in production', async () => {
     vi.resetModules();
     restoreEnv();
@@ -77,6 +120,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'vapi',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
       VAPI_API_KEY: 'stale-vapi-key',
       RETELL_VOICE_ID: '11labs-Adrian',
     });
@@ -126,6 +170,10 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      // Production requires a Supabase claims source. vitest.setup.ts supplies
+      // SUPABASE_URL but deliberately not this, so every production fixture has
+      // to name it or the schema rejects before reaching what it is testing.
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
     const azureBase = {
       AZURE_OPENAI_ENDPOINT: 'https://voiceforge.openai.azure.com',
@@ -364,6 +412,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
 
     it.each([
@@ -454,6 +503,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
 
     it.each([

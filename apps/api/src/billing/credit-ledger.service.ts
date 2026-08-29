@@ -45,6 +45,19 @@ const MonthKeySchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 const IdentifierSchema = z.string().trim().min(1);
 const IdempotencyKeySchema = z.string().trim().min(1).max(255);
 
+/**
+ * The Stripe event whose processing this grant *is*.
+ *
+ * A webhook handler used to grant credit in one transaction and mark its event
+ * processed in another, so a crash between the two commits left a granted event
+ * looking unprocessed and re-dispatched the whole handler on redelivery.
+ * Passing the event id here moves the "processed" write inside the grant's own
+ * transaction, which makes grant and acknowledgement commit or roll back
+ * together. Optional because non-webhook callers (the free-credit worker,
+ * backfills) have no Stripe event to acknowledge.
+ */
+const StripeEventIdSchema = IdentifierSchema.optional();
+
 const SubscriptionGrantInputSchema = z
   .object({
     organizationId: IdentifierSchema,
@@ -52,6 +65,7 @@ const SubscriptionGrantInputSchema = z
     includedMinutes: z.number().int().nonnegative(),
     periodEnd: z.date(),
     actorId: IdentifierSchema.optional(),
+    stripeEventId: StripeEventIdSchema,
   })
   .strict();
 
@@ -61,6 +75,12 @@ const PurchasedGrantInputSchema = z
     checkoutSessionId: IdentifierSchema,
     purchasedAt: z.date(),
     actorId: IdentifierSchema.optional(),
+    /**
+     * The PaymentIntent that funded the pack. Persisted on the bucket under a
+     * unique index, so a second bucket can never be minted for one payment.
+     */
+    paymentIntentId: IdentifierSchema.optional(),
+    stripeEventId: StripeEventIdSchema,
   })
   .strict();
 
@@ -105,8 +125,20 @@ const ReleaseReservationInputSchema = CommitReservationInputSchema;
 const CreditReversalInputSchema = z
   .object({
     organizationId: IdentifierSchema,
+    /**
+     * The bucket's `sourceId`: a Checkout session for a pack, a Stripe invoice
+     * for a subscription period. The field keeps its original name because it is
+     * the pack case that every persisted reversal to date recorded under it.
+     */
     checkoutSessionId: IdentifierSchema,
     refundId: IdentifierSchema,
+    /**
+     * Which credit a refund takes back. Defaults to `purchased` so the pack
+     * callers and every already-persisted reversal keep their exact meaning;
+     * `included` reverses a refunded subscription period, which used to be
+     * retained as usable service forever.
+     */
+    sourceType: z.enum(['purchased', 'included']).default('purchased'),
   })
   .strict();
 
@@ -272,7 +304,10 @@ const PurchasedReversalOperationSchema = z
     checkoutSessionId: IdentifierSchema,
     refundId: IdentifierSchema,
     bucketId: IdentifierSchema,
-    sourceType: z.literal('purchased'),
+    // Widened from a `purchased` literal when subscription reversals were added.
+    // Widening is backward compatible: every already-persisted reversal recorded
+    // `purchased`, which the enum still accepts.
+    sourceType: z.enum(['purchased', 'included']),
     sourceId: IdentifierSchema,
     originalSeconds: z.number().int().positive(),
   })
@@ -309,7 +344,10 @@ export type MinuteReservationInput = z.infer<typeof MinuteReservationInputSchema
 export type CommitReservationInput = z.infer<typeof CommitReservationInputSchema>;
 export type NextMinuteInput = z.infer<typeof NextMinuteInputSchema>;
 export type ReleaseReservationInput = z.infer<typeof ReleaseReservationInputSchema>;
-export type CreditReversalInput = z.infer<typeof CreditReversalInputSchema>;
+/** `z.input`, not `z.infer`: `sourceType` has a default, so callers may omit it. */
+export type CreditReversalInput = z.input<typeof CreditReversalInputSchema>;
+/** The same input after parsing, where the `sourceType` default has been applied. */
+type ParsedCreditReversal = z.output<typeof CreditReversalInputSchema>;
 
 export type ReservationAllocation = z.infer<typeof ReservationAllocationSchema>;
 
@@ -434,9 +472,13 @@ export class CreditLedgerService {
             bucket.priority === 10 &&
             bucket.status === 'active',
         });
+        await this.markStripeEventProcessed(tx, input.stripeEventId);
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
+      // Forfeit the outgoing allowance BEFORE the new one exists, so the query
+      // cannot pick up the bucket it is about to create.
+      await this.supersedeIncludedBuckets(tx, input.organizationId, lockedBalance, input.invoiceId);
       const grantedAt = new Date();
       const bucket = await tx.billingCreditBucket.create({
         data: {
@@ -491,8 +533,114 @@ export class CreditLedgerService {
           }),
         },
       });
+      await this.markStripeEventProcessed(tx, input.stripeEventId);
 
       return this.buildCreditBalance(tx, updatedBalance);
+    });
+  }
+
+  /**
+   * Forfeits every still-active `included` bucket before a new period's
+   * allowance lands.
+   *
+   * A mid-cycle plan change makes Stripe issue a second invoice inside one
+   * billing period. The grant is keyed by invoice, so it correctly refused to
+   * double-grant *the same* invoice — but the outgoing period's bucket was left
+   * `active` with its unused balance intact and expiring at the old period end,
+   * so the customer held two full allowances at once and the cheapest moment to
+   * upgrade was the day before renewal.
+   *
+   * The free monthly allowance is `included` too and is forfeited by the same
+   * sweep, deliberately: an organization that upgrades mid-month must not stack
+   * the free grant on top of the paid one either.
+   *
+   * `remainingSeconds` on a bucket is by construction unreserved — a reservation
+   * decrements the bucket and moves the projection from available to reserved —
+   * so the forfeit only ever removes spendable credit, never seconds an in-flight
+   * call is relying on.
+   */
+  private async supersedeIncludedBuckets(
+    tx: TransactionClient,
+    organizationId: string,
+    lockedBalance: OrganizationCreditBalance,
+    invoiceId: string,
+  ): Promise<void> {
+    const outgoing = await tx.billingCreditBucket.findMany({
+      where: { organizationId, sourceType: 'included', status: 'active' },
+      select: { id: true, sourceId: true, remainingSeconds: true },
+    });
+    const forfeitedSeconds = outgoing.reduce((total, bucket) => total + bucket.remainingSeconds, 0);
+    if (outgoing.length === 0) return;
+
+    if (forfeitedSeconds > lockedBalance.availableSeconds) {
+      throw new CreditLedgerInvariantError(
+        `Superseding included buckets would forfeit ${forfeitedSeconds} seconds but only ` +
+          `${lockedBalance.availableSeconds} are available for organization ${organizationId}`,
+      );
+    }
+    for (const bucket of outgoing) {
+      await this.updateScopedBucket(tx, organizationId, bucket.id, {
+        remainingSeconds: 0,
+        status: 'expired',
+      });
+    }
+    const updatedBalance = await tx.organizationCreditBalance.update({
+      where: { organizationId },
+      data: {
+        availableSeconds: { decrement: forfeitedSeconds },
+        version: { increment: 1 },
+      },
+    });
+    // Recorded even at zero seconds: "the previous allowance was retired here"
+    // is the fact a plan-change dispute turns on, and a fully-spent bucket is the
+    // most likely case of all.
+    await tx.billingLedgerEntry.create({
+      data: {
+        organizationId,
+        bucketId: null,
+        workspaceId: null,
+        callId: null,
+        entryType: 'included_grant_superseded',
+        seconds: -forfeitedSeconds,
+        balanceAfterSeconds: this.totalOwned(updatedBalance),
+        actorType: 'stripe',
+        actorId: invoiceId,
+        reasonCode: 'included_period_superseded',
+        idempotencyKey: `stripe:invoice:${invoiceId}:supersede`,
+        metadata: this.jsonMetadata({
+          operation: {
+            kind: 'included_grant_superseded',
+            organizationId,
+            invoiceId,
+          },
+          invoiceId,
+          forfeitedSeconds,
+          supersededBuckets: outgoing.map((bucket) => ({
+            bucketId: bucket.id,
+            sourceId: bucket.sourceId,
+            forfeitedSeconds: bucket.remainingSeconds,
+          })),
+        }),
+      },
+    });
+  }
+
+  /**
+   * Marks the Stripe event that drove this grant processed, inside the grant's
+   * own transaction.
+   *
+   * `updateMany` with a `processedAt: null` guard rather than `update`: the row
+   * is owned by the webhook service, so this must neither invent one nor
+   * overwrite an acknowledgement another delivery already recorded.
+   */
+  private async markStripeEventProcessed(
+    tx: TransactionClient,
+    stripeEventId: string | undefined,
+  ): Promise<void> {
+    if (!stripeEventId) return;
+    await tx.stripeEvent.updateMany({
+      where: { stripeEventId, processedAt: null },
+      data: { processedAt: new Date(), processingStartedAt: null, errorMessage: null },
     });
   }
 
@@ -673,8 +821,15 @@ export class CreditLedgerService {
             bucket.sourceId === input.checkoutSessionId &&
             bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
             bucket.priority === 20 &&
+            // A bucket predating the payment-intent column carries null, and a
+            // replay of its Checkout must still be recognised as the same
+            // purchase rather than reported as a conflict. A bucket that *does*
+            // name a payment intent must name this one.
+            (bucket.stripePaymentIntentId === null ||
+              bucket.stripePaymentIntentId === (input.paymentIntentId ?? null)) &&
             bucket.status === 'active',
         });
+        await this.markStripeEventProcessed(tx, input.stripeEventId);
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
@@ -690,6 +845,10 @@ export class CreditLedgerService {
           expiresAt,
           priority: 20,
           status: 'active',
+          // Unique. Two different Checkout sessions reporting the same payment —
+          // the shape a replay takes once the session id is no longer stable —
+          // abort here instead of granting a second paid-for pack.
+          stripePaymentIntentId: input.paymentIntentId ?? null,
         },
       });
       const updatedBalance = await tx.organizationCreditBalance.update({
@@ -733,6 +892,7 @@ export class CreditLedgerService {
           }),
         },
       });
+      await this.markStripeEventProcessed(tx, input.stripeEventId);
 
       return this.buildCreditBalance(tx, updatedBalance);
     });
@@ -1118,23 +1278,35 @@ export class CreditLedgerService {
     });
   }
 
+  /**
+   * Takes back the credit a refunded or successfully-disputed payment bought.
+   *
+   * Reverses either source: a pack (`purchased`) or a refunded subscription
+   * period (`included`, which used to be retained as usable service no matter
+   * how much of the invoice was refunded). The two share every rule that matters
+   * — one reversal per Stripe reversal id, no reversal of already-spent credit
+   * without a human — so they share the implementation rather than a copy of it.
+   */
   async reversePurchasedCredits(rawInput: CreditReversalInput): Promise<CreditBalance> {
     const input = CreditReversalInputSchema.parse(rawInput);
-    const idempotencyKey = `stripe:refund:${input.refundId}:topup_reversal`;
+    const idempotencyKey =
+      input.sourceType === 'included'
+        ? `stripe:refund:${input.refundId}:included_reversal`
+        : `stripe:refund:${input.refundId}:topup_reversal`;
 
     return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
       const bucket = await tx.billingCreditBucket.findUnique({
         where: {
           organizationId_sourceType_sourceId: {
             organizationId: input.organizationId,
-            sourceType: 'purchased',
+            sourceType: input.sourceType,
             sourceId: input.checkoutSessionId,
           },
         },
       });
       if (!bucket) {
         throw new CreditLedgerInvariantError(
-          `Purchased credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
+          `${input.sourceType} credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
         );
       }
       this.assertPurchasedBucketIdentity(bucket, input);
@@ -1945,7 +2117,7 @@ export class CreditLedgerService {
 
   private assertPurchasedBucketIdentity(
     bucket: BillingCreditBucket,
-    input: CreditReversalInput,
+    input: ParsedCreditReversal,
   ): void {
     // `originalSeconds` is deliberately not compared to the current catalog:
     // a pack sold under earlier terms must still be refundable after the pack
@@ -1953,13 +2125,13 @@ export class CreditLedgerService {
     // below is measured against.
     if (
       bucket.organizationId !== input.organizationId ||
-      bucket.sourceType !== 'purchased' ||
+      bucket.sourceType !== input.sourceType ||
       bucket.sourceId !== input.checkoutSessionId ||
       !Number.isInteger(bucket.originalSeconds) ||
       bucket.originalSeconds <= 0
     ) {
       throw new CreditLedgerInvariantError(
-        'Purchased reversal bucket does not match immutable purchase identity',
+        'Reversal bucket does not match immutable purchase identity',
         'idempotency_conflict',
       );
     }
@@ -1967,7 +2139,7 @@ export class CreditLedgerService {
 
   private assertPurchasedReversalReplay(
     entry: BillingLedgerEntry,
-    input: CreditReversalInput,
+    input: ParsedCreditReversal,
     bucket: BillingCreditBucket,
   ): void {
     if (entry.entryType === 'purchase_reversal') {
@@ -2026,7 +2198,7 @@ export class CreditLedgerService {
 
   private purchasedReversalIdentityMatches(
     operation: z.infer<typeof PurchasedReversalOperationSchema>,
-    input: CreditReversalInput,
+    input: ParsedCreditReversal,
     bucket: BillingCreditBucket,
   ): boolean {
     return (
@@ -2034,7 +2206,7 @@ export class CreditLedgerService {
       operation.checkoutSessionId === input.checkoutSessionId &&
       operation.refundId === input.refundId &&
       operation.bucketId === bucket.id &&
-      operation.sourceType === 'purchased' &&
+      operation.sourceType === input.sourceType &&
       operation.sourceId === input.checkoutSessionId &&
       operation.originalSeconds === bucket.originalSeconds
     );
@@ -2048,7 +2220,7 @@ export class CreditLedgerService {
   }
 
   private purchasedReversalOperation(
-    input: CreditReversalInput,
+    input: ParsedCreditReversal,
     bucket: BillingCreditBucket,
   ): z.infer<typeof PurchasedReversalOperationSchema> {
     return {
@@ -2057,7 +2229,7 @@ export class CreditLedgerService {
       checkoutSessionId: input.checkoutSessionId,
       refundId: input.refundId,
       bucketId: bucket.id,
-      sourceType: 'purchased',
+      sourceType: input.sourceType,
       sourceId: input.checkoutSessionId,
       originalSeconds: bucket.originalSeconds,
     };

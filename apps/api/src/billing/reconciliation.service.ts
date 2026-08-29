@@ -1030,6 +1030,74 @@ export class ReconciliationService {
     return true;
   }
 
+  /**
+   * The inverse of `flagForReview`, and the reason it has to exist: nothing in
+   * the codebase ever moved `status` back to `active`. `entitlement.service.ts`
+   * refuses every call on ANY non-`active` status, so both `review` (set above)
+   * and `blocked` (set by the partial-refund path in `credit-ledger.service.ts`)
+   * killed an organization's inbound and outbound calling until someone ran an
+   * UPDATE by hand.
+   *
+   * `reviewReason` is cleared with it, not merely alongside it: it is
+   * `flagForReview`'s own dedupe guard, so an organization left with a stale
+   * non-null reason can never be flagged again. Clearing it is what re-arms
+   * review, not just what restores calling.
+   *
+   * No customer figure moves — `availableSeconds`, `reservedSeconds`, buckets
+   * and ledger entries are all untouched. This restores permission to call; it
+   * does not hand out credit.
+   *
+   * `updateMany` rather than `update`, so an organization with no balance row
+   * keeps having none instead of one being invented for it, and the `where`
+   * repeats the values just read so a concurrent flag or clear loses the race
+   * instead of being silently overwritten. That compare-and-set is why this
+   * needs no advisory lock.
+   */
+  async clearBalanceReview(
+    organizationId: string,
+    clearedBy: string,
+  ): Promise<{
+    cleared: boolean;
+    previousStatus: string | null;
+    previousReviewReason: string | null;
+  }> {
+    const balance = await this.prisma.organizationCreditBalance.findUnique({
+      where: { organizationId },
+      select: { status: true, reviewReason: true },
+    });
+    if (!balance) {
+      return { cleared: false, previousStatus: null, previousReviewReason: null };
+    }
+
+    const previous = {
+      previousStatus: balance.status,
+      previousReviewReason: balance.reviewReason,
+    };
+    // Idempotent: already clear is a no-op, not a second audit entry.
+    if (balance.status === 'active' && balance.reviewReason === null) {
+      return { cleared: false, ...previous };
+    }
+
+    const changed = await this.prisma.organizationCreditBalance.updateMany({
+      where: { organizationId, status: balance.status, reviewReason: balance.reviewReason },
+      data: { status: 'active', reviewReason: null, version: { increment: 1 } },
+    });
+    if (changed.count === 0) return { cleared: false, ...previous };
+
+    await this.audit.log({
+      organizationId,
+      action: 'billing.manual_review_cleared',
+      resourceType: 'organization_credit_balance',
+      resourceId: organizationId,
+      metadata: {
+        clearedBy,
+        previousStatus: balance.status,
+        previousReviewReason: balance.reviewReason,
+      },
+    });
+    return { cleared: true, ...previous };
+  }
+
   private async publishBalanceGauges(): Promise<void> {
     const totals = await this.prisma.organizationCreditBalance.aggregate({
       _sum: { availableSeconds: true, reservedSeconds: true },

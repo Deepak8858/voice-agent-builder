@@ -49,6 +49,12 @@ function makePrisma(overrides?: {
    * organizations cannot be expressed with `packGrantAudit`.
    */
   packGrantAudits?: unknown[];
+  /** The `included` bucket a refunded subscription invoice resolves to. */
+  includedBucket?: unknown;
+  /** The bucket the refunded PaymentIntent funded — the post-migration path. */
+  fundedBucket?: unknown;
+  /** Rows the stuck-event sweep should find still holding a processing lease. */
+  stuckEvents?: unknown[];
 }) {
   const uniqueError = Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
   const tx = {
@@ -69,9 +75,17 @@ function makePrisma(overrides?: {
         return { id: 'stripe-event-row' };
       }),
       findUnique: vi.fn(async () => overrides?.processedEvent ?? null),
+      findMany: vi.fn(
+        async (_input: { where: { processingStartedAt: { lte: Date } } }) =>
+          overrides?.stuckEvents ?? [],
+      ),
       update: vi.fn(async () => ({ id: 'stripe-event-row' })),
       updateMany: vi.fn(async () => ({ count: overrides?.reclaimedCount ?? 1 })),
       upsert: vi.fn(async () => ({ id: 'stripe-event-row' })),
+    },
+    billingCreditBucket: {
+      findFirst: vi.fn(async () => overrides?.includedBucket ?? null),
+      findUnique: vi.fn(async () => overrides?.fundedBucket ?? null),
     },
     subscription: {
       update: vi.fn(async () => ({ id: 'sub-local' })),
@@ -205,9 +219,9 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith(
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { organizationId: 'org-1' },
+        where: expect.objectContaining({ organizationId: 'org-1' }),
         data: expect.objectContaining({
           stripeSubscriptionId: 'sub_123',
           plan: 'starter',
@@ -244,7 +258,14 @@ describe('StripeWebhookService production webhook handling', () => {
     expect(prisma.subscription.updateMany).not.toHaveBeenCalled();
   });
 
-  it('acknowledges duplicate events already being processed without dispatching again', async () => {
+  /**
+   * `processing` is not an acknowledgement: it means another delivery took the
+   * lease and has not finished. A 200 here tells Stripe to stop redelivering,
+   * and if the lease-holder was the process that crashed, nothing is left to
+   * re-drive the event once the lease expires — the grant is lost for good. So
+   * this must be a 5xx that keeps the event in Stripe's retry queue.
+   */
+  it('asks Stripe to retry an event another delivery is still processing', async () => {
     const prisma = makePrisma({
       processedEvent: { processedAt: null, processingStartedAt: new Date() },
       reclaimedCount: 0,
@@ -253,7 +274,7 @@ describe('StripeWebhookService production webhook handling', () => {
 
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
-    expect(result).toMatchObject({ handled: true, statusCode: 200 });
+    expect(result).toMatchObject({ handled: false, statusCode: 500 });
     expect(result.message).toContain('already being processed');
     expect(prisma.subscription.updateMany).not.toHaveBeenCalled();
     expect(prisma.stripeEvent.update).not.toHaveBeenCalled();
@@ -283,12 +304,12 @@ describe('StripeWebhookService production webhook handling', () => {
         }),
       }),
     );
-    expect(prisma.subscription.update).toHaveBeenCalled();
+    expect(prisma.subscription.updateMany).toHaveBeenCalled();
   });
 
   it('clears a failed event lease so the next delivery can reclaim immediately', async () => {
     const prisma = makePrisma();
-    prisma.subscription.update.mockRejectedValueOnce(new Error('database unavailable'));
+    prisma.subscription.updateMany.mockRejectedValueOnce(new Error('database unavailable'));
     const svc = makeService(prisma, makeSubscriptionEvent());
 
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
@@ -299,6 +320,138 @@ describe('StripeWebhookService production webhook handling', () => {
         update: expect.objectContaining({ processingStartedAt: null }),
       }),
     );
+  });
+
+  /**
+   * The processing lease only lets the *next delivery* reclaim a stranded row.
+   * Stripe stops redelivering after a bounded window, so a process that dies
+   * mid-dispatch after that window closes leaves an event `processing` forever —
+   * a paid invoice or pack whose credit was never granted, with no error
+   * recorded because the handler never reached one. The sweep is what re-drives
+   * those.
+   */
+  describe('stuck event sweep', () => {
+    function makeStuckRow(overrides?: Record<string, unknown>) {
+      return {
+        stripeEventId: 'evt_stranded',
+        type: 'invoice.paid',
+        apiVersion: '2026-04-22.dahlia',
+        created: new Date(1_800_000_000 * 1000),
+        livemode: false,
+        pendingWebhooks: 1,
+        processingStartedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+        data: {
+          id: 'in_stranded',
+          customer: 'cus_123',
+          amount_paid: 4900,
+          currency: 'usd',
+          lines: {
+            data: [
+              { price: { id: 'price_starter' }, period: { start: 1_800_000_000, end: 1_802_592_000 } },
+            ],
+          },
+        },
+        ...overrides,
+      };
+    }
+
+    it('re-dispatches a stranded event from its stored payload and marks it processed', async () => {
+      const prisma = makePrisma({ stuckEvents: [makeStuckRow()] });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, makeSubscriptionEvent(), { creditLedger });
+
+      const recovered = await svc.reclaimStuckEvents();
+
+      expect(recovered).toBe(1);
+      expect(creditLedger.grantSubscriptionCredits).toHaveBeenCalledWith(
+        expect.objectContaining({ invoiceId: 'in_stranded', stripeEventId: 'evt_stranded' }),
+      );
+      expect(prisma.stripeEvent.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { stripeEventId: 'evt_stranded' },
+          data: expect.objectContaining({ processedAt: expect.any(Date) }),
+        }),
+      );
+    });
+
+    /**
+     * The sweep must never take a row a live handler still owns. Its cutoff is
+     * therefore far older than the processing lease that defines "still owned".
+     */
+    it('only considers claims far older than the processing lease', async () => {
+      const prisma = makePrisma();
+      const svc = makeService(prisma, makeSubscriptionEvent());
+
+      await svc.reclaimStuckEvents();
+
+      expect(prisma.stripeEvent.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { processedAt: null, processingStartedAt: { lte: expect.any(Date) } },
+          take: 25,
+        }),
+      );
+      const call = prisma.stripeEvent.findMany.mock.calls[0]![0];
+      const cutoffAgeMs = Date.now() - call.where.processingStartedAt.lte.getTime();
+      // The lease is 5 minutes; anything in that ballpark could race a handler.
+      expect(cutoffAgeMs).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    });
+
+    it('leaves a row whose claim another worker holds', async () => {
+      const prisma = makePrisma({
+        stuckEvents: [makeStuckRow()],
+        // Claim taken: the row exists and its lease is fresh, so the reclaiming
+        // updateMany matches nothing.
+        processedEvent: { processedAt: null, processingStartedAt: new Date() },
+        reclaimedCount: 0,
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, makeSubscriptionEvent(), { creditLedger });
+
+      const recovered = await svc.reclaimStuckEvents();
+
+      expect(recovered).toBe(0);
+      expect(creditLedger.grantSubscriptionCredits).not.toHaveBeenCalled();
+    });
+
+    it('records the failure and keeps sweeping when a re-drive throws', async () => {
+      const prisma = makePrisma({
+        stuckEvents: [makeStuckRow({ data: { id: 'in_stranded', customer: 'cus_123' } })],
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, makeSubscriptionEvent(), { creditLedger });
+
+      const recovered = await svc.reclaimStuckEvents();
+
+      expect(recovered).toBe(0);
+      expect(prisma.stripeEvent.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            errorMessage: expect.stringContaining('stuck-event sweep'),
+          }),
+        }),
+      );
+    });
+
+    it('schedules the sweep on boot and stops it on shutdown', () => {
+      vi.useFakeTimers();
+      try {
+        const prisma = makePrisma();
+        const svc = makeService(prisma, makeSubscriptionEvent());
+        const reclaim = vi
+          .spyOn(svc, 'reclaimStuckEvents')
+          .mockImplementation(async () => 0);
+
+        svc.onModuleInit();
+        vi.advanceTimersByTime(15 * 60 * 1000);
+        expect(reclaim).toHaveBeenCalledTimes(1);
+
+        svc.onModuleDestroy();
+        vi.advanceTimersByTime(60 * 60 * 1000);
+        expect(reclaim).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('marks invoice.payment_failed subscriptions past_due and queues dunning', async () => {
@@ -313,10 +466,12 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith({
-      where: { organizationId: 'org-1' },
-      data: { status: 'past_due' },
-    });
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organizationId: 'org-1' }),
+        data: expect.objectContaining({ status: 'past_due' }),
+      }),
+    );
     expect(queue.enqueue).toHaveBeenCalledWith('notifications', 'dunning_email', expect.objectContaining({
       organizationId: 'org-1',
       customerId: 'cus_123',
@@ -371,7 +526,7 @@ describe('StripeWebhookService production webhook handling', () => {
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
     expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { stripeSubscriptionId: 'sub_123' },
+        where: expect.objectContaining({ stripeSubscriptionId: 'sub_123' }),
         data: expect.objectContaining({ status: 'canceled' }),
       }),
     );
@@ -401,12 +556,251 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith(
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { organizationId: 'org-1' },
+        where: expect.objectContaining({ organizationId: 'org-1' }),
         data: expect.objectContaining({ status: 'active', plan: 'starter' }),
       }),
     );
+  });
+
+  /**
+   * Stripe does not guarantee delivery order and it redelivers freely, so every
+   * subscription state write is a compare-and-set against the last applied
+   * event's own timestamp. Without it, a slow `subscription.updated` can
+   * resurrect a canceled subscription or rewind `currentPeriodEnd`, which is what
+   * `EntitlementService` now reads to decide whether a plan is still funded.
+   */
+  describe('out-of-order delivery', () => {
+    it('stamps webhookUpdatedAt from the Stripe event, not the receive time, and gates on it', async () => {
+      const prisma = makePrisma();
+      const svc = makeService(prisma, makeSubscriptionEvent('customer.subscription.updated'));
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      const eventCreatedAt = new Date(1_800_000_000 * 1000);
+      expect(prisma.subscription.updateMany).toHaveBeenCalledWith({
+        where: {
+          organizationId: 'org-1',
+          OR: [{ webhookUpdatedAt: null }, { webhookUpdatedAt: { lte: eventCreatedAt } }],
+        },
+        data: expect.objectContaining({ webhookUpdatedAt: eventCreatedAt }),
+      });
+    });
+
+    it('skips the sync and its audit record when a newer event was already applied', async () => {
+      const prisma = makePrisma();
+      // No row satisfies the ordering predicate: a newer event won the race.
+      prisma.subscription.updateMany.mockResolvedValue({ count: 0 });
+      const cacheInvalidator = { invalidateBillingSubscription: vi.fn(async () => undefined) };
+      const svc = makeService(prisma, makeSubscriptionEvent('customer.subscription.updated'), {
+        cacheInvalidator,
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      // Acknowledged: the state is already correct, so a retry would not help.
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+      expect(cacheInvalidator.invalidateBillingSubscription).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel a subscription from an event older than the state already applied', async () => {
+      const prisma = makePrisma();
+      prisma.subscription.updateMany.mockResolvedValue({ count: 0 });
+      const svc = makeService(prisma, makeSubscriptionEvent('customer.subscription.deleted'));
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * An out-of-order *invoice* is different: it still paid for its own period,
+     * so the credit must be granted even though the newer subscription state
+     * wins. The ledger keys the grant by invoice id, so this cannot double-grant.
+     */
+    it('still grants included credit for an invoice whose state write was superseded', async () => {
+      const prisma = makePrisma();
+      prisma.subscription.updateMany.mockResolvedValue({ count: 0 });
+      const creditLedger = makeCreditLedger();
+      const event = {
+        ...makeSubscriptionEvent('invoice.paid'),
+        data: {
+          object: {
+            id: 'in_123',
+            customer: 'cus_123',
+            amount_paid: 4900,
+            currency: 'usd',
+            lines: {
+              data: [
+                { price: { id: 'price_starter' }, period: { start: 1_800_000_000, end: 1_802_592_000 } },
+              ],
+            },
+          },
+        },
+      };
+      const svc = makeService(prisma, event, { creditLedger });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantSubscriptionCredits).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * A price id that is not in this deployment's configuration used to resolve to
+   * `'free'` and be persisted, silently downgrading a paying customer — after
+   * which the free-credit worker reads `paidAccess: false` and starts granting
+   * them a monthly allowance as well. Throwing instead would leave the row stale
+   * for Stripe's whole retry window, so the plan is left alone and the mismatch
+   * is reported.
+   */
+  describe('unrecognized subscription price', () => {
+    function makeUnknownPriceEvent() {
+      const event = makeSubscriptionEvent('customer.subscription.updated');
+      event.data.object.items = {
+        data: [
+          {
+            price: { id: 'price_rotated_growth' },
+            current_period_start: 1_800_000_000,
+            current_period_end: 1_802_592_000,
+          },
+        ],
+      } as never;
+      return event;
+    }
+
+    it('does not write a plan or price it cannot recognize', async () => {
+      const prisma = makePrisma();
+      const svc = makeService(prisma, makeUnknownPriceEvent());
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      const [args] = prisma.subscription.updateMany.mock.calls as unknown as [
+        [{ data: Record<string, unknown> }],
+      ];
+      const written = args[0].data;
+      expect(written).not.toHaveProperty('plan');
+      expect(written).not.toHaveProperty('stripePriceId');
+      // The rest of the event is still authoritative and is applied.
+      expect(written).toMatchObject({
+        status: 'active',
+        currentPeriodEnd: new Date(1_802_592_000 * 1000),
+      });
+    });
+
+    it('reports the mismatch loudly instead of failing the event', async () => {
+      const prisma = makePrisma();
+      const svc = makeService(prisma, makeUnknownPriceEvent());
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('price_rotated_growth'),
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            organizationId: 'org-1',
+            action: 'billing.subscription_price_unrecognized',
+          }),
+        }),
+      );
+    });
+  });
+
+  it('fails a cancellation that matches no local subscription so Stripe redelivers it', async () => {
+    const prisma = makePrisma({ subscription: null });
+    const svc = makeService(prisma, makeSubscriptionEvent('customer.subscription.deleted'));
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    // A zero-match `updateMany` used to be acknowledged as processed, leaving the
+    // local row active forever with no record that anything went wrong.
+    expect(result).toMatchObject({ handled: false, statusCode: 500 });
+    expect(prisma.subscription.updateMany).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The organization on a Checkout session comes from metadata, and a second
+   * Checkout for an already-subscribed organization would overwrite the stored
+   * Stripe ids. The old subscription keeps billing at Stripe while nothing here
+   * can resolve it again, so its renewals stop granting credit.
+   */
+  describe('subscription link conflicts', () => {
+    function makeCheckoutEvent(subscriptionId: string, customerId = 'cus_123') {
+      return {
+        ...makeSubscriptionEvent('checkout.session.completed'),
+        data: {
+          object: {
+            id: 'cs_second',
+            customer: customerId,
+            subscription: subscriptionId,
+            metadata: { organizationId: 'org-1' },
+          },
+        },
+      };
+    }
+
+    function makeLinkedPrisma(linked: { stripeCustomerId: string; stripeSubscriptionId: string }) {
+      const prisma = makePrisma() as ReturnType<typeof makePrisma> & {
+        subscription: ReturnType<typeof makePrisma>['subscription'] & {
+          upsert: ReturnType<typeof vi.fn>;
+        };
+      };
+      prisma.subscription.upsert = vi.fn(async () => ({ id: 'sub-local' }));
+      prisma.subscription.findUnique = vi.fn(async () => ({ organizationId: 'org-1', ...linked }));
+      return prisma;
+    }
+
+    it('refuses to relink an organization to a different Stripe subscription', async () => {
+      const prisma = makeLinkedPrisma({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_existing',
+      });
+      const svc = makeService(prisma, makeCheckoutEvent('sub_second'));
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            organizationId: 'org-1',
+            action: 'billing.subscription_link_conflict',
+          }),
+        }),
+      );
+    });
+
+    it('refuses to move an organization onto a different Stripe customer', async () => {
+      const prisma = makeLinkedPrisma({
+        stripeCustomerId: 'cus_victim',
+        stripeSubscriptionId: 'sub_existing',
+      });
+      const svc = makeService(prisma, makeCheckoutEvent('sub_existing', 'cus_attacker'));
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+    });
+
+    it('still links an organization that carries the same ids', async () => {
+      const prisma = makeLinkedPrisma({
+        stripeCustomerId: 'cus_123',
+        stripeSubscriptionId: 'sub_existing',
+      });
+      const svc = makeService(prisma, makeCheckoutEvent('sub_existing'));
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(prisma.subscription.upsert).toHaveBeenCalled();
+    });
   });
 
   describe('credit grants and reversals', () => {
@@ -417,6 +811,8 @@ describe('StripeWebhookService production webhook handling', () => {
           object: {
             id: 'in_123',
             customer: 'cus_123',
+            amount_paid: 4900,
+            currency: 'usd',
             lines: {
               data: [
                 {
@@ -439,6 +835,8 @@ describe('StripeWebhookService production webhook handling', () => {
             customer: 'cus_123',
             payment_status: 'paid',
             payment_intent: 'pi_pack_1',
+            amount_total: 3900,
+            currency: 'usd',
             metadata: { organizationId: 'org-1', purchaseType: 'minute_pack' },
             ...overrides,
           },
@@ -460,6 +858,8 @@ describe('StripeWebhookService production webhook handling', () => {
         invoiceId: 'in_123',
         includedMinutes: 200,
         periodEnd: new Date(1_802_592_000 * 1000),
+        // The grant acknowledges its own event, inside its own transaction.
+        stripeEventId: 'evt_invoice.paid',
       });
     });
 
@@ -504,11 +904,212 @@ describe('StripeWebhookService production webhook handling', () => {
       expect(creditLedger.grantSubscriptionCredits).not.toHaveBeenCalled();
     });
 
-    it('does not grant a pack whose checkout has not been paid', async () => {
+    it('records the funding payment intent and its event on the pack grant', async () => {
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(makePrisma(), makePackCheckoutEvent(), { creditLedger });
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(creditLedger.grantPurchasedCredits).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentIntentId: 'pi_pack_1',
+          stripeEventId: 'evt_checkout.session.completed',
+        }),
+      );
+    });
+
+    /**
+     * `payment_status: 'paid'` is true of a 100%-discounted session and of one
+     * settled in another currency, neither of which paid for a pack. Nothing in
+     * the repo creates a coupon today, which is the only reason this is not
+     * already being exploited — one promo code in the Stripe dashboard removes
+     * that accidental protection.
+     */
+    it.each([
+      ['a fully discounted session', { amount_total: 0 }],
+      ['a session settled in another currency', { currency: 'eur' }],
+      ['a session with no amount at all', { amount_total: null }],
+    ])('does not grant a pack for %s', async (_label, overrides) => {
+      const prisma = makePrisma();
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, makePackCheckoutEvent(overrides), { creditLedger });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantPurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            organizationId: 'org-1',
+            action: 'billing.grant_amount_review',
+          }),
+        }),
+      );
+    });
+
+    it('does not grant included minutes for an invoice that collected nothing', async () => {
+      const prisma = makePrisma();
+      const creditLedger = makeCreditLedger();
+      const event = makeInvoicePaidEvent();
+      Object.assign(event.data.object, { amount_paid: 0 });
+      const svc = makeService(prisma, event, { creditLedger });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantSubscriptionCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ action: 'billing.grant_amount_review' }),
+        }),
+      );
+    });
+
+    /**
+     * A refunded subscription charge names its invoice, which is the `sourceId`
+     * the period's included bucket was granted under. This path did not exist:
+     * every subscription refund fell through to the pack lookup, found nothing,
+     * threw, and 500-looped — so refunded subscription revenue stayed on the
+     * account as usable minutes.
+     */
+    it('reverses included credit for a refunded subscription invoice', async () => {
+      const prisma = makePrisma({ includedBucket: { organizationId: 'org-1' } });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.refunded'),
+          data: {
+            object: {
+              id: 're_sub',
+              customer: 'cus_123',
+              invoice: 'in_123',
+              payment_intent: 'pi_sub',
+              amount: 4900,
+              amount_refunded: 4900,
+            },
+          },
+        },
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        checkoutSessionId: 'in_123',
+        refundId: 're_sub',
+        sourceType: 'included',
+      });
+      // Resolved from the bucket, so the legacy audit-log lookup is not needed.
+      expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    });
+
+    it('records an invoice refund with no matching included credit for review', async () => {
+      const prisma = makePrisma({ includedBucket: null });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.refunded'),
+          data: {
+            object: {
+              id: 're_orphan',
+              customer: 'cus_123',
+              invoice: 'in_missing',
+              amount: 4900,
+              amount_refunded: 4900,
+            },
+          },
+        },
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.credit_reversal_unresolved',
+            metadata: expect.objectContaining({ reason: 'no_included_credit_for_invoice' }),
+          }),
+        }),
+      );
+    });
+
+    /**
+     * A dispute payload carries no customer, so the payment intent recorded on
+     * the bucket is the only durable mapping back to the payer.
+     */
+    it('reverses a dispute through the payment intent recorded on the bucket', async () => {
+      const prisma = makePrisma({
+        fundedBucket: {
+          organizationId: 'org-1',
+          sourceType: 'purchased',
+          sourceId: 'cs_pack_1',
+        },
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        {
+          ...makeSubscriptionEvent('charge.dispute.closed'),
+          data: { object: { id: 'dp_pi', payment_intent: 'pi_pack_1', status: 'lost' } },
+        },
+        { creditLedger },
+      );
+
+      await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(prisma.billingCreditBucket.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { stripePaymentIntentId: 'pi_pack_1' } }),
+      );
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        checkoutSessionId: 'cs_pack_1',
+        refundId: 'dp_pi',
+        sourceType: 'purchased',
+      });
+      expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    });
+
+    /**
+     * `unpaid` means a delayed-notification method is still clearing. Nothing
+     * grants it later — the pack Checkout is card-only precisely because of that
+     * — so a session that reaches here unpaid is a customer who may have paid and
+     * received nothing. It must leave a record a human can act on rather than a
+     * warn line.
+     */
+    it('records an unpaid pack checkout for manual review instead of dropping it', async () => {
+      const prisma = makePrisma();
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, makePackCheckoutEvent({ payment_status: 'unpaid' }), {
+        creditLedger,
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantPurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            organizationId: 'org-1',
+            action: 'billing.pack_checkout_unpaid_review',
+          }),
+        }),
+      );
+    });
+
+    it('does not grant a pack whose checkout requires no payment', async () => {
       const creditLedger = makeCreditLedger();
       const svc = makeService(
         makePrisma(),
-        makePackCheckoutEvent({ payment_status: 'unpaid' }),
+        makePackCheckoutEvent({ payment_status: 'no_payment_required' }),
         { creditLedger },
       );
 
@@ -560,16 +1161,19 @@ describe('StripeWebhookService production webhook handling', () => {
         organizationId: 'org-1',
         checkoutSessionId: 'cs_pack_1',
         refundId: 're_1',
+        sourceType: 'purchased',
       });
     });
 
     /**
      * A payment intent must map to exactly one payer. If two organizations hold
-     * a grant for it, reversing against either one takes credit from a customer
-     * who may not have been refunded, so the event has to fail and be retried
-     * after a human resolves the ambiguity.
+     * a grant for it, reversing against either takes credit from a customer who
+     * may not have been refunded, so nothing is reversed. Retrying forever does
+     * not resolve it either — it just 500-loops until Stripe gives up and the
+     * refund is forgotten — so the ambiguity is written where a human sees it
+     * and the event terminates.
      */
-    it('refuses a reversal whose payment intent resolves to two organizations', async () => {
+    it('records an ambiguous payment intent for review instead of retrying forever', async () => {
       const prisma = makePrisma({
         packGrantAudits: [
           {
@@ -590,6 +1194,7 @@ describe('StripeWebhookService production webhook handling', () => {
           data: {
             object: {
               id: 're_ambiguous',
+              customer: 'cus_123',
               payment_intent: 'pi_pack_1',
               amount: 10_000,
               amount_refunded: 10_000,
@@ -601,14 +1206,20 @@ describe('StripeWebhookService production webhook handling', () => {
 
       const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
-      // A 500 keeps Stripe retrying, which is the correct outcome: the event is
-      // unresolved rather than handled.
-      expect(result).toMatchObject({ handled: false, statusCode: 500 });
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
       expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
       // The ambiguity is only detectable because the query asks for one more
       // distinct owner than it expects to find.
       expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ distinct: ['organizationId'], take: 2 }),
+      );
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.credit_reversal_unresolved',
+            metadata: expect.objectContaining({ reason: 'ambiguous_payment_intent' }),
+          }),
+        }),
       );
     });
 
@@ -636,6 +1247,7 @@ describe('StripeWebhookService production webhook handling', () => {
         organizationId: 'org-1',
         checkoutSessionId: 'cs_pack_1',
         refundId: 'dp_1',
+        sourceType: 'purchased',
       });
       expect(prisma.subscription.findMany).not.toHaveBeenCalled();
     });
@@ -716,7 +1328,7 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith(
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: new Date(1_700_000_000 * 1000),
@@ -748,7 +1360,7 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith(
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: new Date(1_790_000_000 * 1000),
@@ -768,7 +1380,7 @@ describe('StripeWebhookService production webhook handling', () => {
 
     // Must not 500: a 500 makes Stripe retry and eventually disable the endpoint.
     expect(result).toMatchObject({ handled: true, statusCode: 200 });
-    expect(prisma.subscription.update).toHaveBeenCalledWith(
+    expect(prisma.subscription.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           currentPeriodStart: null,

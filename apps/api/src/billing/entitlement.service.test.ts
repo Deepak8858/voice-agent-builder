@@ -84,6 +84,59 @@ describe('EntitlementService', () => {
       ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
     });
 
+    /**
+     * `status` alone is not proof of funding. Stripe advances the period when it
+     * generates the renewal invoice, so a row whose `currentPeriodEnd` is still
+     * days in the past is one whose renewal webhook never arrived — and it used
+     * to read as `active`, and therefore paid, forever.
+     */
+    it('refuses paid access to an active subscription whose period ended and was never renewed', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            currentPeriodEnd: new Date(Date.now() - 3 * 86_400_000),
+          },
+        }),
+      );
+
+      const plan = await svc.getEffectivePlan('org-1');
+
+      expect(plan.paidAccess).toBe(false);
+      expect(plan.plan).toBe('free');
+    });
+
+    it('keeps paid access through the renewal window while the period-end webhook is in flight', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            // Just past the boundary: Stripe finalizes and pays the renewal
+            // invoice about an hour after it is created, so downgrading here
+            // would cut off every paying customer at every renewal.
+            currentPeriodEnd: new Date(Date.now() - 60 * 60 * 1000),
+          },
+        }),
+      );
+
+      await expect(svc.getEffectivePlan('org-1')).resolves.toMatchObject({
+        paidAccess: true,
+        plan: 'growth',
+      });
+    });
+
+    it('treats a subscription with no recorded period as funded, not expired', async () => {
+      // The checkout upsert creates the row before Stripe reports a period, and
+      // a subscription event that omits it persists null on purpose.
+      const svc = makeService(
+        makePrisma({ subscription: { plan: 'starter', status: 'active', currentPeriodEnd: null } }),
+      );
+
+      await expect(svc.getEffectivePlan('org-1')).resolves.toMatchObject({ paidAccess: true });
+    });
+
     it('allows an unexpired paid trial and rejects an expired paid trial', async () => {
       const unexpired = makeService(
         makePrisma({

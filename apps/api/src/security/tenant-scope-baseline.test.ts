@@ -71,6 +71,14 @@ const REVIEWED_BASELINE: readonly string[] = [
   'calls/calls.service.ts:callEvent.findUnique',
   // Stripe webhooks are keyed on Stripe's customer/subscription ids, which are
   // the tenant identifier in that direction.
+  // A refund or dispute arrives naming only a Stripe invoice or PaymentIntent
+  // and (for disputes) no customer at all. These two look the credit bucket up
+  // by exactly that identifier to *discover* the owning tenant before reversing
+  // anything; scoping them to an organization would require the answer they
+  // exist to produce. `stripePaymentIntentId` is uniquely indexed, so the
+  // payment-intent lookup cannot return another tenant's bucket by accident.
+  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findFirst',
+  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findUnique',
   'webhooks/stripe-webhook.service.ts:auditLog.findMany',
   'webhooks/stripe-webhook.service.ts:subscription.findFirst',
   'webhooks/stripe-webhook.service.ts:subscription.findMany',
@@ -278,6 +286,10 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.findUnique': 1,
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.update': 1,
   'voice/livekit-knowledge.controller.ts:call.findUnique': 1,
+  // Both new: the invoice → included-bucket lookup and the PaymentIntent →
+  // bucket lookup that resolve a reversal's owner (see REVIEWED_BASELINE).
+  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findFirst': 1,
+  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findUnique': 1,
   'webhooks/stripe-webhook.service.ts:auditLog.findMany': 1,
   'webhooks/stripe-webhook.service.ts:subscription.findFirst': 4,
   'webhooks/stripe-webhook.service.ts:subscription.findMany': 1,

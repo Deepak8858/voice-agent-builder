@@ -4,12 +4,13 @@ import { Reflector } from '@nestjs/core';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { env } from '../config/env';
 import { AuditExportController } from '../audit/audit-export.controller';
+import { BillingAdminController } from '../billing/billing-admin.controller';
 import { ComplianceManifestController } from '../compliance/compliance-manifest.controller';
 import { ErasureController } from '../compliance/erasure.controller';
 import { RetentionController } from '../compliance/retention.controller';
 
 /**
- * Pins @InternalOnly() onto the five operator-admin routes. Unlike the guard's
+ * Pins @InternalOnly() onto every operator-admin route. Unlike the guard's
  * own unit tests, this uses the real Reflector against the real controller
  * classes, so it fails if the decorator is removed from — or never reached —
  * any of these handlers, not just if the guard logic regresses. The threat is
@@ -24,6 +25,11 @@ const ADMIN_ROUTES: ReadonlyArray<[string, new (...args: never[]) => unknown, st
   ['POST admin/retention/sweep', RetentionController, 'sweep'],
   ['DELETE admin/orgs/:orgId', ErasureController, 'eraseOrganization'],
   ['GET admin/compliance/manifest', ComplianceManifestController, 'getManifest'],
+  [
+    'POST admin/billing/orgs/:orgId/clear-balance-review',
+    BillingAdminController,
+    'clearBalanceReview',
+  ],
 ];
 
 function contextFor(

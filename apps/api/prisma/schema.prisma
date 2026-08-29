@@ -812,6 +812,14 @@ model BillingCreditBucket {
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
+  /// The Stripe PaymentIntent that funded this bucket, for one-time purchases.
+  /// Unique, so a replayed Checkout that slips past the processed-event table
+  /// collides on the index instead of minting a second paid-for bucket, and so a
+  /// refund or dispute can be mapped back to its grant by payment intent alone.
+  /// Null on subscription and free-allowance buckets, and on packs granted
+  /// before this column existed.
+  stripePaymentIntentId String? @unique(map: "credit_bucket_payment_intent_uidx") @map("stripe_payment_intent_id")
+
   organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   ledgerEntries BillingLedgerEntry[]
 

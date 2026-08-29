@@ -31,6 +31,20 @@ import { PrismaService } from '../prisma/prisma.service';
 const PAID_ACCESS_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
 
 /**
+ * How far past its stored `currentPeriodEnd` a subscription may still read as
+ * funded.
+ *
+ * Stripe advances the period as soon as it generates the renewal invoice, so a
+ * healthy row is only momentarily behind — for as long as
+ * `customer.subscription.updated`/`invoice.paid` is in flight. A row still
+ * behind a day later is one whose renewal we cannot prove happened (a missed or
+ * undelivered webhook), and it must stop funding paid work rather than reading
+ * as `active` forever. The grace exists so a few minutes of webhook lag at
+ * renewal never downgrades a paying customer.
+ */
+const PERIOD_END_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Derived from the shared contract rather than restated here, so a new plan or
  * Stripe status cannot be added to the schema without this service accepting
  * it.
@@ -62,6 +76,7 @@ export class EntitlementService {
         plan: true,
         status: true,
         trialEnd: true,
+        currentPeriodEnd: true,
         concurrentCallLimitOverride: true,
       },
     });
@@ -72,11 +87,16 @@ export class EntitlementService {
       status === 'trialing' &&
       subscription?.trialEnd instanceof Date &&
       subscription.trialEnd.getTime() <= Date.now();
-
     // A paid plan name without a funding status is not paid access. An expired
-    // trial falls all the way back to Free so no downstream caller can read a
-    // paid entitlement from a stale row.
-    const paidAccess = PAID_ACCESS_STATUSES.has(status) && !trialExpired && storedPlan !== 'free';
+    // trial, or a paid period that ended and was never renewed, falls all the
+    // way back to Free so no downstream caller can read a paid entitlement from
+    // a stale row. The period is only consulted for a row that would otherwise
+    // have funded usage, so a long-canceled row does not log every time.
+    const paidAccess =
+      PAID_ACCESS_STATUSES.has(status) &&
+      !trialExpired &&
+      storedPlan !== 'free' &&
+      !this.isPeriodExpired(organizationId, subscription?.currentPeriodEnd);
     const plan: PlanType = paidAccess ? storedPlan : 'free';
 
     return {
@@ -361,6 +381,23 @@ export class EntitlementService {
 
   private resolvePlan(plan: string | undefined): PlanType {
     return plan && PLAN_TYPES.has(plan) ? (plan as PlanType) : 'free';
+  }
+
+  /**
+   * A `null` period is not an expiry: the checkout upsert creates the row before
+   * Stripe reports a period, and a subscription event that omits it persists
+   * null on purpose. Only a period that is genuinely in the past, by more than
+   * {@link PERIOD_END_GRACE_MS}, revokes funding.
+   */
+  private isPeriodExpired(organizationId: string, currentPeriodEnd: Date | null | undefined): boolean {
+    if (!(currentPeriodEnd instanceof Date)) return false;
+    if (currentPeriodEnd.getTime() + PERIOD_END_GRACE_MS > Date.now()) return false;
+    this.logger.warn(
+      `Organization ${organizationId} has a subscription period that ended at ` +
+        `${currentPeriodEnd.toISOString()} and was never renewed; refusing paid usage. ` +
+        `A renewal webhook was probably missed.`,
+    );
+    return true;
   }
 
   /**

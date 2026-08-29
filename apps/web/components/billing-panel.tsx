@@ -11,6 +11,7 @@ import {
   getPlanById,
   getPlanEntitlements,
   getUpgradeTarget,
+  hasLiveSubscription,
   isPaidPlan,
   SubscriptionDtoSchema,
   WorkspaceUsageDtoSchema,
@@ -117,7 +118,19 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const plan: PlanType = (subscription.data?.plan as PlanType | undefined) ?? 'free';
   const planEntry = useMemo(() => getPlanById(plan), [plan]);
-  const upgradeTarget = useMemo(() => getUpgradeTarget(plan), [plan]);
+  // A second subscription Checkout is refused by the API whenever Stripe still
+  // holds a live subscription, because it would create a second subscription and
+  // bill twice. Rendering "Upgrade" there would hand a paying customer a button
+  // that can only return 400; plan changes go through the portal instead, which
+  // is the button already shown beside it.
+  // Read straight off the query rather than the `status` default below: that one
+  // falls back to 'active', which would read as a live subscription for a Free
+  // org that has no subscription row at all and hide its only upgrade path.
+  const liveSubscription = isPaidPlan(plan) && hasLiveSubscription(subscription.data?.status ?? '');
+  const upgradeTarget = useMemo(
+    () => (liveSubscription ? null : getUpgradeTarget(plan)),
+    [plan, liveSubscription],
+  );
   const upgradeEntry = useMemo(() => (upgradeTarget ? getPlanById(upgradeTarget) : null), [upgradeTarget]);
 
   const checkout = useMutation({

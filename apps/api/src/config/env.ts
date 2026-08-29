@@ -310,6 +310,26 @@ const EnvSchema = z
         message: 'ALLOWED_ORIGINS must contain at least one explicit origin in production',
       });
     }
+    // Supabase Auth has exactly two ways to establish a session's claims, and
+    // supabase-auth.service.ts tries them in order: local HS256 verification
+    // with SUPABASE_JWT_SECRET, then token introspection against
+    // /auth/v1/user with SUPABASE_SERVICE_ROLE_KEY. With neither set,
+    // resolveClaims() falls straight through to `return null` and the API
+    // rejects every single authenticated request while /health stays green and
+    // boot logs stay clean. Same failure shape INTERNAL_API_KEY's `.min(32)`
+    // exists to prevent: an unsatisfiable check is a config bug, not a mode.
+    if (
+      value.NODE_ENV === 'production' &&
+      !value.SUPABASE_JWT_SECRET &&
+      !value.SUPABASE_SERVICE_ROLE_KEY
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SUPABASE_JWT_SECRET'],
+        message:
+          'One of SUPABASE_JWT_SECRET or SUPABASE_SERVICE_ROLE_KEY is required in production; with neither, every session is rejected',
+      });
+    }
     if (value.NODE_ENV === 'production' && !value.VOICE_WEBHOOK_SECRET) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
