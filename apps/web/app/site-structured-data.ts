@@ -25,7 +25,6 @@ export function organizationJsonLd(): Record<string, unknown> {
     logo: `${siteUrl}/logo.svg`,
     description:
       'VoiceForge AI is a spec-first platform for building, testing, governing, deploying, and white-labeling AI voice calling agents.',
-    sameAs: ['https://github.com/Deepak8858/voice-agent-builder'],
   };
 }
 
