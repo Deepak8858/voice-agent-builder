@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { BillingModule } from '../billing/billing.module';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import {
   ClientInvitesController,
@@ -10,7 +11,7 @@ import {
 import { WhiteLabelService } from './white-label.service';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, BillingModule],
   controllers: [
     WhiteLabelController,
     ClientWorkspacesController,

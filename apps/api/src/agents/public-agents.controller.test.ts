@@ -4,18 +4,25 @@ import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
 import { PublicAgentsController } from './agents.controller';
 
 const AGENT_ID = '123e4567-e89b-42d3-a456-426614174000';
+const ORG_ID = '223e4567-e89b-42d3-a456-426614174000';
 const VERSION_DATE = new Date('2026-05-20T10:00:00.000Z');
 
-function makeController() {
+function makeController(whiteLabelEntitled = true) {
   const publishedAgent = {
     id: AGENT_ID,
+    organizationId: ORG_ID,
     name: 'Dental Receptionist',
     status: 'published',
     createdAt: new Date('2026-05-19T10:00:00.000Z'),
     workspace: {
       name: 'Smile Dental Workspace',
       slug: 'smile-dental',
-      whiteLabel: { brandName: 'Smile Dental' },
+      whiteLabel: {
+        brandName: 'Smile Dental',
+        logoUrl: 'https://cdn.example.com/logo.png',
+        primaryColor: '#123456',
+        hidePlatformBranding: true,
+      },
     },
     organization: { name: 'Acme Clinics' },
   };
@@ -51,9 +58,16 @@ function makeController() {
     },
   };
 
+  const entitlements = {
+    getEffectivePlan: vi.fn(async () => ({
+      entitlements: { whiteLabel: whiteLabelEntitled },
+    })),
+  };
+
   return {
-    controller: new PublicAgentsController(prisma as never),
+    controller: new PublicAgentsController(prisma as never, entitlements as never),
     prisma,
+    entitlements,
   };
 }
 
@@ -93,6 +107,36 @@ describe('PublicAgentsController', () => {
     });
     expect(result.publishedAt).toEqual(VERSION_DATE);
     expect(result.sampleTranscript?.[0]?.text).toContain('Smile Dental');
+  });
+
+  // F-005: the white_label feature gate had no reader, so branding stored while
+  // the org was on Growth kept being served after it fell back to Free.
+  it('serves stored branding while the plan entitles white-label', async () => {
+    const { controller, entitlements } = makeController(true);
+
+    const result = await controller.getById(`dental-receptionist-${AGENT_ID}`);
+
+    expect(entitlements.getEffectivePlan).toHaveBeenCalledWith(ORG_ID);
+    if (!result.found) throw new Error('expected published agent share payload');
+    expect(result.branding).toEqual({
+      brandName: 'Smile Dental',
+      logoUrl: 'https://cdn.example.com/logo.png',
+      primaryColor: '#123456',
+      hidePlatformBranding: true,
+    });
+    expect(result.workspaceName).toBe('Smile Dental');
+  });
+
+  it('suppresses branding once the plan no longer entitles white-label', async () => {
+    const { controller } = makeController(false);
+
+    const result = await controller.getById(`dental-receptionist-${AGENT_ID}`);
+
+    if (!result.found) throw new Error('expected published agent share payload');
+    // hidePlatformBranding is the thing Growth actually sells here, so the whole
+    // block has to go, not just the brand name.
+    expect(result.branding).toBeNull();
+    expect(result.workspaceName).toBe('Smile Dental Workspace');
   });
 
   it('does not expose draft or unknown agents', async () => {
