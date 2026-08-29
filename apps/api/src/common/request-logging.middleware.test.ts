@@ -1,19 +1,28 @@
 import type { NextFunction, Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { RequestLoggingMiddleware } from './request-logging.middleware';
+import { logger } from '../logging';
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function run(headerValue?: string | string[]) {
+function run(headerValue?: string | string[], originalUrl = '/api/v1/health') {
   const req = {
     method: 'GET',
-    originalUrl: '/api/v1/health',
+    originalUrl,
     headers: headerValue === undefined ? {} : { 'x-request-id': headerValue },
     ip: '203.0.113.7',
   } as unknown as Request;
 
   const setHeader = vi.fn();
-  const res = { setHeader, on: vi.fn(), statusCode: 200 } as unknown as Response;
+  // Fire the `finish` handler synchronously so the request:end record is
+  // produced too — it is a second, independent log call site.
+  const res = {
+    setHeader,
+    on: vi.fn((event: string, cb: () => void) => {
+      if (event === 'finish') cb();
+    }),
+    statusCode: 200,
+  } as unknown as Response;
   const next = vi.fn() as unknown as NextFunction;
 
   new RequestLoggingMiddleware().use(req, res, next);
@@ -62,5 +71,25 @@ describe('RequestLoggingMiddleware correlation ID', () => {
     // Express collapses duplicates to `first, second`; the comma and space fail
     // the pattern, so a fresh server-owned ID is minted.
     expect(run(['first', 'second']).correlationId).toMatch(UUID_SHAPE);
+  });
+});
+
+describe('RequestLoggingMiddleware URL logging', () => {
+  it('strips the query string from every logged URL', () => {
+    // The Google OAuth callback takes its one-time `code` as a query parameter
+    // and the web proxy forwards the search string verbatim, so logging the
+    // query persists a live credential to the log store. pino's `redact` cannot
+    // cover this: the value is a hand-picked scalar on the merging object.
+    const info = vi.spyOn(logger, 'info').mockImplementation((() => undefined) as never);
+
+    try {
+      run(undefined, '/api/v1/google/callback?code=4%2F0Aeaeaeaeaea&state=xyz');
+
+      const urls = info.mock.calls.map(([record]) => (record as { url: string }).url);
+
+      expect(urls).toEqual(['/api/v1/google/callback', '/api/v1/google/callback']);
+    } finally {
+      info.mockRestore();
+    }
   });
 });
