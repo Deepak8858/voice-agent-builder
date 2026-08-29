@@ -41,7 +41,7 @@ interface SupabaseJWTPayload {
 @Injectable()
 export class SupabaseAuthService extends AuthService {
   private readonly logger = new Logger(SupabaseAuthService.name);
-  private readonly supabaseUrl: string | null;
+  private readonly supabaseUrl: string;
   private readonly supabaseServiceRoleKey: string | null;
 
   constructor(
@@ -50,8 +50,7 @@ export class SupabaseAuthService extends AuthService {
     @Optional() private readonly posthog?: PostHogService,
   ) {
     super();
-    const supabaseUrl = env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-    this.supabaseUrl = supabaseUrl ?? null;
+    this.supabaseUrl = env.SUPABASE_URL;
     this.supabaseServiceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY ?? null;
   }
 
@@ -69,7 +68,7 @@ export class SupabaseAuthService extends AuthService {
 
   async logout(req: Request, _res: Response): Promise<void> {
     const token = this.extractBearerToken(req);
-    if (!token || !this.supabaseUrl || !this.supabaseServiceRoleKey) return;
+    if (!token || !this.supabaseServiceRoleKey) return;
     try {
       await fetch(`${this.supabaseUrl}/auth/v1/logout`, {
         method: 'POST',
@@ -121,9 +120,11 @@ export class SupabaseAuthService extends AuthService {
         return jwt.verify(token, env.SUPABASE_JWT_SECRET, {
           algorithms: ['HS256'],
           audience: 'authenticated',
-          ...(this.supabaseUrl
-            ? { issuer: `${this.supabaseUrl.replace(/\/$/, '')}/auth/v1` }
-            : {}),
+          // Unconditional. This was previously spread in only when supabaseUrl
+          // happened to be set, so a deployment missing SUPABASE_URL verified
+          // tokens with no issuer binding at all — any HS256 token signed with
+          // the shared secret passed. SUPABASE_URL is now required in env.ts.
+          issuer: `${this.supabaseUrl.replace(/\/$/, '')}/auth/v1`,
         }) as SupabaseJWTPayload;
       } catch (err) {
         this.logger.debug(`[supabase] local token verify failed: ${(err as Error).message}`);
@@ -147,7 +148,7 @@ export class SupabaseAuthService extends AuthService {
   }
 
   private async getSupabaseUser(token: string): Promise<SupabaseAuthUser | null> {
-    if (!this.supabaseUrl || !this.supabaseServiceRoleKey) return null;
+    if (!this.supabaseServiceRoleKey) return null;
 
     const res = await fetch(`${this.supabaseUrl}/auth/v1/user`, {
       headers: {
