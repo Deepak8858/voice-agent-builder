@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 
 export interface CallSession {
@@ -33,7 +34,13 @@ export class CallSessionManager {
     metadata?: Record<string, unknown>;
   }): CallSession {
     const session: CallSession = {
-      id: `session_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      // The id is emitted to Twilio inside the `<Stream url="wss://.../voice/
+      // stream/<id>">` TwiML, i.e. it is a bearer capability in a URL. It was
+      // built from `Date.now()` and `Math.random()`: V8's PRNG state is
+      // recoverable from a handful of outputs and the clock is not a secret, so
+      // ids were predictable. `startedAt` already carries the timestamp the old
+      // prefix encoded, and nothing parses this shape.
+      id: `session_${randomUUID()}`,
       callSid: params.callSid,
       agentId: params.agentId,
       agentVersionId: params.agentVersionId,
