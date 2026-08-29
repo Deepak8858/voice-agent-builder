@@ -14,14 +14,15 @@ import type {
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
   CreateTopUpCheckoutDto,
-  SessionUser,
 } from '@voiceforge/shared';
 import {
   CreateCheckoutSessionDtoSchema,
   CreatePortalSessionDtoSchema,
   CreateTopUpCheckoutDtoSchema,
 } from '@voiceforge/shared';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { ForbiddenError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,13 +35,6 @@ export class BillingController {
     private readonly billing: BillingService,
     private readonly prisma: PrismaService,
   ) {}
-
-  private assertBillingAdmin(req: Request): void {
-    const role = (req as Request & { user?: SessionUser }).user?.active_workspace_role;
-    if (role !== 'owner' && role !== 'admin') {
-      throw new ForbiddenError('Only workspace owners and admins can manage billing.');
-    }
-  }
 
   /**
    * The single place a workspace the caller has access to becomes the
@@ -106,13 +100,15 @@ export class BillingController {
     );
   }
 
+  // Money routes are owner+admin; RoleGuard re-resolves the seat rather than
+  // trusting the session copy the old assertBillingAdmin read.
   @Post('checkout')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async createCheckout(
     @Param('workspaceId') workspaceId: string,
-    @Req() req: Request,
     @Body(new ZodValidationPipe(CreateCheckoutSessionDtoSchema)) dto: CreateCheckoutSessionDto,
   ): Promise<{ url: string }> {
-    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     try {
       return await this.billing.createCheckoutSession(orgId, dto);
@@ -127,33 +123,35 @@ export class BillingController {
    * paths so a client can never name a price or an amount.
    */
   @Post('topup-checkout')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async createTopUpCheckout(
     @Param('workspaceId') workspaceId: string,
-    @Req() req: Request,
     @Body(new ZodValidationPipe(CreateTopUpCheckoutDtoSchema)) dto: CreateTopUpCheckoutDto,
   ): Promise<{ url: string }> {
-    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createTopUpCheckoutSession(orgId, dto);
   }
 
   @Post('portal')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async createPortal(
     @Param('workspaceId') workspaceId: string,
-    @Req() req: Request,
     @Body(new ZodValidationPipe(CreatePortalSessionDtoSchema)) dto: CreatePortalSessionDto,
   ): Promise<{ url: string }> {
-    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     return this.billing.createPortalSession(orgId, dto);
   }
 
+  // The one admin-gated read: invoices carry the organization's billing
+  // address and payment history, which members below admin have no seat to see.
   @Get('invoices')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
   async getInvoices(
     @Param('workspaceId') workspaceId: string,
-    @Req() req: Request,
   ): Promise<{ items: unknown[] }> {
-    this.assertBillingAdmin(req);
     const orgId = await this.getOrgId(workspaceId);
     const sub = await this.billing.getSubscription(orgId);
     if (!sub?.stripeCustomerId) return { items: [] };

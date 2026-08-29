@@ -1,8 +1,15 @@
-import type { Request } from 'express';
-import type { SessionUser } from '@voiceforge/shared';
+import 'reflect-metadata';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
-import { ForbiddenError } from '../common/errors';
+import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
+import { ForbiddenError, UnauthorizedError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
+import { WorkspaceGuard } from '../common/workspace.guard';
 import { BillingController } from './billing.controller';
+
+const handler = (name: string) =>
+  (BillingController.prototype as unknown as Record<string, (...args: never[]) => unknown>)[name];
 
 function makeController() {
   const billing = {
@@ -29,19 +36,34 @@ function makeController() {
   };
 }
 
-function request(
-  role: SessionUser['active_workspace_role'],
-  activeWorkspaceId = 'ws-1',
-): Request {
-  return {
-    user: { active_workspace_role: role, active_workspace_id: activeWorkspaceId },
-    query: {},
-  } as unknown as Request;
-}
-
-/** A request the guard never populated, e.g. because it was bypassed. */
-function requestWithoutSessionUser(): Request {
-  return { query: {} } as unknown as Request;
+/**
+ * Exercises RoleGuard against the REAL @RequiredRole metadata on the named
+ * handler (real Reflector, real class), so these tests fail if someone removes
+ * a decorator or widens a role set. The membership role comes from the stubbed
+ * database row, exactly where the guard is required to read it from.
+ */
+function roleGuard(
+  handlerName: string,
+  membershipRole: string | null,
+  user: Record<string, unknown> | null | undefined = { id: 'user-1' },
+) {
+  const prisma = {
+    membership: {
+      findUnique: vi.fn(async () => (membershipRole ? { role: membershipRole } : null)),
+    },
+  };
+  const cache = { get: vi.fn(async () => null), set: vi.fn(async () => undefined) };
+  const ctx = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        params: { workspaceId: 'ws-1' },
+        ...(user === null ? {} : { user }),
+      }),
+    }),
+    getHandler: () => handler(handlerName),
+    getClass: () => BillingController,
+  };
+  return { guard: new RoleGuard(prisma as never, cache as never, new Reflector()), ctx };
 }
 
 const checkoutDto = {
@@ -51,61 +73,91 @@ const checkoutDto = {
   cancelPath: '/dashboard/billing?checkout=cancel',
 };
 
-const topUpDto = {
-  idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
-  successPath: '/dashboard/billing?topup=success',
-  cancelPath: '/dashboard/billing?topup=cancel',
-};
-
-const portalDto = { returnPath: '/dashboard/billing' };
+const MONEY_ROUTES = ['createCheckout', 'createTopUpCheckout', 'createPortal', 'getInvoices'] as const;
 
 describe('BillingController authorization', () => {
-  it.each([
-    ['checkout', (controller: BillingController) =>
-      controller.createCheckout('ws-1', request('viewer'), checkoutDto)],
-    ['top-up checkout', (controller: BillingController) =>
-      controller.createTopUpCheckout('ws-1', request('viewer'), topUpDto)],
-    ['portal', (controller: BillingController) =>
-      controller.createPortal('ws-1', request('viewer'), portalDto)],
-    ['invoices', (controller: BillingController) =>
-      controller.getInvoices('ws-1', request('viewer'))],
-  ])('denies viewers access to %s', async (_name, invoke) => {
-    const { controller, billing, prisma } = makeController();
+  it.each(MONEY_ROUTES)('gates %s to owner/admin', (name) => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler(name))).toEqual([RoleGuard]);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler(name))).toEqual({
+      roles: ['owner', 'admin'],
+      fresh: false,
+    });
+  });
 
-    await expect(invoke(controller)).rejects.toBeInstanceOf(ForbiddenError);
-    expect(prisma.workspace.findUnique).not.toHaveBeenCalled();
-    expect(billing.createCheckoutSession).not.toHaveBeenCalled();
-    expect(billing.createTopUpCheckoutSession).not.toHaveBeenCalled();
-    expect(billing.createPortalSession).not.toHaveBeenCalled();
-    expect(billing.getInvoices).not.toHaveBeenCalled();
+  it.each(['getSubscription', 'getBillingStatus', 'getSummary', 'getUsage'] as const)(
+    'leaves %s open to every member',
+    (name) => {
+      expect(Reflect.getMetadata(GUARDS_METADATA, handler(name)) ?? []).not.toContain(RoleGuard);
+      expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler(name))).toBeUndefined();
+    },
+  );
+
+  it.each(
+    MONEY_ROUTES.flatMap((name) => (['viewer', 'editor'] as const).map((role) => [role, name] as const)),
+  )('denies a %s on %s', async (role, name) => {
+    const { guard, ctx } = roleGuard(name, role);
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
   });
 
   it.each(['owner', 'admin'] as const)('allows %s to start checkout', async (role) => {
-    const { controller, billing } = makeController();
+    const { guard, ctx } = roleGuard('createCheckout', role);
 
-    await expect(controller.createCheckout('ws-1', request(role), checkoutDto)).resolves.toEqual({
-      url: 'https://checkout.test',
-    });
-    expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto);
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+
+  /** A request no auth guard populated must deny, not fall through to a paid action. */
+  it('denies a request with no session user', async () => {
+    const { guard, ctx } = roleGuard('createCheckout', 'owner', null);
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(UnauthorizedError);
   });
 
   /**
-   * If a guard does not populate the session, the role is `undefined`. That
-   * must deny rather than fall through to a paid action.
+   * The old inline assertBillingAdmin trusted `active_workspace_role` off the
+   * session; RoleGuard resolves the seat from the membership row for the
+   * workspace in the URL. A caller whose session says owner-of-somewhere-else
+   * but who holds no membership here is denied.
    */
-  it.each([
-    ['checkout', (controller: BillingController) =>
-      controller.createCheckout('ws-1', requestWithoutSessionUser(), checkoutDto)],
-    ['top-up checkout', (controller: BillingController) =>
-      controller.createTopUpCheckout('ws-1', requestWithoutSessionUser(), topUpDto)],
-    ['portal', (controller: BillingController) =>
-      controller.createPortal('ws-1', requestWithoutSessionUser(), portalDto)],
-    ['invoices', (controller: BillingController) =>
-      controller.getInvoices('ws-1', requestWithoutSessionUser())],
-  ])('denies %s to a request with no session user', async (_name, invoke) => {
-    const { controller, billing, prisma } = makeController();
+  it('denies a caller with no membership in the path workspace', async () => {
+    const { guard, ctx } = roleGuard('createCheckout', null, {
+      id: 'user-1',
+      active_workspace_id: 'ws-other',
+      active_workspace_role: 'owner',
+    });
 
-    await expect(invoke(controller)).rejects.toBeInstanceOf(ForbiddenError);
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  /**
+   * Reads the guard list off the class and method the way Nest composes them
+   * and runs the request through it: drop RoleGuard from the decorator and the
+   * handler gets reached, which is the regression to catch.
+   */
+  it.each(MONEY_ROUTES)('%s cannot be reached as a viewer through the bound guards', async (name) => {
+    const { controller, billing, prisma } = makeController();
+    const bound = [
+      ...((Reflect.getMetadata(GUARDS_METADATA, BillingController) ?? []) as unknown[]),
+      ...((Reflect.getMetadata(GUARDS_METADATA, handler(name)) ?? []) as unknown[]),
+    ];
+
+    expect(bound).toEqual([WorkspaceGuard, RoleGuard]);
+
+    const { guard, ctx } = roleGuard(name, 'viewer');
+    const request = async () => {
+      for (const Bound of bound) {
+        const instance = Bound === RoleGuard ? guard : { canActivate: async () => true };
+        if (!(await instance.canActivate(ctx as never))) {
+          throw new ForbiddenError('guard returned false');
+        }
+      }
+      return (controller[name as 'createCheckout'] as (...args: unknown[]) => unknown)(
+        'ws-1',
+        checkoutDto,
+      );
+    };
+
+    await expect(request()).rejects.toBeInstanceOf(ForbiddenError);
     expect(prisma.workspace.findUnique).not.toHaveBeenCalled();
     expect(billing.createCheckoutSession).not.toHaveBeenCalled();
     expect(billing.createTopUpCheckoutSession).not.toHaveBeenCalled();
@@ -113,18 +165,10 @@ describe('BillingController authorization', () => {
     expect(billing.getInvoices).not.toHaveBeenCalled();
   });
 
-  /**
-   * The role on the session belongs to the caller's active workspace. These
-   * endpoints therefore depend on `WorkspaceGuard` having already established
-   * that the path workspace *is* that active workspace; the role alone is not
-   * a cross-tenant grant. This documents that contract: an owner of one
-   * workspace reaches organization billing only for the workspace the guard
-   * admitted, which is why the guard runs before the role check.
-   */
-  it('resolves the organization from the path workspace, not the session workspace', async () => {
+  it('resolves the organization from the path workspace', async () => {
     const { controller, billing, prisma } = makeController();
 
-    await controller.createCheckout('ws-1', request('owner', 'ws-other'), checkoutDto);
+    await controller.createCheckout('ws-1', checkoutDto);
 
     expect(prisma.workspace.findUnique).toHaveBeenCalledWith({
       where: { id: 'ws-1' },
@@ -166,11 +210,15 @@ describe('BillingController client-workspace escalation', () => {
   it.each([
     ['subscription', (c: BillingController) => c.getSubscription('ws-client')],
     ['summary', (c: BillingController) => c.getSummary('ws-client')],
-    ['checkout', (c: BillingController) => c.createCheckout('ws-client', request('owner'), checkoutDto)],
+    ['checkout', (c: BillingController) => c.createCheckout('ws-client', checkoutDto)],
     ['top-up checkout', (c: BillingController) =>
-      c.createTopUpCheckout('ws-client', request('owner'), topUpDto)],
-    ['portal', (c: BillingController) => c.createPortal('ws-client', request('owner'), portalDto)],
-    ['invoices', (c: BillingController) => c.getInvoices('ws-client', request('owner'))],
+      c.createTopUpCheckout('ws-client', {
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing?topup=success',
+        cancelPath: '/dashboard/billing?topup=cancel',
+      })],
+    ['portal', (c: BillingController) => c.createPortal('ws-client', { returnPath: '/dashboard/billing' })],
+    ['invoices', (c: BillingController) => c.getInvoices('ws-client')],
   ])("denies a client workspace owner the agency's %s", async (_name, invoke) => {
     const { controller, billing } = clientWorkspaceController();
 
