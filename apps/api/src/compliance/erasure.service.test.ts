@@ -16,6 +16,7 @@ const WORKSPACE_SCOPED_MODELS = [
   'contact',
   'dncEntry',
   'integrationTool',
+  'agentTemplate',
   'agent',
   'membership',
 ] as const;
@@ -35,6 +36,11 @@ describe('ErasureService', () => {
     deleteStoredFileImpl?: (file: unknown) => Promise<void>;
     user?: { id: string; email: string; authUserId: string | null } | null;
     memberships?: Array<{ workspaceId: string; userId: string }>;
+    subscription?: {
+      stripeCustomerId: string | null;
+      stripeSubscriptionId: string | null;
+      status: string;
+    } | null;
   }) {
     const deletedContacts: string[] = [];
     const deletedWorkspaces: string[] = [];
@@ -97,6 +103,15 @@ describe('ErasureService', () => {
         }),
       },
       workspaceMembership: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      subscription: {
+        findUnique: vi.fn(async () => opts.subscription ?? null),
+      },
+      referral: {
+        deleteMany: vi.fn(async () => {
+          deleteOrder.push('referral');
+          return { count: 0 };
+        }),
+      },
     };
 
     for (const model of WORKSPACE_SCOPED_MODELS) {
@@ -212,7 +227,105 @@ describe('ErasureService', () => {
       expect(deleteOrder.indexOf('knowledgeChunk')).toBeLessThan(deleteOrder.indexOf('knowledgeSource'));
       expect(deleteOrder.indexOf('knowledgeSource')).toBeLessThan(deleteOrder.indexOf('agent'));
       expect(deleteOrder.indexOf('call')).toBeLessThan(deleteOrder.indexOf('agent'));
+      // referrals.referrer_workspace_id is ON DELETE RESTRICT, so these rows
+      // must be gone before the workspace or Postgres aborts the erasure.
+      expect(
+        (prisma.referral as { deleteMany: ReturnType<typeof vi.fn> }).deleteMany,
+      ).toHaveBeenCalledWith({ where: { referrerWorkspaceId: 'ws-1' } });
+      expect(deleteOrder.indexOf('referral')).toBeLessThan(deleteOrder.indexOf('workspace:ws-1'));
       expect(deletedOrganizations).toEqual(['org-1']);
+    });
+
+    /**
+     * F-029. `subscriptions.organization_id` is ON DELETE CASCADE and that row
+     * holds the only copy of the Stripe ids, so deleting the organization while
+     * the subscription is live leaves Stripe charging the card with nothing here
+     * able to identify, let alone cancel, it.
+     */
+    it('refuses to delete an organization with a live Stripe subscription', async () => {
+      const { service, prisma, deletedOrganizations, audit } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        subscription: {
+          stripeCustomerId: 'cus_live',
+          stripeSubscriptionId: 'sub_live',
+          status: 'active',
+        },
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('sub_live');
+      // Nothing may be destroyed: the Stripe id must stay resolvable.
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(deletedOrganizations).toEqual([]);
+      expect(audit.log).not.toHaveBeenCalled();
+    });
+
+    it('still refuses when the live subscription is only past_due', async () => {
+      const { service, deletedOrganizations } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        subscription: {
+          stripeCustomerId: 'cus_live',
+          stripeSubscriptionId: 'sub_live',
+          status: 'past_due',
+        },
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(false);
+      expect(deletedOrganizations).toEqual([]);
+    });
+
+    it('proceeds for a customer row that has no subscription attached', async () => {
+      // A free org that merely opened the billing portal has a subscription row
+      // with the default status 'active' and no stripeSubscriptionId. Refusing
+      // on status alone would make every free org un-erasable.
+      const { service, deletedOrganizations } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        subscription: {
+          stripeCustomerId: 'cus_free',
+          stripeSubscriptionId: null,
+          status: 'active',
+        },
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(true);
+      expect(deletedOrganizations).toEqual(['org-1']);
+    });
+
+    it('records the Stripe handles in the audit row before the cascade drops them', async () => {
+      const { service, auditLogs, deletedOrganizations } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        subscription: {
+          stripeCustomerId: 'cus_gone',
+          stripeSubscriptionId: 'sub_gone',
+          status: 'canceled',
+        },
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(true);
+      expect(deletedOrganizations).toEqual(['org-1']);
+      // audit_logs.organization_id has no foreign key, so this row survives the
+      // organization and is the only remaining way back to the Stripe customer.
+      expect(auditLogs[0]).toMatchObject({
+        organizationId: 'org-1',
+        action: 'gdpr.organization_deleted',
+        metadata: expect.objectContaining({
+          stripeCustomerId: 'cus_gone',
+          stripeSubscriptionId: 'sub_gone',
+          stripeSubscriptionStatus: 'canceled',
+        }),
+      });
     });
 
     it('deletes stored knowledge files for every workspace in the organization', async () => {
