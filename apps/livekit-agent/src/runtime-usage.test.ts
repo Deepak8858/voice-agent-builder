@@ -445,6 +445,46 @@ describe('CallMeter', () => {
     expect(callbacks).toHaveLength(1);
   });
 
+  /** Ring time is not talk time: a dial-out nobody answers must bill zero minutes. */
+  it('bills nothing when the callee never answers', async () => {
+    const { meter, emit } = makeMeter();
+    const callbacks: Array<() => Promise<void>> = [];
+    const run = vi.fn(async () => undefined);
+
+    await expect(
+      runWithMeteredCall(meter, 'pc-1', (callback) => callbacks.push(callback), run, async () => false),
+    ).resolves.toBe(false);
+
+    expect(emit).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+
+    await callbacks[0]!();
+    expect(emit.mock.calls.map((call) => (call[0] as { type: string }).type)).toEqual(['call_failed']);
+    expect(emit.mock.calls[0]![0]).toMatchObject({ failureCode: 'connection_not_committed' });
+  });
+
+  it('commits the reserved minute exactly once, after the callee answers', async () => {
+    const order: string[] = [];
+    const emit = vi.fn(async () => {
+      order.push('connected');
+      return decision();
+    });
+    const { meter } = makeMeter({ emit });
+
+    await expect(
+      runWithMeteredCall(
+        meter,
+        'pc-1',
+        () => undefined,
+        async () => { order.push('session'); },
+        async () => { order.push('answered'); return true; },
+      ),
+    ).resolves.toBe(true);
+
+    expect(order).toEqual(['answered', 'connected', 'session']);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
   it('never starts voice and reports call_failed when connection billing is refused', async () => {
     const emit = vi.fn(async () => decision({ allowed: false, reason: 'credit_insufficient' }));
     const { meter } = makeMeter({ emit });
