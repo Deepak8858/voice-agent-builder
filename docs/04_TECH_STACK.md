@@ -25,7 +25,7 @@
 | Analytics | ClickHouse later | High-volume call events |
 | Files | S3/R2 | Recordings, uploads, exports |
 | Billing | Stripe | Subscription + usage |
-| Auth | Clerk/Auth0/WorkOS | Teams/orgs/SSO path |
+| Auth | Supabase Auth | Hosted sign-in; the API verifies the Supabase JWT. Orgs/workspaces/roles are our own tables |
 
 ## Voice Runtime
 MVP: Mock provider → real adapters. Current: OpenAI Realtime (paid plans) and the in-house `standard` pipeline (Azure Speech STT → Azure OpenAI → Azure Speech TTS), both over LiveKit + Twilio/Telnyx SIP.

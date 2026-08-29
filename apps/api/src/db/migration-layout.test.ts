@@ -21,7 +21,11 @@ const KNOWN_UNAPPLIED_LEGACY_SQL_FILES = [
   '0034_phase2_materialized_views.sql',
   '0035_phase2_partitions.sql',
   '0036_subscription_stripe_price_id.sql',
-  '0037_drop_legacy_clerk_columns.sql',
+  // 0037_drop_legacy_clerk_columns.sql was promoted to
+  // 20260829010000_drop_legacy_clerk_columns/migration.sql. It had never been
+  // applied anywhere — the deployed `organizations` table still carried
+  // `clerk_org_id` and its indexes — so the bare file was deleted rather than
+  // left as a second, dead copy of the same DDL.
 ];
 
 function readSchema(): string {

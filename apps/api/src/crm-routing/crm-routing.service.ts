@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { CreateCrmRoutingRuleDto } from './crm-routing.schemas';
 
 export interface RoutingRule {
   id: string;
@@ -69,15 +70,13 @@ export class CrmRoutingService {
     }).sort((a, b) => a.priority - b.priority);
   }
 
-  async createRule(
-    workspaceId: string,
-    dto: {
-      keyword: string;
-      provider: string;
-      action: 'primary' | 'secondary';
-      agent_id?: string;
-    },
-  ): Promise<RoutingRule> {
+  // The DTO type comes from the request schema rather than being restated here.
+  // Restating it broke `tsc -p tsconfig.build.json`, which sets `strict: false`:
+  // with strictNullChecks off `undefined extends string` holds, so zod's
+  // `z.infer` reports every property as optional and an all-optional argument
+  // will not satisfy a hand-written required one. Sharing the type makes both
+  // sides degrade identically instead of disagreeing.
+  async createRule(workspaceId: string, dto: CreateCrmRoutingRuleDto): Promise<RoutingRule> {
     const created = await this.prisma.crmRoutingRule.create({
       data: {
         workspaceId,
