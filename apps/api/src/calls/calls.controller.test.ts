@@ -3,10 +3,11 @@ import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
 import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
-import { ForbiddenError } from '../common/errors';
+import { CallNotFoundError, ForbiddenError } from '../common/errors';
 import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { CallsController } from './calls.controller';
+import { liveCallChannel } from './calls.service';
 
 const handler = (name: string) =>
   (CallsController.prototype as unknown as Record<string, (...args: never[]) => unknown>)[name];
@@ -114,6 +115,28 @@ describe('CallsController authorization', () => {
 });
 
 describe('CallsController.live', () => {
+  /**
+   * `on` captures the 'close' listener so a client disconnect can be fired at a
+   * chosen moment; the real Response emits it, nothing else in the handler does.
+   */
+  function makeResponse({ closed = false } = {}) {
+    const listeners: Record<string, () => void> = {};
+    return {
+      // Node sets this once 'close' has fired. `true` here stands for a client
+      // that disconnected while the handler was still awaiting the backfill,
+      // i.e. before the 'close' listener existed.
+      closed,
+      setHeader: vi.fn(),
+      flushHeaders: vi.fn(),
+      write: vi.fn(),
+      end: vi.fn(),
+      on: vi.fn((event: string, listener: () => void) => {
+        listeners[event] = listener;
+      }),
+      emit: (event: string) => listeners[event]?.(),
+    };
+  }
+
   it('streams live call events through the injected cache service', async () => {
     const calls = {
       getLiveEvents: vi.fn(async () => [{ type: 'call.started', call_id: 'call-1' }]),
@@ -127,21 +150,94 @@ describe('CallsController.live', () => {
         }),
       ),
     };
-    const response = {
-      setHeader: vi.fn(),
-      flushHeaders: vi.fn(),
-      write: vi.fn(),
-      end: vi.fn(),
-      on: vi.fn(),
-    };
+    const response = makeResponse();
 
     const controller = new CallsController(calls as never, cache as never);
     await controller.live('ws-1', 'call-1', response as never);
 
-    expect(cache.subscribe).toHaveBeenCalledWith('call:call-1');
+    // Pinned as a literal, not via `liveCallChannel`: the point of the assertion
+    // is that this exact string is what the publisher in calls.service.ts writes
+    // to. Both sides moving together to a channel nobody publishes on would
+    // still pass a helper-to-helper comparison, and the stream would go dark.
+    expect(cache.subscribe).toHaveBeenCalledWith('call:ws-1:call-1');
+    expect(cache.subscribe).toHaveBeenCalledWith(liveCallChannel('ws-1', 'call-1'));
     expect(response.write).toHaveBeenCalledWith(
       `data: ${JSON.stringify({ type: 'call.started', call_id: 'call-1' })}\n\n`,
     );
     expect(response.end).toHaveBeenCalled();
+  });
+
+  /**
+   * A-007/A-029: the workspace guard proves membership of the workspace in the
+   * URL, not ownership of the call. `getLiveEvents` rejecting is the only thing
+   * standing between a guessed call id and a live subscription to another
+   * tenant's transcript, so no subscription may be attached when it throws — and
+   * no header may be flushed either, or the 404 cannot be written.
+   */
+  it('never subscribes when the call is not in the workspace', async () => {
+    const calls = {
+      getLiveEvents: vi.fn(async () => {
+        throw new CallNotFoundError('call-1');
+      }),
+    };
+    const cache = { subscribe: vi.fn() };
+    const response = makeResponse();
+
+    const controller = new CallsController(calls as never, cache as never);
+
+    await expect(controller.live('ws-1', 'call-1', response as never)).rejects.toBeInstanceOf(
+      CallNotFoundError,
+    );
+    expect(cache.subscribe).not.toHaveBeenCalled();
+    expect(response.flushHeaders).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The leak this pins: `read()` on a quiet call stays pending until the next
+   * message, which for most closed streams is never. Only cancelling the reader
+   * runs `subscribe()`'s cleanup, which unsubscribes and disconnects the Redis
+   * connection it duplicated. A `closed` flag checked by the loop is never
+   * reached and leaks one connection per disconnect.
+   */
+  it('releases the subscription when the client closes before any message', async () => {
+    const cancelled = vi.fn();
+    const calls = { getLiveEvents: vi.fn(async () => []) };
+    const cache = {
+      subscribe: vi.fn(() => new ReadableStream({ start() {}, cancel: cancelled })),
+    };
+    const response = makeResponse();
+
+    const controller = new CallsController(calls as never, cache as never);
+    const streaming = controller.live('ws-1', 'call-1', response as never);
+
+    // Let the handler reach the pending `read()` before disconnecting.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cancelled).not.toHaveBeenCalled();
+
+    response.emit('close');
+
+    await expect(streaming).resolves.toBeUndefined();
+    expect(cancelled).toHaveBeenCalled();
+    expect(response.end).toHaveBeenCalled();
+  });
+
+  /**
+   * The window the 'close' listener cannot cover: the backfill query is awaited
+   * before the listener is attached, and Node does not replay an already-emitted
+   * 'close'. Without the `res.closed` re-check the reader is never cancelled and
+   * one Redis connection leaks per aborted request, for the process lifetime.
+   */
+  it('releases the subscription when the client closed during the backfill', async () => {
+    const cancelled = vi.fn();
+    const calls = { getLiveEvents: vi.fn(async () => []) };
+    const cache = {
+      subscribe: vi.fn(() => new ReadableStream({ start() {}, cancel: cancelled })),
+    };
+    const response = makeResponse({ closed: true });
+
+    const controller = new CallsController(calls as never, cache as never);
+    await expect(controller.live('ws-1', 'call-1', response as never)).resolves.toBeUndefined();
+
+    expect(cancelled).toHaveBeenCalled();
   });
 });
