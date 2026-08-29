@@ -64,9 +64,45 @@ export class RetentionService {
 
   async updateWorkspaceRetention(workspaceId: string, retentionDays: number): Promise<void> {
     const clamped = Math.min(3650, Math.max(30, retentionDays));
-    await this.prisma.workspace.update({
-      where: { id: workspaceId },
-      data: { retentionDays: clamped },
-    });
+    // A retention change has to reach the calls already recorded. Without the
+    // re-stamp below, shortening the period only affects calls created after
+    // it: the older recordings and transcripts the shortening was meant to
+    // purge keep their original, longer expires_at and are never swept.
+    //
+    // expires_at is per-call `created_at + retention_days`, and Prisma has no
+    // way to reference another column in an update, so the re-stamp is one
+    // parameterised raw UPDATE. It is workspace-scoped in its WHERE and passes
+    // the day count and the workspace id as bound parameters; the tenant-scope
+    // analyzer cannot see raw SQL, so this scoping is verified by hand and by
+    // the isolation test in retention.service.test.ts.
+    //
+    // created_at is timestamp(3) (no zone) while expires_at is timestamptz, so
+    // `AT TIME ZONE 'UTC'` makes the bridge explicit instead of relying on the
+    // session TimeZone, matching what computeExpiresAt does in JS.
+    //
+    // Both statements share one transaction: if the re-stamp fails the setting
+    // rolls back with it, so the workspace never advertises a period its stored
+    // calls do not honour, and a request that errored never leaves calls
+    // shortened.
+    //
+    // ponytail: one unbounded UPDATE holds row locks for the whole workspace's
+    // calls. Upgrade path if that lock ever matters: batch by a created_at
+    // keyset like sweepExpiredCalls batches — at the cost of atomicity with the
+    // workspace row, which is why it is one statement today.
+    const [, restamped] = await this.prisma.$transaction([
+      this.prisma.workspace.update({
+        where: { id: workspaceId },
+        data: { retentionDays: clamped },
+      }),
+      this.prisma.$executeRaw`
+        UPDATE calls
+           SET expires_at = (created_at AT TIME ZONE 'UTC') + (${clamped}::int * INTERVAL '1 day'),
+               retention_days = ${clamped}::int
+         WHERE workspace_id = ${workspaceId}::uuid
+      `,
+    ]);
+    // Shortening can make rows immediately expired, so the next sweep deletes
+    // them. Log the blast radius: the change is destructive and irreversible.
+    this.logger.log({ workspaceId, retentionDays: clamped, restamped }, 'Workspace retention updated');
   }
 }
