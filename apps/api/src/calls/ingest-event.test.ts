@@ -1,7 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { createHmac } from 'crypto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { CallsService } from './calls.service';
+import { CallsService, liveCallChannel } from './calls.service';
 import { VoiceWebhookController } from './voice-webhook.controller';
 import type { CallAdmissionService } from '../billing/call-admission.service';
 import type { EntitlementService } from '../billing/entitlement.service';
@@ -119,7 +119,7 @@ function makeService(opts: {
     admission as never,
     entitlements as never,
   );
-  return { service, prisma, created, updates, events, evals, queue };
+  return { service, prisma, created, updates, events, evals, queue, cache };
 }
 
 describe('CallsService.ingestEvent', () => {
@@ -270,6 +270,42 @@ describe('CallsService.ingestEvent', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ eventType: 'agent.booking_created' });
     expect(updates).toHaveLength(0);
+  });
+
+  /**
+   * The SSE handler subscribes to this exact channel. It is spelled out as a
+   * literal rather than built from `liveCallChannel` so that a rename cannot
+   * move publisher and subscriber together onto a channel that no deployed
+   * publisher writes to — the failure mode is a stream that goes silently dark.
+   * The workspace id in the channel is the tenant boundary (A-007/A-029).
+   */
+  it('publishes live events on the tenant-namespaced channel', async () => {
+    const { service, cache } = makeService({
+      callByProviderCallId: {
+        id: 'c1',
+        workspaceId: 'w1',
+        agentId: 'a1',
+        agentVersionId: 'v1',
+        startedAt: new Date(),
+        status: 'in_progress',
+        providerCallId: 'call_xyz',
+      },
+    });
+
+    await service.ingestEvent('openai-realtime', {
+      event_type: 'call.transcript_partial',
+      provider_call_id: 'call_xyz',
+      data: { text: 'hello' },
+    });
+
+    expect(cache.publish).toHaveBeenCalledWith(
+      'call:w1:c1',
+      expect.objectContaining({ type: 'call.transcript_partial', call_id: 'c1' }),
+    );
+    expect(cache.publish).toHaveBeenCalledWith(
+      liveCallChannel('w1', 'c1'),
+      expect.objectContaining({ type: 'call.transcript_partial' }),
+    );
   });
 
   it('deduplicates provider events by their stable event id', async () => {

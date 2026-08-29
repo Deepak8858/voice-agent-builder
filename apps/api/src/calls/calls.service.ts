@@ -40,6 +40,17 @@ import { VoiceProviderRegistry } from '../voice/voice-provider.registry';
 
 const CALL_LIST_TTL_SECONDS = 15;
 
+/**
+ * Single spelling of the live-event Pub/Sub channel, shared by the publisher
+ * here and the SSE subscriber in the controller — two spellings of one channel
+ * is how the stream silently goes dark. The workspace id is part of the channel
+ * so a subscription can never receive another tenant's call events, even if an
+ * ownership check upstream is bypassed.
+ */
+export function liveCallChannel(workspaceId: string, callId: string): string {
+  return `call:${workspaceId}:${callId}`;
+}
+
 @Injectable()
 export class CallsService {
   constructor(
@@ -619,16 +630,19 @@ export class CallsService {
 
   /**
    * Returns existing CallEvent rows for backfill when a client connects to SSE.
+   * Throws for a call this workspace does not own: the caller subscribes to the
+   * live channel only after this resolves, so a foreign call id must 404 here
+   * rather than resolve to an empty backfill and then attach a subscription.
    */
   async getLiveEvents(
     callId: string,
     workspaceId: string,
   ): Promise<Array<Record<string, unknown>>> {
     // `Call.id` is a `@db.Uuid` column, so a non-UUID id makes Prisma throw
-    // instead of returning no rows. Treat a malformed id as no backfill.
-    if (!isUuid(callId)) return [];
+    // instead of returning no rows. A malformed id is a missing call, not a 500.
+    if (!isUuid(callId)) throw new CallNotFoundError(callId);
     const call = await this.prisma.call.findFirst({ where: { id: callId, workspaceId } });
-    if (!call) return [];
+    if (!call) throw new CallNotFoundError(callId);
     const events = await this.prisma.callEvent.findMany({
       where: { callId },
       orderBy: { eventTime: 'asc' },
@@ -827,7 +841,7 @@ export class CallsService {
     }
 
     // Publish to Redis Pub/Sub for real-time SSE subscribers
-    await this.cache.publish(`call:${call.id}`, {
+    await this.cache.publish(liveCallChannel(call.workspaceId, call.id), {
       type: payload.event_type,
       call_id: call.id,
       event_id: callEvent.id,
