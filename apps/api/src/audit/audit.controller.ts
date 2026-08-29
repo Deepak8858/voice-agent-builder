@@ -28,8 +28,12 @@ export class AuditController {
   ) {
     // `parseInt` gives NaN on junk and a negative on `?limit=-2`; a negative
     // `take` makes Prisma page backwards, which returned one row for a
-    // zero-length page and then crashed on `items[-1].id`.
-    const take = Math.min(Math.max(parseInt(limit ?? '20', 10) || 20, 1), 100);
+    // zero-length page and then crashed on `items[-1].id`. It also stops at the
+    // first non-digit rather than rejecting the value, so `?limit=5junk` paged
+    // at 5 instead of falling back to the default — hence the full-string test.
+    const rawLimit = limit ?? '20';
+    const parsedLimit = /^\s*[-+]?\d+\s*$/.test(rawLimit) ? parseInt(rawLimit, 10) : NaN;
+    const take = Math.min(Math.max(parsedLimit || 20, 1), 100);
     const where: Prisma.AuditLogWhereInput = { workspaceId };
     if (action) where.action = { contains: action, mode: 'insensitive' };
     const logs = await this.prisma.auditLog.findMany({

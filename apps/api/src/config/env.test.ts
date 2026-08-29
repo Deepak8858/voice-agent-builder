@@ -59,6 +59,75 @@ describe('env validation', () => {
     await expect(import('./env')).resolves.toBeDefined();
   });
 
+  /**
+   * `' '` is truthy, so a whitespace-only credential used to satisfy the
+   * presence check above: boot stayed clean and then local verification had no
+   * usable secret and introspection sent a blank service-role key, so every
+   * authenticated request was rejected.
+   */
+  it.each([
+    ['a whitespace-only JWT secret', { SUPABASE_JWT_SECRET: '   ' }],
+    ['a whitespace-only service-role key', { SUPABASE_SERVICE_ROLE_KEY: '\t' }],
+    [
+      'whitespace-only values for both',
+      { SUPABASE_JWT_SECRET: ' ', SUPABASE_SERVICE_ROLE_KEY: ' ' },
+    ],
+  ])('refuses to boot in production on %s', async (_label, claimsSource) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      ...claimsSource,
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_JWT_SECRET/);
+  });
+
+  /**
+   * SUPABASE_URL becomes the Supabase client base URL, the expected JWT issuer
+   * and the base of every /auth/v1 request URL, so a whitespace-only or
+   * malformed value has to fail at boot rather than per request. Whitespace-only
+   * counts as absent, which is why the fallback variable is consulted for it.
+   */
+  it.each([
+    ['whitespace only', '   '],
+    ['not a URL at all', 'test-project.supabase.co'],
+    ['a URL with a leading space that is still malformed', ' supabase'],
+  ])('rejects a Supabase URL that is %s', async (_label, supabaseUrl) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      SUPABASE_URL: supabaseUrl,
+      NEXT_PUBLIC_SUPABASE_URL: '  ',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_URL/);
+  });
+
+  it('trims the selected Supabase URL and falls back past a whitespace-only value', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      SUPABASE_URL: ' \t ',
+      NEXT_PUBLIC_SUPABASE_URL: '  https://fallback-project.supabase.co  ',
+    });
+
+    const mod = await import('./env');
+    expect(mod.env.SUPABASE_URL).toBe('https://fallback-project.supabase.co');
+  });
+
   it('refuses to boot in production with no Supabase claims source at all', async () => {
     vi.resetModules();
     restoreEnv();

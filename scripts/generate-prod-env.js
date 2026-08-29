@@ -19,6 +19,26 @@ if (!encryptionKey) {
   );
 }
 
+// Same decoding and 32-byte check as resolveKey() in
+// apps/api/src/security/encryption.service.ts. Without it a preserved key of the
+// wrong length is written into .env.production and only rejected when the API
+// boots on the host, i.e. as a crash after the deploy rather than here. Validate
+// only: an invalid key is fixed by hand in .env, never replaced, because
+// replacing it makes every existing ciphertext undecryptable.
+const encryptionKeyBytes = /^[0-9a-f]{64}$/i.test(encryptionKey)
+  ? Buffer.from(encryptionKey, 'hex')
+  : encryptionKey.length === 44
+    ? Buffer.from(encryptionKey, 'base64')
+    : Buffer.from(encryptionKey, 'utf8');
+if (encryptionKeyBytes.length !== 32) {
+  throw new Error(
+    `ENCRYPTION_KEY in .env decodes to ${encryptionKeyBytes.length} bytes; the API requires ` +
+      'exactly 32 (64 hex characters, 44 base64 characters, or 32 raw bytes). Correct the value ' +
+      'in .env by hand — do not swap in a new key, or every stored ciphertext becomes ' +
+      'undecryptable.',
+  );
+}
+
 // Rotating JWT_SECRET only invalidates sessions, so inventing one is safe when
 // absent — but preserve it when present so re-running this script does not log
 // every user out as a side effect.

@@ -1,5 +1,7 @@
 import './load-env';
+import { hostname, userInfo } from 'node:os';
 import { PrismaClient } from '@prisma/client';
+import { z } from 'zod';
 
 /**
  * Flags free-tier organizations that one identity minted to farm free credit.
@@ -150,11 +152,20 @@ function sparingReason(organization: OrganizationFacts): string | null {
 }
 
 async function main() {
-  const apply = process.argv.includes('--apply');
+  // Both are external process inputs. `--apply` used to be matched inside the
+  // whole argv with every other token ignored, so a mistyped `--aply` or a
+  // hopeful `--force` looked accepted; and an absent DATABASE_URL surfaced as a
+  // bare `TypeError: Invalid URL` from the non-null assertion below.
+  const args = z.array(z.enum(['--apply'])).parse(process.argv.slice(2));
+  const databaseUrl = z
+    .string()
+    .url('DATABASE_URL must be a Postgres connection URL')
+    .parse(process.env.DATABASE_URL);
+  const apply = args.includes('--apply');
   const prisma = new PrismaClient();
   console.log(
     `[flag-farmed-orgs] ${apply ? 'APPLY' : 'DRY RUN'} — host:`,
-    new URL(process.env.DATABASE_URL!).host,
+    new URL(databaseUrl).host,
   );
 
   const owners = await prisma.organization.groupBy({
@@ -241,12 +252,50 @@ async function main() {
         `status='${FREE_CREDIT_HOLD_STATUS}' on the ${farmed.length} organization(s) above.`,
     );
   } else if (farmed.length > 0) {
-    const result = await prisma.organization.updateMany({
-      where: { id: { in: farmed.map((organization) => organization.id) }, status: 'active' },
-      data: { status: FREE_CREDIT_HOLD_STATUS },
-    });
+    // One statement per organization instead of a single updateMany: an audit row
+    // has to name the status the row moved *from*, and only the organizations this
+    // run actually changed may be recorded — the `status: 'active'` guard can
+    // legitimately match nothing if the row moved between the scan and the write.
+    //
+    // There is no session actor for a script run and `audit_logs.actor_user_id`
+    // has a foreign key to `users`, so the operator identity goes in metadata and
+    // the row is explicitly marked as a bulk script run.
+    const executedBy = `${userInfo().username}@${hostname()}`;
+    const executedAt = new Date().toISOString();
+    let changed = 0;
+    for (const organization of farmed) {
+      const result = await prisma.organization.updateMany({
+        where: { id: organization.id, status: 'active' },
+        data: { status: FREE_CREDIT_HOLD_STATUS },
+      });
+      if (result.count === 0) {
+        console.log(`  = ${organization.id} left alone — status changed since the scan`);
+        continue;
+      }
+      changed += 1;
+      await prisma.auditLog.create({
+        data: {
+          organizationId: organization.id,
+          actorUserId: null,
+          action: 'organization.credit_hold_applied',
+          resourceType: 'organization',
+          resourceId: organization.id,
+          metadata: {
+            bulkScript: 'flag-farmed-organizations',
+            executedBy,
+            executedAt,
+            previousStatus: organization.status,
+            newStatus: FREE_CREDIT_HOLD_STATUS,
+            ownerUserId: organization.ownerUserId,
+            slug: organization.slug,
+            reason: 'free monthly credit farming remediation',
+          },
+        },
+      });
+    }
     console.log(
-      `[flag-farmed-orgs] set status='${FREE_CREDIT_HOLD_STATUS}' on ${result.count} organization(s). ` +
+      `[flag-farmed-orgs] set status='${FREE_CREDIT_HOLD_STATUS}' on ${changed} organization(s), ` +
+        `each recorded in audit_logs as 'organization.credit_hold_applied' by ${executedBy}. ` +
         'No organization, workspace, or credit row was deleted.',
     );
   }

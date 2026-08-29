@@ -224,20 +224,21 @@ describe('CallsController.live', () => {
   /**
    * The window the 'close' listener cannot cover: the backfill query is awaited
    * before the listener is attached, and Node does not replay an already-emitted
-   * 'close'. Without the `res.closed` re-check the reader is never cancelled and
-   * one Redis connection leaks per aborted request, for the process lifetime.
+   * 'close'. Subscribing anyway and cancelling afterwards would still cost a
+   * Redis subscribe/unsubscribe round trip per aborted request, so the handler
+   * must bail before flushing headers and never open the subscription at all.
    */
-  it('releases the subscription when the client closed during the backfill', async () => {
-    const cancelled = vi.fn();
+  it('never subscribes when the client closed during the backfill', async () => {
     const calls = { getLiveEvents: vi.fn(async () => []) };
     const cache = {
-      subscribe: vi.fn(() => new ReadableStream({ start() {}, cancel: cancelled })),
+      subscribe: vi.fn(() => new ReadableStream({ start: (c) => c.close() })),
     };
     const response = makeResponse({ closed: true });
 
     const controller = new CallsController(calls as never, cache as never);
     await expect(controller.live('ws-1', 'call-1', response as never)).resolves.toBeUndefined();
 
-    expect(cancelled).toHaveBeenCalled();
+    expect(cache.subscribe).not.toHaveBeenCalled();
+    expect(response.flushHeaders).not.toHaveBeenCalled();
   });
 });

@@ -62,6 +62,19 @@ describe('CrmRoutingController authorization', () => {
     expect(pipes.some((pipe) => pipe instanceof ZodValidationPipe)).toBe(true);
   });
 
+  // The service audits rule creation with `actorUserId`, so the handler has to
+  // forward the caller. Dropping the third argument leaves the audit row
+  // anonymous while every other assertion here still passes.
+  it('forwards the caller to the service so the audit row names an actor', async () => {
+    const routing = { createRule: vi.fn(async () => ({ id: 'rule-1' })) };
+    const controller = new CrmRoutingController(routing as never);
+    const body = { keyword: 'dental', provider: 'pipedrive', action: 'primary' } as never;
+
+    await controller.createRule('ws-1', body, { id: 'user-1' } as never);
+
+    expect(routing.createRule).toHaveBeenCalledWith('ws-1', body, 'user-1');
+  });
+
   it.each(['viewer', 'editor'] as const)('denies %s', async (role) => {
     const { guard, ctx } = guardContext(role);
 

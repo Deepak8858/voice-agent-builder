@@ -54,6 +54,37 @@ describe('isAllowedProxyPath', () => {
     expect(isAllowedProxyPath(path)).toBe(false);
   });
 
+  /**
+   * Same escape as the dot-segment cases, through a separator `split('/')`
+   * cannot see: the URL parser treats `\` as `/` on http(s) URLs. Next.js
+   * decodes the catch-all param, so a request for `/workspaces/..%5Cadmin/...`
+   * arrives here with a literal backslash. Written with String.fromCharCode so
+   * the escaping is unambiguous.
+   */
+  const BS = String.fromCharCode(92);
+  it.each([
+    [`/workspaces/..${BS}admin/retention/sweep`, '/api/v1/admin/retention/sweep'],
+    [`/workspaces/%2e%2e${BS}v1/users/me/erasure`, '/api/v1/v1/users/me/erasure'],
+    [`/templates/..${BS}..${BS}metrics`, '/api/metrics'],
+  ])('rejects backslash path %s, which resolves to %s', (path, upstream) => {
+    expect(new URL(`http://api.internal/api/v1${path}`).pathname).toBe(upstream);
+    expect(isAllowedProxyPath(path)).toBe(false);
+  });
+
+  it('rejects a bare backslash even where it resolves inside the prefix', () => {
+    // `/api/v1/workspaces//admin/...` is not an escape, but a backslash has no
+    // legitimate use here and an empty segment is not something to forward.
+    expect(isAllowedProxyPath(`/workspaces/${BS}admin/retention/sweep`)).toBe(false);
+  });
+
+  it('leaves an encoded %2F alone (the URL parser does not fold it)', () => {
+    // Documents why only `\` needs the extra guard: `%2f` survives URL
+    // parsing, so it reaches the API as an opaque id segment, not a separator.
+    expect(new URL('http://api.internal/api/v1/workspaces/a/..%2fadmin').pathname).toBe(
+      '/api/v1/workspaces/a/..%2fadmin',
+    );
+  });
+
   it('still allows dots inside a segment', () => {
     // Only a segment that is entirely dots is traversal; an id or filename
     // containing one is ordinary.

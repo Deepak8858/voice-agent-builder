@@ -100,7 +100,11 @@ function makePrisma(overrides?: {
         return { id: 'stripe-event-row' };
       }),
       updateMany: vi.fn(async () => ({ count: overrides?.reclaimedCount ?? 1 })),
-      upsert: vi.fn(async () => ({ id: 'stripe-event-row' })),
+      // Typed so a test can read back the failure write and check the row it
+      // leaves behind, not just that some upsert happened.
+      upsert: vi.fn(async (_input: { update: Record<string, unknown> }) => ({
+        id: 'stripe-event-row',
+      })),
     },
     billingCreditBucket: {
       findFirst: vi.fn(async () => overrides?.includedBucket ?? null),
@@ -327,7 +331,17 @@ describe('StripeWebhookService production webhook handling', () => {
     expect(prisma.subscription.updateMany).toHaveBeenCalled();
   });
 
-  it('clears a failed event lease so the next delivery can reclaim immediately', async () => {
+  /**
+   * This assertion used to be the opposite — the lease was cleared "so the next
+   * delivery can reclaim immediately". Clearing it also hid the row from the
+   * stuck-event sweep, whose predicate ages rows by `processingStartedAt` and so
+   * can never match `null`: once Stripe's retry window closed on a failing event,
+   * nothing swept it again and the billing state change was lost. Keeping the
+   * claim timestamp costs at most one wasted redelivery (a redelivery inside the
+   * 5-minute lease gets a 500 and Stripe retries again) and buys the row a place
+   * in every later sweep.
+   */
+  it('keeps the failed attempt lease so the stuck-event sweep can still see the row', async () => {
     const prisma = makePrisma();
     prisma.subscription.updateMany.mockRejectedValueOnce(new Error('database unavailable'));
     const svc = makeService(prisma, makeSubscriptionEvent());
@@ -335,10 +349,10 @@ describe('StripeWebhookService production webhook handling', () => {
     const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
 
     expect(result).toMatchObject({ handled: false, statusCode: 500 });
+    // Exact, not `objectContaining`: a reintroduced `processingStartedAt: null`
+    // must fail here.
     expect(prisma.stripeEvent.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({ processingStartedAt: null }),
-      }),
+      expect.objectContaining({ update: { errorMessage: expect.any(String) } }),
     );
   });
 
@@ -450,6 +464,38 @@ describe('StripeWebhookService production webhook handling', () => {
           }),
         }),
       );
+    });
+
+    /**
+     * A re-drive that fails must stay sweepable. The sweep ages rows by
+     * `processingStartedAt`, so if the failure write cleared that column the row
+     * would drop out of every later pass — one failed re-drive and the event is
+     * stranded for good. Applying the actual failure write to the row and
+     * re-checking it against the sweep's own predicate is what proves it.
+     */
+    it('leaves an errored row still matching the sweep predicate for a later pass', async () => {
+      const row = makeStuckRow({ data: { id: 'in_stranded', customer: 'cus_123' } });
+      const prisma = makePrisma({ stuckEvents: [row] });
+      const svc = makeService(prisma, makeSubscriptionEvent(), { creditLedger: makeCreditLedger() });
+
+      expect(await svc.reclaimStuckEvents()).toBe(0);
+
+      const predicate = prisma.stripeEvent.findMany.mock.calls[0]![0].where;
+      expect(predicate).toEqual({
+        processedAt: null,
+        processingStartedAt: { lte: expect.any(Date) },
+      });
+      const failureWrite = prisma.stripeEvent.upsert.mock.calls[0]![0].update;
+      // The claim this pass took, with the recorded failure applied on top.
+      const claimedAt = new Date();
+      const after = { ...row, processedAt: null, processingStartedAt: claimedAt, ...failureWrite };
+      // The sweep predicate, evaluated on a pass an hour after this attempt.
+      const laterCutoff = new Date(claimedAt.getTime() + 60 * 60 * 1000);
+      expect(
+        after.processedAt === null &&
+          after.processingStartedAt !== null &&
+          after.processingStartedAt <= laterCutoff,
+      ).toBe(true);
     });
 
     it('schedules the sweep on boot and stops it on shutdown', () => {
@@ -590,6 +636,48 @@ describe('StripeWebhookService production webhook handling', () => {
       expect.objectContaining({
         where: expect.objectContaining({ organizationId: 'org-1' }),
         data: expect.objectContaining({ status: 'active', plan: 'starter' }),
+      }),
+    );
+  });
+
+  /**
+   * Basil removed the top-level `subscription` field from the Invoice object and
+   * moved it under `parent.subscription_details`. Reading only the flat field
+   * left `stripeSubscriptionId` null, so a customer with more than one
+   * subscription row could not be disambiguated and `resolveSubscription` threw
+   * on every delivery — a paid invoice that never granted its credit.
+   */
+  it('resolves the subscription from the nested invoice parent', async () => {
+    const event = {
+      ...makeSubscriptionEvent('invoice.paid'),
+      data: {
+        object: {
+          id: 'in_nested',
+          customer: 'cus_123',
+          parent: {
+            type: 'subscription_details',
+            subscription_details: { subscription: 'sub_nested' },
+          },
+          lines: {
+            data: [
+              {
+                price: { id: 'price_starter' },
+                period: { start: 1_800_000_000, end: 1_802_592_000 },
+              },
+            ],
+          },
+        },
+      },
+    };
+    const prisma = makePrisma();
+    const svc = makeService(prisma, event);
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), 'sig');
+
+    expect(result).toMatchObject({ handled: true, statusCode: 200 });
+    expect(prisma.subscription.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_nested' },
       }),
     );
   });

@@ -144,13 +144,15 @@ const EnvSchema = z
     // downgrades token verification to "trust any issuer". Accepts
     // NEXT_PUBLIC_SUPABASE_URL as the source because deployments that only set
     // the frontend variable booted fine before this became required.
-    SUPABASE_URL: z.preprocess(
-      (value) =>
-        typeof value === 'string' && value.trim() !== ''
-          ? value
-          : process.env.NEXT_PUBLIC_SUPABASE_URL,
-      z.string().min(1, 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) is required'),
-    ),
+    // Trimmed and URL-checked, not merely non-empty: this value becomes the
+    // Supabase client base URL, the expected JWT `issuer` and the base of every
+    // /auth/v1 request URL. A whitespace-only or malformed value passed a
+    // non-empty check and then failed per-request instead of at boot.
+    SUPABASE_URL: z.preprocess((value) => {
+      const direct = typeof value === 'string' ? value.trim() : '';
+      if (direct !== '') return direct;
+      return process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || undefined;
+    }, z.string().url('SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) must be an absolute URL')),
     SUPABASE_JWT_SECRET: z.string().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
     SUPABASE_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
@@ -324,10 +326,12 @@ const EnvSchema = z
     // rejects every single authenticated request while /health stays green and
     // boot logs stay clean. Same failure shape INTERNAL_API_KEY's `.min(32)`
     // exists to prevent: an unsatisfiable check is a config bug, not a mode.
+    // Trimmed: ' ' is truthy, so a whitespace-only credential satisfied a plain
+    // presence check and then failed every verification and introspection call.
     if (
       value.NODE_ENV === 'production' &&
-      !value.SUPABASE_JWT_SECRET &&
-      !value.SUPABASE_SERVICE_ROLE_KEY
+      !value.SUPABASE_JWT_SECRET?.trim() &&
+      !value.SUPABASE_SERVICE_ROLE_KEY?.trim()
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

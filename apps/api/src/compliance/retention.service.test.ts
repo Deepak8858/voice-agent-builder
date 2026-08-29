@@ -35,6 +35,11 @@ interface FakeState {
   /** Last workspace row written. */
   workspace?: { id: string; retentionDays: number };
   /**
+   * The stored workspace as it stands *before* an update, so the audit row's
+   * previousRetentionDays can be pinned to a real prior value rather than null.
+   */
+  workspaceRow?: { organizationId: string | null; retentionDays: number };
+  /**
    * Audit writes in order, each with the call ids still present at the moment
    * the write happened -- so ordering (delete first, audit second) is asserted
    * without a second spy.
@@ -66,8 +71,17 @@ function makeService(state: FakeState) {
       }),
     },
     workspace: {
+      findUnique: vi.fn(async () => state.workspaceRow ?? null),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: { retentionDays: number } }) => {
         state.workspace = { id: where.id, retentionDays: data.retentionDays };
+        return {};
+      }),
+    },
+    // Recorded into the same list as AuditService.log writes, so a test asserting
+    // "one audit row" cannot be satisfied by writing through both paths.
+    auditLog: {
+      create: vi.fn(async ({ data }: { data: AuditPayload }) => {
+        (state.audits ??= []).push({ payload: data, callIdsStillPresent: state.calls.map(c => c.id) });
         return {};
       }),
     },
@@ -251,7 +265,7 @@ describe('RetentionService', () => {
 
     it('re-stamps existing calls when the period is shortened', async () => {
       const state = stateWithTwoWorkspaces();
-      await makeService(state).updateWorkspaceRetention('ws-a', 30);
+      await makeService(state).updateWorkspaceRetention('ws-a', 30, 'user-1');
 
       expect(state.workspace).toEqual({ id: 'ws-a', retentionDays: 30 });
       for (const id of ['call-a1', 'call-a2']) {
@@ -263,19 +277,19 @@ describe('RetentionService', () => {
 
     it('stamps the clamped period, not the requested one', async () => {
       const tooShort = stateWithTwoWorkspaces();
-      await makeService(tooShort).updateWorkspaceRetention('ws-a', 1);
+      await makeService(tooShort).updateWorkspaceRetention('ws-a', 1, 'user-1');
       expect(tooShort.calls.find(c => c.id === 'call-a1')!.retentionDays).toBe(30);
       expect(tooShort.calls.find(c => c.id === 'call-a1')!.expiresAt).toEqual(new Date(createdAt.getTime() + 30 * DAY));
 
       const tooLong = stateWithTwoWorkspaces();
-      await makeService(tooLong).updateWorkspaceRetention('ws-a', 99999);
+      await makeService(tooLong).updateWorkspaceRetention('ws-a', 99999, 'user-1');
       expect(tooLong.calls.find(c => c.id === 'call-a1')!.retentionDays).toBe(3650);
       expect(tooLong.calls.find(c => c.id === 'call-a1')!.expiresAt).toEqual(new Date(createdAt.getTime() + 3650 * DAY));
     });
 
     it('leaves calls in another workspace untouched', async () => {
       const state = stateWithTwoWorkspaces();
-      await makeService(state).updateWorkspaceRetention('ws-a', 30);
+      await makeService(state).updateWorkspaceRetention('ws-a', 30, 'user-1');
 
       const other = state.calls.find(c => c.id === 'call-b1')!;
       expect(other.retentionDays).toBe(365);
@@ -289,11 +303,49 @@ describe('RetentionService', () => {
 
     it('re-stamps existing calls when the period is lengthened', async () => {
       const state = stateWithTwoWorkspaces();
-      await makeService(state).updateWorkspaceRetention('ws-a', 730);
+      await makeService(state).updateWorkspaceRetention('ws-a', 730, 'user-1');
 
       const call = state.calls.find(c => c.id === 'call-a1')!;
       expect(call.retentionDays).toBe(730);
       expect(call.expiresAt).toEqual(new Date(createdAt.getTime() + 730 * DAY));
+    });
+
+    it('audits who shortened retention, from what, and what they asked for', async () => {
+      const state = stateWithTwoWorkspaces();
+      state.workspaceRow = { organizationId: 'org-1', retentionDays: 1095 };
+      // 1 is below the floor, so the requested and applied values differ and the
+      // row has to carry both.
+      await makeService(state).updateWorkspaceRetention('ws-a', 1, 'user-1');
+
+      expect(state.audits).toHaveLength(1);
+      expect(state.audits![0]!.payload).toEqual({
+        workspaceId: 'ws-a',
+        organizationId: 'org-1',
+        actorUserId: 'user-1',
+        action: 'retention.updated',
+        resourceType: 'workspace',
+        resourceId: 'ws-a',
+        metadata: {
+          previousRetentionDays: 1095,
+          retentionDays: 30,
+          requestedRetentionDays: 1,
+        },
+      });
+    });
+
+    it('writes the audit row in the same transaction as the change', async () => {
+      const state = stateWithTwoWorkspaces();
+      state.workspaceRow = { organizationId: 'org-1', retentionDays: 365 };
+      const service = makeService(state);
+      // Pin that the row is a transaction participant, not a follow-up write: if
+      // the create moves outside $transaction, it still runs and the assertion
+      // above still passes, so ordering alone cannot catch the regression.
+      const tx = (service as unknown as { prisma: { $transaction: ReturnType<typeof vi.fn> } }).prisma.$transaction;
+      await service.updateWorkspaceRetention('ws-a', 30, 'user-1');
+
+      expect(tx).toHaveBeenCalledTimes(1);
+      expect(tx.mock.calls[0]![0]).toHaveLength(3);
+      expect(state.audits).toHaveLength(1);
     });
   });
 });

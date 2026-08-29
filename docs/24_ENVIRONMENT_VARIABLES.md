@@ -32,8 +32,9 @@ SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_JWT_SECRET=
 SUPABASE_KNOWLEDGE_BUCKET=knowledge-files
 AUTH_PROVIDER=supabase
-# Required, min 32 chars. Shared secret between the Next.js app and this API;
-# the web app is the only legitimate caller.
+# Required, min 32 chars. Shared secret presented as the `x-internal-key`
+# header on every request that is not @Public(). The Next.js app is the main
+# caller but not the only one — see ## Auth for all four entry modes.
 INTERNAL_API_KEY=
 ```
 
@@ -44,6 +45,20 @@ token to the API as a bearer token alongside `INTERNAL_API_KEY`, and the API
 verifies the JWT (locally with `SUPABASE_JWT_SECRET`, otherwise against
 `SUPABASE_URL/auth/v1/user`). Every auth variable is listed under Frontend or
 Backend above.
+
+`InternalAuthGuard` (`apps/api/src/auth/internal-auth.guard.ts`) has four entry
+modes, not one:
+
+1. **User session** — `x-internal-key` plus an `Authorization: Bearer` Supabase
+   access token. Every ordinary tenant route.
+2. **Internal platform call** — `x-internal-key` with *no* bearer token. Accepted
+   only on routes declaring `@InternalOnly()`; on any other route a key-only
+   request is refused, and a request carrying user context is refused on an
+   `@InternalOnly()` route.
+3. **`@Public()` routes** — health and metrics. No credentials at all; the guard
+   returns before it looks at any header.
+4. **Provider webhooks** — also `@Public()`, authenticated by provider signature
+   instead (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, Twilio signature).
 
 ## LLM
 ```env

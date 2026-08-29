@@ -124,8 +124,10 @@ verifying schema equivalence hides real drift.
 fails before touching the running stack if a required variable is missing or
 invalid. It enforces `NODE_ENV=production`, a live-mode `STRIPE_SECRET_KEY`
 (`sk_test_`/`rk_test_` is rejected — the API also refuses to boot on one, but
-that failure would land after the old container is already stopped), all five
-Stripe variables including `STRIPE_MINUTE_PACK_PRICE_ID`, an `https://`
+that failure would land after the old container is already stopped), all six
+Stripe variables — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+`STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`,
+`STRIPE_MINUTE_PACK_PRICE_ID` and `STRIPE_ENTERPRISE_PRICE_ID` — an `https://`
 non-localhost `WEB_BASE_URL`, a numeric `TRUST_PROXY_HOPS`, and — when
 `KNOWLEDGE_STORAGE_PROVIDER=s3` — a non-empty `S3_KNOWLEDGE_BUCKET` with
 `AWS_REGION=us-east-1`. LiveKit must be configured with all three of

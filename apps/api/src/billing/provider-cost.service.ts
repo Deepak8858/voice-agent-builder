@@ -327,7 +327,6 @@ export class ProviderCostService {
       take: limit,
       select: {
         id: true,
-        phoneNumber: true,
         costPerMonth: true,
         workspaceId: true,
         // A number is workspace-scoped and a cost event needs an organization.
@@ -350,7 +349,13 @@ export class ProviderCostService {
           quantity: 1,
           amountUsd: Number(number.costPerMonth),
           occurredAt,
-          metadata: { phoneNumberId: number.id, phoneNumber: number.phoneNumber, month },
+          // The raw E.164 number is deliberately NOT copied in here. Erasing an
+          // organization releases and deletes its `twilioPhoneNumber` rows, but
+          // cost events are kept for accounting, so a number stored in this
+          // metadata would outlive the erasure that was supposed to remove it.
+          // `phoneNumberId` identifies the rental for any reconciliation, and the
+          // number itself can be resolved from that row while it still exists.
+          metadata: { phoneNumberId: number.id, month },
         });
         recorded += 1;
       } catch (err) {

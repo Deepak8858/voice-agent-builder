@@ -318,6 +318,19 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
     return typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002';
   }
 
+  /**
+   * The failed attempt's claim timestamp is KEPT, not cleared. `StripeEvent` has
+   * no `updatedAt`, and {@link reclaimStuckEvents} ages rows by
+   * `processingStartedAt`; clearing it made every errored row invisible to the
+   * sweep (`null` never satisfies `lte`), so a re-drive that failed once was
+   * stranded forever — a permanently unapplied billing state change. Keeping it
+   * re-arms the same {@link STUCK_EVENT_RECLAIM_MS} backoff the sweep already
+   * uses, measured from the last attempt, and {@link claimEvent} bumps
+   * `attemptCount` on each re-drive so a genuinely dead event is visible as a
+   * climbing count rather than dropped. Nothing is lost inside Stripe's own
+   * retry window either: a redelivery arriving while this claim is still fresh
+   * gets `processing` and a 500, so Stripe simply retries again.
+   */
   private async markError(event: StripeWebhookEvent, errorMessage: string): Promise<void> {
     await this.prisma.stripeEvent.upsert({
       where: { stripeEventId: event.id },
@@ -329,9 +342,12 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
         data: event.data.object as unknown as Prisma.InputJsonValue,
         livemode: event.livemode,
         pendingWebhooks: event.pending_webhooks,
+        // Only reached when the claim itself failed before writing a row; without
+        // a claim stamp this row would be invisible to the sweep as well.
+        processingStartedAt: new Date(),
         errorMessage,
       },
-      update: { errorMessage, processingStartedAt: null },
+      update: { errorMessage },
     });
   }
 
@@ -793,7 +809,7 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
       throw new Error(`Invoice ${String(data['id'])} uses an unrecognized Stripe price`);
     }
     const periodEnd = this.extractInvoicePeriodEnd(data);
-    const stripeSubscriptionId = typeof data['subscription'] === 'string' ? data['subscription'] : null;
+    const stripeSubscriptionId = this.extractInvoiceSubscriptionId(data);
     const sub = await this.resolveSubscription(customerId, stripeSubscriptionId);
 
     const applied = await this.applySubscriptionState(sub.organizationId, eventCreatedAt, {
@@ -1153,6 +1169,24 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
       if (priceId) return priceId;
     }
     return null;
+  }
+
+  /**
+   * The subscription behind an invoice, from either payload shape. The Basil API
+   * version removed the top-level `subscription` field and moved it under
+   * `parent.subscription_details`; the flat field is still read as a fallback
+   * because a webhook payload carries the API version the endpoint is pinned to,
+   * which can be older than the SDK's. Without the nested read a customer
+   * holding more than one subscription row cannot be disambiguated, and
+   * `resolveSubscription` then throws on every delivery of that invoice.
+   */
+  private extractInvoiceSubscriptionId(data: Record<string, unknown>): string | null {
+    const parent = data['parent'] as
+      | { subscription_details?: { subscription?: unknown } | null }
+      | undefined;
+    const nested = parent?.subscription_details?.subscription;
+    if (typeof nested === 'string') return nested;
+    return typeof data['subscription'] === 'string' ? data['subscription'] : null;
   }
 
   /**

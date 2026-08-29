@@ -200,6 +200,107 @@ describe('PhoneNumbersService plan gates', () => {
   });
 });
 
+describe('PhoneNumbersService acquisition audit trail', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  // Provisioning starts a recurring carrier rental and opens a new inbound route
+  // into the workspace. `assign` and `release` were audited; the two doors that
+  // create the number were not, so nothing recorded who spent the money.
+  it('logs the provision once the local row exists', async () => {
+    const { service, audit } = makeService();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ available_phone_numbers: [{ phone_number: '+14155551234' }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ sid: 'PN00000000000000000000000000000009', phone_number: '+14155551234' }),
+      );
+
+    await service.provision('workspace-1', '415', 'agent-1', 'user-1');
+
+    expect(audit.log).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      actorUserId: 'user-1',
+      action: 'phone_number.provision',
+      resourceType: 'twilio_phone_number',
+      resourceId: 'number-1',
+      metadata: {
+        phone_number: '+14155551234',
+        twilio_sid: 'PN00000000000000000000000000000009',
+        agent_id: 'agent-1',
+      },
+    });
+  });
+
+  it('writes no provision entry when the local row could not be written', async () => {
+    const { service, audit } = makeService({
+      create: async () => {
+        throw new Error('insert failed');
+      },
+    });
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ available_phone_numbers: [{ phone_number: '+14155551234' }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ sid: 'PN00000000000000000000000000000009', phone_number: '+14155551234' }),
+      )
+      .mockResolvedValueOnce({ ok: true, status: 204 });
+
+    await expect(service.provision('workspace-1', '415', undefined, 'user-1')).rejects.toThrow(
+      'insert failed',
+    );
+
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('logs a BYO registration', async () => {
+    const { service, audit } = makeService();
+
+    await service.addByo(
+      'workspace-1',
+      '+14155551234',
+      'PN00000000000000000000000000000001',
+      'user-1',
+    );
+
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'workspace-1',
+        actorUserId: 'user-1',
+        action: 'phone_number.byo_add',
+        resourceType: 'twilio_phone_number',
+        resourceId: 'number-1',
+        metadata: expect.objectContaining({
+          phone_number: '+14155551234',
+          twilio_sid: 'PN00000000000000000000000000000001',
+        }),
+      }),
+    );
+  });
+
+  // A rejected duplicate claim wrote no row, so it must leave no audit record
+  // either - otherwise the log implies a number this workspace does not hold.
+  it('writes no entry when a BYO claim is rejected as a duplicate', async () => {
+    const { service, audit } = makeService({
+      create: async () => {
+        throw Object.assign(new Error('unique constraint'), { code: 'P2002' });
+      },
+    });
+
+    await expect(
+      service.addByo('workspace-1', '+14155551234', undefined, 'user-1'),
+    ).rejects.toMatchObject({ errorCode: 'PHONE_NUMBER_ALREADY_CONNECTED' });
+
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+});
+
 describe('PhoneNumbersService.release', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 

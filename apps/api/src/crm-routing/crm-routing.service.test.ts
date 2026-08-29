@@ -8,12 +8,14 @@ const mockPrisma = {
   },
 };
 
+const mockAudit = { log: vi.fn(async () => undefined) };
+
 describe('CrmRoutingService', () => {
   let service: CrmRoutingService;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new CrmRoutingService(mockPrisma as any);
+    service = new CrmRoutingService(mockPrisma as any, mockAudit as any);
   });
 
   describe('getRulesForAgent', () => {
@@ -150,6 +152,48 @@ describe('CrmRoutingService', () => {
           keyword: 'billing',
         }),
       });
+    });
+
+    // A routing rule decides which CRM the caller's contact data is sent to, so
+    // the write needs the same audit trail as its siblings.
+    it('writes an audit record naming the actor and the rule', async () => {
+      mockPrisma.crmRoutingRule.create.mockResolvedValue({
+        id: 'new-rule',
+        keyword: 'sales',
+        provider: 'hubspot',
+        action: 'primary',
+        priority: 100,
+        active: true,
+      });
+
+      await service.createRule(
+        'ws-1',
+        { keyword: 'sales', provider: 'hubspot', action: 'primary', agent_id: 'agent-1' },
+        'user-1',
+      );
+
+      expect(mockAudit.log).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        actorUserId: 'user-1',
+        action: 'crm_routing_rule.create',
+        resourceType: 'crm_routing_rule',
+        resourceId: 'new-rule',
+        metadata: {
+          keyword: 'sales',
+          provider: 'hubspot',
+          rule_action: 'primary',
+          agent_id: 'agent-1',
+        },
+      });
+    });
+
+    // orchestrator.worker calls createRule directly, so the controller's
+    // ZodValidationPipe is not the only entry the DTO can arrive through.
+    it('rejects a DTO the controller pipe never saw', async () => {
+      await expect(
+        service.createRule('ws-1', { keyword: 'sales', provider: 'salesbaloney' } as any),
+      ).rejects.toThrow();
+      expect(mockPrisma.crmRoutingRule.create).not.toHaveBeenCalled();
     });
   });
 });

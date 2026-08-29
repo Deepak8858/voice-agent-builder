@@ -77,6 +77,27 @@ describe('EmbeddingsWorker', () => {
     expect(embedder.generateEmbeddings).not.toHaveBeenCalled();
   });
 
+  /**
+   * The source filter is built from a truthiness test, so a blank sourceId used
+   * to mean "no filter" — one malformed job re-embedding every null vector in
+   * the workspace instead of one source's. It must fail the job, not widen it.
+   */
+  it.each([
+    ['blank', ''],
+    ['not a uuid', 'source-1'],
+  ])('throws instead of dropping the source filter when sourceId is %s', async (_label, bad) => {
+    await expect(
+      build().processor(job({ workspaceId: WORKSPACE_ID, sourceId: bad })),
+    ).rejects.toThrow(/sourceId/);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(embedder.generateEmbeddings).not.toHaveBeenCalled();
+  });
+
+  it('throws when workspaceId is not a uuid', async () => {
+    await expect(build().processor(job({ workspaceId: 'ws-1' }))).rejects.toThrow(/workspaceId/);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
   it('drains a shrinking result set without skipping rows', async () => {
     // The predicate is "embedding IS NULL", so embedded rows leave the result set:
     // the worker must re-query from the top, never advance an offset.

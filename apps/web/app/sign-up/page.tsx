@@ -11,6 +11,11 @@ import { Logo } from '@/components/logo';
 import { PostHogIdentityBoundary } from '@/components/analytics/posthog-identity-boundary';
 import { CheckoutPlanSchema } from '@voiceforge/shared';
 
+// Must match supabase/config.toml `minimum_password_length`, otherwise the
+// browser lets a short password through and Supabase rejects it with an
+// opaque "weak password" error after the round trip.
+const MIN_PASSWORD_LENGTH = 12;
+
 function sanitizeNext(next: string | null): string | null {
   if (!next) return null;
   if (!next.startsWith('/') || next.startsWith('//')) return null;
@@ -137,9 +142,12 @@ function SignUpInner() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={8}
+              minLength={MIN_PASSWORD_LENGTH}
               autoComplete="new-password"
             />
+            <p className="text-xs text-muted-foreground">
+              At least {MIN_PASSWORD_LENGTH} characters.
+            </p>
           </div>
           <Button type="submit" className="w-full" loading={loading}>
             Create account

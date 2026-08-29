@@ -10,9 +10,10 @@ const knowledge = {
   clearEmbeddings: vi.fn(async () => 3),
 };
 const queue = { enqueue: vi.fn(async () => undefined) };
+const audit = { log: vi.fn(async () => undefined) };
 
 function build(): KnowledgeController {
-  return new KnowledgeController(knowledge as never, queue as never);
+  return new KnowledgeController(knowledge as never, queue as never, audit as never);
 }
 
 const user = { id: 'user-1' } as never;
@@ -53,5 +54,53 @@ describe('KnowledgeController embedding jobs', () => {
     expect(queue.enqueue).toHaveBeenCalledWith(EMBEDDINGS_QUEUE, 'generate-embeddings', {
       workspaceId: WORKSPACE_ID,
     });
+  });
+
+  /**
+   * Both handlers destroy persisted vectors. Without an audit row there is no
+   * record of who wiped a workspace's embeddings, and the scope has to be on the
+   * row too — one source and the whole workspace are very different blast radii.
+   */
+  it('reindex records the actor and the source scope', async () => {
+    await build().reindex(WORKSPACE_ID, SOURCE_ID, user);
+
+    expect(audit.log).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: 'user-1',
+      action: 'knowledge_source.reindex',
+      resourceType: 'knowledge_source',
+      resourceId: SOURCE_ID,
+      metadata: { scope: 'source', cleared_chunks: 3, enqueued: true },
+    });
+  });
+
+  it('backfill records the actor and the workspace scope', async () => {
+    await build().backfill(WORKSPACE_ID, user);
+
+    expect(audit.log).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: 'user-1',
+      action: 'knowledge_source.backfill',
+      resourceType: 'workspace',
+      resourceId: WORKSPACE_ID,
+      metadata: { scope: 'workspace', cleared_chunks: 3, enqueued: true },
+    });
+  });
+
+  /**
+   * The vectors are already gone once the enqueue is attempted, so a failed
+   * enqueue is exactly when the audit row matters most: the workspace is left
+   * unembedded and someone has to know who did it.
+   */
+  it('records enqueued: false when the enqueue fails, and still raises the error', async () => {
+    queue.enqueue.mockRejectedValueOnce(new Error('redis down'));
+
+    await expect(build().backfill(WORKSPACE_ID, user)).rejects.toThrow('redis down');
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'knowledge_source.backfill',
+        metadata: { scope: 'workspace', cleared_chunks: 3, enqueued: false },
+      }),
+    );
   });
 });

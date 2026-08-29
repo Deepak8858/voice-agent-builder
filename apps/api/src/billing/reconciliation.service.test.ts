@@ -73,7 +73,7 @@ function makeService(
     stripeInvoices?: Array<{
       id: string;
       customer: unknown;
-      subscription: unknown;
+      parent: { type: string; subscription_details?: { subscription?: unknown } | null } | null;
       amount_paid: number;
     }>;
     stripeSessions?: Array<{
@@ -913,8 +913,15 @@ describe('ReconciliationService.reportStripeDrift', () => {
   /** A paid invoice, a paid minute pack and a subscription, all for one org. */
   function driftFixture() {
     return {
+      // Basil moved the subscription off the top level of the Invoice object; this
+      // is the shape the pinned API version actually returns.
       stripeInvoices: [
-        { id: 'in_1', customer: CUSTOMER, subscription: 'sub_1', amount_paid: 9_900 },
+        {
+          id: 'in_1',
+          customer: CUSTOMER,
+          parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_1' } },
+          amount_paid: 9_900,
+        },
       ],
       stripeSessions: [
         {

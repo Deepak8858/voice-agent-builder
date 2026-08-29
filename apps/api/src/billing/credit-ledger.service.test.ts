@@ -1284,8 +1284,11 @@ describe('CreditLedgerService', () => {
       periodEnd: new Date('2026-07-28T00:00:00.000Z'),
     });
     // Burned to zero: the allowance was received, so there is nothing left to
-    // top up even though the bucket is empty.
+    // top up even though the bucket is empty. The projection is decremented with
+    // the bucket, or this models a full allowance rather than a consumed one and
+    // the assertion below would hold no matter what the withholding did.
     prisma.buckets[0]!.remainingSeconds = 0;
+    prisma.balances.get('org-lapsed')!.availableSeconds = 0;
 
     const balance = await service.grantFreeMonthlyCredits({
       organizationId: 'org-lapsed',
@@ -1294,7 +1297,8 @@ describe('CreditLedgerService', () => {
 
     expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual(['in_lapsed']);
     expect(prisma.ledger.map((entry) => entry.entryType)).toEqual(['subscription_grant']);
-    expect(balance.availableSeconds).toBe(1_200);
+    // Nothing was granted, so the consumed allowance stays consumed.
+    expect(balance.availableSeconds).toBe(0);
   });
 
   /**

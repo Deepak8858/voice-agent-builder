@@ -79,7 +79,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Scan repository for secrets
-        uses: gitleaks/gitleaks-action@v2
+        # @v3 is @v2 with the action runtime moved from Node 20 to Node 24 (no
+        # input, output or behaviour change). GitHub-hosted runners drop Node 20
+        # on 2026-09-16, which would fail this step before the scan even starts.
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Named explicitly rather than relying on gitleaks auto-detecting

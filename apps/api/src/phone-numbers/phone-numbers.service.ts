@@ -161,6 +161,7 @@ export class PhoneNumbersService {
     workspaceId: string,
     areaCode: ProvisionPhoneNumberDto['area_code'],
     agentId?: ProvisionPhoneNumberDto['agent_id'],
+    actorUserId?: string | null,
   ): Promise<string> {
     // Validated before the search/purchase, and before the credential check,
     // because this is caller input: a rejection after the number is bought
@@ -253,6 +254,23 @@ export class PhoneNumbersService {
       throw err;
     }
 
+    // Recurring carrier spend, and a new inbound route into this workspace, so
+    // the acquisition is recorded like the assign and release transitions below.
+    // After the create, so a failed insert (which hands the number back) writes
+    // nothing.
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'phone_number.provision',
+      resourceType: 'twilio_phone_number',
+      resourceId: record.id,
+      metadata: {
+        phone_number: purchased.phone_number,
+        twilio_sid: purchased.sid,
+        agent_id: agentId ?? null,
+      },
+    });
+
     this.logger.log(`Provisioned ${purchased.phone_number} (${record.id}) for workspace ${workspaceId}`);
     return record.phoneNumber;
   }
@@ -278,11 +296,13 @@ export class PhoneNumbersService {
     workspaceId: string,
     phoneNumber: AddByoPhoneNumberDto['phone_number'],
     twilioSid?: AddByoPhoneNumberDto['twilio_sid'],
+    actorUserId?: string | null,
   ) {
     await this.assertMayAddNumber(workspaceId, 'byo_telephony', BYO_TELEPHONY_REFUSAL);
 
+    let record;
     try {
-      await this.prisma.twilioPhoneNumber.create({
+      record = await this.prisma.twilioPhoneNumber.create({
         data: {
           workspaceId,
           phoneNumber,
@@ -306,6 +326,22 @@ export class PhoneNumbersService {
       }
       throw err;
     }
+
+    // Outside the catch on purpose: a claim rejected as a duplicate must leave no
+    // record. Registering a number changes which workspace receives its inbound
+    // calls, which is the same reroute `phone_number.assign` is logged for.
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'phone_number.byo_add',
+      resourceType: 'twilio_phone_number',
+      resourceId: record.id,
+      metadata: {
+        phone_number: phoneNumber,
+        twilio_sid: twilioSid ?? null,
+        agent_id: record.agentId,
+      },
+    });
   }
 
   async assignToAgent(

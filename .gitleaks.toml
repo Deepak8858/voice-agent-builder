@@ -15,7 +15,7 @@
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "Non-secret sentinels required by tests that assert on credential shape"
 regexTarget = "match"
 regexes = [
@@ -38,10 +38,20 @@ regexes = [
   # (`docs/24_ENVIRONMENT_VARIABLES.md`). A real credential is never another
   # variable name, so this cannot mask one.
   '''[A-Z0-9_]+=\s*[A-Z0-9_]+_(?:API_KEY|SECRET|TOKEN|KEY)=''',
+]
 
-  # A bare UUID is not a credential format for any provider we use, but
-  # `generic-api-key` scores one as high entropy. Stripe idempotency keys,
-  # organization ids and workspace ids are UUIDs and appear in hundreds of
-  # fixtures, so leaving this to fingerprints guarantees a broken gate.
-  '''[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}''',
+# A bare UUID is not a credential format for any provider we use, but
+# `generic-api-key` scores one as high entropy. Stripe idempotency keys,
+# organization ids and workspace ids are UUIDs and appear in hundreds of
+# fixtures, so leaving this to fingerprints guarantees a broken gate.
+#
+# Separate block on purpose: this one matches the SECRET, not the whole match,
+# which is the only target the pattern can be anchored against. Unanchored
+# against the match it was a substring test, so a real credential that merely
+# CONTAINED a UUID (`INTERNAL_SECRET_KEY=prod-123e4567-e89b-...`) was suppressed
+# too. Anchored, the value has to be nothing but a UUID.
+[[allowlists]]
+description = "A value that is nothing but a bare UUID (ids, idempotency keys)"
+regexes = [
+  '''^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$''',
 ]
