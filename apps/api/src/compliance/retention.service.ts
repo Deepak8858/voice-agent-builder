@@ -283,37 +283,57 @@ export class RetentionService {
     // all, and an `AND workspace_id IN (...)` would skip exactly the rows this
     // method exists for. Both branches are built from the batch itself, so
     // neither can reach a row the cutoff did not select.
-    const result = await this.prisma.telephonyWebhookEvent.deleteMany({
-      where: {
-        id: { in: ids },
-        OR: [{ workspaceId: { in: [...workspaceIds] } }, { workspaceId: null }],
-      },
-    });
+    // Delete and audit commit together, the way updateWorkspaceRetention does it
+    // and deliberately UNLIKE sweepExpiredCalls. That method logs locally first
+    // and audits after, because rolling a call purge back would also have to undo
+    // the crm_fanout_log purge that ran before it, and it would rather lose the
+    // audit row than the delete. This sweep has neither problem: it is a flat
+    // age-out of rows nothing reads, so if the audit insert fails there is
+    // nothing to salvage by keeping the delete -- tonight's run simply selects
+    // the same over-30-day rows again. One transaction therefore costs a day of
+    // delay in the worst case and buys the guarantee that no payload is destroyed
+    // without a row saying so.
+    //
+    // `auditLog.create` inline rather than `this.audit.log()`: AuditService holds
+    // its own client and would commit independently of this transaction. With
+    // `workspaceId: null` its only added behaviour, resolveOrganizationId,
+    // returns null without querying, so nothing is lost by inlining.
+    const [result] = await this.prisma.$transaction([
+      this.prisma.telephonyWebhookEvent.deleteMany({
+        where: {
+          id: { in: ids },
+          OR: [{ workspaceId: { in: [...workspaceIds] } }, { workspaceId: null }],
+        },
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          workspaceId: null,
+          organizationId: null,
+          action: 'retention.sweep_telephony_webhook_events',
+          resourceType: 'telephony_webhook_event',
+          metadata: {
+            // Spelled out rather than omitted, matching the call sweep: a
+            // platform-wide purge must not read as a row that lost its scope.
+            scope: 'all-workspaces',
+            cutoff: cutoff.toISOString(),
+            maxAgeDays: TELEPHONY_WEBHOOK_EVENT_MAX_AGE_DAYS,
+            // The batch size, not deleteMany's count: the two statements are
+            // built in one array, so the count is not available to the row that
+            // records it. They differ only if a concurrent erasure deleted some
+            // of these ids first, which is why the field is named for what it is.
+            // Counted, never listed -- unlike the call sweep's `callIds`, these
+            // ids answer no question once the rows are gone, and a list of them
+            // would only be a surviving pointer to the payloads this destroyed.
+            selected: ids.length,
+          },
+        },
+      }),
+    ]);
 
-    // Local log before the audit insert, for the reason sweepExpiredCalls does
-    // it: the audit write can fail and the only record of a bulk delete must not
-    // fail with it.
     this.logger.log(
-      { cutoff: cutoff.toISOString(), deleted: result.count },
+      { cutoff: cutoff.toISOString(), selected: ids.length, deleted: result.count },
       'Telephony webhook event sweep completed',
     );
-    await this.audit.log({
-      workspaceId: null,
-      action: 'retention.sweep_telephony_webhook_events',
-      resourceType: 'telephony_webhook_event',
-      metadata: {
-        // Spelled out rather than omitted, matching the call sweep: a
-        // platform-wide purge must not read as a row that lost its scope.
-        scope: 'all-workspaces',
-        cutoff: cutoff.toISOString(),
-        maxAgeDays: TELEPHONY_WEBHOOK_EVENT_MAX_AGE_DAYS,
-        // Counted, never listed. Unlike the call sweep's `callIds`, these ids
-        // answer no question once the rows are gone -- the calls they belonged to
-        // are named on their own rows -- and a list of them would only be a
-        // surviving pointer to the payloads this just destroyed.
-        deleted: result.count,
-      },
-    });
     return result.count;
   }
 

@@ -23,8 +23,15 @@ const DOC_PATH = path.resolve(__dirname, '../../../../docs/16_BILLING.md');
 /** Normalized: the doc is CRLF on Windows checkouts and LF in CI. */
 const doc = readFileSync(DOC_PATH, 'utf8').replace(/\r\n/g, '\n');
 
+/**
+ * `from ` is optional and deliberately not captured: Enterprise is sales-assisted,
+ * so its documented price is a floor rather than a quotable fixed number. The
+ * numeric floor is still the catalog's `monthlyPriceUsd` and is still compared,
+ * so the prefix changes how the price reads to a human without letting the
+ * number drift.
+ */
 const PLAN_LINE =
-  /^(\w+): \$([\d,]+)\/month, ([\d,]+) agents?, ([\d,]+) minutes\/month, ([\d,]+) concurrent calls?/gm;
+  /^(\w+): (?:from )?\$([\d,]+)\/month, ([\d,]+) agents?, ([\d,]+) minutes\/month, ([\d,]+) concurrent calls?/gm;
 
 const PACK_LINE =
   /^Minute pack: \$([\d,]+) for ([\d,]+) extra minutes, expires ([\d,]+) days after purchase\.$/m;

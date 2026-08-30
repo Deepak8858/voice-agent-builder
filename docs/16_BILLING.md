@@ -13,7 +13,7 @@ with it.
 Free: $0/month, 1 agent, 10 minutes/month, 1 concurrent call, 1 workspace, 0 integrations, 50 contacts, 0 phone numbers.
 Starter: $99/month, 3 agents, 200 minutes/month, 2 concurrent calls, 1 workspace, 2 integrations, 500 contacts, 2 phone numbers.
 Growth: $299/month, 10 agents, 1,000 minutes/month, 10 concurrent calls, 5 workspaces, 10 integrations, 5,000 contacts, 10 phone numbers.
-Enterprise: $999/month, 30 agents, 3,000 minutes/month, 25 concurrent calls, 15 workspaces, 25 integrations, 25,000 contacts, 25 phone numbers.
+Enterprise: from $999/month, 30 agents, 3,000 minutes/month, 25 concurrent calls, 15 workspaces, 25 integrations, 25,000 contacts, 25 phone numbers.
 
 Minute pack: $39 for 100 extra minutes, expires 365 days after purchase.
 
@@ -28,10 +28,12 @@ Minute pack: $39 for 100 extra minutes, expires 365 days after purchase.
   checkout path to Enterprise, and no code reads `STRIPE_ENTERPRISE_PRICE_ID`.
   Its 25 concurrent calls can be raised per contract to at most 50 through
   `subscriptions.concurrent_call_limit_override`.
-- Phone-number caps equal each plan's concurrent-call limit: a number is an
-  inbound lane, so holding more than the plan can answer buys nothing, and a
-  provisioned number is recurring platform spend on VoiceForge's own Twilio
-  account.
+- Phone-number caps equal the concurrent-call limit on every *paid* plan: a
+  number is an inbound lane, so holding more than the plan can answer buys
+  nothing, and a provisioned number is recurring platform spend on VoiceForge's
+  own Twilio account. Free is the exception and breaks the equality on purpose —
+  1 concurrent call but **0** phone numbers, so a free workspace can place and
+  receive browser test calls without VoiceForge provisioning a number for it.
 - White-label is Growth and Enterprise.
 - Compliance blocking (DNC, quiet hours, consent) is on for every plan including
   Free. It is a safety control, not a commercial feature, so no repricing can

@@ -67,9 +67,10 @@ modes, not one:
 3. **`@Public()` routes** — health and metrics. No credentials at all; the guard
    returns before it looks at any header.
 4. **Provider webhooks** — also `@Public()`, authenticated by provider signature
-   instead. Only two of those signatures come from an env var
-   (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`); the telephony ones do not —
-   see ## Voice.
+   instead. Three of those signatures come from an env var
+   (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, and `TWILIO_AUTH_TOKEN` for
+   the legacy platform-owned Twilio voice webhooks); the BYO telephony ones do
+   not — see ## Voice.
 
 ## LLM
 ```env
@@ -89,10 +90,16 @@ No webhook secret is configured here, and there is no `LIVEKIT_WEBHOOK_SECRET` o
 `VOBIZ_WEBHOOK_SECRET` — both used to be listed and neither was ever read by any
 code. Inbound LiveKit webhooks are verified with `LIVEKIT_API_KEY` /
 `LIVEKIT_API_SECRET` (the SDK's `WebhookReceiver` validates the request's
-`Authorization` JWT against them); Vobiz and Twilio webhooks are verified with a
-**per-phone-number** secret VoiceForge stores encrypted on the number itself
-(Twilio falls back to the connection's account auth token), so no environment
-variable secures them.
+`Authorization` JWT against them); Vobiz webhooks are verified with a
+**per-phone-number** secret VoiceForge stores encrypted on the number itself, so
+no environment variable secures those.
+
+Twilio has two webhook families and only one of them is env-free:
+
+| Family | Routes | Signing secret |
+| --- | --- | --- |
+| BYO telephony | `telephony/` | the provider connection's decrypted `authToken`, falling back to the number's per-number secret |
+| Legacy platform-owned | `twilio-adapter/` | the account-level **`TWILIO_AUTH_TOKEN`** below — `TwilioSignatureVerifier` rejects every delivery when it is unset, because those `TwilioPhoneNumber` rows carry no provider connection |
 ```env
 VOICE_PROVIDER=openai-realtime
 TWILIO_ACCOUNT_SID=

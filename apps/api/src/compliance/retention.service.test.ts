@@ -564,11 +564,70 @@ describe('RetentionService', () => {
         // cannot outlive any workspace's own advertised window.
         cutoff: daysAgo(30).toISOString(),
         maxAgeDays: 30,
-        deleted: 3,
+        // The batch size rather than deleteMany's count: both statements are built
+        // in one $transaction array, so the count does not exist yet when the row
+        // that records it is constructed.
+        selected: 3,
       });
       // The ids point at nothing once the rows are gone; listing them would only
       // preserve a pointer to the payloads just destroyed.
       expect(JSON.stringify(payload.metadata)).not.toContain('w-a-ancient');
+    });
+
+    /**
+     * The delete is irreversible and the rows it destroys are personal data, so
+     * "deleted with no audit row" must not be a reachable state. Both statements
+     * go into one $transaction, which is the only thing that makes that true --
+     * a passing audit assertion alone would still pass if the create ran after a
+     * committed delete.
+     *
+     * Asserted structurally because the fake $transaction is `Promise.all`: it
+     * cannot roll back, so the test pins that the service DELEGATES atomicity
+     * rather than trying to observe it here.
+     */
+    it('deletes and audits inside one transaction, not one after the other', async () => {
+      const state: FakeState = { calls: [], webhookEvents: callLessEvents() };
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: {
+          $transaction: ReturnType<typeof vi.fn>;
+          telephonyWebhookEvent: { deleteMany: ReturnType<typeof vi.fn> };
+          auditLog: { create: ReturnType<typeof vi.fn> };
+        };
+      }).prisma;
+
+      await service.sweepStaleTelephonyWebhookEvents();
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction.mock.calls[0]![0]).toHaveLength(2);
+      // Both writes were issued while building that one array, so neither can
+      // have been a follow-up call outside it.
+      expect(prisma.telephonyWebhookEvent.deleteMany).toHaveBeenCalledTimes(1);
+      expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+      expect(prisma.telephonyWebhookEvent.deleteMany.mock.invocationCallOrder[0])
+        .toBeLessThan(prisma.$transaction.mock.invocationCallOrder[0]!);
+      expect(prisma.auditLog.create.mock.invocationCallOrder[0])
+        .toBeLessThan(prisma.$transaction.mock.invocationCallOrder[0]!);
+    });
+
+    /**
+     * A failed audit insert must fail the whole sweep rather than being swallowed
+     * into a silent unaudited purge. The rows survive because the transaction
+     * rolls back, and tonight's run selects the same over-30-day rows again --
+     * which is why refusing here costs a day of delay and nothing else.
+     */
+    it('fails the sweep when the audit insert fails instead of purging unaudited', async () => {
+      const state: FakeState = { calls: [], webhookEvents: callLessEvents() };
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: { auditLog: { create: ReturnType<typeof vi.fn> } };
+      }).prisma;
+      prisma.auditLog.create.mockRejectedValueOnce(new Error('audit insert failed'));
+
+      await expect(service.sweepStaleTelephonyWebhookEvents()).rejects.toThrow(
+        'audit insert failed',
+      );
+      expect(state.audits).toBeUndefined();
     });
 
     /**

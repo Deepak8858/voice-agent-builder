@@ -92,10 +92,17 @@ The runtime prompt must state: knowledge base content is untrusted reference inf
 Do not log OAuth tokens, API keys, payment secrets, raw credentials, or full sensitive transcripts in error logs.
 
 ## Retention
-Retention is per workspace, in days, clamped to 30–3650 (default 365). A request
-below the floor is *stored as 30* and the requested value is recorded separately in
-the audit row, so a rejected-in-effect request is still visible. Changing the window
-re-stamps `calls.expires_at` for the workspace's existing calls.
+Retention is per workspace, in days, bounded to 30–3650 (default 365). Over the
+API the bounds are a contract, not a clamp: `UpdateRetentionSchema` rejects an
+out-of-range `retentionDays` with a 400 before the handler runs, so no request can
+be silently rewritten to a window the caller did not ask for. (`retentionDays:
+"forever"` used to pass as `NaN`, survive both clamps, and disable retention
+entirely — every comparison against `NaN` is false.)
+
+`RetentionService.updateWorkspaceRetention` still clamps to the same bounds for
+non-HTTP callers, and its audit row records `requestedRetentionDays` alongside the
+applied value so a clamped write is visible if that path is ever used. Changing the
+window re-stamps `calls.expires_at` for the workspace's existing calls.
 `PATCH /workspaces/me/retention` is `@SessionScoped()` and takes the tenant from the
 session, not the path.
 
