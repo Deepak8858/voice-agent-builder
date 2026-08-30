@@ -90,6 +90,12 @@ jobs:
           # discovery rules cannot silently drop the allowlist and fail the gate
           # on the same test fixtures again.
           GITLEAKS_CONFIG: .gitleaks.toml
+          # The action defaults to gitleaks 8.24.3, which predates root-level
+          # `[[allowlists]]` (added in 8.25.0) and silently IGNORES every block
+          # in our config — the sentinel exemptions were dead and the gate
+          # failed on historical test-fixture commits. Pin a version that
+          # actually parses the config it is handed.
+          GITLEAKS_VERSION: "8.30.1"
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high

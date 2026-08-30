@@ -100,6 +100,11 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # The action's default gitleaks (8.24.3) predates root-level
+          # `[[allowlists]]` (added in 8.25.0) and silently ignores the whole
+          # config block. Keep in lockstep with .github/workflows/quality-gate.yml.
+          GITLEAKS_VERSION: "8.30.1"
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high
