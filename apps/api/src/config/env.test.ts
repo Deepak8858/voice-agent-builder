@@ -320,6 +320,52 @@ describe('env validation', () => {
     expect(mod.env.POSTHOG_HOST).toBe('not-a-url');
   });
 
+  /**
+   * The keyring's failure mode is invisible: a mistyped key id or a key that is
+   * one hex character short still boots, and only shows up as an undecryptable
+   * tenant credential later. So the format is a parse error, not a warning.
+   */
+  describe('ENCRYPTION_KEYS', () => {
+    const devBase = {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    };
+    const hex = '22'.repeat(32);
+
+    it.each([
+      ['a bare key with no key id', hex],
+      ['a key id with no key', 'k1:'],
+      ['a key one hex character short', `k1:${'22'.repeat(31)}2`],
+      ['a non-hex key', `k1:${'z'.repeat(64)}`],
+      ['a trailing separator', `k1:${hex},`],
+      ['a space-separated list', `k1:${hex} k2:${hex}`],
+      ['a key id with a colon in it', `k:1:${hex}`],
+    ])('rejects %s', async (_label, keys) => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, devBase, { ENCRYPTION_KEYS: keys });
+
+      await expect(import('./env')).rejects.toThrow(/ENCRYPTION_KEYS/);
+    });
+
+    it('accepts a comma-separated ring and treats blank as unset', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, devBase, { ENCRYPTION_KEYS: `k2:${hex},k1:${hex}` });
+
+      let mod = await import('./env');
+      expect(mod.env.ENCRYPTION_KEYS).toBe(`k2:${hex},k1:${hex}`);
+
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, devBase, { ENCRYPTION_KEYS: '   ' });
+
+      mod = await import('./env');
+      expect(mod.env.ENCRYPTION_KEYS).toBeUndefined();
+    });
+  });
+
   it('rejects unsafe release metadata', async () => {
     vi.resetModules();
     restoreEnv();

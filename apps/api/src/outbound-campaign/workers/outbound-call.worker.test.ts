@@ -40,6 +40,9 @@ const prisma = {
 const telephony = {
   startOutboundCall: vi.fn(),
 };
+const audit = {
+  log: vi.fn(),
+};
 
 describe('OutboundCallWorker', () => {
   beforeEach(() => {
@@ -69,6 +72,10 @@ describe('OutboundCallWorker', () => {
     campaigns.dispatchContact.mockResolvedValue(true);
   });
 
+  // Every constructor dependency, in order - including `audit`, which this
+  // factory used to omit. Nest always injects it in production, so a short
+  // argument list left `this.audit` undefined in tests only, silently swallowing
+  // the pause audit row behind the catch in pauseCampaign.
   function makeWorker() {
     return new (OutboundCallWorker as any)(
       queue as never,
@@ -76,6 +83,7 @@ describe('OutboundCallWorker', () => {
       campaigns as never,
       prisma as never,
       telephony as never,
+      audit as never,
     );
   }
 
@@ -90,15 +98,7 @@ describe('OutboundCallWorker', () => {
   } as never;
 
   it('starts campaign calls through the compliance-checked CallsService path', async () => {
-    const worker = new (OutboundCallWorker as any)(
-      queue as never,
-      calls as never,
-      campaigns as never,
-      prisma as never,
-      telephony as never,
-    );
-
-    await worker.processor({
+    await makeWorker().processor({
       data: {
         campaignId: 'camp-1',
         agentId: 'agent-1',
@@ -127,15 +127,7 @@ describe('OutboundCallWorker', () => {
       id: 'phone-number-1',
       provider: 'vobiz',
     });
-    const worker = new (OutboundCallWorker as any)(
-      queue as never,
-      calls as never,
-      campaigns as never,
-      prisma as never,
-      telephony as never,
-    );
-
-    await worker.processor({
+    await makeWorker().processor({
       data: {
         campaignId: 'camp-1',
         agentId: 'agent-1',
@@ -175,17 +167,28 @@ describe('OutboundCallWorker', () => {
     },
   );
 
-  it('pauses the campaign when the organization is out of credit', async () => {
+  // Deliberate reversal: this test used to assert incrementStat('camp-1', 'failed')
+  // on the pause branch. That was the bug. The contact is never dialled here and
+  // the cursor is left at its index, so the resume re-dials it; counting it failed
+  // now inflates the stat by one per pause/resume cycle.
+  it('pauses the campaign without counting the undialled contact as failed', async () => {
     calls.startOutboundCall.mockRejectedValue(
       new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),
     );
 
     await expect(makeWorker().processor(job)).resolves.toBeUndefined();
 
-    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    expect(campaigns.incrementStat).not.toHaveBeenCalled();
     expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
       where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
       data: { status: 'paused' },
+    });
+    expect(audit.log).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      action: 'billing.campaign_paused',
+      resourceType: 'outbound_campaign',
+      resourceId: 'camp-1',
+      metadata: { reason: 'credit_insufficient', pausedBy: 'outbound_call_worker' },
     });
   });
 
@@ -218,28 +221,17 @@ describe('OutboundCallWorker', () => {
       data: { status: 'paused' },
     });
     // Nothing further enqueued, and the cursor stays at 4 so a resume re-dials
-    // the contact billing refused rather than starting at 5.
+    // the contact billing refused rather than starting at 5 - which is exactly
+    // why contact 4 must not be counted as a failed dial on the way out.
+    expect(campaigns.incrementStat).not.toHaveBeenCalled();
     expect(campaigns.dispatchContact).not.toHaveBeenCalled();
     expect(campaigns.advanceCursor).not.toHaveBeenCalled();
     expect(campaigns.markCompleted).not.toHaveBeenCalled();
   });
 
-  it('pauses before recording failure statistics so a stats error cannot leave dispatch running', async () => {
-    calls.startOutboundCall.mockRejectedValue(
-      new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),
-    );
-    campaigns.incrementStat.mockRejectedValueOnce(new Error('stats unavailable'));
-
-    await expect(makeWorker().processor(job)).rejects.toThrow('stats unavailable');
-
-    expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
-      where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
-      data: { status: 'paused' },
-    });
-    expect(prisma.outboundCampaign.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
-      campaigns.incrementStat.mock.invocationCallOrder[0]!,
-    );
-  });
+  // The "pause before the stats write" ordering test that lived here is gone with
+  // the stats write itself: the pause branch no longer touches incrementStat, so
+  // there is no non-critical write left that could strand a running campaign.
 
   // F-021: a pause has to stop the dial, not just relabel the campaign.
   it('does not dial for a campaign that is no longer running', async () => {

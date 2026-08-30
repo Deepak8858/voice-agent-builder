@@ -28,7 +28,9 @@ import {
 } from '@voiceforge/shared';
 import { AuditService } from '../audit/audit.service';
 import { CurrentUser } from '../common/current-user.decorator';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { KnowledgeFileInvalidError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { QueueService } from '../queue/queue.service';
@@ -55,7 +57,13 @@ export class KnowledgeController {
     return { items: await this.knowledge.list(workspaceId, query) };
   }
 
+  // Knowledge mutations are content authoring, so editors are admitted, exactly
+  // as in agents.controller.ts; the destructive routes at the bottom of the file
+  // are narrower. Bound per-method because a class-level RoleGuard would fail
+  // closed on the ungated GETs and on the read-shaped search.
   @Post('knowledge-sources')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async create(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateKnowledgeSourceDtoSchema))
@@ -66,6 +74,8 @@ export class KnowledgeController {
   }
 
   @Post('knowledge-sources/upload')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   async upload(
     @Param('workspaceId') workspaceId: string,
@@ -120,6 +130,8 @@ export class KnowledgeController {
   }
 
   @Patch('knowledge-sources/:sourceId')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Param('sourceId') sourceId: string,
@@ -130,7 +142,12 @@ export class KnowledgeController {
     return this.knowledge.update(workspaceId, sourceId, user.id, dto);
   }
 
+  // Destroys persisted content, so it stops at admin and reads the membership
+  // row fresh: a just-demoted admin must not delete a source through the 300s
+  // workspace-access cache.
   @Delete('knowledge-sources/:sourceId')
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   @HttpCode(204)
   async remove(
     @Param('workspaceId') workspaceId: string,
@@ -153,6 +170,8 @@ export class KnowledgeController {
    * times.
    */
   @Post('knowledge-sources/:sourceId/reindex')
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   @HttpCode(202)
   async reindex(
     @Param('workspaceId') workspaceId: string,
@@ -194,9 +213,11 @@ export class KnowledgeController {
 
   /**
    * Enqueue a full backfill for THIS workspace only: clear every vector, then
-   * let the worker re-embed them. Admin use only.
+   * let the worker re-embed them. Admin use only, and enforced as such.
    */
   @Post('knowledge-sources/backfill')
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   @HttpCode(202)
   async backfill(
     @Param('workspaceId') workspaceId: string,

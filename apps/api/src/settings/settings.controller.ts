@@ -28,7 +28,17 @@ export const UpdateRetentionSchema = z.object({
 });
 export type UpdateRetentionDto = z.infer<typeof UpdateRetentionSchema>;
 
-@Controller('v1/workspaces')
+/**
+ * `main.ts` already sets the global prefix `api/v1`, so the old
+ * `@Controller('v1/workspaces')` served this at `/api/v1/v1/workspaces/...` and
+ * forced the web app and the proxy allow-list to carry the doubled segment
+ * (CS-40). Dropping it puts the route in the same `workspaces` namespace as
+ * every other workspace-scoped controller. `me/retention` is two segments, so it
+ * cannot be captured by WorkspacesController's one-segment `:workspaceId`
+ * routes. The erasure controller still carries its own `v1/` prefix; it has no
+ * browser caller, so it is left alone here rather than moved blind.
+ */
+@Controller('workspaces')
 export class SettingsController {
   constructor(private readonly retention: RetentionService) {}
 

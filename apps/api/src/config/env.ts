@@ -180,6 +180,30 @@ const EnvSchema = z
     // could run. Its twin in main.ts was dead for the same reason.
     JWT_SECRET: z.string().min(32),
     ENCRYPTION_KEY: z.string().optional(),
+    /**
+     * The AES-256-GCM keyring, as `kid:key` pairs joined by commas, where each
+     * key is 32 bytes in 64 hex characters. The first pair encrypts every new
+     * value; the rest exist only so rows written earlier keep decrypting, so
+     * rotating means prepending a new pair and never deleting an old one.
+     *
+     * Optional, and unset is the normal state: `ENCRYPTION_KEY` is always in the
+     * ring under the key id `legacy`, which is what rows carrying no key id at
+     * all (everything written before the ring existed) decrypt with.
+     *
+     * Validated here rather than where the keys are loaded because a typo would
+     * otherwise surface as an undecryptable tenant credential long after boot.
+     */
+    ENCRYPTION_KEYS: z.preprocess(
+      (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+      z
+        .string()
+        .regex(
+          /^[A-Za-z0-9_-]{1,32}:[0-9a-fA-F]{64}(,[A-Za-z0-9_-]{1,32}:[0-9a-fA-F]{64})*$/,
+          'ENCRYPTION_KEYS must be comma-separated kid:key pairs, where kid matches ' +
+            '[A-Za-z0-9_-]{1,32} and key is 64 hex characters (32 bytes)',
+        )
+        .optional(),
+    ),
 
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),

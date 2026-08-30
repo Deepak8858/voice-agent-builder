@@ -74,7 +74,6 @@ Repository **variables**:
 - `AWS_DEPLOY_ROLE_ARN` — OIDC role permitted to push to ECR
 - `DEPOT_API_PROJECT_ID`, `DEPOT_WEB_PROJECT_ID`, `DEPOT_LIVEKIT_PROJECT_ID`
 - `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_BILLING_MODE` — `demo` or `live`; baked into the web image
 
 Repository **secrets**:
 - `AWS_EC2_HOST`, `AWS_EC2_USER`, `AWS_EC2_SSH_KEY`, `AWS_EC2_KNOWN_HOSTS`

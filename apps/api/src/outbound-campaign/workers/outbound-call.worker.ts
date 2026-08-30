@@ -303,10 +303,11 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
 
     if (reason && BLOCKING_ADMISSION_REASONS.has(reason)) {
       this.logger.error(`Pausing campaign ${campaignId}: ${reason}`);
-      // Stop new dispatches before the non-critical statistics write. A failed
-      // counter update must never leave a drained campaign running.
+      // No `failed` increment here: this contact was never dialled and the cursor
+      // is deliberately left at its index, so resuming the campaign dispatches it
+      // again. Counting it now would double-count it against the second attempt's
+      // outcome, and inflate `failed` on every pause/resume cycle.
       await this.pauseCampaign(campaignId, workspaceId, reason);
-      await this.campaigns.incrementStat(campaignId, 'failed');
       return true;
     }
 

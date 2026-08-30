@@ -242,6 +242,11 @@ export class ProviderCostService {
 
     let estimated = 0;
     for (const call of calls) {
+      // `call_usages.call_id` is nullable since the retention sweep stopped
+      // cascading billing rows away, and a purged call has no duration or
+      // provider left to estimate a cost from. The `call:` relation filter above
+      // already excludes these rows; this makes it true for the type system too.
+      if (call.callId === null) continue;
       try {
         await this.estimateConnectedCall({
           organizationId: call.organizationId,

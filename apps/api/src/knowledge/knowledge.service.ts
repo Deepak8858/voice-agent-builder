@@ -301,15 +301,38 @@ export class KnowledgeService {
    * `data: { embedding: null }` at runtime as an unknown argument. Every other
    * write to this column goes through raw SQL for the same reason — see
    * insertChunkWithVector.
+   *
+   * Each cleared source's `embedding_generation` is incremented in the SAME
+   * statement, via a data-modifying CTE. It has to be one statement: a worker
+   * that read the generation between the bump and the null-out would believe it
+   * still owns the rebuild and keep writing vectors computed from content this
+   * reset supersedes — and because those writes make the chunk non-null again,
+   * the job queued by this reset would skip them and the stale vector would
+   * stick. The workspace path bumps every source it clears, which is the
+   * granularity EmbeddingsWorker compares at.
    */
   async clearEmbeddings(workspaceId: string, sourceId?: string): Promise<number> {
     return sourceId
       ? this.prisma.$executeRaw`
+          WITH bumped AS (
+            UPDATE knowledge_sources
+            SET embedding_generation = embedding_generation + 1
+            WHERE workspace_id = ${workspaceId}::uuid AND id = ${sourceId}::uuid
+            RETURNING id, workspace_id
+          )
           UPDATE knowledge_chunks SET embedding = NULL
-          WHERE workspace_id = ${workspaceId}::uuid AND source_id = ${sourceId}::uuid`
+          WHERE source_id = ANY (SELECT id FROM bumped)
+            AND workspace_id = ANY (SELECT workspace_id FROM bumped)`
       : this.prisma.$executeRaw`
+          WITH bumped AS (
+            UPDATE knowledge_sources
+            SET embedding_generation = embedding_generation + 1
+            WHERE workspace_id = ${workspaceId}::uuid
+            RETURNING id, workspace_id
+          )
           UPDATE knowledge_chunks SET embedding = NULL
-          WHERE workspace_id = ${workspaceId}::uuid`;
+          WHERE source_id = ANY (SELECT id FROM bumped)
+            AND workspace_id = ANY (SELECT workspace_id FROM bumped)`;
   }
 
   /**

@@ -180,15 +180,13 @@ jobs:
           file: infra/docker/Dockerfile.web
           tags: voiceforge-web:ci
           load: true
-          # Dockerfile.web hard-fails when NEXT_PUBLIC_BILLING_MODE is absent or
-          # is anything other than demo|live, so it must be passed here even
-          # though this job only checks the shipped dependency graph. The default
-          # keeps the gate independent of repository configuration; the value
-          # baked into a CI-only image is never deployed.
+          # Dockerfile.web hard-fails on a missing required build arg, so the
+          # required ones must be passed here even though this job only checks
+          # the shipped dependency graph. The defaults keep the gate independent
+          # of repository configuration; a CI-only image is never deployed.
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || 'http://localhost:4000' }}
             NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
-            NEXT_PUBLIC_BILLING_MODE=${{ vars.NEXT_PUBLIC_BILLING_MODE || 'demo' }}
             NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}

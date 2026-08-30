@@ -9,7 +9,7 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { ForbiddenError, UnauthorizedError, ValidationError } from '../common/errors';
 
 /**
- * `PATCH v1/workspaces/me/retention` takes a number that decides how long call
+ * `PATCH workspaces/me/retention` takes a number that decides how long call
  * recordings and transcripts survive. There is no global validation pipe in
  * this app (see main.ts - only filters and interceptors are registered), so the
  * body arrives exactly as the client sent it.
@@ -44,6 +44,24 @@ function makeController() {
   const retention = { updateWorkspaceRetention: vi.fn(async () => undefined) };
   return { retention, controller: new SettingsController(retention as never) };
 }
+
+/**
+ * CS-40: the controller prefix was `v1/workspaces` while main.ts already sets the
+ * global prefix `api/v1`, so the live path was `/api/v1/v1/workspaces/...` and
+ * apps/web plus its proxy allow-list had to carry the doubled segment. The path
+ * is asserted here because it is one half of a two-sided contract - the web
+ * caller now sends `/workspaces/me/retention` - and nothing else in this repo
+ * pins it.
+ */
+describe('SettingsController route path', () => {
+  it('does not repeat the global api/v1 prefix', () => {
+    const prefix = Reflect.getMetadata('path', SettingsController);
+    expect(prefix).toBe('workspaces');
+    expect(
+      Reflect.getMetadata('path', SettingsController.prototype.updateRetention),
+    ).toBe('me/retention');
+  });
+});
 
 describe('SettingsController.updateRetention body validation', () => {
   it('defaults to 365 days when retentionDays is omitted', () => {

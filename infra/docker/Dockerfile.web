@@ -23,7 +23,6 @@ ARG NEXT_PUBLIC_API_URL
 # this ARG the deploy workflow's --build-arg is silently discarded and those
 # three advertise the localhost fallback to search engines.
 ARG NEXT_PUBLIC_APP_URL
-ARG NEXT_PUBLIC_BILLING_MODE
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
@@ -47,17 +46,21 @@ ARG NEXT_PUBLIC_POSTHOG_HOST
 ARG NEXT_PUBLIC_APP_ENV
 ARG NEXT_PUBLIC_APP_VERSION
 
+# NEXT_PUBLIC_BILLING_MODE used to be required here and validated `demo|live`.
+# Nothing reads it: `apps/web/lib/billing-mode.ts` was deleted and no NEXT_PUBLIC
+# billing switch survives anywhere in apps/, so the value was inlined into the
+# bundle and never consulted. Requiring it only implied a control that does not
+# exist, and the same reasoning already retired the host-side BILLING_MODE check
+# in .github/workflows/deploy-aws-ec2.yml. Checkout availability comes from the
+# STRIPE_* configuration the API reads at runtime.
 RUN require_arg() { eval "value=\${$1}"; test -n "$value" || { echo "Required build argument $1 is missing" >&2; exit 1; }; }; \
     require_arg NEXT_PUBLIC_API_URL; \
     require_arg NEXT_PUBLIC_APP_URL; \
-    require_arg NEXT_PUBLIC_BILLING_MODE; \
     require_arg NEXT_PUBLIC_SUPABASE_URL; \
-    require_arg NEXT_PUBLIC_SUPABASE_ANON_KEY; \
-    case "$NEXT_PUBLIC_BILLING_MODE" in demo|live) ;; *) echo "NEXT_PUBLIC_BILLING_MODE must be demo or live" >&2; exit 1 ;; esac
+    require_arg NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL \
-    NEXT_PUBLIC_BILLING_MODE=$NEXT_PUBLIC_BILLING_MODE \
     NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY \

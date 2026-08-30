@@ -83,24 +83,42 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
 
   const ref = agent.shareSlug ?? slug;
   const brandName = agent.branding?.brandName ?? agent.workspaceName;
+  // The paid white-label switch. `branding` is only present when the plan still
+  // entitles white-label (the API collapses a lapsed plan back to Free and sends
+  // `branding: null`), so reading the flag off it needs no separate plan check.
+  // What it removes is this page's platform promotion: the link to the platform
+  // home, both sign-up calls to action, and the pricing link. The brand name and
+  // the agent itself are the tenant's own content and stay either way.
+  const hidePlatformBranding = agent.branding?.hidePlatformBranding ?? false;
+  const brandLockup = (
+    <>
+      <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
+        <Mic2 className="h-4 w-4 text-primary-foreground" />
+      </div>
+      <span className="font-serif text-lg">{brandName}</span>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-accent/20 flex flex-col">
       {/* Header */}
       <header className="border-b border-border bg-background/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="mx-auto max-w-4xl px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2 font-semibold">
-            <div className="h-8 w-8 rounded-md bg-primary flex items-center justify-center">
-              <Mic2 className="h-4 w-4 text-primary-foreground" />
-            </div>
-            <span className="font-serif text-lg">{brandName}</span>
-          </Link>
-          <Link href={`/sign-up?ref=${ref}`}>
-            <Button size="sm" className="gap-2">
-              Build your own
-              <ArrowRight className="h-4 w-4" />
-            </Button>
-          </Link>
+          {hidePlatformBranding ? (
+            <div className="flex items-center gap-2 font-semibold">{brandLockup}</div>
+          ) : (
+            <Link href="/" className="flex items-center gap-2 font-semibold">
+              {brandLockup}
+            </Link>
+          )}
+          {!hidePlatformBranding && (
+            <Link href={`/sign-up?ref=${ref}`}>
+              <Button size="sm" className="gap-2">
+                Build your own
+                <ArrowRight className="h-4 w-4" />
+              </Button>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -182,20 +200,22 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
             </div>
 
             {/* CTA */}
-            <div className="border-t border-border bg-muted/30 p-8 text-center">
-              <p className="text-muted-foreground mb-4">
-                Build your own voice agent in minutes
-              </p>
-              <Link href={`/sign-up?ref=${ref}`}>
-                <Button size="lg" className="gap-2">
-                  Build your own voice agent
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </Link>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Free to start · No credit card required
-              </p>
-            </div>
+            {!hidePlatformBranding && (
+              <div className="border-t border-border bg-muted/30 p-8 text-center">
+                <p className="text-muted-foreground mb-4">
+                  Build your own voice agent in minutes
+                </p>
+                <Link href={`/sign-up?ref=${ref}`}>
+                  <Button size="lg" className="gap-2">
+                    Build your own voice agent
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                </Link>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Free to start · No credit card required
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </main>
@@ -207,9 +227,11 @@ export default async function AgentSharePage({ params }: AgentSharePageProps) {
             <Mic2 className="h-3.5 w-3.5" />
             <span>{brandName}</span>
           </div>
-          <Link href="/pricing" className="hover:text-foreground transition-colors">
-            View pricing
-          </Link>
+          {!hidePlatformBranding && (
+            <Link href="/pricing" className="hover:text-foreground transition-colors">
+              View pricing
+            </Link>
+          )}
         </div>
       </footer>
     </div>

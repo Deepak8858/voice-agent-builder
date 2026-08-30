@@ -482,6 +482,13 @@ export class ReconciliationService {
     });
 
     for (const usage of stale) {
+      // `call_usages.call_id` is nullable since the retention sweep stopped
+      // cascading billing rows away. Every branch below reserves, releases or
+      // flags against a live call id, and the ledger rejects one that no longer
+      // resolves, so a purged call's row is left as the historical record it now
+      // is. Unreachable in practice: retention purges at 30 days at the
+      // earliest, and staleness is measured in minutes.
+      if (usage.callId === null) continue;
       try {
         const abandonedAfterConnect = usage.finalizationState === 'connected';
 
