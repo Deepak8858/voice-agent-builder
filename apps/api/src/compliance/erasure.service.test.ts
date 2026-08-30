@@ -390,9 +390,23 @@ describe('ErasureService', () => {
       // Nothing may be destroyed: the Stripe id must stay resolvable.
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(deletedOrganizations).toEqual([]);
-      // A refusal claims no erasure, so it writes no erasure row -- by either
-      // path, the in-transaction one or AuditService.
-      expect(auditLogs).toEqual([]);
+      // F-33. A refusal is a data-subject-request outcome and has to leave a
+      // record of its own -- but never the success action, which would assert an
+      // erasure that did not happen.
+      expect(auditLogs).toHaveLength(1);
+      expect(auditLogs[0]).toMatchObject({
+        organizationId: 'org-1',
+        action: 'gdpr.organization_erasure_refused',
+        resourceType: 'organization',
+        resourceId: 'org-1',
+        metadata: expect.objectContaining({
+          reason: 'live_stripe_subscription',
+          stripeSubscriptionId: 'sub_live',
+          stripeSubscriptionStatus: 'active',
+        }),
+      });
+      expect(auditLogs.map((row) => row.action)).not.toContain('gdpr.organization_deleted');
+      // AuditService is not a path this service uses at all.
       expect(audit.log).not.toHaveBeenCalled();
     });
 
@@ -729,10 +743,21 @@ describe('ErasureService', () => {
         expect(deletedNumbers).toEqual([]);
         expect(deletedWorkspaces).toEqual([]);
         expect(deletedOrganizations).toEqual([]);
-        // A refusal claims no erasure, so it writes no erasure row. `audit.log`
-        // covers PhoneNumbersService.release too, which also got no further than
-        // the failed carrier call.
-        expect(auditLogs).toEqual([]);
+        // F-33. The refusal is recorded with its own action and a reason that
+        // distinguishes it from the Stripe refusal, but never the success action.
+        expect(auditLogs).toHaveLength(1);
+        expect(auditLogs[0]).toMatchObject({
+          organizationId: 'org-1',
+          action: 'gdpr.organization_erasure_refused',
+          resourceId: 'org-1',
+          metadata: expect.objectContaining({
+            reason: 'carrier_release_refused',
+            phoneNumber: '+14155550004',
+          }),
+        });
+        expect(auditLogs.map((row) => row.action)).not.toContain('gdpr.organization_deleted');
+        // `audit.log` covers PhoneNumbersService.release, which got no further
+        // than the failed carrier call and so released nothing to record.
         expect(audit.log).not.toHaveBeenCalled();
       });
 

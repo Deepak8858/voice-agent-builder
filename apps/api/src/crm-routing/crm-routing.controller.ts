@@ -5,6 +5,8 @@ import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { CreateCrmRoutingRuleDtoSchema, type CreateCrmRoutingRuleDto } from './crm-routing.schemas';
+import { CurrentUser } from '../common/current-user.decorator';
+import type { SessionUser } from '@voiceforge/shared';
 
 @UseGuards(WorkspaceGuard)
 @Controller('workspaces/:workspaceId/crm-routing')
@@ -26,8 +28,12 @@ export class CrmRoutingController {
   async createRule(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateCrmRoutingRuleDtoSchema)) body: CreateCrmRoutingRuleDto,
+    @CurrentUser() user: SessionUser,
   ) {
-    const rule = await this.routing.createRule(workspaceId, body);
+    // The actor is passed through so the audit row names a person. The service
+    // parameter is optional because orchestrator.worker also calls createRule
+    // and genuinely has no actor; a request always does.
+    const rule = await this.routing.createRule(workspaceId, body, user.id);
     return rule;
   }
 }

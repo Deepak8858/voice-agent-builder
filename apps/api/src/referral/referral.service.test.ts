@@ -84,6 +84,18 @@ describe('ReferralService', () => {
     expect(result.status).toBe('converted');
     expect(prisma.referral.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.usageRecord.create).not.toHaveBeenCalled();
+    // Conversion grants nothing, so the award stamp must stay null. A timestamp
+    // here is a false record of a completed award that a later idempotent grant
+    // would read and use to skip the credit.
+    expect(prisma.referral.updateMany).toHaveBeenCalledWith({
+      where: { id: 'ref-1', status: 'pending' },
+      data: {
+        referredUserId: 'user-referred',
+        referredWorkspaceId: 'ws-referred',
+        referredOrganizationId: 'org-referred',
+        status: 'converted',
+      },
+    });
   });
 
   it('refuses a referral converted inside the referrer organization', async () => {

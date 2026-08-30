@@ -291,7 +291,7 @@ describe('cross-tenant isolation: CRM fan-out (transcript read by bare call id)'
       crmFanoutLog: [],
     });
 
-    const routing = new CrmRoutingService(prisma as never);
+    const routing = new CrmRoutingService(prisma as never, { log: vi.fn() } as never);
     const crmExecutor = { createContact: vi.fn() };
     const encryption = { decryptJson: vi.fn(), encryptJson: vi.fn() };
     const service = new CrmFanOutService(
@@ -336,7 +336,7 @@ describe('cross-tenant isolation: CRM fan-out (transcript read by bare call id)'
       crmFanoutLog: [],
     });
 
-    const routing = new CrmRoutingService(prisma as never);
+    const routing = new CrmRoutingService(prisma as never, { log: vi.fn() } as never);
     const crmExecutor = {
       createContact: vi.fn(async () => ({ contact_id: 'c1', status: 'created', provider: 'pipedrive' })),
     };

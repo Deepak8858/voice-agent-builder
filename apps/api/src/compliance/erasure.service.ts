@@ -125,13 +125,18 @@ export class ErasureService {
     // org that merely opened the billing portal has a customer row with the
     // default status 'active' and no subscription.
     if (subscription?.stripeSubscriptionId && hasLiveSubscription(subscription.status)) {
-      return {
-        success: false,
-        error:
-          `Organization ${orgId} still has a live Stripe subscription `
-          + `(${subscription.stripeSubscriptionId}, status "${subscription.status}"). Cancel it in `
-          + `Stripe first, then retry: deleting the organization removes the only record of that id.`,
-      };
+      return this.refuseOrganizationErasure(
+        orgId,
+        'live_stripe_subscription',
+        {
+          stripeCustomerId: subscription.stripeCustomerId,
+          stripeSubscriptionId: subscription.stripeSubscriptionId,
+          stripeSubscriptionStatus: subscription.status,
+        },
+        `Organization ${orgId} still has a live Stripe subscription `
+        + `(${subscription.stripeSubscriptionId}, status "${subscription.status}"). Cancel it in `
+        + `Stripe first, then retry: deleting the organization removes the only record of that id.`,
+      );
     }
 
     const workspaces = await this.prisma.workspace.findMany({
@@ -169,13 +174,18 @@ export class ErasureService {
         // end state for them; their rows are gone so a retry will not revisit
         // them. Refusing here leaves the rest of the tenant's data intact and
         // erasable on retry, whereas proceeding would strand this number.
-        return {
-          success: false,
-          error:
-            `Organization ${orgId} still holds phone number ${number.phoneNumber} at the carrier: `
-            + `${err instanceof Error ? err.message : String(err)}. Release it, then retry: `
-            + `deleting the workspace removes the only record of its Twilio SID.`,
-        };
+        const carrierError = err instanceof Error ? err.message : String(err);
+        return this.refuseOrganizationErasure(
+          orgId,
+          'carrier_release_refused',
+          // `phone_number` is already recorded in the clear by
+          // PhoneNumbersService.release's own audit row, and it is the tenant's
+          // carrier-billed number, not a data subject's contact detail.
+          { phoneNumber: number.phoneNumber, carrierError },
+          `Organization ${orgId} still holds phone number ${number.phoneNumber} at the carrier: `
+          + `${carrierError}. Release it, then retry: `
+          + `deleting the workspace removes the only record of its Twilio SID.`,
+        );
       }
     }
 
@@ -200,8 +210,8 @@ export class ErasureService {
       // committed row claiming the organization had been erased.
       //
       // The two refusals above (live Stripe subscription, un-released number)
-      // return before reaching this transaction, so a refused erasure still
-      // writes no audit row of its own.
+      // return before reaching this transaction and record themselves with a
+      // distinct action; see refuseOrganizationErasure.
       await tx.auditLog.create({
         data: {
           organizationId: orgId,
@@ -251,6 +261,45 @@ export class ErasureService {
       'GDPR organization erasure completed',
     );
     return { success: true, erasedAt };
+  }
+
+  /**
+   * Records a refused organization erasure, then returns the refusal.
+   *
+   * A refusal is a data-subject-request outcome and has to be answerable later:
+   * which organization was asked about, when, and on what grounds. Both callers
+   * return immediately afterwards, so this method is the only place the refusal
+   * is recorded.
+   *
+   * Written through `this.prisma`, outside any transaction, which is the inverse
+   * of the rule set out in eraseContact for the inverse situation: a refusal
+   * commits no mutation, so there is nothing for the row to over-claim -- it is
+   * true the moment it is written and cannot be falsified by a rollback. Both
+   * refusal paths also have to stay outside a transaction for their own reasons
+   * (the carrier call must not hold one open, and Postgres aborts a whole
+   * transaction on the first failed statement).
+   *
+   * No `actorUserId`: `DELETE admin/orgs/:orgId` is `@InternalOnly()`, which
+   * rejects any request carrying user context, so no user id reaches this
+   * service -- the same reason the success row above records none either.
+   */
+  private async refuseOrganizationErasure(
+    orgId: string,
+    reason: string,
+    metadata: Record<string, string | null>,
+    error: string,
+  ): Promise<ErasureResult> {
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: orgId,
+        action: 'gdpr.organization_erasure_refused',
+        resourceType: 'organization',
+        resourceId: orgId,
+        metadata: { reason, refusedAt: new Date().toISOString(), ...metadata },
+      },
+    });
+    this.logger.warn({ orgId, reason }, 'GDPR organization erasure refused');
+    return { success: false, error };
   }
 
   /**

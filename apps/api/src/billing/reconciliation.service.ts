@@ -114,7 +114,15 @@ const LIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'past_due']);
 interface StripeDriftInvoice {
   id: string;
   customer: unknown;
-  subscription: unknown;
+  /**
+   * The subscription behind an invoice lives here, not in a top-level
+   * `subscription` field: that field was removed from the Invoice object in the
+   * Basil API version, and the client below pins the installed SDK's version,
+   * which is well past it. Reading the old field made every subscription invoice
+   * fail the filter, so the drift counters silently reported less drift than
+   * exists.
+   */
+  parent: { type: string; subscription_details?: { subscription?: unknown } | null } | null;
   amount_paid: number;
 }
 
@@ -738,7 +746,10 @@ export class ReconciliationService {
       stripe.invoices.list({ status: 'paid', created, ...params }),
     );
     const paidInvoices = invoices.items.filter(
-      (invoice) => invoice.amount_paid > 0 && typeof invoice.subscription === 'string',
+      (invoice) =>
+        invoice.amount_paid > 0 &&
+        invoice.parent?.type === 'subscription_details' &&
+        Boolean(invoice.parent.subscription_details?.subscription),
     );
 
     // Checkout sessions cannot be filtered by metadata server-side, so pack

@@ -241,7 +241,9 @@ export function findUnguardedRoutes(
   return findings;
 }
 
-const MUTATING_METHODS = new Set(['Post', 'Put', 'Patch', 'Delete']);
+// `All` is here because `@All()` serves POST/PUT/PATCH/DELETE too, so leaving it
+// out would let a mutation in through a method this ratchet never looks at.
+const MUTATING_METHODS = new Set(['Post', 'Put', 'Patch', 'Delete', 'All']);
 
 export type RolelessRoute = Omit<UnguardedRoute, 'tenantParam'>;
 

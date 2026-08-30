@@ -124,7 +124,10 @@ export class ReferralService {
     // one token both read `pending` above, and the loser must be told the
     // referral is already converted rather than silently rewriting who converted
     // it. This is also the single place a conversion is stamped, so it is the
-    // hook a future credit grant hangs its per-referral idempotency off.
+    // hook a future credit grant hangs its per-referral idempotency off — which
+    // is why `bonusAwardedAt` is deliberately left null here: nothing is granted
+    // on conversion, and stamping it would make that idempotency guard skip the
+    // credit the customer earned.
     const converted = await this.prisma.referral.updateMany({
       where: { id: referral.id, status: 'pending' },
       data: {
@@ -132,7 +135,6 @@ export class ReferralService {
         referredWorkspaceId: args.referredWorkspaceId,
         referredOrganizationId: referredWorkspace.organizationId,
         status: 'converted',
-        bonusAwardedAt: new Date(),
       },
     });
     if (converted.count === 0) {

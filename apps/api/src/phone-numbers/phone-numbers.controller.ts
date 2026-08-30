@@ -43,8 +43,14 @@ export class PhoneNumbersController {
   async provision(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(ProvisionPhoneNumberDtoSchema)) body: ProvisionPhoneNumberDto,
+    @CurrentUser() user: SessionUser | undefined,
   ) {
-    const number = await this.numbers.provision(workspaceId, body.area_code, body.agent_id);
+    const number = await this.numbers.provision(
+      workspaceId,
+      body.area_code,
+      body.agent_id,
+      user?.id ?? null,
+    );
     return { phone_number: number };
   }
 
@@ -54,8 +60,9 @@ export class PhoneNumbersController {
   async addByo(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(AddByoPhoneNumberDtoSchema)) body: AddByoPhoneNumberDto,
+    @CurrentUser() user: SessionUser | undefined,
   ) {
-    await this.numbers.addByo(workspaceId, body.phone_number, body.twilio_sid);
+    await this.numbers.addByo(workspaceId, body.phone_number, body.twilio_sid, user?.id ?? null);
     return { success: true };
   }
 

@@ -26,6 +26,7 @@ import {
   type SessionUser,
   type UpdateKnowledgeSourceDto,
 } from '@voiceforge/shared';
+import { AuditService } from '../audit/audit.service';
 import { CurrentUser } from '../common/current-user.decorator';
 import { KnowledgeFileInvalidError } from '../common/errors';
 import { WorkspaceGuard } from '../common/workspace.guard';
@@ -42,6 +43,7 @@ export class KnowledgeController {
   constructor(
     private readonly knowledge: KnowledgeService,
     private readonly queue: QueueService,
+    private readonly audit: AuditService,
   ) {}
 
   @Get('knowledge-sources')
@@ -155,7 +157,7 @@ export class KnowledgeController {
   async reindex(
     @Param('workspaceId') workspaceId: string,
     @Param('sourceId') sourceId: string,
-    @CurrentUser() _user: SessionUser,
+    @CurrentUser() user: SessionUser,
   ): Promise<{ jobId: string; message: string }> {
     // `get` first: it is what proves the source belongs to this workspace, and
     // clearEmbeddings must not run on someone else's source.
@@ -163,11 +165,27 @@ export class KnowledgeController {
     // Clearing is not optional. The worker selects only chunks whose vector IS
     // NULL, and ingest always writes a vector, so without this the job would
     // select zero rows and reindex would return 202 having done nothing.
-    await this.knowledge.clearEmbeddings(workspaceId, sourceId);
-    await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
-      workspaceId,
-      sourceId,
-    });
+    const cleared = await this.knowledge.clearEmbeddings(workspaceId, sourceId);
+    // The audit write is in `finally` so a failed enqueue still leaves a record:
+    // the vectors are already gone at this point, which is the state an operator
+    // most needs to be able to trace back to an actor.
+    let enqueued = false;
+    try {
+      await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
+        workspaceId,
+        sourceId,
+      });
+      enqueued = true;
+    } finally {
+      await this.audit.log({
+        workspaceId,
+        actorUserId: user.id,
+        action: 'knowledge_source.reindex',
+        resourceType: 'knowledge_source',
+        resourceId: sourceId,
+        metadata: { scope: 'source', cleared_chunks: cleared, enqueued },
+      });
+    }
     return {
       jobId: sourceId,
       message: `Reindex job queued for source ${sourceId}. Every chunk under it had its vector cleared and will be re-embedded.`,
@@ -182,14 +200,27 @@ export class KnowledgeController {
   @HttpCode(202)
   async backfill(
     @Param('workspaceId') workspaceId: string,
-    @CurrentUser() _user: SessionUser,
+    @CurrentUser() user: SessionUser,
   ): Promise<{ jobId: string; message: string }> {
     // Mark all existing embeddings as null so the worker — which only embeds
     // null vectors — picks up the whole workspace.
-    await this.knowledge.clearEmbeddings(workspaceId);
-    await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
-      workspaceId,
-    });
+    const cleared = await this.knowledge.clearEmbeddings(workspaceId);
+    let enqueued = false;
+    try {
+      await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
+        workspaceId,
+      });
+      enqueued = true;
+    } finally {
+      await this.audit.log({
+        workspaceId,
+        actorUserId: user.id,
+        action: 'knowledge_source.backfill',
+        resourceType: 'workspace',
+        resourceId: workspaceId,
+        metadata: { scope: 'workspace', cleared_chunks: cleared, enqueued },
+      });
+    }
     return {
       jobId: `backfill-${workspaceId}`,
       message: `Backfill job queued. Every chunk in workspace ${workspaceId} had its vector cleared and will be re-embedded.`,

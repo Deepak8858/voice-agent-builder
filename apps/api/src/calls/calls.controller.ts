@@ -111,6 +111,12 @@ export class CallsController {
     // foreign call id therefore never reaches the subscription below.
     const backfill = await this.calls.getLiveEvents(callId, workspaceId);
 
+    // The client can disconnect during the awaited backfill above. There is
+    // nothing left to write to, and `subscribe()` duplicates a Redis connection,
+    // so continuing costs a subscribe/unsubscribe round trip per aborted request
+    // on a route clients cancel routinely.
+    if (res.closed) return;
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -129,12 +135,6 @@ export class CallsController {
     // next message, so on a quiet call the flag is never observed and the
     // connection leaks for the life of the process.
     res.on('close', () => { void reader.cancel(); });
-
-    // The client can disconnect during the awaited backfill above, before that
-    // listener exists, and Node does not replay an already-emitted 'close'. The
-    // read below would then stay pending forever on a call that has ended,
-    // leaking the connection subscribe() duplicated.
-    if (res.closed) void reader.cancel();
 
     try {
       for (;;) {

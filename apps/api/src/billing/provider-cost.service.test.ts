@@ -442,6 +442,22 @@ describe('ProviderCostService.recordNumberRentals', () => {
     expect(args.create.isEstimate).toBe(false);
   });
 
+  /**
+   * Cost events are kept for accounting and are not deleted when an organization
+   * is erased, while the `twilioPhoneNumber` row is. A raw E.164 number copied
+   * into this metadata would therefore survive a GDPR erasure inside billing.
+   * The number id is enough to reconcile a rental.
+   */
+  it('books the rental without copying the raw phone number into the metadata', async () => {
+    const { service, upsert } = makeService({ phoneNumbers: [rented()] });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(1);
+
+    const metadata = upsertArgs(upsert).create.metadata as Record<string, unknown>;
+    expect(metadata).toEqual({ phoneNumberId: 'pn-1', month: month() });
+    expect(JSON.stringify(metadata)).not.toContain('+1555');
+  });
+
   it('does not book a second rental for the same number in the same month', async () => {
     const { service, upsert } = makeService({ phoneNumbers: [rented()] });
 

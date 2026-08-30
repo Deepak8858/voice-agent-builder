@@ -62,7 +62,7 @@ export class SettingsController {
     if (!workspaceId) throw new ForbiddenError('No active workspace for this session.');
 
     const days = body.retentionDays;
-    await this.retention.updateWorkspaceRetention(workspaceId, days);
+    await this.retention.updateWorkspaceRetention(workspaceId, days, user.id);
     return { success: true, retentionDays: days };
   }
 }

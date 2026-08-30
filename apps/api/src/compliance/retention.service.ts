@@ -118,8 +118,27 @@ export class RetentionService {
     return { deleted, remaining: afterRemaining };
   }
 
-  async updateWorkspaceRetention(workspaceId: string, retentionDays: number): Promise<void> {
+  /**
+   * `actorUserId` is required, not optional. Shortening retention destroys
+   * recordings and transcripts on the next sweep, so "who shortened it" is the
+   * whole point of the record -- an optional parameter would let a caller write
+   * an unattributed row for the most destructive setting in the product.
+   */
+  async updateWorkspaceRetention(
+    workspaceId: string,
+    retentionDays: number,
+    actorUserId: string,
+  ): Promise<void> {
     const clamped = Math.min(3650, Math.max(30, retentionDays));
+    // Read before the write, so the audit row can say what the period *was*.
+    // A retention change is only meaningful against its previous value: "set to
+    // 30" is not reviewable, "1095 -> 30" is. Also supplies organizationId,
+    // which a direct auditLog.create does not resolve for itself the way
+    // AuditService.log would.
+    const before = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { organizationId: true, retentionDays: true },
+    });
     // A retention change has to reach the calls already recorded. Without the
     // re-stamp below, shortening the period only affects calls created after
     // it: the older recordings and transcripts the shortening was meant to
@@ -156,6 +175,28 @@ export class RetentionService {
                retention_days = ${clamped}::int
          WHERE workspace_id = ${workspaceId}::uuid
       `,
+      // Third statement in the same transaction, not an AuditService call after
+      // it: AuditService holds its own client and would commit independently, so
+      // a rolled-back re-stamp would still leave a row claiming the period
+      // changed. Here the claim and the change commit together or neither does.
+      this.prisma.auditLog.create({
+        data: {
+          workspaceId,
+          organizationId: before?.organizationId ?? null,
+          actorUserId,
+          action: 'retention.updated',
+          resourceType: 'workspace',
+          resourceId: workspaceId,
+          metadata: {
+            previousRetentionDays: before?.retentionDays ?? null,
+            retentionDays: clamped,
+            // Recorded separately from `retentionDays` because the value is
+            // clamped: a request for 1 day is stored as 30, and the row should
+            // show what was asked for as well as what was applied.
+            requestedRetentionDays: retentionDays,
+          },
+        },
+      }),
     ]);
     // Shortening can make rows immediately expired, so the next sweep deletes
     // them. Log the blast radius: the change is destructive and irreversible.

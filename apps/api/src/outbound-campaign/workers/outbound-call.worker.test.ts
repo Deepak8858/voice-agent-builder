@@ -189,6 +189,41 @@ describe('OutboundCallWorker', () => {
     });
   });
 
+  // F-028: pausing used to fall through to the chaining block below, which
+  // enqueued contact index+1 and advanced the cursor past a contact that was
+  // never dialled. `start()` resumes from `dispatchedCount`, so that contact was
+  // silently lost for good.
+  it('stops the chain on a blocking denial, leaving the cursor at the undialled contact', async () => {
+    campaigns.getCampaign.mockResolvedValue({
+      id: 'camp-1',
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      status: 'running',
+      dispatchedCount: 4,
+      contacts: [{ phone: '+15551111111' }, { phone: '+15552222222' }],
+      schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+    });
+    calls.startOutboundCall.mockRejectedValue(
+      new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'subscription_inactive' }),
+    );
+
+    await expect(
+      makeWorker().processor({
+        data: { ...(job as any).data, contactIndex: 4, dispatchToken: 7 },
+      } as never),
+    ).resolves.toBeUndefined();
+
+    expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+      where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
+      data: { status: 'paused' },
+    });
+    // Nothing further enqueued, and the cursor stays at 4 so a resume re-dials
+    // the contact billing refused rather than starting at 5.
+    expect(campaigns.dispatchContact).not.toHaveBeenCalled();
+    expect(campaigns.advanceCursor).not.toHaveBeenCalled();
+    expect(campaigns.markCompleted).not.toHaveBeenCalled();
+  });
+
   it('pauses before recording failure statistics so a stats error cannot leave dispatch running', async () => {
     calls.startOutboundCall.mockRejectedValue(
       new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),

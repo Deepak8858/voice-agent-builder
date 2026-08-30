@@ -150,7 +150,11 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
         );
         return;
       }
-      await this.handleDispatchFailure(campaignId, workspaceId, to, err);
+      // A blocking billing denial paused the campaign. The dial for `index` never
+      // happened, so the chain stops here: enqueueing the next contact would
+      // restart dispatch, and advancing the cursor past `index` would make the
+      // resume in `start()` skip that contact forever.
+      if (await this.handleDispatchFailure(campaignId, workspaceId, to, err)) return;
     }
 
     if (index === undefined) return;
@@ -276,13 +280,17 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
    * A billing denial is not a dial failure. Distinguishing them keeps campaign
    * statistics honest and stops a drained balance from silently consuming an
    * entire contact list.
+   *
+   * Returns true when the campaign was paused, which the caller must treat as
+   * "stop the chain": the contact was not dialled, so nothing after it may be
+   * enqueued and the cursor may not move past it.
    */
   private async handleDispatchFailure(
     campaignId: string,
     workspaceId: string,
     to: string,
     err: unknown,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const reason = this.admissionReason(err);
     const message = (err as Error).message;
 
@@ -299,11 +307,12 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       // counter update must never leave a drained campaign running.
       await this.pauseCampaign(campaignId, workspaceId, reason);
       await this.campaigns.incrementStat(campaignId, 'failed');
-      return;
+      return true;
     }
 
     this.logger.error(`Outbound call failed for ${to}: ${message}`);
     await this.campaigns.incrementStat(campaignId, 'failed');
+    return false;
   }
 
   /** Parsed against the shared contract so an unknown reason is not trusted. */

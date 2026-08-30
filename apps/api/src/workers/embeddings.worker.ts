@@ -1,4 +1,5 @@
 import { type Job } from 'bullmq';
+import { z } from 'zod';
 import { Injectable } from '@nestjs/common';
 import { BaseWorker } from './base.worker';
 import { QueueService } from '../queue/queue.service';
@@ -9,6 +10,18 @@ import { Prisma } from '@prisma/client';
 export const EMBEDDINGS_QUEUE = 'embeddings';
 
 const BATCH_SIZE = 64;
+
+/**
+ * `sourceId` may be absent (whole-workspace backfill) but never blank: the
+ * source filter below is built from a truthiness test, so `sourceId: ''` would
+ * silently widen one malformed job into "re-embed every null vector in the
+ * workspace". `.uuid()` also rejects a blank string, so a payload that fails
+ * here fails the job instead of scoping itself away.
+ */
+const GenerateEmbeddingsJobSchema = z.object({
+  workspaceId: z.string().uuid(),
+  sourceId: z.string().uuid().optional(),
+});
 
 interface GenerateEmbeddingsJob {
   /** Tenant scope. Required — every query is filtered by it. */
@@ -28,12 +41,19 @@ export class EmbeddingsWorker extends BaseWorker<GenerateEmbeddingsJob> {
   }
 
   async processor(job: Job<GenerateEmbeddingsJob>): Promise<void> {
-    const { workspaceId, sourceId } = job.data;
     // Fail loudly rather than fall back to "all workspaces": a job queued before
-    // the payload carried workspaceId must not re-embed other tenants' chunks.
-    if (!workspaceId) {
-      throw new Error('[EmbeddingsWorker] job is missing workspaceId — refusing to run unscoped.');
+    // the payload carried workspaceId must not re-embed other tenants' chunks,
+    // and a blank sourceId must not widen a one-source job into the whole
+    // workspace.
+    const parsed = GenerateEmbeddingsJobSchema.safeParse(job.data);
+    if (!parsed.success) {
+      throw new Error(
+        `[EmbeddingsWorker] malformed job payload — refusing to run: ${parsed.error.issues
+          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+          .join('; ')}`,
+      );
     }
+    const { workspaceId, sourceId } = parsed.data;
 
     const sourceClause = sourceId ? Prisma.sql`AND source_id = ${sourceId}::uuid` : Prisma.empty;
     const stamp = JSON.stringify({ embedder: this.embedder.name, dimensions: this.embedder.dimensions });
