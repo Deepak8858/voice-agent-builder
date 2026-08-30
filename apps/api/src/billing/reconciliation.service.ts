@@ -36,6 +36,8 @@ export interface BillingReconciliationReport {
   staleCallsFinalized: number;
   leasesRecovered: number;
   costEventsEstimated: number;
+  /** Phone numbers whose monthly carrier rental was booked this pass. */
+  numberRentalsRecorded: number;
   manualReviewsCreated: number;
   /** Stripe objects examined by the drift comparison (the drift denominator). */
   stripeObjectsCompared: number;
@@ -55,6 +57,7 @@ export function emptyReconciliationReport(): BillingReconciliationReport {
     staleCallsFinalized: 0,
     leasesRecovered: 0,
     costEventsEstimated: 0,
+    numberRentalsRecorded: 0,
     manualReviewsCreated: 0,
     stripeObjectsCompared: 0,
     stripePaidInvoicesWithoutCredit: 0,
@@ -615,10 +618,19 @@ export class ReconciliationService {
     return report;
   }
 
-  /** Backfill provider cost estimates and alert when coverage is too low. */
+  /**
+   * Backfill provider cost estimates, book the monthly carrier number rentals,
+   * and alert when call cost coverage is too low.
+   *
+   * The rental sweep rides along here rather than on its own schedule: it is the
+   * same books, the same idempotent-repair contract, and it must run before
+   * `publishMarginMetrics` in the same pass (see `runAll`) or margin is reported
+   * against minutes alone with every number rental missing from the cost side.
+   */
   async reconcileProviderCosts(limit = this.batchSize): Promise<BillingReconciliationReport> {
     const report = emptyReconciliationReport();
     report.costEventsEstimated = await this.providerCosts.estimateMissingCallCosts(limit);
+    report.numberRentalsRecorded = await this.providerCosts.recordNumberRentals(limit);
 
     const since = new Date(Date.now() - 24 * 60 * MINUTE_MS);
     const coverage = await this.providerCosts.costCoverage(since);
@@ -632,6 +644,7 @@ export class ReconciliationService {
     }
 
     this.countCorrections('provider_cost', report.costEventsEstimated);
+    this.countCorrections('number_rental', report.numberRentalsRecorded);
     return report;
   }
 
@@ -1063,6 +1076,7 @@ export class ReconciliationService {
       merged.staleCallsFinalized += report.staleCallsFinalized;
       merged.leasesRecovered += report.leasesRecovered;
       merged.costEventsEstimated += report.costEventsEstimated;
+      merged.numberRentalsRecorded += report.numberRentalsRecorded;
       merged.manualReviewsCreated += report.manualReviewsCreated;
       merged.stripeObjectsCompared += report.stripeObjectsCompared;
       merged.stripePaidInvoicesWithoutCredit += report.stripePaidInvoicesWithoutCredit;

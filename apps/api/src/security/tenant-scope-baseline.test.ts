@@ -98,8 +98,18 @@ const REVIEWED_BASELINE: readonly string[] = [
   'billing/reconciliation.service.ts:subscription.findMany',
   'billing/provider-cost.service.ts:callUsage.count',
   'billing/provider-cost.service.ts:callUsage.findMany',
+  // recordNumberRentals() books the carrier's monthly rent for every phone
+  // number the platform holds on its own Twilio account, so that reported
+  // margin stops omitting it. It has no caller and no tenant: it must observe
+  // every workspace's numbers to bill the platform's own cost, and each row it
+  // writes is attributed to the organization owning that number's workspace
+  // (read via `workspace: { select: { organizationId: true } }` on the number's
+  // own row), so nothing crosses tenants on the write side. The event read is
+  // the same sweep asking which numbers it already recorded this month.
+  'billing/provider-cost.service.ts:providerCostEvent.findMany',
   'billing/provider-cost.service.ts:providerCostEvent.findUnique',
   'billing/provider-cost.service.ts:providerCostEvent.upsert',
+  'billing/provider-cost.service.ts:twilioPhoneNumber.findMany',
   'compliance/retention.service.ts:call.count',
   'compliance/retention.service.ts:call.deleteMany',
   'compliance/retention.service.ts:call.findMany',
@@ -213,8 +223,12 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'billing/call-admission.service.ts:callUsage.upsert': 1,
   'billing/provider-cost.service.ts:callUsage.count': 2,
   'billing/provider-cost.service.ts:callUsage.findMany': 1,
+  // Both added by recordNumberRentals(), one site each — see the reason in
+  // REVIEWED_BASELINE above.
+  'billing/provider-cost.service.ts:providerCostEvent.findMany': 1,
   'billing/provider-cost.service.ts:providerCostEvent.findUnique': 1,
   'billing/provider-cost.service.ts:providerCostEvent.upsert': 1,
+  'billing/provider-cost.service.ts:twilioPhoneNumber.findMany': 1,
   'billing/reconciliation.service.ts:billingCreditBucket.findMany': 1,
   'billing/reconciliation.service.ts:billingCreditBucket.updateMany': 1,
   'billing/reconciliation.service.ts:callConcurrencyLease.count': 1,

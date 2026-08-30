@@ -9,6 +9,7 @@ const envState = vi.hoisted(() => ({
 
 vi.mock('../config/env', () => ({ env: envState }));
 
+import { EntitlementService } from '../billing/entitlement.service';
 import { PhoneNumbersService } from './phone-numbers.service';
 import { AddByoPhoneNumberDtoSchema, ProvisionPhoneNumberDtoSchema } from './phone-numbers.schemas';
 
@@ -30,6 +31,9 @@ function makeService(overrides?: {
   create?: () => Promise<unknown>;
   existingNumber?: unknown;
   deletedCount?: number;
+  /** Numbers the organization already holds, across all of its workspaces. */
+  numberCount?: number;
+  plan?: string;
 }) {
   const prisma = {
     workspace: {
@@ -44,12 +48,25 @@ function makeService(overrides?: {
       ),
       findFirst: vi.fn(async () => overrides?.existingNumber ?? null),
       deleteMany: vi.fn(async () => ({ count: overrides?.deletedCount ?? 1 })),
+      count: vi.fn(async () => overrides?.numberCount ?? 0),
     },
+    // Read by the real EntitlementService below, so the cap these tests assert is
+    // the catalog's own number rather than one restated here.
+    subscription: {
+      findUnique: vi.fn(async () => ({ plan: overrides?.plan ?? 'starter', status: 'active' })),
+    },
+    auditLog: { create: vi.fn(async () => ({ id: 'audit-1' })) },
   };
   const audit = { log: vi.fn(async () => undefined) };
   const billing = { checkFeatureGate: vi.fn(async () => overrides?.gateAllows ?? true) };
-  const service = new PhoneNumbersService(prisma as never, audit as never, billing as never);
-  return { service, prisma, audit, billing };
+  const entitlements = new EntitlementService(prisma as never);
+  const service = new PhoneNumbersService(
+    prisma as never,
+    audit as never,
+    billing as never,
+    entitlements,
+  );
+  return { service, prisma, audit, billing, entitlements };
 }
 
 describe('PhoneNumbersService plan gates', () => {
@@ -96,6 +113,69 @@ describe('PhoneNumbersService plan gates', () => {
     expect(billing.checkFeatureGate).toHaveBeenCalledWith('org-1', 'managed_telephony');
     // The whole point of gating here: no search, no purchase, no money spent.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The capability gate alone bounded nothing: a paying Starter owner could loop
+   * `POST /provision` and rent unbounded numbers on VoiceForge's own Twilio
+   * account at ~$1.15/month each. The refusal must land before the search, so no
+   * money leaves.
+   */
+  it('refuses provision once the organization holds every number its plan allows', async () => {
+    const { service } = makeService({ plan: 'starter', numberCount: 2 });
+    // Deliberately primed to succeed: if the cap were evaluated after the
+    // carrier calls, the search and purchase would both go through and only the
+    // `not.toHaveBeenCalled()` below would notice. Without these stubs a
+    // mis-ordered gate fails on an unrelated TypeError instead.
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({ available_phone_numbers: [{ phone_number: '+14155551234' }] }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ sid: 'PN00000000000000000000000000000009', phone_number: '+14155551234' }),
+      );
+
+    await expect(service.provision('workspace-1', '415')).rejects.toMatchObject({
+      errorCode: 'PLAN_LIMIT_EXCEEDED',
+      details: expect.objectContaining({
+        reason: 'phone_number_limit_reached',
+        current: 2,
+        limit: 2,
+        plan: 'starter',
+      }),
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('counts the numbers the organization holds, not just the calling workspace', async () => {
+    // A per-workspace count caps nothing on a plan that can create more
+    // workspaces, so the predicate must reach the organization and must not
+    // mention the calling workspace at all.
+    const { service, prisma } = makeService({ plan: 'growth', numberCount: 10 });
+
+    await expect(service.provision('workspace-1', '415')).rejects.toMatchObject({
+      errorCode: 'PLAN_LIMIT_EXCEEDED',
+      details: expect.objectContaining({ reason: 'phone_number_limit_reached', limit: 10 }),
+    });
+
+    expect(prisma.twilioPhoneNumber.count).toHaveBeenCalledWith({
+      where: { workspace: { organizationId: 'org-1' } },
+    });
+  });
+
+  it('caps addByo against the same quota, so BYO cannot outrun the plan', async () => {
+    // BYO spends no platform money, but registration does not prove ownership
+    // and `phoneNumber` is uniquely indexed, so an uncapped addByo lets one
+    // workspace permanently squat unbounded numbers it does not own.
+    const { service, prisma } = makeService({ plan: 'starter', numberCount: 2 });
+
+    await expect(service.addByo('workspace-1', '+14155551234')).rejects.toMatchObject({
+      errorCode: 'PLAN_LIMIT_EXCEEDED',
+      details: expect.objectContaining({ reason: 'phone_number_limit_reached' }),
+    });
+
+    expect(prisma.twilioPhoneNumber.create).not.toHaveBeenCalled();
   });
 
   it('hands a purchased number back to Twilio when the local row cannot be written', async () => {
