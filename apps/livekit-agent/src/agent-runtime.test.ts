@@ -103,6 +103,20 @@ describe('LiveKit agent runtime helpers', () => {
     expect(metadata.pipeline).toBe('standard');
   });
 
+  /**
+   * `startTestSession` dispatches `direction: 'browser_test'`. A narrower enum
+   * here rejected it — `.passthrough()` tolerates unknown keys, not a known key
+   * with an out-of-enum value — so every test session threw in `entry()` before
+   * connecting. Pinned per direction the API actually sends.
+   */
+  it.each(['inbound', 'outbound', 'browser_test'] as const)(
+    'accepts the %s direction the API dispatches',
+    (direction) => {
+      expect(parseDispatchMetadata(JSON.stringify({ agentId: 'agent-1', direction })))
+        .toMatchObject({ direction });
+    },
+  );
+
   it('accepts only a positive integer hard duration cap', () => {
     expect(parseDispatchMetadata(JSON.stringify({ agentId: 'agent-1', maxDurationSeconds: 125 })))
       .toMatchObject({ maxDurationSeconds: 125 });

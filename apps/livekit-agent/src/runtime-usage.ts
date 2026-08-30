@@ -424,19 +424,27 @@ export class CallMeter {
 
 /**
  * Commits billing before starting any voice session. The shutdown callback is
- * installed first so SIGTERM during authorization still releases the reserved
- * minute with `call_failed`; once committed, every exit path reports `call_ended`.
+ * installed first so SIGTERM during authorization — or a dial-out nobody answers
+ * — still releases the reserved minute with `call_failed`; once committed, every
+ * exit path reports `call_ended`.
  */
 export async function runWithMeteredCall(
   meter: CallMeter,
   providerCallId: string,
   addShutdownCallback: (callback: () => Promise<void>) => void,
   run: () => Promise<void>,
+  /**
+   * Resolves `true` once the far end is actually on the call. Ring time is not
+   * billable, so the reserved minute is committed only after this says the
+   * callee picked up; `false` leaves the shutdown callback to release it.
+   */
+  waitUntilAnswered?: () => Promise<boolean>,
 ): Promise<boolean> {
   addShutdownCallback(async () => {
     if (meter.isConnected) await meter.ended();
     else await meter.failed('connection_not_committed');
   });
+  if (waitUntilAnswered && !(await waitUntilAnswered())) return false;
   await meter.connected(providerCallId);
   if (!meter.isConnected || meter.isSettled) return false;
   meter.start();

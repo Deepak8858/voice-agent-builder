@@ -3,11 +3,14 @@ import {
   cli,
   defineAgent,
   voice,
+  waitForParticipant as waitForRoomParticipant,
+  waitForParticipantAttribute,
   type JobProcess,
   type VAD,
   type llm,
   type JobContext,
 } from '@livekit/agents';
+import { ParticipantKind } from '@livekit/rtc-node';
 import * as openai from '@livekit/agents-plugin-openai';
 import * as silero from '@livekit/agents-plugin-silero';
 import { PrismaClient } from '@prisma/client';
@@ -67,6 +70,57 @@ function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter
       ctx.shutdown(`billing:${reason}`);
     },
   });
+}
+
+/**
+ * How long a dial-out may ring before the job gives up.
+ *
+ * Only a backstop: an unanswered call normally ends sooner, when the carrier
+ * stops trying and the SIP participant leaves the room, which fails the wait
+ * immediately.
+ */
+const RING_TIMEOUT_MS = 120_000;
+
+/**
+ * Resolves once the callee is actually on the call, or `false` if nobody is.
+ *
+ * Ring time is not billable. The API dials without blocking on answer
+ * (`waitUntilAnswered: false`), so LiveKit puts the SIP participant in the room
+ * while it is still ringing — being connected to the room proves only that we
+ * started dialing. Holding the metering commit until the leg goes active is what
+ * keeps ring time off the invoice.
+ *
+ * ponytail: gated on LiveKit's `sip.callStatus` attribute, the same signal the
+ * SDK's own answering-machine detection uses. Ceiling: if LiveKit ever stops
+ * publishing it, outbound calls bill nothing and never start — gate on the SIP
+ * participant's audio track publication instead if that happens.
+ */
+async function waitUntilAnswered(ctx: JobContext): Promise<boolean> {
+  const signal = AbortSignal.timeout(RING_TIMEOUT_MS);
+  try {
+    const sip = await waitForRoomParticipant({
+      room: ctx.room,
+      kind: ParticipantKind.SIP,
+      signal,
+    });
+    await waitForParticipantAttribute({
+      room: ctx.room,
+      identity: sip.identity,
+      attribute: 'sip.callStatus',
+      value: 'active',
+      signal,
+    });
+    return true;
+  } catch (err) {
+    // Nobody picked up. Shutting the job down now runs the metering shutdown
+    // callback, which returns the reserved minute and frees the concurrency slot
+    // instead of holding both until the room's own empty timeout.
+    console.warn(
+      `[metering] outbound call was never answered, so nothing is billable: ${(err as Error).message}`,
+    );
+    ctx.shutdown('ring_no_answer');
+    return false;
+  }
 }
 
 class VoiceForgeAgent extends voice.Agent {
@@ -226,12 +280,15 @@ async function runCall(
   }
 
   // Billing authorization must precede AgentSession.start(): both Realtime and
-  // standard sessions begin automatic turn handling as soon as they start.
+  // standard sessions begin automatic turn handling as soon as they start. On a
+  // dial-out the room exists before the callee answers, so authorization waits
+  // for the answer — billing ring time as talk time is the failure being avoided.
   await runWithMeteredCall(
     meter,
     metadata.providerCallId ?? ctx.room.name ?? callId,
     (callback) => ctx.addShutdownCallback(callback),
     startSession,
+    metadata.direction === 'outbound' ? () => waitUntilAnswered(ctx) : undefined,
   );
 }
 
