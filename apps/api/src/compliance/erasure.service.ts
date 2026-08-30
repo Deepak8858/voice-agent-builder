@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import { hasLiveSubscription } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CacheInvalidator } from '../common/cache-invalidator';
@@ -72,11 +73,53 @@ export class ErasureService {
     const org = await this.prisma.organization.findUnique({ where: { id: orgId } });
     if (!org) return { success: false, error: 'Organization not found' };
 
+    // `subscriptions.organization_id` is ON DELETE CASCADE, and that row is the
+    // only place the Stripe customer/subscription ids are stored. Read it before
+    // the delete: afterwards there is nothing left to cancel the subscription by.
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { organizationId: orgId },
+      select: { stripeCustomerId: true, stripeSubscriptionId: true, status: true },
+    });
+
+    // Ordering, deliberately: cancel-then-delete is the only recoverable order.
+    // Cancel first and the delete fails -> the customer is un-billed but not yet
+    // erased, and erasure can simply be retried. Delete first and the cancel
+    // fails -> Stripe keeps charging the card every month and the id needed to
+    // stop it went away with the cascade, which is unrecoverable through this
+    // product. Nothing in this codebase can cancel a Stripe subscription (the
+    // only Stripe writes are customers.create, checkout.sessions and
+    // billingPortal.sessions), so the cancel half has to happen outside it: this
+    // refuses instead of destroying the handle. Erasure is therefore delayed by
+    // one operator action, never blocked on a Stripe call from this process --
+    // Stripe returning 500 cannot wedge it, because it makes no Stripe call.
+    // `stripeSubscriptionId` is the discriminator, not `status` alone: a free
+    // org that merely opened the billing portal has a customer row with the
+    // default status 'active' and no subscription.
+    if (subscription?.stripeSubscriptionId && hasLiveSubscription(subscription.status)) {
+      return {
+        success: false,
+        error:
+          `Organization ${orgId} still has a live Stripe subscription `
+          + `(${subscription.stripeSubscriptionId}, status "${subscription.status}"). Cancel it in `
+          + `Stripe first, then retry: deleting the organization removes the only record of that id.`,
+      };
+    }
+
     await this.audit.log({
+      organizationId: orgId,
       action: 'gdpr.organization_deleted',
       resourceType: 'organization',
       resourceId: orgId,
-      metadata: { orgName: org.name, erasedAt: new Date().toISOString() },
+      metadata: {
+        orgName: org.name,
+        erasedAt: new Date().toISOString(),
+        // Keeps the Stripe handles findable after the cascade removes the
+        // subscription row. `audit_logs.organization_id` has no foreign key, so
+        // this row outlives the organization it names.
+        stripeCustomerId: subscription?.stripeCustomerId ?? null,
+        stripeSubscriptionId: subscription?.stripeSubscriptionId ?? null,
+        stripeSubscriptionStatus: subscription?.status ?? null,
+      },
     });
 
     const workspaces = await this.prisma.workspace.findMany({
@@ -160,6 +203,18 @@ export class ErasureService {
     await tx.contact.deleteMany(scope);
     await tx.dncEntry.deleteMany(scope);
     await tx.integrationTool.deleteMany(scope);
+
+    // A workspace's own templates carry its prompt text in `template_spec`. The
+    // workspace foreign key is SET NULL, so without this the content survives
+    // the erasure detached from any tenant instead of being removed.
+    await tx.agentTemplate.deleteMany(scope);
+
+    // `referrals.referrer_workspace_id` is ON DELETE RESTRICT, so a workspace
+    // that ever sent a referral invite cannot be deleted while its rows exist --
+    // this is the constraint that aborts erasure for any tenant that used the
+    // referral programme. The mirror column `referred_workspace_id` is SET NULL
+    // and those rows belong to the *referring* tenant, so they are left alone.
+    await tx.referral.deleteMany({ where: { referrerWorkspaceId: workspaceId } });
 
     // Agents are referenced by knowledge sources (SET NULL) and calls, so they
     // are removed only after both are gone.

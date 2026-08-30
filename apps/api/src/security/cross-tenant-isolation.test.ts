@@ -484,6 +484,12 @@ describe('cross-tenant isolation: already-correct services (regression guards)',
       executor('google_calendar') as never,
       executor('gmail') as never,
       executor('sheets') as never,
+      // Required since the fail-open entitlement guards were deleted: an absent
+      // billing/compliance dependency is no longer silently permissive. This
+      // test only calls `get`, so none of the three is exercised.
+      { createContact: vi.fn() } as never,
+      { checkFeatureGate: vi.fn(async () => true) } as never,
+      { checkOutboundEmail: vi.fn() } as never,
     );
 
     await expect(service.get(WS_A, 'tool-b')).rejects.toMatchObject({ errorCode: 'TOOL_NOT_FOUND' });

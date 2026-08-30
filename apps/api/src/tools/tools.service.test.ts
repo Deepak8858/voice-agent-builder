@@ -2,6 +2,8 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { Prisma } from '@prisma/client';
 import { ToolsService } from './tools.service';
 import {
+  AgentNotFoundError,
+  CallNotFoundError,
   ComplianceBlockedError,
   ToolExecutionFailedError,
   ToolInputInvalidError,
@@ -81,16 +83,28 @@ function makeService(opts: {
    * idempotency key throws P2002 after `onLostRace` has inserted the winner.
    */
   onLostRace?: (invocations: Map<string, InvocationRow>) => void;
+  /**
+   * Agent/call ids that exist but belong to another workspace, so a lookup
+   * carrying the caller's `workspaceId` finds nothing — exactly what Postgres
+   * returns for a cross-tenant id.
+   */
+  foreignIds?: string[];
 }) {
   let invCounter = 0;
   const invocations = new Map<string, InvocationRow>();
   for (const row of opts.seedInvocations ?? []) invocations.set(row.id, row);
   let lostRacePending = Boolean(opts.onLostRace);
+  const scopedFindFirst = () =>
+    vi.fn(async ({ where }: { where: { id: string } }) =>
+      opts.foreignIds?.includes(where.id) ? null : { id: where.id },
+    );
   const prisma = {
     organizationIdFor: vi.fn(async () => 'org-1'),
     integrationTool: {
       findFirst: vi.fn(async () => opts.tool ?? null),
     },
+    agent: { findFirst: scopedFindFirst() },
+    call: { findFirst: scopedFindFirst() },
     toolInvocation: {
       findUnique: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         const key = where.workspaceId_toolId_idempotencyKey as
@@ -292,6 +306,30 @@ describe('ToolsService.invoke', () => {
       service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' } }),
     ).rejects.toThrow(/paid plan/);
     expect(executor.execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses to attribute an invocation to another workspace agent', async () => {
+    const { service, executor, invocations } = makeService({
+      tool: baseTool,
+      foreignIds: ['agent-other'],
+    });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' }, agent_id: 'agent-other' }),
+    ).rejects.toBeInstanceOf(AgentNotFoundError);
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(invocations.size).toBe(0);
+  });
+
+  it('refuses to attach an invocation to another workspace call', async () => {
+    const { service, executor, invocations } = makeService({
+      tool: baseTool,
+      foreignIds: ['call-other'],
+    });
+    await expect(
+      service.invoke('w1', 'tool_1', 'u1', { arguments: { name: 'Ada' }, call_id: 'call-other' }),
+    ).rejects.toBeInstanceOf(CallNotFoundError);
+    expect(executor.execute).not.toHaveBeenCalled();
+    expect(invocations.size).toBe(0);
   });
 
   it('rejects invalid input against schema', async () => {

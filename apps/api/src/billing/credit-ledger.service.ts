@@ -712,6 +712,39 @@ export class CreditLedgerService {
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
+      // One included allowance per period, in both directions.
+      //
+      // `supersedeIncludedBuckets` enforces that when a *paid* invoice lands: it
+      // forfeits the free grant so an upgrade cannot stack the two. Nothing
+      // enforced the reverse. An organization that paid for the period and then
+      // lapsed reads as Free from `getEffectivePlan` (`paidAccess` false), so the
+      // sweep granted it the free allowance on top of the paid bucket it still
+      // holds for that same period — and because the worker also sweeps on every
+      // boot, any mid-month deploy triggered it. Cancelling after burning the
+      // paid allowance was a refill.
+      //
+      // Only a bucket that outlives `periodStart` can overlap this month, and the
+      // sole free bucket that could is this month's own — already returned above
+      // by the idempotency check — so anything left here is an invoice grant.
+      // Spent buckets count: the allowance was received either way, which is
+      // exactly what the supersede path assumes too.
+      //
+      // Deliberately no ledger entry for the skip: the only key available is
+      // `sourceId`, and writing it would send the next run down the replay path
+      // looking for a bucket that was never created.
+      const overlappingPaid = await tx.billingCreditBucket.findMany({
+        where: {
+          organizationId: input.organizationId,
+          sourceType: 'included',
+          status: 'active',
+          expiresAt: { gt: periodStart },
+        },
+        select: { id: true, sourceId: true },
+      });
+      if (overlappingPaid.some((candidate) => candidate.sourceId !== sourceId)) {
+        return this.buildCreditBalance(tx, lockedBalance);
+      }
+
       const bucket = await tx.billingCreditBucket.create({
         data: {
           organizationId: input.organizationId,

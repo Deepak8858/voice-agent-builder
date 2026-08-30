@@ -15,6 +15,7 @@ import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import {
   AgentNotFoundError,
+  CallNotFoundError,
   ComplianceBlockedError,
   ToolExecutionFailedError,
   ToolInputInvalidError,
@@ -91,9 +92,13 @@ export class ToolsService {
     private readonly googleCalendarExecutor: GoogleCalendarExecutor,
     private readonly gmailExecutor: GmailExecutor,
     private readonly sheetsExecutor: SheetsExecutor,
-    private readonly crmExecutor?: CrmExecutor,
-    private readonly billing?: BillingService,
-    private readonly compliance?: ComplianceService,
+    // Required, not optional: a plan gate or a compliance check that silently
+    // disappears when its dependency looks absent is a fail-open control. Every
+    // one of these is provided by ToolsModule, so an absent dependency is a
+    // wiring bug that must fail at bootstrap, not a bypass at request time.
+    private readonly crmExecutor: CrmExecutor,
+    private readonly billing: BillingService,
+    private readonly compliance: ComplianceService,
   ) {
     this.executors = new Map<string, ToolExecutor>([
       ['webhook', webhookExecutor],
@@ -102,13 +107,14 @@ export class ToolsService {
       [googleCalendarExecutor.name, googleCalendarExecutor],
       [gmailExecutor.name, gmailExecutor],
       [sheetsExecutor.name, sheetsExecutor],
+      [
+        'crm',
+        {
+          name: 'crm',
+          execute: async (params, config) => this.executeCrmTool(params, config),
+        },
+      ],
     ]);
-    if (crmExecutor) {
-      this.executors.set('crm', {
-        name: 'crm',
-        execute: async (params, config) => this.executeCrmTool(params, config),
-      });
-    }
   }
 
   async list(workspaceId: string, agentId?: string | null): Promise<ToolSummary[]> {
@@ -133,12 +139,7 @@ export class ToolsService {
   async create(workspaceId: string, actorUserId: string, dto: CreateToolDto): Promise<ToolDetail> {
     await this.assertToolsAllowed(workspaceId);
 
-    if (dto.agent_id) {
-      const agent = await this.prisma.agent.findFirst({
-        where: { id: dto.agent_id, workspaceId },
-      });
-      if (!agent) throw new AgentNotFoundError(dto.agent_id);
-    }
+    if (dto.agent_id) await this.assertAgentInWorkspace(workspaceId, dto.agent_id);
 
     const row = await this.prisma.integrationTool.create({
       data: {
@@ -177,10 +178,7 @@ export class ToolsService {
     if (!existing) throw new ToolNotFoundError(toolId);
 
     if (dto.agent_id !== undefined && dto.agent_id !== null) {
-      const agent = await this.prisma.agent.findFirst({
-        where: { id: dto.agent_id, workspaceId },
-      });
-      if (!agent) throw new AgentNotFoundError(dto.agent_id);
+      await this.assertAgentInWorkspace(workspaceId, dto.agent_id);
     }
 
     const row = await this.prisma.integrationTool.update({
@@ -237,6 +235,14 @@ export class ToolsService {
       throw new ToolExecutionFailedError(`Tool ${tool.name} is disabled.`);
     }
     await this.assertToolsAllowed(workspaceId);
+
+    // `agent_id` and `call_id` are supplied by the caller and are written onto
+    // the invocation row as its attribution. Nothing upstream proves either one
+    // belongs to this workspace — the tool id does, the ids travelling beside it
+    // do not — so an invocation could otherwise be filed against another
+    // tenant's agent or call.
+    if (dto.agent_id) await this.assertAgentInWorkspace(workspaceId, dto.agent_id);
+    if (dto.call_id) await this.assertCallInWorkspace(workspaceId, dto.call_id);
 
     const validation = validateToolInput(
       tool.inputSchema as Parameters<typeof validateToolInput>[0],
@@ -505,7 +511,6 @@ export class ToolsService {
     workspaceId: string,
     args: Record<string, unknown>,
   ): Promise<void> {
-    if (!this.compliance) return;
     const to = typeof args.to === 'string' ? args.to.trim() : '';
     if (!to) return;
     const result = await this.compliance.checkOutboundEmail(workspaceId, to);
@@ -523,7 +528,6 @@ export class ToolsService {
     workspaceId: string,
     args: Record<string, unknown>,
   ): Promise<void> {
-    if (typeof this.compliance?.checkCalendarOperation !== 'function') return;
     const operation = typeof args.operation === 'string' ? args.operation : '';
     const attendeeEmails = Array.isArray(args.attendees)
       ? args.attendees.filter((value): value is string => typeof value === 'string')
@@ -547,7 +551,6 @@ export class ToolsService {
     workspaceId: string,
     args: Record<string, unknown>,
   ): Promise<void> {
-    if (typeof this.compliance?.checkDataExport !== 'function') return;
     const values = Array.isArray(args.values) ? args.values : [];
     const emails = values
       .filter((value): value is string => typeof value === 'string')
@@ -587,8 +590,23 @@ export class ToolsService {
     });
   }
 
+  private async assertAgentInWorkspace(workspaceId: string, agentId: string): Promise<void> {
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: agentId, workspaceId },
+      select: { id: true },
+    });
+    if (!agent) throw new AgentNotFoundError(agentId);
+  }
+
+  private async assertCallInWorkspace(workspaceId: string, callId: string): Promise<void> {
+    const call = await this.prisma.call.findFirst({
+      where: { id: callId, workspaceId },
+      select: { id: true },
+    });
+    if (!call) throw new CallNotFoundError(callId);
+  }
+
   private async assertToolsAllowed(workspaceId: string): Promise<void> {
-    if (typeof this.billing?.checkFeatureGate !== 'function') return;
     const organizationId = await this.prisma.organizationIdFor(workspaceId);
     const allowed = await this.billing.checkFeatureGate(organizationId, 'tools');
     if (!allowed) {
@@ -748,9 +766,6 @@ export class ToolsService {
     params: Record<string, unknown>,
     config: Record<string, string>,
   ): Promise<ToolCallResult> {
-    if (!this.crmExecutor) {
-      return { success: false, error: 'CRM executor is not configured.' };
-    }
     const provider = crmProvider(config.provider);
     if (!provider) {
       return {
