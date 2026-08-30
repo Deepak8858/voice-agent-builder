@@ -100,6 +100,7 @@ Twilio has two webhook families and only one of them is env-free:
 | --- | --- | --- |
 | BYO telephony | `telephony/` | the provider connection's decrypted `authToken`, falling back to the number's per-number secret |
 | Legacy platform-owned | `twilio-adapter/` | the account-level **`TWILIO_AUTH_TOKEN`** below — `TwilioSignatureVerifier` rejects every delivery when it is unset, because those `TwilioPhoneNumber` rows carry no provider connection |
+
 ```env
 VOICE_PROVIDER=openai-realtime
 TWILIO_ACCOUNT_SID=
