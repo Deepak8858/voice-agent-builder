@@ -68,5 +68,7 @@ origin-verify-secret.txt
 # Security audit reports. This repository is public, and these contain working
 # exploit paths for vulnerabilities that are still open in production. Committing
 # one publishes it. Share them out of band.
-voiceforge-*-report.md
-voiceforge-*-audit-report.md
+# Deliberately loose: copies get suffixed by hand (-report-1.md, -report1.md),
+# and those did not match a trailing "-report.md" pattern.
+voiceforge-*report*.md
+VOICEFORGE_AUDIT_REPORT.md

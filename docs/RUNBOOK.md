@@ -52,8 +52,9 @@ not part of this stack.
    application is at fault.
 
 ### P2 — Security incident
-1. Rotate `SUPABASE_JWT_SECRET`, `JWT_SECRET`, `ENCRYPTION_KEY`, and
-   `INTERNAL_API_KEY` in `/opt/voiceforge/.env`, then redeploy the current SHA
+1. Rotate `SUPABASE_JWT_SECRET`, `JWT_SECRET`, and `INTERNAL_API_KEY` in
+   `/opt/voiceforge/.env`, then redeploy the current SHA.
+   **Do not rotate `ENCRYPTION_KEY` — see the warning at the end of this section.**
 2. Revoke active sessions via Supabase Dashboard → Authentication → Sessions
 3. Check `audit_logs` for suspicious `action` patterns in the last 1h
 4. If the metrics endpoint was exposed, rotate `METRICS_SCRAPE_TOKEN`
@@ -61,6 +62,20 @@ not part of this stack.
    `docker logs vf-api > /tmp/vf-incident-$(date +%s).log`
 6. To cut off ingress without destroying evidence, tighten the security group
    rather than stopping containers.
+
+> **`ENCRYPTION_KEY` cannot be rotated. Do not change its value.**
+> The envelope written by `apps/api/src/security/encryption.service.ts` records
+> `v`, `alg`, `iv`, `tag` and `ciphertext` but **no key id**, and `resolveKey()`
+> loads exactly one key. Changing the value does not re-key anything: it makes
+> every existing ciphertext permanently undecryptable, including tenant provider
+> credentials and stored OAuth tokens. There is no recovery once the old value is
+> gone — not from a database backup, which holds the ciphertext and not the key.
+>
+> If you believe `ENCRYPTION_KEY` is compromised: preserve the current value,
+> escalate, and do **not** redeploy with a new one. Re-keying requires a
+> decrypt-with-old / re-encrypt-with-new pass run with both values present, and
+> that tooling does not exist yet. Treat this variable as append-only until the
+> encryption-keyring work ships.
 
 ---
 

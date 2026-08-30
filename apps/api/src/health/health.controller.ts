@@ -33,10 +33,12 @@ export class HealthController {
       checks: {
         db,
         redis,
-        llm: { provider: this.llm.name, status: llm },
+        // Deliberately no `provider` and no `uptime`: this route is @Public(),
+        // so both were anonymous disclosure — the LLM vendor name, and restart
+        // timing that dates every deploy. Callers only branch on the statuses.
+        llm: { status: llm },
       },
       time: new Date().toISOString(),
-      uptime: process.uptime(),
     };
   }
 

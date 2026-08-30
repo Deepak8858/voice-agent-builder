@@ -2,6 +2,7 @@ import { Injectable, NestMiddleware } from '@nestjs/common';
 import type { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../logging';
+import { stripQuery } from './strip-query';
 
 /**
  * Conservative shape for an inbound correlation ID: short, opaque, and free of
@@ -45,7 +46,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
       msg: 'request:start',
       correlationId,
       method: req.method,
-      url: req.originalUrl,
+      url: stripQuery(req.originalUrl),
       userAgent: req.headers['user-agent'],
       ip: req.ip,
     });
@@ -57,7 +58,7 @@ export class RequestLoggingMiddleware implements NestMiddleware {
         msg: 'request:end',
         correlationId,
         method: req.method,
-        url: req.originalUrl,
+        url: stripQuery(req.originalUrl),
         statusCode: res.statusCode,
         durationMs,
       });

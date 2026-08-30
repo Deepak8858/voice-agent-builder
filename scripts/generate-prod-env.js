@@ -1,10 +1,28 @@
 const fs = require('fs');
 const crypto = require('crypto');
 
-const jwtSecret = crypto.randomBytes(32).toString('hex');
-const encryptionKey = crypto.randomBytes(32).toString('hex');
-
 let env = fs.readFileSync('.env', 'utf8');
+
+// Never regenerate a secret that already exists. ENCRYPTION_KEY especially: the
+// AES-256-GCM envelope written by apps/api/src/security/encryption.service.ts
+// carries no key id and resolveKey() loads exactly one key, so replacing the
+// value does not re-key anything — it makes every stored ciphertext permanently
+// undecryptable, including tenant provider credentials and OAuth tokens.
+const existingValue = (name) =>
+  new RegExp(`^${name}=(.+)$`, 'm').exec(env)?.[1]?.trim() || null;
+
+const encryptionKey = existingValue('ENCRYPTION_KEY');
+if (!encryptionKey) {
+  throw new Error(
+    'ENCRYPTION_KEY is missing from .env. Set it there first. This script must ' +
+      'never generate one: a fresh key orphans every existing ciphertext.',
+  );
+}
+
+// Rotating JWT_SECRET only invalidates sessions, so inventing one is safe when
+// absent — but preserve it when present so re-running this script does not log
+// every user out as a side effect.
+const jwtSecret = existingValue('JWT_SECRET') ?? crypto.randomBytes(32).toString('hex');
 
 // Runtime mode
 env = env.replace(/^NODE_ENV=.*/m, 'NODE_ENV=production');
