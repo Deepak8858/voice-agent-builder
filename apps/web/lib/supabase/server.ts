@@ -19,6 +19,13 @@ function getEnv() {
  * Server-side Supabase client authenticated via the user's session
  * cookies. Use in Server Components, Route Handlers, and Server Actions.
  * RLS will run as the signed-in user.
+ *
+ * No `cookieOptions`: @supabase/ssr applies DEFAULT_COOKIE_OPTIONS
+ * (`path: '/'`, `sameSite: 'lax'`, `httpOnly: false`) either way, and
+ * `httpOnly: true` would hide the session from createBrowserSupabaseClient(),
+ * which reads it out of `document.cookie` — that is an outage, not a fix. Any
+ * other attribute override has to be made in client.ts at the same time or
+ * the two writers disagree and the last write wins.
  */
 export async function createServerSupabaseClient() {
   const { url, key } = getEnv();
@@ -35,8 +42,12 @@ export async function createServerSupabaseClient() {
             cookieStore.set(name, value, options);
           }
         } catch {
-          // Server Component context — cookies are read-only here. The
-          // session refresh path in middleware.ts handles writes.
+          // Server Component context — cookies are read-only here, so a
+          // render-triggered refresh cannot persist. Not middleware's job
+          // either: updateSupabaseSession() only checks that an auth cookie
+          // exists, it never builds a client or writes one. The real writers
+          // are the browser client (autoRefreshToken, document.cookie) and
+          // route handlers like app/auth/callback, where cookies().set works.
         }
       },
     },

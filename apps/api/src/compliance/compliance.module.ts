@@ -26,9 +26,3 @@ import { PhoneNumbersModule } from '../phone-numbers/phone-numbers.module';
   imports: [EmailModule, KnowledgeModule, PhoneNumbersModule],
 })
 export class ComplianceModule {}
-
-@Module({
-  providers: [RetentionService],
-  exports: [RetentionService],
-})
-export class RetentionModule {}
