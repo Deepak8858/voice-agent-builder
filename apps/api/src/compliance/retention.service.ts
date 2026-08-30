@@ -111,6 +111,32 @@ export class RetentionService {
       },
     });
 
+    // Same defect class, same reason it has to happen before the calls go:
+    // `telephony_webhook_events.call_id` is a bare uuid column with no foreign
+    // key at all, so nothing cascades and nothing even nulls the pointer -- the
+    // row simply stays, holding `raw_payload_json`, which for a Twilio delivery
+    // is the provider's own form body with `From` and `To` in it: the caller's
+    // phone number, kept past the retention period the sweep exists to enforce.
+    //
+    // The workspace predicate is NOT the same argument as the fan-out one above,
+    // so it is not spelled the same way. There the writer sets `workspace_id` and
+    // `call_id` together, so a row with a call always agreed with that call's
+    // workspace. Here the two columns come from different places:
+    // `recordWebhookEvent` takes `workspace_id` from the phone number the event
+    // arrived on and `call_id` from a call looked up independently, so a LiveKit
+    // event whose phone number could not be resolved has a `call_id` and a NULL
+    // `workspace_id`. An `AND workspace_id IN (...)` alone would skip exactly
+    // those rows and leave the defect live for them, hence the NULL branch: a row
+    // whose `call_id` is in this batch belongs to a call being destroyed right
+    // now, whatever its workspace column says, so the id list is what makes it
+    // exact and the OR cannot reach another tenant.
+    const webhookEvents = await this.prisma.telephonyWebhookEvent.deleteMany({
+      where: {
+        callId: { in: callIds },
+        OR: [{ workspaceId: { in: [...doomedWorkspaceIds] } }, { workspaceId: null }],
+      },
+    });
+
     // `where` is repeated next to the id list on purpose, not redundantly: a
     // concurrent updateWorkspaceRetention can lengthen a call's expires_at
     // between these two statements, and re-asserting the predicate stops a call
@@ -125,7 +151,13 @@ export class RetentionService {
     // Local log first. The audit insert can fail, and the only record of an
     // irreversible bulk delete must not fail with it.
     this.logger.log(
-      { scope, deleted, remaining: afterRemaining, crmFanoutLogsDeleted: fanout.count },
+      {
+        scope,
+        deleted,
+        remaining: afterRemaining,
+        crmFanoutLogsDeleted: fanout.count,
+        telephonyWebhookEventsDeleted: webhookEvents.count,
+      },
       'Retention sweep completed',
     );
     // After the delete, never before: an audit row must not claim a deletion
@@ -150,6 +182,10 @@ export class RetentionService {
         // naming them individually in a row that outlives them would re-create a
         // pointer to what was purged.
         crmFanoutLogsDeleted: fanout.count,
+        // Counted for the same reason and with the same restraint: the payloads
+        // held the caller's number, so the row that records their destruction
+        // must not become a pointer back to them.
+        telephonyWebhookEventsDeleted: webhookEvents.count,
         // The ids, not only the count: this row is the sole surviving record
         // that a specific recording and transcript were destroyed, and it is
         // what answers "was call X purged, and when". One row per run rather

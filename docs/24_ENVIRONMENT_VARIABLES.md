@@ -20,6 +20,15 @@ DATABASE_URL=postgresql://user:password@localhost:5432/voiceforge
 DIRECT_URL=postgresql://user:password@localhost:5432/voiceforge
 REDIS_URL=redis://localhost:6379
 ENCRYPTION_KEY=
+# Optional AES-256-GCM keyring: `kid:key` pairs joined by commas, each key 64 hex
+# characters (32 bytes), kid matching [A-Za-z0-9_-]{1,32}. Unset is the normal
+# state. The FIRST pair encrypts every new value; the rest exist only so rows
+# written earlier keep decrypting, so rotating is "prepend a new pair" and an old
+# pair is never deleted. `ENCRYPTION_KEY` is always in the ring under the key id
+# `legacy`, which is what rows carrying no key id (everything written before the
+# ring existed) decrypt with — so `legacy` cannot be reused here, and
+# ENCRYPTION_KEY's value can never change.
+ENCRYPTION_KEYS=
 JWT_SECRET=
 # Required. Boot fails without it, because it binds the `issuer` claim when the
 # API verifies a Supabase JWT. Falls back to NEXT_PUBLIC_SUPABASE_URL if unset.

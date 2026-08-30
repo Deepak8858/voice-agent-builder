@@ -19,8 +19,13 @@ import { siteUrl } from '@/lib/site-url';
  * The retention page used to need its own `/v1/workspaces/me/retention` entry
  * because SettingsController doubled the global `api/v1` prefix. That prefix is
  * gone (CS-40), so the route now sits under the existing `/workspaces` prefix
- * and no `/v1` entry exists at all — the erasure endpoints still mounted under
- * the doubled namespace stay unreachable from the browser, as before.
+ * and no `/v1` entry exists at all. The erasure endpoints lost the same doubled
+ * prefix, which changed what the browser can reach and is deliberate on both
+ * sides: contact erasure is now `/workspaces/me/contacts/:id/erasure` and so is
+ * covered by the `/workspaces` prefix, like ContactsController's other contact
+ * mutations, while `/users/me/erasure` gets no entry and stays unreachable. The
+ * one route still under the doubled namespace, `GET v1/orgs/:orgId/audit-logs`,
+ * is unreachable here as before.
  *
  * proxy-guards.test.ts extracts every proxy call site in apps/web and asserts
  * both directions: every requested path matches a prefix here, and every

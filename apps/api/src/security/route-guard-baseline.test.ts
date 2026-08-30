@@ -27,7 +27,7 @@ import {
  * If you need a route whose tenant comes from the session rather than the path,
  * do not add a tenant param to the path: read `active_workspace_id` from the
  * verified session and mark the route @SessionScoped(). That is what the
- * erasure and retention endpoints do.
+ * contact-erasure and retention endpoints do.
  */
 
 const SRC_DIR = path.resolve(__dirname, '..');

@@ -30,6 +30,11 @@ const GenerateEmbeddingsJobSchema = z.object({
    * sees it, which still stops the drain if a reset lands mid-job.
    */
   generation: z.number().int().nonnegative().optional(),
+  /**
+   * Per-source generations for a whole-workspace job, where the single
+   * `generation` cannot describe many sources. Same optionality reasoning.
+   */
+  generations: z.record(z.string().uuid(), z.number().int().nonnegative()).optional(),
 });
 
 interface GenerateEmbeddingsJob {
@@ -39,6 +44,8 @@ interface GenerateEmbeddingsJob {
   sourceId?: string;
   /** Generation of the reset that queued this job (optional — see the schema). */
   generation?: number;
+  /** Per-source generations for a workspace-wide job (optional — see the schema). */
+  generations?: Record<string, number>;
 }
 
 @Injectable()
@@ -64,7 +71,7 @@ export class EmbeddingsWorker extends BaseWorker<GenerateEmbeddingsJob> {
           .join('; ')}`,
       );
     }
-    const { workspaceId, sourceId, generation } = parsed.data;
+    const { workspaceId, sourceId, generation, generations } = parsed.data;
 
     const sourceClause = sourceId ? Prisma.sql`AND source_id = ${sourceId}::uuid` : Prisma.empty;
     const stamp = JSON.stringify({ embedder: this.embedder.name, dimensions: this.embedder.dimensions });
@@ -75,6 +82,12 @@ export class EmbeddingsWorker extends BaseWorker<GenerateEmbeddingsJob> {
     // from content that reset superseded.
     const owned = new Map<string, number>();
     if (sourceId && generation !== undefined) owned.set(sourceId, generation);
+    // Workspace-wide jobs carry a per-source map: seeding from it means a job
+    // that only starts AFTER a newer reset refuses immediately instead of
+    // spending an embed pass to find out via the snapshot fallback below.
+    if (!sourceId && generations) {
+      for (const [id, gen] of Object.entries(generations)) owned.set(id, gen);
+    }
 
     this.logger.log(`[EmbeddingsWorker] embedding null vectors (workspace=${workspaceId}, sourceId=${sourceId ?? 'all'})`);
 

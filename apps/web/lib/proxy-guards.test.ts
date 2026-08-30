@@ -17,16 +17,24 @@ describe('isAllowedProxyPath', () => {
     // CS-40: the retention route lost its doubled `v1/` prefix, so it is covered
     // by the plain `/workspaces` prefix and the old spelling is now refused.
     expect(isAllowedProxyPath('/workspaces/me/retention')).toBe(true);
+    // Same wave, and a real reachability change rather than a rename: contact
+    // erasure moved out of the doubled namespace into `/workspaces`, so the
+    // browser can now reach it. Intended — it is scoped to the session
+    // workspace — but pinned so the change is a reviewed diff if it reverses.
+    expect(isAllowedProxyPath('/workspaces/me/contacts/c1/erasure')).toBe(true);
   });
 
   it('rejects internal-only API surfaces', () => {
     expect(isAllowedProxyPath('/admin/retention')).toBe(false);
     expect(isAllowedProxyPath('/internal/anything')).toBe(false);
-    // Nothing under the doubled-v1 namespace is proxied any more: the erasure
-    // endpoints still mount there and the retention route no longer does.
+    // Nothing under the doubled-v1 namespace is proxied: only
+    // `GET v1/orgs/:orgId/audit-logs` still mounts there, and the retention and
+    // erasure routes no longer do, so their old spellings are refused too.
+    expect(isAllowedProxyPath('/v1/orgs/o1/audit-logs')).toBe(false);
     expect(isAllowedProxyPath('/v1/workspaces/me/retention')).toBe(false);
     expect(isAllowedProxyPath('/v1/users/me/erasure')).toBe(false);
-    expect(isAllowedProxyPath('/v1/workspaces/me/contacts/c1/erasure')).toBe(false);
+    // The API serves this at its new path; the browser is not given `/users`.
+    expect(isAllowedProxyPath('/users/me/erasure')).toBe(false);
   });
 
   it('matches whole segments, not raw string prefixes', () => {
@@ -47,7 +55,7 @@ describe('isAllowedProxyPath', () => {
   it.each([
     ['/workspaces/../admin/retention/sweep', '/api/v1/admin/retention/sweep'],
     ['/workspaces/%2e%2e/admin/retention/sweep', '/api/v1/admin/retention/sweep'],
-    ['/workspaces/%2E%2E/v1/users/me/erasure', '/api/v1/v1/users/me/erasure'],
+    ['/workspaces/%2E%2E/users/me/erasure', '/api/v1/users/me/erasure'],
     ['/workspaces/a/../../metrics', '/api/v1/metrics'],
     ['/templates/./../admin/retention/sweep', '/api/v1/admin/retention/sweep'],
   ])('rejects %s, which the upstream URL resolves to %s', (path, upstream) => {
@@ -67,7 +75,7 @@ describe('isAllowedProxyPath', () => {
   const BS = String.fromCharCode(92);
   it.each([
     [`/workspaces/..${BS}admin/retention/sweep`, '/api/v1/admin/retention/sweep'],
-    [`/workspaces/%2e%2e${BS}v1/users/me/erasure`, '/api/v1/v1/users/me/erasure'],
+    [`/workspaces/%2e%2e${BS}users/me/erasure`, '/api/v1/users/me/erasure'],
     [`/templates/..${BS}..${BS}metrics`, '/api/metrics'],
   ])('rejects backslash path %s, which resolves to %s', (path, upstream) => {
     expect(new URL(`http://api.internal/api/v1${path}`).pathname).toBe(upstream);

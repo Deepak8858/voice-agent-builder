@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { createHash } from 'node:crypto';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
 import type { PipeTransform } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
@@ -119,5 +120,30 @@ describe('audit export projection', () => {
       'id,workspace_id,organization_id,actor_user_id,action,resource_type,resource_id,created_at\n' +
         'log-1,ws-1,org-1,user-1,agent.updated,agent,agent-1,2026-08-29T00:00:00.000Z',
     );
+  });
+});
+
+// S-007: the download token is the whole authorization for 72h of one
+// organization's audit log, and it was stored in the clear next to the report.
+describe('signed audit report token', () => {
+  it('stores only the digest of the token it puts in the URL', async () => {
+    const create = vi.fn(async (_args: { data: { token: string } }) => ({ id: 'report-1' }));
+    const service = new AuditExportService(
+      { auditLog: { findMany: vi.fn(async () => [row()]) }, auditReport: { create } } as never,
+      { send: vi.fn(async () => undefined) } as never,
+    );
+
+    const { url } = await service.generateSignedReport(
+      'org-1',
+      new Date('2026-08-01T00:00:00.000Z'),
+      new Date('2026-08-29T00:00:00.000Z'),
+      'auditor@example.com',
+    );
+
+    const token = url.split('/').pop()!;
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    const stored = create.mock.calls[0][0].data.token;
+    expect(stored).not.toBe(token);
+    expect(stored).toBe(createHash('sha256').update(token).digest('hex'));
   });
 });

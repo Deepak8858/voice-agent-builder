@@ -16,7 +16,10 @@ import { FileParser } from './parsers/file-parser';
 describe('KnowledgeService.clearEmbeddings generation marker', () => {
   function createService() {
     const prisma = {
-      $executeRaw: vi.fn(async (_strings: string[], ..._values: unknown[]) => 4),
+      $queryRaw: vi.fn(async (_strings: string[], ..._values: unknown[]) => [
+        { id: 'source-9', generation: 5, cleared: 4 },
+      ]),
+      $executeRaw: vi.fn(),
       knowledgeSource: { update: vi.fn(), updateMany: vi.fn() },
     };
     const service = new KnowledgeService(
@@ -34,8 +37,11 @@ describe('KnowledgeService.clearEmbeddings generation marker', () => {
 
     await service.clearEmbeddings('ws-1', 'source-9');
 
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
-    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    // The generations come back from this same statement's RETURNING, so there
+    // is no second call that could read a generation a later reset had moved.
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    const [strings, ...values] = prisma.$queryRaw.mock.calls[0];
     const sql = strings.join('?');
     expect(sql).toContain('embedding_generation = embedding_generation + 1');
     expect(sql).toContain('SET embedding = NULL');
@@ -54,8 +60,8 @@ describe('KnowledgeService.clearEmbeddings generation marker', () => {
 
     await service.clearEmbeddings('ws-1');
 
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
-    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    const [strings, ...values] = prisma.$queryRaw.mock.calls[0];
     const sql = strings.join('?');
     expect(sql).toContain('embedding_generation = embedding_generation + 1');
     // The counter is per source, so the workspace path bumps each of them and
@@ -63,5 +69,33 @@ describe('KnowledgeService.clearEmbeddings generation marker', () => {
     expect(sql).toContain('source_id = ANY (SELECT id FROM bumped)');
     expect(sql).toContain('workspace_id = ANY (SELECT workspace_id FROM bumped)');
     expect(values).toEqual(['ws-1']);
+  });
+
+  /**
+   * The handlers stamp this generation on the job they queue, so it must be the
+   * number this statement produced — and per source, because the workspace path
+   * bumps many at once while the worker compares one source at a time.
+   */
+  it('returns the cleared chunk count and the new generation of every source it bumped', async () => {
+    const { prisma, service } = createService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      { id: 'source-9', generation: 5, cleared: 7 },
+      { id: 'source-8', generation: 2, cleared: 7 },
+    ]);
+
+    await expect(service.clearEmbeddings('ws-1')).resolves.toEqual({
+      cleared: 7,
+      generations: { 'source-9': 5, 'source-8': 2 },
+    });
+  });
+
+  it('reports nothing cleared when the statement bumped no source', async () => {
+    const { prisma, service } = createService();
+    prisma.$queryRaw.mockResolvedValueOnce([]);
+
+    await expect(service.clearEmbeddings('ws-1', 'source-gone')).resolves.toEqual({
+      cleared: 0,
+      generations: {},
+    });
   });
 });

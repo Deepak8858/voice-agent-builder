@@ -34,6 +34,11 @@ const WORKSPACE_SCOPED_MODELS = [
   // and `agent_id`, both ON DELETE SET NULL -- so nothing cascades it and the
   // contact name, phone and email in `contact_data` outlived every erasure.
   'crmFanoutLog',
+  // `telephony_webhook_events.workspace_id` is ON DELETE SET NULL, so the
+  // workspace delete empties the only column that makes these rows reachable and
+  // leaves `raw_payload_json` -- the provider's webhook body, `From` and `To`
+  // included -- behind. `call_id` has no foreign key at all, so it is no help.
+  'telephonyWebhookEvent',
 ] as const;
 
 interface KnowledgeRow {
@@ -51,6 +56,17 @@ interface CostEventRow {
   id: string;
   organizationId: string;
   metadata: Record<string, unknown>;
+}
+
+/**
+ * A `telephony_webhook_events` row. Stateful in the mock rather than left to the
+ * generic WORKSPACE_SCOPED_MODELS stub, because the stub ignores `where` and so
+ * cannot show that another tenant's payloads survive the erasure.
+ */
+interface WebhookEventRow {
+  id: string;
+  workspaceId: string | null;
+  rawPayloadJson: { From: string };
 }
 
 interface PhoneNumberRow {
@@ -79,6 +95,7 @@ describe('ErasureService', () => {
     } | null;
     phoneNumbers?: PhoneNumberRow[];
     providerCostEvents?: CostEventRow[];
+    telephonyWebhookEvents?: WebhookEventRow[];
   }) {
     const deletedContacts: string[] = [];
     const deletedWorkspaces: string[] = [];
@@ -92,6 +109,7 @@ describe('ErasureService', () => {
     const deleteOrder: string[] = [];
     const deletedNumbers: string[] = [];
     const liveNumbers: PhoneNumberRow[] = [...(opts.phoneNumbers ?? [])];
+    const webhookEvents: WebhookEventRow[] = [...(opts.telephonyWebhookEvents ?? [])];
 
     const prisma: Record<string, unknown> = {
       contact: {
@@ -182,6 +200,19 @@ describe('ErasureService', () => {
           deleteOrder.push(`twilioPhoneNumber:${where.id}`);
           deletedNumbers.push(where.id);
           return { count: 1 };
+        }),
+      },
+      // Defined here rather than left to the generic loop below so the delete
+      // honours its `where`: the workspace foreign key is SET NULL, so a missing
+      // predicate would show up as another tenant's payloads destroyed.
+      telephonyWebhookEvent: {
+        deleteMany: vi.fn(async ({ where }: { where: { workspaceId?: string } }) => {
+          deleteOrder.push('telephonyWebhookEvent');
+          const doomed = webhookEvents.filter(
+            (r) => where.workspaceId === undefined || r.workspaceId === where.workspaceId,
+          );
+          for (const row of doomed) webhookEvents.splice(webhookEvents.indexOf(row), 1);
+          return { count: doomed.length };
         }),
       },
     };
@@ -291,6 +322,7 @@ describe('ErasureService', () => {
       deletedOrganizations,
       deletedFiles,
       deletedNumbers,
+      webhookEvents,
       deleteOrder,
       costEvents,
       rawStatements,
@@ -408,6 +440,41 @@ describe('ErasureService', () => {
       ).toHaveBeenCalledWith({ where: { referrerWorkspaceId: 'ws-1' } });
       expect(deleteOrder.indexOf('referral')).toBeLessThan(deleteOrder.indexOf('workspace:ws-1'));
       expect(deletedOrganizations).toEqual(['org-1']);
+    });
+
+    /**
+     * `telephony_webhook_events.workspace_id` is ON DELETE SET NULL, so the
+     * workspace delete does not cascade these rows -- it nulls the one column that
+     * makes them reachable and leaves `raw_payload_json` behind, which for a Twilio
+     * delivery holds `From` and `To`: the caller's number, outliving the erasure.
+     */
+    it('destroys this organization telephony webhook payloads and no other tenant ones', async () => {
+      const { service, webhookEvents, prisma, deleteOrder } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }, { id: 'ws-2' }],
+        telephonyWebhookEvents: [
+          { id: 'w-1', workspaceId: 'ws-1', rawPayloadJson: { From: '+14155550111' } },
+          { id: 'w-2', workspaceId: 'ws-2', rawPayloadJson: { From: '+14155550222' } },
+          // Another organization's workspace.
+          { id: 'w-9', workspaceId: 'ws-other', rawPayloadJson: { From: '+14155550999' } },
+          // Known, unfixed gap: a row whose phone number could not be resolved has
+          // a NULL workspace and (on the Twilio paths) no call id either, so no
+          // tenant-scoped query can ever reach it. Pinned so it stays visible.
+          { id: 'w-orphan', workspaceId: null, rawPayloadJson: { From: '+14155550777' } },
+        ],
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(true);
+      expect(webhookEvents.map((r) => r.id)).toEqual(['w-9', 'w-orphan']);
+      expect(
+        (prisma.telephonyWebhookEvent as { deleteMany: ReturnType<typeof vi.fn> }).deleteMany,
+      ).toHaveBeenCalledWith({ where: { workspaceId: 'ws-2' } });
+      // Before the workspace goes: afterwards SET NULL has already emptied
+      // `workspace_id` and the rows are unreachable, which is the whole defect.
+      expect(deleteOrder.indexOf('telephonyWebhookEvent'))
+        .toBeLessThan(deleteOrder.indexOf('workspace:ws-1'));
     });
 
     /**

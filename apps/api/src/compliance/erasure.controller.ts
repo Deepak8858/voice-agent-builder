@@ -4,8 +4,27 @@ import { ErasureService } from './erasure.service';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
 import { InternalOnly } from '../common/decorators/internal-only.decorator';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
+import { SessionScoped } from '../common/decorators/session-scoped.decorator';
+import { RoleGuard } from '../common/role.guard';
 import { ForbiddenError, UnauthorizedError } from '../common/errors';
 
+/**
+ * `main.ts` already sets the global prefix `api/v1`, so the `v1/` these two
+ * handler paths carried served them at `/api/v1/v1/...` — the same doubled
+ * namespace fixed in SettingsController (CS-40). Dropping it has one behaviour
+ * consequence worth stating: `workspaces/me/contacts/:contactId/erasure` now
+ * sits under the `/workspaces` prefix the web proxy allow-lists, so it is
+ * reachable from the browser where the doubled path was not. That is the
+ * intended state — it is tenant self-service scoped to the session's
+ * `active_workspace_id`, and ContactsController's sibling contact mutations are
+ * already reachable the same way. `users/me/erasure` stays unreachable:
+ * `/users` is not an allow-listed proxy prefix and this change does not add one.
+ *
+ * Neither path can be captured by another controller: no route under
+ * `workspaces/:workspaceId` serves DELETE at five segments, and nothing else
+ * mounts a `users` prefix.
+ */
 @Controller()
 export class ErasureController {
   constructor(private readonly erasure: ErasureService) {}
@@ -28,7 +47,14 @@ export class ErasureController {
    * for a client to name the tenant on a destructive self-service endpoint when
    * the session already identifies it. Nothing in `apps/web` called the old path.
    */
-  @Delete('v1/workspaces/me/contacts/:contactId/erasure')
+  @Delete('workspaces/me/contacts/:contactId/erasure')
+  // Becoming browser-reachable made the missing role gate live: erasure
+  // permanently destroys the contact and everything cascaded from it, so a
+  // viewer must not be able to trigger it. Same stack and fresh-read reasoning
+  // as SettingsController.updateRetention and the knowledge destructive routes.
+  @SessionScoped()
+  @UseGuards(RoleGuard)
+  @RequiredRole(['owner', 'admin'], { fresh: true })
   async eraseContact(
     @CurrentUser() user: SessionUser | undefined,
     @Param('contactId') contactId: string,
@@ -49,7 +75,7 @@ export class ErasureController {
 
   // User self-deletion. The user id comes from the verified session, never the
   // path, so there is no cross-user surface to guard.
-  @Delete('v1/users/me/erasure')
+  @Delete('users/me/erasure')
   async eraseUser(@CurrentUser() user: SessionUser | undefined) {
     if (!user?.id) throw new UnauthorizedError();
     return this.erasure.eraseUser(user.id);

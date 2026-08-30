@@ -8,6 +8,7 @@ import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
 import { EmbeddingsWorker } from './embeddings.worker';
 import { DigestWorker } from './digest.worker';
+import { RetentionSweepWorker } from './retention-sweep.worker';
 import { OutboundCallWorker } from '../outbound-campaign/workers/outbound-call.worker';
 import { OrchestratorWorker } from './orchestrator.worker';
 import { AgentGenModule } from '../agent-gen/agent-gen.module';
@@ -22,6 +23,7 @@ import { OutboundCampaignModule } from '../outbound-campaign/outbound-campaign.m
 import { CrmRoutingModule } from '../crm-routing/crm-routing.module';
 import { CallsModule } from '../calls/calls.module';
 import { TelephonyModule } from '../telephony/telephony.module';
+import { ComplianceModule } from '../compliance/compliance.module';
 
 @Module({
   imports: [
@@ -37,6 +39,10 @@ import { TelephonyModule } from '../telephony/telephony.module';
     TelephonyModule,
     EmailModule,
     BillingModule,
+    // Supplies RetentionService to RetentionSweepWorker. No cycle: this module's
+    // imports are [EmailModule, KnowledgeModule, PhoneNumbersModule], none of
+    // which imports WorkersModule.
+    ComplianceModule,
   ],
   providers: [
     AgentGenWorker,
@@ -50,6 +56,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
     FreeCreditGrantWorker,
+    RetentionSweepWorker,
   ],
   exports: [
     AgentGenWorker,
@@ -63,6 +70,7 @@ import { TelephonyModule } from '../telephony/telephony.module';
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
     FreeCreditGrantWorker,
+    RetentionSweepWorker,
   ],
 })
 export class WorkersModule {}

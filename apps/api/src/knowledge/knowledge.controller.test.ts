@@ -14,7 +14,7 @@ const SOURCE_ID = '22222222-2222-4222-8222-222222222222';
 
 const knowledge = {
   get: vi.fn(async () => ({ id: SOURCE_ID })),
-  clearEmbeddings: vi.fn(async () => 3),
+  clearEmbeddings: vi.fn(async () => ({ cleared: 3, generations: { [SOURCE_ID]: 5 } })),
 };
 const queue = { enqueue: vi.fn(async () => undefined) };
 const audit = { log: vi.fn(async () => undefined) };
@@ -135,7 +135,29 @@ describe('KnowledgeController embedding jobs', () => {
     expect(queue.enqueue).toHaveBeenCalledWith(EMBEDDINGS_QUEUE, 'generate-embeddings', {
       workspaceId: WORKSPACE_ID,
       sourceId: SOURCE_ID,
+      generation: 5,
     });
+  });
+
+  /**
+   * The job must carry the generation this clear produced, not one the worker
+   * reads later: a worker that adopts whatever it sees on its first batch has
+   * already lost the race it is meant to detect, and keeps writing vectors a
+   * newer reset superseded.
+   */
+  it('reindex stamps the job with the generation the clear just produced', async () => {
+    knowledge.clearEmbeddings.mockResolvedValueOnce({
+      cleared: 1,
+      generations: { [SOURCE_ID]: 9 },
+    });
+
+    await build().reindex(WORKSPACE_ID, SOURCE_ID, user);
+
+    expect(queue.enqueue).toHaveBeenCalledWith(
+      EMBEDDINGS_QUEUE,
+      'generate-embeddings',
+      expect.objectContaining({ generation: 9 }),
+    );
   });
 
   it('reindex clears the source vectors, or the worker would select nothing', async () => {
@@ -158,8 +180,12 @@ describe('KnowledgeController embedding jobs', () => {
     await build().backfill(WORKSPACE_ID, user);
 
     expect(knowledge.clearEmbeddings).toHaveBeenCalledWith(WORKSPACE_ID);
+    // The per-source map, not a single generation: each source lands on its
+    // own number and the worker seeds its ownership check from this map, so a
+    // job that starts after a newer reset refuses that source immediately.
     expect(queue.enqueue).toHaveBeenCalledWith(EMBEDDINGS_QUEUE, 'generate-embeddings', {
       workspaceId: WORKSPACE_ID,
+      generations: { [SOURCE_ID]: 5 },
     });
   });
 

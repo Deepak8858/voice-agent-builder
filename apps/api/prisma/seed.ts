@@ -171,7 +171,7 @@ async function seedDemoKnowledge(workspaceId: string, agentId: string, creatorId
   return source;
 }
 
-async function seedDemoCall(workspaceId: string, agentId: string) {
+async function seedDemoCall(workspaceId: string, agentId: string, retentionDays: number) {
   console.log('[seed] Demo browser-test call…');
   const existing = await prisma.call.findFirst({
     where: { workspaceId, agentId, direction: 'browser_test' },
@@ -204,6 +204,13 @@ async function seedDemoCall(workspaceId: string, agentId: string) {
       durationSeconds: 7,
       transcriptText: transcript,
       outcome: 'test_completed',
+      // Same arithmetic as RetentionService.computeExpiresAt and the
+      // 20260830120000 backfill: created_at + the workspace's retention. Left
+      // unset, the seeded call was NULL like every pre-backfill production row —
+      // permanently invisible to sweepExpiredCalls, so the one call a developer
+      // has locally could never exercise the retention path.
+      expiresAt: new Date(endedAt.getTime() + retentionDays * 24 * 60 * 60 * 1000),
+      retentionDays,
     },
   });
   console.log(`  ✔ created → ${call.id.slice(0, 8)}`);
@@ -216,7 +223,7 @@ async function main() {
   const agents = await seedDemoAgents(workspace.id, user.id);
   if (agents[0]) {
     await seedDemoKnowledge(workspace.id, agents[0].id, user.id);
-    await seedDemoCall(workspace.id, agents[0].id);
+    await seedDemoCall(workspace.id, agents[0].id, workspace.retentionDays);
   }
   console.log('[seed] Done.');
 }

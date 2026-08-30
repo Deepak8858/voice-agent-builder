@@ -201,6 +201,22 @@ describe('EmbeddingsWorker', () => {
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
+  // The workspace-wide map short-circuits before any embedding work: a source
+  // whose current generation moved past the job's map entry is refused on the
+  // FIRST batch, not discovered one embed pass late by the snapshot fallback.
+  it('refuses a workspace job whose generations map is already stale', async () => {
+    prisma.$queryRaw.mockResolvedValueOnce([{ id: 'a', content: 'one', source_id: SOURCE_ID }]);
+    prisma.knowledgeSource.findMany.mockResolvedValueOnce([
+      { id: SOURCE_ID, embeddingGeneration: 4 },
+    ]);
+
+    await build().processor(
+      job({ workspaceId: WORKSPACE_ID, generations: { [SOURCE_ID]: 3 } }),
+    );
+
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+
   it('stops instead of looping forever when a batch writes no embeddings', async () => {
     prisma.$queryRaw.mockResolvedValue([{ id: 'a', content: 'one' }]);
     prisma.$executeRaw.mockResolvedValue(0);

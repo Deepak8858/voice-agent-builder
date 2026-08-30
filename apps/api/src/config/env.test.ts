@@ -405,6 +405,60 @@ describe('env validation', () => {
   });
 
   /**
+   * The kill switch on the only automation that permanently destroys customer
+   * data. It must default off: 20260830120000 backfills every historical call
+   * with its workspace's retention, so a deployment that inherited this flag as
+   * "on" would purge on the first nightly run.
+   */
+  it('defaults RETENTION_SWEEP_ENABLED off and does not require it to be set', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+    });
+    delete process.env.RETENTION_SWEEP_ENABLED;
+
+    let mod = await import('./env');
+    expect(mod.env.RETENTION_SWEEP_ENABLED).toBe(false);
+
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      RETENTION_SWEEP_ENABLED: 'true',
+    });
+
+    mod = await import('./env');
+    expect(mod.env.RETENTION_SWEEP_ENABLED).toBe(true);
+  });
+
+  /**
+   * Anything that is not an explicit truthy token is off. Pinned because the
+   * downstream effect of a misread value here is an irreversible bulk delete:
+   * 'false' must never coerce to true just because it is a non-empty string.
+   */
+  it.each([['false'], ['0'], ['off'], ['no'], ['']])(
+    'reads RETENTION_SWEEP_ENABLED=%j as off',
+    async (raw) => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, {
+        NODE_ENV: 'development',
+        REDIS_URL: 'redis://localhost:6379',
+        JWT_SECRET: 'development-jwt-secret-with-32-chars',
+        RETENTION_SWEEP_ENABLED: raw,
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.RETENTION_SWEEP_ENABLED).toBe(false);
+    },
+  );
+
+  /**
    * WEB_BASE_URL defaults to localhost and is what Stripe redirects customers
    * back to after checkout. A deployment with working Stripe credentials that
    * forgets to set it takes real payments and then sends the customer to a dead

@@ -369,6 +369,15 @@ export class ErasureService {
     // agent link was nulled years ago.
     await tx.crmFanoutLog.deleteMany(scope);
 
+    // `telephony_webhook_events.workspace_id` is ON DELETE SET NULL, so the
+    // workspace delete below does not cascade these rows -- it empties the one
+    // column that makes them reachable and leaves `raw_payload_json` behind. That
+    // payload is the provider's own webhook body, which for a Twilio delivery
+    // carries `From` and `To`: the caller's phone number, surviving the erasure
+    // with nothing left to find it by. `call_id` cannot substitute, because it has
+    // no foreign key either and most rows never had one.
+    await tx.telephonyWebhookEvent.deleteMany(scope);
+
     await tx.call.deleteMany(scope);
     await tx.consentRecord.deleteMany(scope);
     await tx.contact.deleteMany(scope);

@@ -1,5 +1,9 @@
+import 'reflect-metadata';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it, vi } from 'vitest';
 import { ErasureController } from './erasure.controller';
+import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
+import { RoleGuard } from '../common/role.guard';
 import { ForbiddenError, UnauthorizedError } from '../common/errors';
 import type { SessionUser } from '@voiceforge/shared';
 
@@ -19,6 +23,46 @@ const CALLER: SessionUser = {
   active_workspace_name: 'Own Workspace',
   active_workspace_role: 'owner',
 };
+
+/**
+ * CS-40: both self-service handlers carried a `v1/` that main.ts already sets as
+ * the global prefix, so they served at `/api/v1/v1/...`. Asserted here because
+ * the path is one half of a two-sided contract with the web proxy allow-list and
+ * nothing else in this repo pins it — see proxy-guards.test.ts for the other
+ * half, which pins that `/workspaces/me/contacts/.../erasure` is now proxyable
+ * and `/users/me/erasure` still is not.
+ */
+describe('ErasureController route paths', () => {
+  it('does not repeat the global api/v1 prefix', () => {
+    expect(
+      Reflect.getMetadata('path', ErasureController.prototype.eraseContact),
+    ).toBe('workspaces/me/contacts/:contactId/erasure');
+    expect(Reflect.getMetadata('path', ErasureController.prototype.eraseUser)).toBe(
+      'users/me/erasure',
+    );
+    // The operator route never had the doubled prefix; pinned so a future edit
+    // cannot "restore consistency" by adding one.
+    expect(
+      Reflect.getMetadata('path', ErasureController.prototype.eraseOrganization),
+    ).toBe('admin/orgs/:orgId');
+  });
+});
+
+describe('ErasureController.eraseContact authorization', () => {
+  // Dropping the doubled prefix made this route browser-reachable, which made
+  // the missing role gate live: erasure permanently destroys the contact and
+  // its cascade, so a viewer must not trigger it. Pinned by metadata on the
+  // real class — a guard built by hand in a test pins nothing.
+  it('binds RoleGuard with a fresh owner/admin requirement', () => {
+    const handler = ErasureController.prototype.eraseContact;
+
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toEqual([RoleGuard]);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, handler)).toEqual({
+      roles: ['owner', 'admin'],
+      fresh: true,
+    });
+  });
+});
 
 describe('ErasureController.eraseContact', () => {
   /**

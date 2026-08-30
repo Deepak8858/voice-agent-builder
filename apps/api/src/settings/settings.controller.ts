@@ -35,8 +35,8 @@ export type UpdateRetentionDto = z.infer<typeof UpdateRetentionSchema>;
  * (CS-40). Dropping it puts the route in the same `workspaces` namespace as
  * every other workspace-scoped controller. `me/retention` is two segments, so it
  * cannot be captured by WorkspacesController's one-segment `:workspaceId`
- * routes. The erasure controller still carries its own `v1/` prefix; it has no
- * browser caller, so it is left alone here rather than moved blind.
+ * routes. The erasure controller's self-service routes dropped their doubled
+ * prefix the same way in the following wave.
  */
 @Controller('workspaces')
 export class SettingsController {

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { createHmac, randomBytes } from 'crypto';
+import { createHash, createHmac, randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
@@ -123,9 +123,14 @@ export class AuditExportService {
     const token = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + AuditExportService.REPORT_EXPIRY_MS);
 
+    // The token in the emailed URL is a bearer credential for a 72h window of
+    // one organization's audit log, so only its digest is stored: a read of
+    // `audit_reports` cannot reconstruct a working download link. Whatever
+    // eventually serves `/api/audit/report/:token` (nothing does today) must
+    // look the row up by sha256 of the token it was given.
     await this.prisma.auditReport.create({
       data: {
-        token,
+        token: createHash('sha256').update(token).digest('hex'),
         organizationId: orgId,
         fromDate: from,
         toDate: to,

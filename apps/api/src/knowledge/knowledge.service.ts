@@ -44,6 +44,13 @@ interface RawKnowledgeChunk {
   source_id: string;
 }
 
+/** One bumped source per row; `cleared` is the whole statement's chunk count. */
+interface ClearedEmbeddingsRow {
+  id: string;
+  generation: number;
+  cleared: number;
+}
+
 @Injectable()
 export class KnowledgeService {
   private readonly logger = new Logger(KnowledgeService.name);
@@ -310,29 +317,52 @@ export class KnowledgeService {
    * the job queued by this reset would skip them and the stale vector would
    * stick. The workspace path bumps every source it clears, which is the
    * granularity EmbeddingsWorker compares at.
+   *
+   * Returns each bumped source's NEW generation, so the caller can stamp it on
+   * the job it queues. It has to come out of this statement: read back by a
+   * later SELECT it could only be too high — a concurrent reset having landed —
+   * and a job claiming a generation it does not own is precisely the write this
+   * counter exists to stop. `cleared` is the chunk count for the audit row.
    */
-  async clearEmbeddings(workspaceId: string, sourceId?: string): Promise<number> {
-    return sourceId
-      ? this.prisma.$executeRaw`
+  async clearEmbeddings(
+    workspaceId: string,
+    sourceId?: string,
+  ): Promise<{ cleared: number; generations: Record<string, number> }> {
+    const rows = sourceId
+      ? await this.prisma.$queryRaw<ClearedEmbeddingsRow[]>`
           WITH bumped AS (
             UPDATE knowledge_sources
             SET embedding_generation = embedding_generation + 1
             WHERE workspace_id = ${workspaceId}::uuid AND id = ${sourceId}::uuid
-            RETURNING id, workspace_id
+            RETURNING id, workspace_id, embedding_generation
+          ), cleared AS (
+            UPDATE knowledge_chunks SET embedding = NULL
+            WHERE source_id = ANY (SELECT id FROM bumped)
+              AND workspace_id = ANY (SELECT workspace_id FROM bumped)
+            RETURNING id
           )
-          UPDATE knowledge_chunks SET embedding = NULL
-          WHERE source_id = ANY (SELECT id FROM bumped)
-            AND workspace_id = ANY (SELECT workspace_id FROM bumped)`
-      : this.prisma.$executeRaw`
+          SELECT id, embedding_generation AS generation,
+                 (SELECT count(*)::int FROM cleared) AS cleared
+          FROM bumped`
+      : await this.prisma.$queryRaw<ClearedEmbeddingsRow[]>`
           WITH bumped AS (
             UPDATE knowledge_sources
             SET embedding_generation = embedding_generation + 1
             WHERE workspace_id = ${workspaceId}::uuid
-            RETURNING id, workspace_id
+            RETURNING id, workspace_id, embedding_generation
+          ), cleared AS (
+            UPDATE knowledge_chunks SET embedding = NULL
+            WHERE source_id = ANY (SELECT id FROM bumped)
+              AND workspace_id = ANY (SELECT workspace_id FROM bumped)
+            RETURNING id
           )
-          UPDATE knowledge_chunks SET embedding = NULL
-          WHERE source_id = ANY (SELECT id FROM bumped)
-            AND workspace_id = ANY (SELECT workspace_id FROM bumped)`;
+          SELECT id, embedding_generation AS generation,
+                 (SELECT count(*)::int FROM cleared) AS cleared
+          FROM bumped`;
+    return {
+      cleared: rows[0]?.cleared ?? 0,
+      generations: Object.fromEntries(rows.map((r) => [r.id, r.generation])),
+    };
   }
 
   /**
