@@ -1,20 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="VoiceForge AI">
   <defs>
     <linearGradient id="vf-grad" x1="4" y1="4" x2="60" y2="60" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#4ade80"/>
-      <stop offset="0.5" stop-color="#16a34a"/>
-      <stop offset="1" stop-color="#166534"/>
+      <stop offset="0" stop-color="#ef4444"/>
+      <stop offset="0.55" stop-color="#dc2626"/>
+      <stop offset="1" stop-color="#991b1b"/>
     </linearGradient>
   </defs>
   <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#vf-grad)"/>
-  <!-- Voice waveform shaped as a "V" -->
-  <g fill="#ffffff">
-    <rect x="12" y="15" width="4" height="34" rx="2"/>
-    <rect x="18" y="20" width="4" height="24" rx="2"/>
-    <rect x="24" y="24" width="4" height="16" rx="2"/>
-    <rect x="30" y="28" width="4" height="8"  rx="2"/>
-    <rect x="36" y="24" width="4" height="16" rx="2"/>
-    <rect x="42" y="20" width="4" height="24" rx="2"/>
-    <rect x="48" y="15" width="4" height="34" rx="2"/>
+  <!--
+    Headset mark: the same three paths the app renders in
+    apps/web/components/logo.tsx and packages/ui/src/logo.tsx (headband arc +
+    two earcups), scaled from the 24-unit viewBox and centred in the tile.
+    Keep these paths in sync with the components if the mark ever changes.
+
+    stroke-width is 2.5 rather than the component's 1.75: this file is rendered
+    as a favicon down to 16x16, and at 1.75 the strokes fell below one device
+    pixel and the mark disappeared entirely. Verified visible at 16/32/64/256.
+  -->
+  <g transform="translate(10.6 12.1) scale(1.8)"
+     fill="none"
+     stroke="#ffffff"
+     stroke-width="2.5"
+     stroke-linecap="round"
+     stroke-linejoin="round">
+    <path d="M4 11a8 8 0 0 1 16 0"/>
+    <path d="M4 15a4 4 0 0 0 4 4h1v-6H4z"/>
+    <path d="M20 15a4 4 0 0 1-4 4h-1v-6h5z"/>
   </g>
 </svg>
