@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { CacheInvalidator } from '../common/cache-invalidator';
 import {
   KNOWLEDGE_FILE_STORAGE_TOKEN,
   type KnowledgeFileStorage,
@@ -23,6 +24,7 @@ export class ErasureService {
     private readonly audit: AuditService,
     @Inject(KNOWLEDGE_FILE_STORAGE_TOKEN)
     private readonly fileStorage: KnowledgeFileStorage,
+    private readonly invalidator: CacheInvalidator,
   ) {}
 
   async eraseContact(workspaceId: string, contactId: string): Promise<ErasureResult> {
@@ -87,6 +89,15 @@ export class ErasureService {
     // metadata that tells us which bucket/key to remove is gone forever.
     const storedFiles = await this.collectStoredFiles(workspaceIds);
 
+    // Same before-delete rule for memberships: once the rows are gone there
+    // is nothing left to say whose cached access needs revoking.
+    const memberships = workspaceIds.length === 0
+      ? []
+      : await this.prisma.membership.findMany({
+          where: { workspaceId: { in: workspaceIds } },
+          select: { workspaceId: true, userId: true },
+        });
+
     await this.prisma.$transaction(async (tx) => {
       for (const workspaceId of workspaceIds) {
         await this.deleteWorkspaceChildren(tx, workspaceId);
@@ -94,6 +105,19 @@ export class ErasureService {
       }
       await tx.organization.delete({ where: { id: orgId } });
     });
+
+    // Erased members must lose access on the next request, not when the
+    // 300s access/session/org caches happen to expire.
+    for (const { workspaceId, userId } of memberships) {
+      await this.invalidator.invalidateWorkspaceAccess(workspaceId, userId);
+      await this.invalidator.invalidateWorkspaceList(userId);
+      await this.invalidator.invalidateSession({ appUserId: userId });
+      await this.invalidator.invalidateOrgAccess(orgId, userId);
+    }
+    // OrganizationGuard also grants access by ownership, without a membership.
+    if (org.ownerUserId) {
+      await this.invalidator.invalidateOrgAccess(orgId, org.ownerUserId);
+    }
 
     // Only purge storage once the database transaction has committed. Deleting
     // first would destroy customer files even if the erasure was rolled back.
@@ -226,12 +250,30 @@ export class ErasureService {
       metadata: { userEmail: user.email, erasedAt: new Date().toISOString() },
     });
 
+    // Enumerate before deleteMany: the rows are the only record of which
+    // workspace access caches this user holds.
+    const memberships = await this.prisma.membership.findMany({
+      where: { userId },
+      select: { workspaceId: true },
+    });
+
     await this.prisma.$transaction(async (tx) => {
       // Delete memberships
       await tx.membership.deleteMany({ where: { userId } });
       await tx.workspaceMembership.deleteMany({ where: { userId } });
       // Delete user
       await tx.user.delete({ where: { id: userId } });
+    });
+
+    // An erased user must stop authenticating on the next request, not when
+    // the 300s access/session caches happen to expire.
+    for (const { workspaceId } of memberships) {
+      await this.invalidator.invalidateWorkspaceAccess(workspaceId, userId);
+    }
+    await this.invalidator.invalidateWorkspaceList(userId);
+    await this.invalidator.invalidateSession({
+      appUserId: userId,
+      supabaseUserId: user.authUserId ?? undefined,
     });
 
     const erasedAt = new Date().toISOString();

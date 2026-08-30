@@ -1,6 +1,10 @@
+import 'reflect-metadata';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionUser } from '@voiceforge/shared';
 import { SettingsController, UpdateRetentionSchema } from './settings.controller';
+import { RoleGuard } from '../common/role.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { ForbiddenError, UnauthorizedError, ValidationError } from '../common/errors';
 
@@ -131,6 +135,97 @@ describe('SettingsController.updateRetention', () => {
     await expect(
       controller.updateRetention({ ...CALLER, active_workspace_id: null }, parseBody({})),
     ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(retention.updateWorkspaceRetention).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Exercises RoleGuard against the REAL @RequiredRole metadata on the handler
+ * (real Reflector, real class). The session claims `owner` in every case
+ * below; the membership row is what must decide — on this @SessionScoped()
+ * route `active_workspace_role` is the caller's oldest membership, not their
+ * seat here.
+ */
+function roleGuardContext(dbRole: string | null, user: SessionUser | null = CALLER) {
+  const prisma = {
+    membership: { findUnique: vi.fn(async () => (dbRole ? { role: dbRole } : null)) },
+  };
+  const cache = {
+    // A stale entry that would admit the caller if the guard consulted it;
+    // the route declares `fresh`, so it must not.
+    get: vi.fn(async () => ({ role: 'admin', name: 'Own Workspace' })),
+    set: vi.fn(async () => undefined),
+  };
+  const req = { params: {}, ...(user === null ? {} : { user }) };
+  const ctx = {
+    switchToHttp: () => ({ getRequest: () => req }),
+    getHandler: () => SettingsController.prototype.updateRetention,
+    getClass: () => SettingsController,
+  };
+  return { prisma, cache, guard: new RoleGuard(prisma as never, cache as never, new Reflector()), ctx };
+}
+
+describe('SettingsController.updateRetention authorization', () => {
+  it.each(['editor', 'viewer'] as const)('denies %s', async (role) => {
+    const { guard, ctx } = roleGuardContext(role);
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it.each(['owner', 'admin'] as const)('allows %s', async (role) => {
+    const { guard, ctx } = roleGuardContext(role);
+
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+
+  it('resolves the seat in the session workspace, skipping the role cache', async () => {
+    const { guard, ctx, prisma, cache } = roleGuardContext('owner');
+
+    await guard.canActivate(ctx as never);
+
+    expect(prisma.membership.findUnique).toHaveBeenCalledWith({
+      where: { userId_workspaceId: { userId: CALLER.id, workspaceId: WORKSPACE_ID } },
+      select: { role: true },
+    });
+    expect(cache.get).not.toHaveBeenCalled();
+  });
+
+  it('denies a caller with no membership in the session workspace', async () => {
+    const { guard, ctx } = roleGuardContext(null);
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('denies a session with no active workspace', async () => {
+    const { guard, ctx } = roleGuardContext('owner', { ...CALLER, active_workspace_id: null });
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  /**
+   * Reads the guard list off the method and runs it the way Nest does, so
+   * deleting `@UseGuards(RoleGuard)` from the route fails here even though
+   * every other test builds the guard by hand.
+   */
+  it('cannot be reached as an editor through the guards the route binds', async () => {
+    const { guard, ctx } = roleGuardContext('editor');
+    const { retention, controller } = makeController();
+    const bound = (Reflect.getMetadata(GUARDS_METADATA, SettingsController.prototype.updateRetention) ??
+      []) as unknown[];
+
+    expect(bound).toEqual([RoleGuard]);
+
+    const request = async () => {
+      for (const Bound of bound) {
+        const instance = Bound === RoleGuard ? guard : { canActivate: async () => true };
+        if (!(await instance.canActivate(ctx as never))) {
+          throw new ForbiddenError('guard returned false');
+        }
+      }
+      return controller.updateRetention(CALLER, parseBody({ retentionDays: 30 }));
+    };
+
+    await expect(request()).rejects.toBeInstanceOf(ForbiddenError);
     expect(retention.updateWorkspaceRetention).not.toHaveBeenCalled();
   });
 });

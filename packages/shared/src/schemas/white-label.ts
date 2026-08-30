@@ -87,7 +87,11 @@ export type ClientInvite = z.infer<typeof ClientInviteSchema>;
 
 export const CreateClientInviteDtoSchema = z.object({
   email: z.string().email(),
-  role: z.enum(['admin', 'viewer']).default('admin'),
+  // Least privilege: an invite that does not name a role must not mint an
+  // admin. The validation pipe applies this default before the service sees
+  // the payload, so this line — not the service-side fallback — is the one an
+  // HTTP caller actually hits.
+  role: z.enum(['admin', 'viewer']).default('viewer'),
   client_workspace_id: z.string().uuid().optional(),
   expires_in_days: z.number().int().min(1).max(60).default(14),
 });

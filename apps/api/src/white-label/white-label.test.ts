@@ -275,6 +275,11 @@ function makePrisma(state: {
 }
 
 const audit = { log: vi.fn(async () => undefined) } as any;
+const invalidator = {
+  invalidateWorkspaceList: vi.fn(async () => undefined),
+  invalidateWorkspaceAccess: vi.fn(async () => undefined),
+  invalidateSession: vi.fn(async () => undefined),
+} as any;
 const ACTOR = '00000000-0000-0000-0000-000000000001';
 const AGENCY = 'aa000000-0000-0000-0000-000000000001';
 const ORG = 'or000000-0000-0000-0000-000000000001';
@@ -307,7 +312,7 @@ describe('WhiteLabelService.getSettings', () => {
 
   it('returns empty defaults when no row exists', async () => {
     const state = freshState();
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const s = await svc.getSettings(AGENCY);
     expect(s.workspace_id).toBe(AGENCY);
     expect(s.brand_name).toBeNull();
@@ -327,7 +332,7 @@ describe('WhiteLabelService.getSettings', () => {
       hidePlatformBranding: true,
       updatedAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const s = await svc.getSettings(AGENCY);
     expect(s.brand_name).toBe('Foo');
     expect(s.primary_color).toBe('#112233');
@@ -340,7 +345,7 @@ describe('WhiteLabelService.updateSettings', () => {
 
   it('upserts a new settings row', async () => {
     const state = freshState();
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const s = await svc.updateSettings(AGENCY, ACTOR, {
       brand_name: 'My Agency',
       primary_color: '#abcdef',
@@ -366,7 +371,7 @@ describe('WhiteLabelService.updateSettings', () => {
       hidePlatformBranding: false,
       updatedAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(
       svc.updateSettings(AGENCY, ACTOR, { custom_domain: 'voice.agency.com' }),
     ).rejects.toBeInstanceOf(ValidationError);
@@ -385,7 +390,7 @@ describe('WhiteLabelService.updateSettings', () => {
       hidePlatformBranding: false,
       updatedAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const s = await svc.updateSettings(AGENCY, ACTOR, {
       custom_domain: 'voice.agency.com',
       brand_name: 'New brand',
@@ -400,7 +405,7 @@ describe('WhiteLabelService.createClient', () => {
 
   it('creates a child workspace and promotes parent direct → agency', async () => {
     const state = freshState();
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const c = await svc.createClient(AGENCY, ACTOR, { name: 'Acme', slug: 'acme' });
     expect(c.parent_workspace_id).toBe(AGENCY);
     expect(c.slug).toBe('acme');
@@ -409,6 +414,8 @@ describe('WhiteLabelService.createClient', () => {
     const child = state.workspaces.find((w) => w.id === c.id)!;
     expect(child.type).toBe('client');
     expect(state.memberships.find((m) => m.workspaceId === c.id)?.role).toBe('owner');
+    // The actor's cached sidebar list must not hide the new workspace.
+    expect(invalidator.invalidateWorkspaceList).toHaveBeenCalledWith(ACTOR);
   });
 
   it('rejects duplicate slug within the same organization', async () => {
@@ -423,7 +430,7 @@ describe('WhiteLabelService.createClient', () => {
       status: 'active',
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(
       svc.createClient(AGENCY, ACTOR, { name: 'New', slug: 'acme' }),
     ).rejects.toBeInstanceOf(ValidationError);
@@ -468,7 +475,7 @@ describe('WhiteLabelService.listClients', () => {
         createdAt: new Date(),
       },
     );
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const items = await svc.listClients(AGENCY);
     expect(items).toHaveLength(2);
     expect(items[0].id).toBe('c2'); // newest first
@@ -499,7 +506,7 @@ describe('WhiteLabelService.clientUsage', () => {
     state.compliance = [
       { workspaceId: 'child', status: 'blocked', checkedAt: now },
     ];
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const u = await svc.clientUsage(AGENCY, 'child');
     expect(u.total_calls).toBe(3);
     expect(u.total_minutes).toBe(3.5);
@@ -519,7 +526,7 @@ describe('WhiteLabelService.clientUsage', () => {
       status: 'active',
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.clientUsage(AGENCY, 'child')).rejects.toBeInstanceOf(AppError);
   });
 });
@@ -529,7 +536,7 @@ describe('WhiteLabelService invites', () => {
 
   it('creates an invite with hex token + future expiry', async () => {
     const state = freshState();
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const inv = await svc.createInvite(AGENCY, ACTOR, {
       email: 'client@example.com',
       role: 'admin',
@@ -539,6 +546,37 @@ describe('WhiteLabelService invites', () => {
     expect(inv.status).toBe('pending');
     expect(inv.token).toMatch(/^[0-9a-f]{48}$/);
     expect(new Date(inv.expires_at).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('defaults the role to viewer when the dto omits it', async () => {
+    const state = freshState();
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
+    const inv = await svc.createInvite(AGENCY, ACTOR, {
+      email: 'client@example.com',
+    } as Parameters<WhiteLabelService['createInvite']>[2]);
+    expect(inv.role).toBe('viewer');
+    expect(state.invites[0].role).toBe('viewer');
+  });
+
+  it('never returns the raw token from listInvites', async () => {
+    const state = freshState();
+    state.invites.push({
+      id: 'inv1',
+      agencyWorkspaceId: AGENCY,
+      clientWorkspaceId: null,
+      email: 'a@b.com',
+      role: 'admin',
+      token: 'secret-token',
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400_000),
+      acceptedAt: null,
+      invitedBy: ACTOR,
+      createdAt: new Date(),
+    });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
+    const items = await svc.listInvites(AGENCY);
+    expect(items).toHaveLength(1);
+    expect(items[0].token).toBe('');
   });
 
   it('rejects invite with client_workspace_id not under this agency', async () => {
@@ -553,7 +591,7 @@ describe('WhiteLabelService invites', () => {
       status: 'active',
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(
       svc.createInvite(AGENCY, ACTOR, {
         email: 'a@b.com',
@@ -579,7 +617,7 @@ describe('WhiteLabelService invites', () => {
       invitedBy: ACTOR,
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const r = await svc.revokeInvite(AGENCY, ACTOR, 'inv1');
     expect(r.status).toBe('revoked');
   });
@@ -599,7 +637,7 @@ describe('WhiteLabelService invites', () => {
       invitedBy: ACTOR,
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.revokeInvite(AGENCY, ACTOR, 'inv1')).rejects.toBeInstanceOf(
       ValidationError,
     );
@@ -631,7 +669,7 @@ describe('WhiteLabelService invites', () => {
       createdAt: new Date(),
     });
     state.users.push({ id: 'user-2', email: 'a@b.com' });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     const r = await svc.acceptInvite('user-2', 'tok-123');
     expect(r.status).toBe('accepted');
     expect(r.accepted_at).not.toBeNull();
@@ -639,6 +677,11 @@ describe('WhiteLabelService invites', () => {
       (m) => m.userId === 'user-2' && m.workspaceId === 'child',
     );
     expect(mem?.role).toBe('admin');
+    // The upsert can change an existing member's role, so the acceptor's
+    // cached access, list and session must be revoked, not waited out.
+    expect(invalidator.invalidateWorkspaceAccess).toHaveBeenCalledWith('child', 'user-2');
+    expect(invalidator.invalidateWorkspaceList).toHaveBeenCalledWith('user-2');
+    expect(invalidator.invalidateSession).toHaveBeenCalledWith({ appUserId: 'user-2' });
   });
 
   it('rejects an expired invite + flips it to expired', async () => {
@@ -656,7 +699,7 @@ describe('WhiteLabelService invites', () => {
       invitedBy: ACTOR,
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.acceptInvite('user-2', 'tok-x')).rejects.toBeInstanceOf(
       ValidationError,
     );
@@ -665,7 +708,7 @@ describe('WhiteLabelService invites', () => {
 
   it('rejects an unknown token', async () => {
     const state = freshState();
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.acceptInvite('user-2', 'nope')).rejects.toBeInstanceOf(AppError);
   });
 
@@ -684,7 +727,7 @@ describe('WhiteLabelService invites', () => {
       invitedBy: ACTOR,
       createdAt: new Date(),
     });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.acceptInvite('user-2', 'tok-y')).rejects.toBeInstanceOf(
       ValidationError,
     );
@@ -706,7 +749,7 @@ describe('WhiteLabelService invites', () => {
       createdAt: new Date(),
     });
     state.users.push({ id: 'user-2', email: 'wrong@email.com' });
-    const svc = new WhiteLabelService(makePrisma(state) as never, audit);
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator);
     await expect(svc.acceptInvite('user-2', 'tok-mismatch')).rejects.toBeInstanceOf(AppError);
   });
 });

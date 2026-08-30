@@ -49,6 +49,15 @@ export interface AnalyzerOptions {
   guardCoverage?: GuardCoverage;
 }
 
+export interface RoleAnalyzerOptions {
+  /**
+   * Which decorator name satisfies the role requirement. The accompanying test
+   * overrides it with a name no route carries, so every converted route must
+   * reappear — the same anti-vacuity trick as `guardCoverage`.
+   */
+  requiredRoleDecorator?: string;
+}
+
 const TENANT_PARAMS = ['workspaceId', 'orgId'] as const;
 
 const HTTP_METHOD_DECORATORS = new Set(['Get', 'Post', 'Put', 'Patch', 'Delete', 'Head', 'All']);
@@ -68,7 +77,7 @@ export interface UnguardedRoute {
 }
 
 /** Stable key for baseline comparison, independent of line numbers. */
-export function routeKey(r: UnguardedRoute): string {
+export function routeKey(r: Pick<UnguardedRoute, 'file' | 'controller' | 'handler'>): string {
   return `${r.file}:${r.controller}.${r.handler}`;
 }
 
@@ -143,12 +152,14 @@ function uncoveredTenantParam(
   return null;
 }
 
-export function findUnguardedRoutes(
-  srcDir: string,
-  options: AnalyzerOptions = {},
-): UnguardedRoute[] {
-  const coverage = options.guardCoverage ?? GUARD_COVERAGE;
-  const findings: UnguardedRoute[] = [];
+interface RouteInfo extends Omit<UnguardedRoute, 'tenantParam'> {
+  classDecorators: readonly ts.Decorator[];
+  memberDecorators: readonly ts.Decorator[];
+}
+
+/** Every authenticated route in the controller surface, with its decorators. */
+function collectRoutes(srcDir: string): RouteInfo[] {
+  const routes: RouteInfo[] = [];
 
   for (const filePath of listControllerFiles(srcDir)) {
     const text = fs.readFileSync(filePath, 'utf8');
@@ -178,20 +189,16 @@ export function findUnguardedRoutes(
         // reviewed separately and never carry a tenant param they trust.
         if (hasDecorator(memberDecorators, 'Public')) continue;
 
-        const route = joinRoute(prefix, decoratorStringArg(methodDec) ?? '');
-        const guards = [...classGuards, ...guardsFrom(memberDecorators)];
-        const tenantParam = uncoveredTenantParam(route, guards, coverage);
-        if (!tenantParam) continue;
-
-        findings.push({
+        routes.push({
           file: relative,
           line: source.getLineAndCharacterOfPosition(member.getStart(source)).line + 1,
           controller: controllerName,
           handler: member.name.getText(source),
           method: decoratorName(methodDec) ?? '?',
-          route,
-          tenantParam,
-          guards,
+          route: joinRoute(prefix, decoratorStringArg(methodDec) ?? ''),
+          guards: [...classGuards, ...guardsFrom(memberDecorators)],
+          classDecorators,
+          memberDecorators,
         });
       }
     };
@@ -203,5 +210,61 @@ export function findUnguardedRoutes(
     visit(source);
   }
 
-  return findings.sort((a, b) => routeKey(a).localeCompare(routeKey(b)));
+  return routes.sort((a, b) => routeKey(a).localeCompare(routeKey(b)));
+}
+
+export function findUnguardedRoutes(
+  srcDir: string,
+  options: AnalyzerOptions = {},
+): UnguardedRoute[] {
+  const coverage = options.guardCoverage ?? GUARD_COVERAGE;
+  const findings: UnguardedRoute[] = [];
+
+  for (const { classDecorators: _c, memberDecorators: _m, ...r } of collectRoutes(srcDir)) {
+    const tenantParam = uncoveredTenantParam(r.route, r.guards, coverage);
+    if (tenantParam) findings.push({ ...r, tenantParam });
+  }
+
+  return findings;
+}
+
+const MUTATING_METHODS = new Set(['Post', 'Put', 'Patch', 'Delete']);
+
+export type RolelessRoute = Omit<UnguardedRoute, 'tenantParam'>;
+
+/**
+ * Mutating workspace routes without an ENFORCED `@RequiredRole`.
+ * `WorkspaceGuard` proves membership, not seat: without a role gate any viewer
+ * can call these. Reads stay open to every member by design, so only mutations
+ * are reported. Two coverage rules that are easy to get half-right:
+ *
+ * - The decorator only counts together with a `RoleGuard` binding. RoleGuard
+ *   is never an APP_GUARD, so `@RequiredRole` metadata nobody reads is an open
+ *   route that reviews as gated — the fail-open half of the misconfiguration.
+ *   (The mirror, RoleGuard without the decorator, fails closed at runtime and
+ *   is reported here as a dead route.)
+ * - `@SessionScoped()` mutations carry no `:workspaceId` — their tenant is the
+ *   session workspace — but a viewer seat there writes all the same, so they
+ *   are workspace mutations for this ratchet's purposes.
+ */
+export function findMutatingWorkspaceRoutesWithoutRole(
+  srcDir: string,
+  options: RoleAnalyzerOptions = {},
+): RolelessRoute[] {
+  const roleDecorator = options.requiredRoleDecorator ?? 'RequiredRole';
+
+  return collectRoutes(srcDir)
+    .filter((r) => {
+      if (!MUTATING_METHODS.has(r.method)) return false;
+      const workspaceScoped =
+        r.route.includes(':workspaceId') ||
+        hasDecorator(r.memberDecorators, 'SessionScoped') ||
+        hasDecorator(r.classDecorators, 'SessionScoped');
+      if (!workspaceScoped) return false;
+      const declared =
+        hasDecorator(r.memberDecorators, roleDecorator) ||
+        hasDecorator(r.classDecorators, roleDecorator);
+      return !(declared && r.guards.includes('RoleGuard'));
+    })
+    .map(({ classDecorators: _c, memberDecorators: _m, ...r }) => r);
 }

@@ -8,6 +8,15 @@ import type { SessionUser } from '@voiceforge/shared';
 const ORG_ACCESS_TTL_SECONDS = 300;
 
 /**
+ * Exported so CacheInvalidator deletes the same entry this guard writes.
+ * A second spelling of the key would let a revoked user keep org access for
+ * a full TTL window.
+ */
+export function orgAccessCacheKey(orgId: string, userId: string): string {
+  return `org:access:${orgId}:${userId}`;
+}
+
+/**
  * Tenant check for routes keyed by `:orgId` rather than `:workspaceId`.
  *
  * `WorkspaceGuard` returns early when the route has no `:workspaceId` param, so
@@ -40,7 +49,7 @@ export class OrganizationGuard implements CanActivate {
       throw new ForbiddenError('This route is not organization-scoped.');
     }
 
-    const accessKey = `org:access:${orgId}:${user.id}`;
+    const accessKey = orgAccessCacheKey(orgId, user.id);
     if (await this.cache.get<true>(accessKey)) return true;
 
     const membership = await this.prisma.membership.findFirst({

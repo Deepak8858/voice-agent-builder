@@ -1,6 +1,16 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { CacheService } from '../cache/cache.service';
 import { ResponseCacheService } from '../cache/response-cache.service';
+import {
+  sessionClaimsCacheKey,
+  sessionUserCacheKey,
+  sessionWorkspaceCacheKey,
+  workspaceListCacheKey,
+} from './cache-keys';
+import { orgAccessCacheKey } from './organization.guard';
+// The guards own their key spelling; deleting anything but the exact entry
+// they write leaves a revoked role live for a full TTL window.
+import { workspaceAccessCacheKey } from './workspace.guard';
 
 /**
  * Centralized cache invalidation service. Provides semantic methods for
@@ -24,11 +34,15 @@ export class CacheInvalidator {
   }
 
   invalidateWorkspaceList(userId: string) {
-    return this.cache.del(`workspaces:user:${userId}`);
+    return this.cache.del(workspaceListCacheKey(userId));
   }
 
   invalidateWorkspaceAccess(workspaceId: string, userId: string) {
-    return this.cache.del(`workspace:access:${workspaceId}:${userId}`);
+    return this.cache.del(workspaceAccessCacheKey(workspaceId, userId));
+  }
+
+  invalidateOrgAccess(orgId: string, userId: string) {
+    return this.cache.del(orgAccessCacheKey(orgId, userId));
   }
 
   async invalidateSession(input: {
@@ -37,13 +51,13 @@ export class CacheInvalidator {
     accessTokenHash?: string;
   }) {
     if (input.supabaseUserId) {
-      await this.cache.del(`session:user:${input.supabaseUserId}`);
+      await this.cache.del(sessionUserCacheKey(input.supabaseUserId));
     }
     if (input.appUserId) {
-      await this.cache.del(`session:workspace:${input.appUserId}`);
+      await this.cache.del(sessionWorkspaceCacheKey(input.appUserId));
     }
     if (input.accessTokenHash) {
-      await this.cache.del(`session:claims:${input.accessTokenHash}`);
+      await this.cache.del(sessionClaimsCacheKey(input.accessTokenHash));
     }
   }
 

@@ -8,6 +8,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
 import { CacheService } from '../cache/cache.service';
+import {
+  sessionClaimsCacheKey,
+  sessionUserCacheKey,
+  sessionWorkspaceCacheKey,
+  workspaceListCacheKey,
+} from '../common/cache-keys';
 import { PostHogService } from '../posthog/posthog.service';
 
 const SESSION_USER_TTL = 300;
@@ -68,7 +74,19 @@ export class SupabaseAuthService extends AuthService {
 
   async logout(req: Request, _res: Response): Promise<void> {
     const token = this.extractBearerToken(req);
-    if (!token || !this.supabaseServiceRoleKey) return;
+    if (!token) return;
+
+    // Drop the local caches keyed off this token, not just the Supabase
+    // session — an exfiltrated bearer would otherwise keep authenticating
+    // here for TOKEN_CLAIMS_TTL + SESSION_USER_TTL after sign-out. Deletion
+    // goes through this.cache rather than CacheInvalidator because injecting
+    // the invalidator here is a require cycle (CacheInvalidator →
+    // WorkspaceGuard → this service).
+    const sub = (jwt.decode(token) as Partial<SupabaseJWTPayload> | null)?.sub;
+    await this.cache.del(this.claimsCacheKey(token));
+    if (sub) await this.cache.del(sessionUserCacheKey(sub));
+
+    if (!this.supabaseServiceRoleKey) return;
     try {
       await fetch(`${this.supabaseUrl}/auth/v1/logout`, {
         method: 'POST',
@@ -94,7 +112,7 @@ export class SupabaseAuthService extends AuthService {
     const supabaseUserId = claims.sub;
     if (!supabaseUserId) return null;
 
-    const userKey = `session:user:${supabaseUserId}`;
+    const userKey = sessionUserCacheKey(supabaseUserId);
     const cached = await this.cache.get<SessionUser>(userKey);
     if (cached) {
       req.res?.setHeader('X-Cache-Hit', 'true');
@@ -193,7 +211,7 @@ export class SupabaseAuthService extends AuthService {
   }
 
   private claimsCacheKey(token: string): string {
-    return `session:claims:${this.tokenHash(token)}`;
+    return sessionClaimsCacheKey(this.tokenHash(token));
   }
 
   private tokenHash(token: string): string {
@@ -217,7 +235,7 @@ export class SupabaseAuthService extends AuthService {
     const authUserId = supabaseUserId;
     const user = await this.findOrProvisionUser(authUserId, supabaseUserId, claims);
 
-    const workspaceKey = `session:workspace:${user.id}`;
+    const workspaceKey = sessionWorkspaceCacheKey(user.id);
     const cachedWorkspace = await this.cache.get<SessionUser>(workspaceKey);
     if (cachedWorkspace) return cachedWorkspace;
 
@@ -353,6 +371,9 @@ export class SupabaseAuthService extends AuthService {
       update: {},
       include: { workspace: true },
     });
+    // A workspace list cached before this membership existed would hide the
+    // provisioned workspace for its TTL.
+    await this.cache.del(workspaceListCacheKey(userId));
     return { membership, workspaceCreated };
   }
 

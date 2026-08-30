@@ -48,6 +48,10 @@ export class TemplatesService {
 
   async getBySlug(slug: string) {
     const row = await this.prisma.agentTemplate.findUnique({ where: { slug } });
+    // A private row 404s rather than falling through to the seed copy: the DB
+    // row is authoritative for its slug, and a 404 does not leak that a
+    // private template exists.
+    if (row && !row.isPublic) throw new NotFoundException(`Template ${slug} not found`);
     if (row) {
       return {
         slug: row.slug,

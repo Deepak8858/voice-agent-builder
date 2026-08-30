@@ -13,6 +13,8 @@ import {
   type SessionUser,
 } from '@voiceforge/shared';
 import { WorkspaceGuard } from '../common/workspace.guard';
+import { RoleGuard } from '../common/role.guard';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { GenerationRateLimitGuard } from '../common/generation-rate-limit.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { UuidParamPipe } from '../common/uuid-param.pipe';
@@ -81,7 +83,12 @@ export class AgentsController {
     return { items: result.agents };
   }
 
+  // Agent mutations are content authoring, so editors are admitted; only the
+  // reads above/below stay open to viewers. Bound per-method because a
+  // class-level RoleGuard would fail closed on the ungated GETs.
   @Post()
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async create(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateAgentDtoSchema)) dto: CreateAgentDto,
@@ -91,7 +98,8 @@ export class AgentsController {
   }
 
   @Post('generate')
-  @UseGuards(GenerationRateLimitGuard)
+  @UseGuards(RoleGuard, GenerationRateLimitGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async generate(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(GenerateAgentDtoSchema)) dto: GenerateAgentDto,
@@ -108,6 +116,8 @@ export class AgentsController {
   }
 
   @Patch(':agentId')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async update(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -118,6 +128,8 @@ export class AgentsController {
   }
 
   @Post(':agentId/versions')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async createVersion(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -128,6 +140,8 @@ export class AgentsController {
   }
 
   @Post(':agentId/publish')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async publish(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -137,6 +151,8 @@ export class AgentsController {
   }
 
   @Post(':agentId/pause')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async pause(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
@@ -146,6 +162,8 @@ export class AgentsController {
   }
 
   @Put(':agentId/flow')
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin', 'editor')
   async updateFlow(
     @Param('workspaceId') workspaceId: string,
     @Param('agentId', agentIdPipe) agentId: string,
