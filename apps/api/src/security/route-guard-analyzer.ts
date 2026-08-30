@@ -16,7 +16,7 @@ import * as ts from 'typescript';
  *     `WorkspaceGuard`, which only inspects `:workspaceId`, so it authorized
  *     nothing while looking guarded. The service then treated `:orgId` as a
  *     workspace id and permanently deleted the contact.
- *   - `GET v1/orgs/:orgId/audit-logs` had no guard at all.
+ *   - `GET orgs/:orgId/audit-logs` had no guard at all.
  *   - `PATCH workspaces/me/retention` and three referral routes carried
  *     `WorkspaceGuard` on a path it could not check, so the decoration hid
  *     whether a check was intended.

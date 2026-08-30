@@ -37,6 +37,7 @@ const mockQueueService = {
 
 const mockRetention = {
   sweepExpiredCalls: vi.fn(),
+  sweepStaleTelephonyWebhookEvents: vi.fn(),
 };
 
 function build(): RetentionSweepWorker {
@@ -53,6 +54,7 @@ describe('RetentionSweepWorker', () => {
     envMock.env.RETENTION_SWEEP_ENABLED = false;
     mockQueueHandle.upsertJobScheduler.mockResolvedValue(undefined);
     mockRetention.sweepExpiredCalls.mockResolvedValue({ deleted: 0, remaining: 0 });
+    mockRetention.sweepStaleTelephonyWebhookEvents.mockResolvedValue(0);
   });
 
   afterEach(() => {
@@ -123,6 +125,7 @@ describe('RetentionSweepWorker', () => {
       await worker.processor(sweepJob());
 
       expect(mockRetention.sweepExpiredCalls).not.toHaveBeenCalled();
+      expect(mockRetention.sweepStaleTelephonyWebhookEvents).not.toHaveBeenCalled();
     });
 
     it('sweeps when the flag is on', async () => {
@@ -147,6 +150,25 @@ describe('RetentionSweepWorker', () => {
       await build().processor(sweepJob());
 
       expect(mockRetention.sweepExpiredCalls).toHaveBeenCalledWith({});
+    });
+
+    /**
+     * Five of the six webhook writers leave `call_id` NULL, so those payloads are
+     * unreachable from the call sweep entirely. A run that finds no expired call
+     * must still age them out, or a workspace on the 365-day default keeps raw
+     * provider bodies for a year before the first call even expires.
+     */
+    it('ages out webhook payloads even on a run with no expired calls', async () => {
+      envMock.env.RETENTION_SWEEP_ENABLED = true;
+      mockRetention.sweepExpiredCalls.mockResolvedValueOnce({ deleted: 0, remaining: 0 });
+      mockRetention.sweepStaleTelephonyWebhookEvents.mockResolvedValueOnce(41);
+      const worker = build();
+      const log = vi.spyOn(worker['logger'], 'log').mockImplementation(() => undefined);
+
+      await worker.processor(sweepJob());
+
+      expect(mockRetention.sweepStaleTelephonyWebhookEvents).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('41'));
     });
 
     it('logs the result of a fully drained run', async () => {

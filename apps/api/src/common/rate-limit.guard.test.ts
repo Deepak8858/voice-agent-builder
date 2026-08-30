@@ -1,13 +1,15 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { Controller, Get, type ExecutionContext } from '@nestjs/common';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { Controller, Get, type ArgumentsHost, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RateLimitGuard, SKIP_RATE_LIMIT_KEY, SkipRateLimit } from './rate-limit.guard';
+import { HttpExceptionFilter } from './http-exception.filter';
 import { MetricsController } from './metrics.controller';
 import { InternalOnly } from './decorators/internal-only.decorator';
 import { Public } from './decorators/public.decorator';
 import { CacheService } from '../cache/cache.service';
+import { env } from '../config/env';
 import type { SessionUser } from '@voiceforge/shared';
 
 /**
@@ -123,7 +125,7 @@ describe('RateLimitGuard', () => {
     const ctx = ctxFor(GUARDED, { ip: '203.0.113.7' });
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       status: 429,
-      response: { code: 'RATE_LIMIT_EXCEEDED' },
+      response: { code: 'RATE_LIMITED' },
     });
   });
 
@@ -177,6 +179,68 @@ describe('RateLimitGuard', () => {
     );
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(mockCache.incr).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Asserted through the REAL exception filter, and in production mode, because
+ * that is the only place either half of the 429 envelope is observable. The
+ * filter rebuilds the response from `code`/`message`/`details` alone, so a
+ * `retryAfterSeconds` thrown at the top level is silently dropped; and it keeps
+ * `details` in production only when the code is exactly `RATE_LIMITED`, so the
+ * old `RATE_LIMIT_EXCEEDED` spelling stripped the hint even once it was nested.
+ * Both defects are invisible to an assertion on the thrown exception.
+ */
+describe('the 429 a client actually receives', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('carries code RATE_LIMITED and retryAfterSeconds in details, in production', async () => {
+    // isProduction() reads process.env on every call, so no re-import is needed.
+    vi.stubEnv('NODE_ENV', 'production');
+
+    const cache = { incr: vi.fn().mockResolvedValue(env.RATE_LIMIT_MAX + 1) };
+    const guard = new RateLimitGuard(cache as unknown as CacheService, new Reflector());
+
+    let thrown: unknown;
+    try {
+      await guard.canActivate(ctxFor(GUARDED, { user: { id: 'user_1' } }));
+    } catch (error) {
+      thrown = error;
+    }
+
+    let sentStatus: number | undefined;
+    let sentBody: unknown;
+    const res = {
+      status(code: number) {
+        sentStatus = code;
+        return res;
+      },
+      json(body: unknown) {
+        sentBody = body;
+        return res;
+      },
+    };
+    const host = {
+      switchToHttp: () => ({
+        getRequest: () => ({ method: 'GET', url: '/api/v1/agents' }),
+        getResponse: () => res,
+      }),
+    } as unknown as ArgumentsHost;
+
+    new HttpExceptionFilter().catch(thrown, host);
+
+    expect(sentStatus).toBe(429);
+    expect(sentBody).toEqual({
+      success: false,
+      data: null,
+      error: {
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Please wait before trying again.',
+        details: { retryAfterSeconds: env.RATE_LIMIT_WINDOW_SECONDS },
+      },
+    });
   });
 });
 

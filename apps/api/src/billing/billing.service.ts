@@ -46,49 +46,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreditLedgerService } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
 
-interface StripeCustomer {
-  id: string;
-}
-
-interface StripeSession {
-  url: string | null;
-}
-
-interface StripeInvoice {
-  id: string;
-  number: string | null;
-  status: string | null;
-  amount_due: number;
-  amount_paid: number;
-  currency: string;
-  created: number;
-  period_start?: number | null;
-  period_end?: number | null;
-  invoice_pdf?: string | null;
-  hosted_invoice_url?: string | null;
-}
-
-interface StripeClient {
-  customers: {
-    create(params: Record<string, unknown>): Promise<StripeCustomer>;
-  };
-  checkout: {
-    sessions: {
-      create(
-        params: Record<string, unknown>,
-        options?: { idempotencyKey?: string },
-      ): Promise<StripeSession>;
-    };
-  };
-  billingPortal: {
-    sessions: {
-      create(params: Record<string, unknown>): Promise<StripeSession>;
-    };
-  };
-  invoices: {
-    list(params: Record<string, unknown>): Promise<{ data: StripeInvoice[] }>;
-  };
-}
+/**
+ * The only SDK surface this service calls, derived from `Stripe` rather than
+ * hand-rolled: every parameter and return shape below is the installed SDK's, so
+ * a renamed resource or a changed Checkout parameter is a compile error here
+ * instead of a runtime failure in the middle of a payment.
+ */
+type StripeClient = Pick<Stripe, 'customers' | 'checkout' | 'billingPortal' | 'invoices'>;
 
 function hasControlCharacter(value: string): boolean {
   return Array.from(value).some((char) => char.charCodeAt(0) <= 31);
@@ -116,10 +80,10 @@ export class BillingService {
     // duplicated literal, and retry transient network failures so a dropped
     // connection does not surface as a failed payment attempt.
     this.stripe = env.STRIPE_SECRET_KEY
-      ? (new Stripe(env.STRIPE_SECRET_KEY, {
+      ? new Stripe(env.STRIPE_SECRET_KEY, {
           apiVersion: Stripe.API_VERSION,
           maxNetworkRetries: 2,
-        }) as unknown as StripeClient)
+        })
       : null;
     if (!this.stripe) {
       this.logger.warn('STRIPE_SECRET_KEY is not set. Stripe operations will be no-ops.');

@@ -4,6 +4,30 @@ import { AuditService } from '../audit/audit.service';
 
 const BATCH_SIZE = 5000;
 
+/**
+ * Age ceiling for `telephony_webhook_events`, in days.
+ *
+ * 30 is the floor `updateWorkspaceRetention` clamps a workspace to, which is why
+ * one flat number is enough: it can never outlive a tenant's own window, where a
+ * per-workspace window could. A workspace on the 30-day minimum would otherwise
+ * keep raw provider bodies here for the 365-day default, and the only thing
+ * asking each workspace would buy is keeping caller phone numbers *longer* for
+ * the tenants with long windows -- the wrong direction for a table whose rows are
+ * unread provider payloads. Rows whose `workspace_id` is NULL (no phone number on
+ * the delivery, or a lookup that missed) have no tenant to ask and get the same
+ * ceiling, which is the whole reason a ceiling exists.
+ *
+ * Three orders of magnitude clear of every provider retry window (minutes for a
+ * Twilio status callback, hours for LiveKit), so purging a row cannot re-open a
+ * replay that a `(provider, event_id)` idempotency check would have refused.
+ * Nothing performs that check today: `TelephonyService.recordWebhookEvent`
+ * creates the row inside a swallowing try/catch and all six call sites discard
+ * its result, so replay protection lives in `ensureInboundCall`'s upsert on
+ * `(provider, provider_call_id)` and in call admission, neither of which reads
+ * this table. The margin is for whoever wires the check up later.
+ */
+const TELEPHONY_WEBHOOK_EVENT_MAX_AGE_DAYS = 30;
+
 interface SweepResult {
   deleted: number;
   remaining: number;
@@ -198,6 +222,119 @@ export class RetentionService {
       },
     });
     return { deleted, remaining: afterRemaining };
+  }
+
+  /**
+   * Ages out telephony webhook payloads the call sweep cannot reach.
+   *
+   * `sweepExpiredCalls` only deletes webhook rows whose `call_id` is in the batch
+   * of calls it is destroying, and five of the six writers in
+   * `TelephonyService.recordWebhookEvent` leave `call_id` NULL -- only the LiveKit
+   * handler resolves a call before recording. Twilio voice, Twilio and Vobiz
+   * status, Vobiz inbound, Vobiz verify and every invalid-signature delivery
+   * therefore wrote rows the sweep could never match, so their `raw_payload_json`
+   * -- the provider's own body, `From` and `To` included -- accumulated for the
+   * life of the database whatever retention period the workspace advertised.
+   *
+   * Only the payload copy ages out. The `telephony.webhook.invalid_signature`
+   * audit row that accompanies a rejected delivery is written separately and
+   * outlives it, so the security trail is not what this deletes.
+   *
+   * Returns how many rows went. No second `count` for a remaining figure: it
+   * would be another full pass over the widest table in the schema for a log
+   * line, and a run that fills its batch already says there is a backlog.
+   *
+   * ponytail: one BATCH_SIZE batch per run, so an existing backlog drains at
+   * 5000 rows/day like the call sweep's. Upgrade path if that is too slow to
+   * matter: raise the ceiling for this table alone -- these rows have no
+   * dependents to cascade, which is what makes the call sweep's batch expensive.
+   */
+  async sweepStaleTelephonyWebhookEvents(): Promise<number> {
+    const cutoff = new Date(
+      Date.now() - TELEPHONY_WEBHOOK_EVENT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
+    );
+
+    // Oldest first, so a backlog drains in age order rather than leaving the
+    // longest-overdue payloads for last.
+    const stale = await this.prisma.telephonyWebhookEvent.findMany({
+      where: { createdAt: { lt: cutoff } },
+      take: BATCH_SIZE,
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, workspaceId: true },
+    });
+    if (stale.length === 0) return 0;
+
+    // Two lists from one loop, not two `stale.map(...)` initializers, for the
+    // same reason as sweepExpiredCalls: the tenant-scope analyzer substitutes a
+    // referenced variable's initializer into the `where` it is checking, so a
+    // mapped id list would carry this `select` -- and its `workspaceId` -- into
+    // the delete below and reclassify it as tenant-scoped without anyone asking.
+    const ids: string[] = [];
+    const workspaceIds = new Set<string>();
+    for (const row of stale) {
+      ids.push(row.id);
+      if (row.workspaceId) workspaceIds.add(row.workspaceId);
+    }
+
+    // The ids alone are already exact. The workspace predicate is the part the
+    // analyzer can read, and it is the same OR as the call sweep's for the same
+    // reason: `workspace_id` is resolved from the phone number the delivery
+    // arrived on, so a delivery whose number could not be resolved has none at
+    // all, and an `AND workspace_id IN (...)` would skip exactly the rows this
+    // method exists for. Both branches are built from the batch itself, so
+    // neither can reach a row the cutoff did not select.
+    // Delete and audit commit together, the way updateWorkspaceRetention does it
+    // and deliberately UNLIKE sweepExpiredCalls. That method logs locally first
+    // and audits after, because rolling a call purge back would also have to undo
+    // the crm_fanout_log purge that ran before it, and it would rather lose the
+    // audit row than the delete. This sweep has neither problem: it is a flat
+    // age-out of rows nothing reads, so if the audit insert fails there is
+    // nothing to salvage by keeping the delete -- tonight's run simply selects
+    // the same over-30-day rows again. One transaction therefore costs a day of
+    // delay in the worst case and buys the guarantee that no payload is destroyed
+    // without a row saying so.
+    //
+    // `auditLog.create` inline rather than `this.audit.log()`: AuditService holds
+    // its own client and would commit independently of this transaction. With
+    // `workspaceId: null` its only added behaviour, resolveOrganizationId,
+    // returns null without querying, so nothing is lost by inlining.
+    const [result] = await this.prisma.$transaction([
+      this.prisma.telephonyWebhookEvent.deleteMany({
+        where: {
+          id: { in: ids },
+          OR: [{ workspaceId: { in: [...workspaceIds] } }, { workspaceId: null }],
+        },
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          workspaceId: null,
+          organizationId: null,
+          action: 'retention.sweep_telephony_webhook_events',
+          resourceType: 'telephony_webhook_event',
+          metadata: {
+            // Spelled out rather than omitted, matching the call sweep: a
+            // platform-wide purge must not read as a row that lost its scope.
+            scope: 'all-workspaces',
+            cutoff: cutoff.toISOString(),
+            maxAgeDays: TELEPHONY_WEBHOOK_EVENT_MAX_AGE_DAYS,
+            // The batch size, not deleteMany's count: the two statements are
+            // built in one array, so the count is not available to the row that
+            // records it. They differ only if a concurrent erasure deleted some
+            // of these ids first, which is why the field is named for what it is.
+            // Counted, never listed -- unlike the call sweep's `callIds`, these
+            // ids answer no question once the rows are gone, and a list of them
+            // would only be a surviving pointer to the payloads this destroyed.
+            selected: ids.length,
+          },
+        },
+      }),
+    ]);
+
+    this.logger.log(
+      { cutoff: cutoff.toISOString(), selected: ids.length, deleted: result.count },
+      'Telephony webhook event sweep completed',
+    );
+    return result.count;
   }
 
   /**

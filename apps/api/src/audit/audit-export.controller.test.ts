@@ -8,7 +8,7 @@ import { OrganizationGuard } from '../common/organization.guard';
 import { AuditExportController } from './audit-export.controller';
 
 /**
- * `GET v1/orgs/:orgId/audit-logs` returns up to 10k rows of actor user ids,
+ * `GET orgs/:orgId/audit-logs` returns up to 10k rows of actor user ids,
  * actions, resource types and resource ids for EVERY workspace in the org.
  * Membership is modelled per workspace, so before @RequiredOrgRole any `viewer`
  * in any one workspace of the org could read all of it, including workspaces
@@ -68,6 +68,27 @@ function guardFor(prisma: ReturnType<typeof prismaFor>) {
   const cache = { get: vi.fn(async () => null), set: vi.fn(async () => undefined) };
   return new OrganizationGuard(prisma as never, cache as never, new Reflector());
 }
+
+/**
+ * CS-40, last instance: this handler declared `v1/orgs/:orgId/audit-logs` while
+ * main.ts already sets the global prefix `api/v1`, so it served at
+ * `/api/v1/v1/orgs/...`. Pinned the way the settings and erasure controllers pin
+ * theirs, because nothing else in this repo asserts the path — proxy-guards.test.ts
+ * only pins that neither spelling is browser-proxyable.
+ */
+describe('AuditExportController route paths', () => {
+  it('does not repeat the global api/v1 prefix', () => {
+    expect(Reflect.getMetadata('path', handler)).toBe('orgs/:orgId/audit-logs');
+    // The operator routes never carried the doubled prefix; pinned so a future
+    // edit cannot "restore consistency" by adding one.
+    expect(Reflect.getMetadata('path', AuditExportController.prototype.adminExport)).toBe(
+      'admin/audit/export',
+    );
+    expect(Reflect.getMetadata('path', AuditExportController.prototype.generateReport)).toBe(
+      'admin/audit/report',
+    );
+  });
+});
 
 describe('AuditExportController org audit-log authorization', () => {
   it('binds OrganizationGuard on the handler', () => {

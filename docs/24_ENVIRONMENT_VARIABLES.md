@@ -67,7 +67,10 @@ modes, not one:
 3. **`@Public()` routes** — health and metrics. No credentials at all; the guard
    returns before it looks at any header.
 4. **Provider webhooks** — also `@Public()`, authenticated by provider signature
-   instead (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, Twilio signature).
+   instead. Three of those signatures come from an env var
+   (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, and `TWILIO_AUTH_TOKEN` for
+   the legacy platform-owned Twilio voice webhooks); the BYO telephony ones do
+   not — see ## Voice.
 
 ## LLM
 ```env
@@ -82,6 +85,22 @@ Vapi and Retell were removed in 2026-08. `VOICE_PROVIDER` accepts `mock`
 (non-production only), `twilio`, or `openai-realtime`; a retired value is coerced
 to `openai-realtime` with a deprecation warning rather than failing boot. See
 `docs/RUNBOOK.md` §2 for the migration.
+
+No webhook secret is configured here, and there is no `LIVEKIT_WEBHOOK_SECRET` or
+`VOBIZ_WEBHOOK_SECRET` — both used to be listed and neither was ever read by any
+code. Inbound LiveKit webhooks are verified with `LIVEKIT_API_KEY` /
+`LIVEKIT_API_SECRET` (the SDK's `WebhookReceiver` validates the request's
+`Authorization` JWT against them); Vobiz webhooks are verified with a
+**per-phone-number** secret VoiceForge stores encrypted on the number itself, so
+no environment variable secures those.
+
+Twilio has two webhook families and only one of them is env-free:
+
+| Family | Routes | Signing secret |
+| --- | --- | --- |
+| BYO telephony | `telephony/` | the provider connection's decrypted `authToken`, falling back to the number's per-number secret |
+| Legacy platform-owned | `twilio-adapter/` | the account-level **`TWILIO_AUTH_TOKEN`** below — `TwilioSignatureVerifier` rejects every delivery when it is unset, because those `TwilioPhoneNumber` rows carry no provider connection |
+
 ```env
 VOICE_PROVIDER=openai-realtime
 TWILIO_ACCOUNT_SID=
@@ -96,10 +115,8 @@ LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=
 LIVEKIT_API_SECRET=
 LIVEKIT_SIP_HOST=your-project.sip.livekit.cloud
-LIVEKIT_WEBHOOK_SECRET=
 LIVEKIT_ROOM_PREFIX=call
 LIVEKIT_AGENT_NAME_PREFIX=voiceforge-agent
-VOBIZ_WEBHOOK_SECRET=
 VOBIZ_DEFAULT_SIP_DOMAIN=
 OPENAI_API_KEY=
 OPENAI_REALTIME_BASE_URL=https://api.openai.com/v1

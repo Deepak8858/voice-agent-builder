@@ -99,11 +99,25 @@ export class RateLimitGuard implements CanActivate {
 
     if (count > this.max) {
       this.logger.debug(`[ratelimit] blocked subject=${subject} count=${count}`);
-      throw new HttpException({
-        code: 'RATE_LIMIT_EXCEEDED',
-        message: 'Too many requests. Please wait before trying again.',
-        retryAfterSeconds: this.windowSec,
-      }, HttpStatus.TOO_MANY_REQUESTS);
+      // `RATE_LIMITED` is the ApiErrorCode for 429 — it is what the shared
+      // union in packages/shared declares, what the exception filter's
+      // mapStatus() produces, and what GenerationRateLimitGuard already
+      // throws. `RATE_LIMIT_EXCEEDED` was in no client contract, and it also
+      // cost the retry hint: the filter keeps `details` in production only for
+      // code === 'RATE_LIMITED'.
+      //
+      // retryAfterSeconds nests under `details` for the same reason it does in
+      // GenerationRateLimitGuard — the filter rebuilds the envelope from
+      // `code`/`message`/`details` alone, so a top-level extra is dropped and
+      // the client never saw the wait time at all.
+      throw new HttpException(
+        {
+          code: 'RATE_LIMITED',
+          message: 'Too many requests. Please wait before trying again.',
+          details: { retryAfterSeconds: this.windowSec },
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     this.logger.debug(`[ratelimit] allowed subject=${subject} count=${count}/${this.max}`);

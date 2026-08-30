@@ -110,53 +110,32 @@ const STRIPE_LOOKBACK_MS = 35 * 24 * 60 * MINUTE_MS;
  */
 const LIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'past_due']);
 
-/** Only the fields the drift comparison reads, mirroring the rest of `billing/`. */
-interface StripeDriftInvoice {
-  id: string;
-  customer: unknown;
-  /**
-   * The subscription behind an invoice lives here, not in a top-level
-   * `subscription` field: that field was removed from the Invoice object in the
-   * Basil API version, and the client below pins the installed SDK's version,
-   * which is well past it. Reading the old field made every subscription invoice
-   * fail the filter, so the drift counters silently reported less drift than
-   * exists.
-   */
-  parent: { type: string; subscription_details?: { subscription?: unknown } | null } | null;
-  amount_paid: number;
-}
-
-interface StripeDriftSession {
-  id: string;
-  customer: unknown;
-  payment_status: string | null;
-  metadata: Record<string, string> | null;
-}
-
-interface StripeDriftSubscription {
-  id: string;
-  status: string;
-  items?: { data?: Array<{ price?: { id?: string | null } | null }> };
-}
-
 interface StripeListPage<T> {
   data: T[];
   has_more: boolean;
 }
 
-interface StripeDriftClient {
-  invoices: {
-    list(params: Record<string, unknown>): Promise<StripeListPage<StripeDriftInvoice>>;
-  };
-  subscriptions: {
-    list(params: Record<string, unknown>): Promise<StripeListPage<StripeDriftSubscription>>;
-  };
-  checkout: {
-    sessions: {
-      list(params: Record<string, unknown>): Promise<StripeListPage<StripeDriftSession>>;
-    };
-  };
+/**
+ * The paging arguments {@link ReconciliationService.listStripe} adds to whatever
+ * filter its caller supplies. Narrow on purpose: it has to be assignable to every
+ * Stripe list-params type, and a `Record<string, unknown>` would not be.
+ */
+interface StripePageParams {
+  limit: number;
+  starting_after?: string;
 }
+
+/**
+ * The only SDK surface the drift comparison calls, derived from `Stripe` rather
+ * than hand-rolled: the objects it reads (a paid invoice's `parent`, a
+ * subscription's items, a session's `payment_status`) are then the installed
+ * SDK's own types, so a field that moves or disappears on a Stripe major is a
+ * compile error here rather than a drift counter silently reading zero. The
+ * subscription behind an invoice is read from `parent.subscription_details`
+ * because the top-level `subscription` field was removed from Invoice in the
+ * Basil API version, which the pinned SDK is well past.
+ */
+type StripeDriftClient = Pick<Stripe, 'invoices' | 'subscriptions' | 'checkout'>;
 
 /**
  * One suspected disagreement between Stripe and us, re-checked against the
@@ -197,10 +176,10 @@ export class ReconciliationService {
     // pinned to the installed SDK's API version, and null when there is no
     // secret key so the comparison no-ops in environments without Stripe.
     this.stripe = env.STRIPE_SECRET_KEY
-      ? (new Stripe(env.STRIPE_SECRET_KEY, {
+      ? new Stripe(env.STRIPE_SECRET_KEY, {
           apiVersion: Stripe.API_VERSION,
           maxNetworkRetries: 2,
-        }) as unknown as StripeDriftClient)
+        })
       : null;
   }
 
@@ -1045,7 +1024,7 @@ export class ReconciliationService {
   private async listStripe<T extends { id: string }>(
     label: string,
     limit: number,
-    list: (params: Record<string, unknown>) => Promise<StripeListPage<T>>,
+    list: (params: StripePageParams) => Promise<StripeListPage<T>>,
   ): Promise<{ items: T[]; truncated: boolean }> {
     const items: T[] = [];
     try {

@@ -83,15 +83,14 @@ function toDateFromUnixSeconds(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-interface StripeWebhookClient {
-  webhooks: {
-    constructEvent(
-      payload: Buffer,
-      signature: string,
-      secret: string,
-    ): StripeWebhookEvent;
-  };
-}
+/**
+ * The only SDK surface this service calls, derived from `Stripe` rather than
+ * hand-rolled: a rename or a signature change in `webhooks` is then a compile
+ * error here instead of a signature check that throws on the live endpoint.
+ * {@link StripeWebhookEvent} still exists because {@link reclaimStuckEvents}
+ * rebuilds an event from stored columns, which cannot be a `Stripe.Event`.
+ */
+type StripeWebhookClient = Pick<Stripe, 'webhooks'>;
 
 @Injectable()
 export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
@@ -107,10 +106,10 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
     private readonly cacheInvalidator?: CacheInvalidator,
   ) {
     this.stripe = env.STRIPE_SECRET_KEY
-      ? (new Stripe(env.STRIPE_SECRET_KEY, {
+      ? new Stripe(env.STRIPE_SECRET_KEY, {
           apiVersion: Stripe.API_VERSION,
           maxNetworkRetries: 2,
-        }) as unknown as StripeWebhookClient)
+        })
       : null;
   }
 

@@ -9,13 +9,14 @@ LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=
 LIVEKIT_API_SECRET=
 LIVEKIT_SIP_HOST=your-project.sip.livekit.cloud
-LIVEKIT_WEBHOOK_SECRET=
 LIVEKIT_ROOM_PREFIX=call
 LIVEKIT_AGENT_NAME_PREFIX=voiceforge-agent
 OPENAI_REALTIME_MODEL=gpt-realtime-2
 ```
 
 `LIVEKIT_API_SECRET` is backend-only. The browser should receive only short-lived room tokens.
+
+There is no separate webhook secret to set. Inbound LiveKit webhooks are verified by the SDK's `WebhookReceiver`, which validates the request's `Authorization` JWT against `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` above. This list used to include `LIVEKIT_WEBHOOK_SECRET`; nothing in the code has ever read it, so setting it verified nothing.
 
 ## Runtime Flow
 

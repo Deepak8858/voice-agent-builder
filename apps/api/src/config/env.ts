@@ -78,11 +78,27 @@ const EnvSchema = z
     LIVEKIT_API_KEY: z.string().optional(),
     LIVEKIT_API_SECRET: z.string().optional(),
     LIVEKIT_SIP_HOST: z.string().optional(),
-    LIVEKIT_WEBHOOK_SECRET: z.string().optional(),
     LIVEKIT_ROOM_PREFIX: z.string().default('call'),
     LIVEKIT_AGENT_NAME: z.string().default('voiceforge-agent'),
     LIVEKIT_AGENT_NAME_PREFIX: z.string().default('voiceforge-agent'),
-    VOBIZ_WEBHOOK_SECRET: z.string().optional(),
+    // There is deliberately no LIVEKIT_WEBHOOK_SECRET or VOBIZ_WEBHOOK_SECRET
+    // here. Both existed, both had zero consumers, and both read as the thing
+    // that secured their webhook — an operator setting them believed signatures
+    // were verified against them. Neither verifier has ever looked at an env
+    // var: LiveKitService.verifyWebhook builds a WebhookReceiver from
+    // LIVEKIT_API_KEY/LIVEKIT_API_SECRET, and Vobiz verifies against a
+    // PER-NUMBER secret decrypted from the phone number's
+    // providerMetadata.webhookSecretEncrypted, so neither has a global secret
+    // to configure. Adding one back would be a lie, not a feature.
+    //
+    // Twilio is the exception and is NOT symmetric with Vobiz, so do not
+    // generalize from it. There are two Twilio webhook families:
+    //   - Legacy platform-owned (`twilio-adapter/`): TwilioSignatureVerifier
+    //     signs with the account-level TWILIO_AUTH_TOKEN above, because those
+    //     `TwilioPhoneNumber` rows carry no provider connection.
+    //   - BYO (`telephony/`): the secret is the connection's decrypted
+    //     `authToken`, falling back to the number's webhookSecretEncrypted.
+    //     No env var participates in this path.
     VOBIZ_DEFAULT_SIP_DOMAIN: z.string().optional(),
 
     OPENAI_REALTIME_BASE_URL: z.string().default('https://api.openai.com/v1'),

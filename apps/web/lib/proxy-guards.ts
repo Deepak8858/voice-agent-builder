@@ -23,9 +23,11 @@ import { siteUrl } from '@/lib/site-url';
  * prefix, which changed what the browser can reach and is deliberate on both
  * sides: contact erasure is now `/workspaces/me/contacts/:id/erasure` and so is
  * covered by the `/workspaces` prefix, like ContactsController's other contact
- * mutations, while `/users/me/erasure` gets no entry and stays unreachable. The
- * one route still under the doubled namespace, `GET v1/orgs/:orgId/audit-logs`,
- * is unreachable here as before.
+ * mutations, while `/users/me/erasure` gets no entry and stays unreachable.
+ * `GET orgs/:orgId/audit-logs` was the last route under the doubled namespace
+ * and has since dropped it too, so no doubled path exists anywhere. Neither
+ * spelling is reachable here: there is no `/orgs` prefix and none is wanted —
+ * that route is an org-admin surface the dashboard does not call.
  *
  * proxy-guards.test.ts extracts every proxy call site in apps/web and asserts
  * both directions: every requested path matches a prefix here, and every

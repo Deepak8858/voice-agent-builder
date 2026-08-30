@@ -121,6 +121,12 @@ export class RetentionSweepWorker
     // Scope-less on purpose: platform-wide is what a retention sweep is, and the
     // service stamps 'all-workspaces' into the audit row for exactly this call.
     const { deleted, remaining } = await this.retention.sweepExpiredCalls({});
+    // Unconditional, and after the calls rather than before them: five of the six
+    // webhook writers leave `call_id` NULL, so those payloads are unreachable
+    // from the call sweep and a day with nothing expired is exactly a day they
+    // still have to age out. Second so that a failure here cannot stop the
+    // primary retention promise from being kept first.
+    const webhookEvents = await this.retention.sweepStaleTelephonyWebhookEvents();
 
     if (remaining > 0) {
       // ponytail: one 5000-call batch per day is the ceiling, so a backlog drains
@@ -129,13 +135,17 @@ export class RetentionSweepWorker
       // Upgrade path if a backlog ever needs to drain faster: re-enqueue this job
       // with a short delay while `remaining > 0`, bounded by a per-run job count.
       this.logger.warn(
-        `[Retention] Swept ${deleted} expired call(s); ${remaining} still expired and ` +
-          'will be picked up by the next daily run (one batch per run by design)',
+        `[Retention] Swept ${deleted} expired call(s) and ${webhookEvents} stale webhook ` +
+          `event(s); ${remaining} call(s) still expired and will be picked up by the next ` +
+          'daily run (one batch per run by design)',
       );
       return;
     }
 
-    this.logger.log(`[Retention] Swept ${deleted} expired call(s); none remaining`);
+    this.logger.log(
+      `[Retention] Swept ${deleted} expired call(s) and ${webhookEvents} stale webhook ` +
+        'event(s); no expired calls remaining',
+    );
   }
 }
 
