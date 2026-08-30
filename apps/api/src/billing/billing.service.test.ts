@@ -237,6 +237,7 @@ describe('BillingService', () => {
           automatic_tax: { enabled: false },
           billing_address_collection: 'required',
           tax_id_collection: { enabled: true },
+          customer_update: { name: 'auto', address: 'auto' },
           success_url: 'https://app.voiceforge.test/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}',
           cancel_url: 'https://app.voiceforge.test/dashboard/billing?checkout=cancel',
           metadata: expect.objectContaining({
@@ -407,6 +408,7 @@ describe('BillingService', () => {
           // not subscribe to, so the pack would be paid for and never granted.
           payment_method_types: ['card'],
           line_items: [{ price: 'price_minute_pack', quantity: 1 }],
+          customer_update: { name: 'auto', address: 'auto' },
           metadata: expect.objectContaining({
             organizationId: 'org-1',
             purchaseType: 'minute_pack',

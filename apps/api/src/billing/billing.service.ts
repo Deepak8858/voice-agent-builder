@@ -223,6 +223,11 @@ export class BillingService {
       automatic_tax: { enabled: env.STRIPE_TAX_ENABLED },
       billing_address_collection: 'required',
       tax_id_collection: { enabled: true },
+      // Persist the collected name and address onto the customer. Stripe India
+      // refuses to create a session for an attached customer that will not end
+      // up carrying both (export rule, stripe.com/docs/india-exports); on other
+      // accounts this only keeps the customer record complete.
+      customer_update: { name: 'auto', address: 'auto' },
       metadata: {
         organizationId,
         plan: dto.plan,
@@ -294,6 +299,8 @@ export class BillingService {
       automatic_tax: { enabled: env.STRIPE_TAX_ENABLED },
       billing_address_collection: 'required',
       tax_id_collection: { enabled: true },
+      // Same India export rule as the subscription session above.
+      customer_update: { name: 'auto', address: 'auto' },
       metadata: {
         organizationId,
         purchaseType: 'minute_pack',
