@@ -6,18 +6,52 @@ import type { LookupAddress } from 'node:dns';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 
+/** Private, reserved and otherwise unreachable IPv4 space, as `[network, prefix]`. */
+const BLOCKED_IPV4_SUBNETS: readonly (readonly [string, number])[] = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+];
+
 const blockedAddresses = new BlockList();
-blockedAddresses.addSubnet('0.0.0.0', 8, 'ipv4');
-blockedAddresses.addSubnet('10.0.0.0', 8, 'ipv4');
-blockedAddresses.addSubnet('100.64.0.0', 10, 'ipv4');
-blockedAddresses.addSubnet('127.0.0.0', 8, 'ipv4');
-blockedAddresses.addSubnet('169.254.0.0', 16, 'ipv4');
-blockedAddresses.addSubnet('172.16.0.0', 12, 'ipv4');
-blockedAddresses.addSubnet('192.0.0.0', 24, 'ipv4');
-blockedAddresses.addSubnet('192.168.0.0', 16, 'ipv4');
-blockedAddresses.addSubnet('198.18.0.0', 15, 'ipv4');
-blockedAddresses.addSubnet('224.0.0.0', 4, 'ipv4');
-blockedAddresses.addSubnet('240.0.0.0', 4, 'ipv4');
+for (const [network, prefix] of BLOCKED_IPV4_SUBNETS) {
+  blockedAddresses.addSubnet(network, prefix, 'ipv4');
+
+  // RFC 6052 NAT64: on a network with a NAT64 gateway, `64:ff9b::<v4>` reaches
+  // the embedded IPv4 address, so `https://[64:ff9b::a9fe:a9fe]/` reaches
+  // 169.254.169.254 -- the cloud metadata endpoint -- while looking like an
+  // ordinary public IPv6 host to a v4-only block list.
+  //
+  // Because the well-known prefix is exactly /96, bits 96..96+prefix of the
+  // IPv6 address ARE the IPv4 network prefix, so mirroring each range at
+  // `96 + prefix` is bit-for-bit equivalent to extracting the embedded address
+  // and re-checking it against the IPv4 list -- with no IPv6 parser to get
+  // wrong. BlockList canonicalises the literal, so every `::`-compressed
+  // spelling of the same address is caught.
+  //
+  // Mirroring the ranges rather than blocking `64:ff9b::/96` wholesale is
+  // deliberate: the whole prefix is how IPv6-only networks reach the IPv4
+  // internet, so blocking all of it would be a functional regression.
+  // `64:ff9b::808:808` (8.8.8.8) still resolves and connects.
+  //
+  // Deriving both from one list is also the point: a range added to
+  // BLOCKED_IPV4_SUBNETS cannot be mirrored-and-forgotten.
+  //
+  // ponytail: well-known prefix only. RFC 6052 permits custom NAT64 prefixes at
+  // /32../64, where the embedded address sits at another offset and straddles
+  // the zero `u` byte. An attacker cannot target those without already knowing
+  // the deployment's prefix. If one is ever configured, mirror it here the same
+  // way -- the arithmetic is identical, only the base and offset change.
+  blockedAddresses.addSubnet(`64:ff9b::${network}`, 96 + prefix, 'ipv6');
+}
 blockedAddresses.addAddress('::', 'ipv6');
 blockedAddresses.addAddress('::1', 'ipv6');
 blockedAddresses.addSubnet('fc00::', 7, 'ipv6');
@@ -200,6 +234,13 @@ function resolveAll(hostname: string): Promise<LookupAddress[]> {
 }
 
 function isBlockedAddress(address: string, familyHint?: number): boolean {
+  // Belt and braces only: `BlockList.check(addr, 'ipv6')` already un-maps
+  // `::ffff:` against the IPv4 rules, in dotted-quad AND hex-group form
+  // (`::ffff:7f00:1`), which is the form WHATWG URL serialisation actually
+  // produces. Pinned by test. The regex below is therefore redundant rather
+  // than a compressed-form gap -- do not copy it as the model for a new
+  // embedded-address family; add the mapped subnets to the block list instead,
+  // as the NAT64 handling above does.
   const mapped = address.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
   if (mapped?.[1]) return isBlockedAddress(mapped[1], 4);
   const family = familyHint ?? isIP(address);

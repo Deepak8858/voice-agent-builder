@@ -13,8 +13,8 @@ import { siteUrl } from '@/lib/site-url';
  *
  * A prefix matches whole segments only (`/workspaces` matches `/workspaces/x`
  * but not `/workspacesx`), so a prefix can never be widened by a lookalike
- * first segment, and paths containing a `.`/`..` segment are refused outright
- * (see isDotSegment) so an allowed prefix cannot be walked out of.
+ * first segment, and paths containing a `.`/`..` segment or a backslash are
+ * refused outright so an allowed prefix cannot be walked out of.
  *
  * `/v1/workspaces/me/retention` is the retention page's doubled-v1 path: the
  * proxy base already ends in `/api/v1` and the API deliberately mounts that
@@ -49,6 +49,15 @@ function isDotSegment(segment: string): boolean {
 }
 
 export function isAllowedProxyPath(pathString: string): boolean {
+  // A backslash is a path separator to the WHATWG URL parser on http(s) URLs
+  // but not to the split('/') below: verified that
+  // `new URL('http://x/api/v1/workspaces/..\\admin/y').pathname` is
+  // `/api/v1/admin/y`. Next.js percent-decodes the catch-all param, so a
+  // request for `/workspaces/..%5Cadmin/y` arrives here as that string, where
+  // `..\admin` is not a dot segment and `/workspaces` still matches a prefix.
+  // No path the browser legitimately proxies contains a backslash, so the
+  // character is refused outright rather than modelling how the parser folds it.
+  if (pathString.includes('\\')) return false;
   // Traversal is rejected BEFORE the prefix test, because the prefix test reads
   // the raw joined segments while route.ts interpolates that same string into
   // the upstream URL, where the parser resolves `..` away. Without this,

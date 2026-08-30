@@ -286,6 +286,37 @@ describe('RuntimeUsageService.handleEvent', () => {
     expect(prisma.callUsage.updateMany).not.toHaveBeenCalled();
   });
 
+  /**
+   * `commitReservation` turns the reserved first minute into revenue. Once it
+   * returns, the money has moved, so a failure of the usage row that follows it
+   * must not be reported as a billing failure: the commit and the bookkeeping
+   * shared one catch, so the runtime was told
+   * `billing_temporarily_unavailable` — and hung up — for a call whose first
+   * minute the customer had already been charged for.
+   */
+  it('keeps a connected call allowed when the usage write fails after the commit', async () => {
+    const { service, creditLedger, prisma } = makeService({ usageWriteThrows: true });
+
+    await expect(
+      service.handleEvent({
+        type: 'call_connected',
+        eventId: 'evt-1',
+        callId: 'call-1',
+        organizationId: 'org-1',
+        occurredAt: '2026-06-07T10:00:00.000Z',
+        providerCallId: 'pc-1',
+      }),
+    ).resolves.toMatchObject({ allowed: true, reason: 'allowed', billableMinutes: 1 });
+
+    expect(creditLedger.commitReservation).toHaveBeenCalledTimes(1);
+    expect(prisma.callUsage.updateMany).toHaveBeenCalled();
+    // Loud enough to rebuild the row from the ledger the commit wrote to.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after the first minute was committed for call call-1'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('usage row unavailable'));
+  });
+
   it('debits each further minute under a per-minute idempotency key', async () => {
     const { service, creditLedger, prisma } = makeService();
 

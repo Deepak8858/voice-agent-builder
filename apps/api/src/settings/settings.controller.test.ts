@@ -107,7 +107,7 @@ describe('SettingsController.updateRetention', () => {
 
     const result = await controller.updateRetention(CALLER, parseBody({ retentionDays: 90 }));
 
-    expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 90);
+    expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 90, CALLER.id);
     expect(result).toEqual({ success: true, retentionDays: 90 });
   });
 
@@ -116,7 +116,7 @@ describe('SettingsController.updateRetention', () => {
 
     const result = await controller.updateRetention(CALLER, parseBody({}));
 
-    expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 365);
+    expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 365, CALLER.id);
     expect(result).toEqual({ success: true, retentionDays: 365 });
   });
 

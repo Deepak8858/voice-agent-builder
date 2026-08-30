@@ -26,6 +26,7 @@ import type {
 } from '@voiceforge/shared';
 import {
   BILLING_CATALOG_VERSION,
+  hasLiveSubscription,
   isCheckoutPlan,
   PAID_CALL_MINIMUM_SECONDS,
   PLAN_LIMITS as SHARED_PLAN_LIMITS,
@@ -184,6 +185,7 @@ export class BillingService {
   async createCheckoutSession(
     organizationId: string,
     dto: CreateCheckoutSessionDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_SUBSCRIPTION_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
@@ -191,6 +193,19 @@ export class BillingService {
     // be reachable from a client-supplied plan value.
     if (!isCheckoutPlan(dto.plan)) {
       throw new BadRequestException('This plan is not available for self-service checkout.');
+    }
+    // Refuse to start a second subscription while one is live. Stripe would
+    // happily create it, the customer would be billed twice, and
+    // `checkout.session.completed` can only record one subscription id — the
+    // other keeps billing with nothing here able to resolve or cancel it.
+    const existing = await this.prisma.subscription.findUnique({
+      where: { organizationId },
+      select: { stripeSubscriptionId: true, status: true },
+    });
+    if (existing?.stripeSubscriptionId && hasLiveSubscription(existing.status)) {
+      throw new BadRequestException(
+        'This organization already has a subscription. Change or cancel it from the billing portal instead.',
+      );
     }
     const customerId = await this.getOrCreateCustomer(organizationId);
     const priceId = this.getPriceIdForPlan(dto.plan);
@@ -219,7 +234,7 @@ export class BillingService {
       },
     }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
-    await this.logBillingAudit(organizationId, 'billing.checkout_started', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.checkout_started', {
       plan: dto.plan,
       priceId,
       stripeCustomerId: customerId,
@@ -237,6 +252,7 @@ export class BillingService {
   async createTopUpCheckoutSession(
     organizationId: string,
     dto: CreateTopUpCheckoutDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_TOPUP_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
@@ -265,6 +281,13 @@ export class BillingService {
     const session = await this.stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'payment',
+      // Card only, deliberately. A delayed-notification method (ACH, SEPA debit,
+      // Bacs) completes Checkout with `payment_status: 'unpaid'` and settles days
+      // later on `checkout.session.async_payment_succeeded`, which we do not
+      // subscribe to — so the pack would be paid for and never granted. Unlike a
+      // subscription, whose credit is granted from `invoice.paid` whenever the
+      // money actually clears, a one-time pack has no such later proof.
+      payment_method_types: ['card'],
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: this.withCheckoutSessionId(this.buildAppUrl(dto.successPath)),
       cancel_url: this.buildAppUrl(dto.cancelPath),
@@ -286,7 +309,7 @@ export class BillingService {
       },
     }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
-    await this.logBillingAudit(organizationId, 'billing.topup_checkout_started', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.topup_checkout_started', {
       priceId,
       stripeCustomerId: customerId,
       catalogVersion: BILLING_CATALOG_VERSION,
@@ -306,17 +329,27 @@ export class BillingService {
   async createPortalSession(
     organizationId: string,
     dto: CreatePortalSessionDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_PORTAL_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     const returnUrl = this.buildAppUrl(dto.returnPath);
+    // Without a configuration the portal shows Stripe's *account default*
+    // feature set, which is whatever was last clicked in the dashboard rather
+    // than something this product controls. Optional on purpose: an unset id
+    // must not disable the portal, because a customer locked out of the portal
+    // cannot fix a failing card, and that turns a config gap into churn. Hence
+    // it is also absent from STRIPE_PORTAL_REQUIRED_ENV.
     const session = await this.stripe.billingPortal.sessions.create({
       customer: customerId,
       return_url: returnUrl,
+      ...(env.STRIPE_PORTAL_CONFIGURATION_ID
+        ? { configuration: env.STRIPE_PORTAL_CONFIGURATION_ID }
+        : {}),
     });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no portal URL.');
-    await this.logBillingAudit(organizationId, 'billing.portal_opened', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.portal_opened', {
       stripeCustomerId: customerId,
     });
     return { url: session.url };
@@ -373,14 +406,28 @@ export class BillingService {
     return `${url}${url.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`;
   }
 
+  /**
+   * `actorUserId` is required, not optional: every one of these three actions is
+   * started by a signed-in owner or admin, and the rows were being written with
+   * a null actor — so an audit log that exists to answer "who moved the money"
+   * could not answer it for the routes that move the most. It is threaded from
+   * `@CurrentUser()` in the controller, the same way ~15 other modules do it,
+   * and never taken from the request body, which the caller controls.
+   *
+   * `ipAddress`/`userAgent` stay unset because no non-test caller anywhere in
+   * this API supplies them; adding them here alone would only make this module's
+   * rows look different, not more traceable.
+   */
   private async logBillingAudit(
     organizationId: string,
+    actorUserId: string,
     action: string,
     metadata: Record<string, unknown>,
   ): Promise<void> {
     await this.prisma.auditLog.create({
       data: {
         organizationId,
+        actorUserId,
         action,
         resourceType: 'subscription',
         metadata: metadata as Prisma.InputJsonValue,
@@ -595,11 +642,16 @@ export class BillingService {
         return entitlements.workspaces > 1;
       case 'tools':
         return entitlements.nangoConnections > 0;
+      // Both telephony gates are "paid plans only" rather than
+      // `entitlements.outboundPstn`: a carrier number is mainly an *inbound*
+      // capability, so deriving it from the outbound flag would refuse a plan
+      // sold inbound-only. No plan in the catalog differs today.
+      case 'byo_telephony':
+      case 'managed_telephony':
       case 'ai_insights':
       case 'api_access':
       case 'bulk_import':
       case 'analytics':
-      case 'byo_telephony':
         return plan !== 'free' && paidAccess;
       default:
         return false;

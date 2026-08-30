@@ -77,15 +77,21 @@ export class WorkspacesService {
     });
     // A rename is visible to every member, not just the actor: their sidebar
     // list, the workspace:access entry WorkspaceGuard stamps into req.user,
-    // and the session:workspace snapshot all cache the old name.
+    // and BOTH session snapshots all cache the old name. There are two session
+    // keys — session:user:<authUserId> and session:workspace:<userId> — and
+    // getSessionUser returns the subject-keyed one first, so clearing only the
+    // workspace-keyed one leaves the stale name live for a full TTL.
     const members = await this.prisma.membership.findMany({
       where: { workspaceId },
-      select: { userId: true },
+      select: { userId: true, user: { select: { authUserId: true } } },
     });
-    for (const { userId } of members) {
+    for (const { userId, user } of members) {
       await this.invalidator.invalidateWorkspaceList(userId);
       await this.invalidator.invalidateWorkspaceAccess(workspaceId, userId);
-      await this.invalidator.invalidateSession({ appUserId: userId });
+      await this.invalidator.invalidateSession({
+        appUserId: userId,
+        supabaseUserId: user?.authUserId ?? undefined,
+      });
     }
     return ws;
   }

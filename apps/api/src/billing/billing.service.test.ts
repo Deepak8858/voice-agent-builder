@@ -6,6 +6,9 @@ import { CreditLedgerService } from './credit-ledger.service';
 import { EntitlementService } from './entitlement.service';
 import { env } from '../config/env';
 
+/** The signed-in owner/admin whose id every money route must audit. */
+const ACTOR = 'user-1';
+
 function makePrisma(overrides?: {
   subscription?: unknown;
   agentCount?: number;
@@ -91,6 +94,9 @@ describe('BillingService', () => {
       STRIPE_GROWTH_PRICE_ID: 'price_growth',
       STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
       STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+      // Reset explicitly: `env` is the real singleton, so a test that sets this
+      // would otherwise leak it into every later portal assertion.
+      STRIPE_PORTAL_CONFIGURATION_ID: undefined,
       STRIPE_TAX_ENABLED: false,
       WEB_BASE_URL: 'https://app.voiceforge.test',
     });
@@ -184,7 +190,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      })).rejects.toMatchObject({
+      }, ACTOR)).rejects.toMatchObject({
         errorCode: 'BILLING_UNAVAILABLE',
       });
 
@@ -208,7 +214,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      })).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+      }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
     });
 
     it('maps plan to server-owned price and enables production Checkout defaults', async () => {
@@ -221,7 +227,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      });
+      }, ACTOR);
 
       expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -254,6 +260,9 @@ describe('BillingService', () => {
           data: expect.objectContaining({
             action: 'billing.checkout_started',
             resourceType: 'subscription',
+            // The row was written with a null actor, so the audit log could not
+            // say who started a payment. It comes from the session, never the body.
+            actorUserId: ACTOR,
           }),
         }),
       );
@@ -274,8 +283,8 @@ describe('BillingService', () => {
         cancelPath: '/dashboard/billing?checkout=cancel',
       };
 
-      await svc.createCheckoutSession('org-1', dto);
-      await svc.createCheckoutSession('org-1', dto);
+      await svc.createCheckoutSession('org-1', dto, ACTOR);
+      await svc.createCheckoutSession('org-1', dto, ACTOR);
 
       const [first, second] = mockStripe.checkout.sessions.create.mock.calls.map(
         (call) => (call[0] as { metadata: Record<string, string> }).metadata.integration_identifier,
@@ -295,7 +304,7 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: 'https://evil.example/success',
         cancelPath: '/dashboard/billing',
-      })).rejects.toBeInstanceOf(BadRequestException);
+      }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
 
@@ -313,9 +322,58 @@ describe('BillingService', () => {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing',
         cancelPath: '/dashboard/billing',
-      })).rejects.toBeInstanceOf(BadRequestException);
+      }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
     });
+
+    /**
+     * Stripe will happily create a second subscription for the same customer.
+     * The customer is then billed twice, and `checkout.session.completed` can
+     * only record one subscription id — the other keeps billing with nothing
+     * here able to resolve, refund, or cancel it. Plan changes belong in the
+     * Customer Portal, which mutates the subscription in place.
+     */
+    it.each(['active', 'trialing', 'past_due', 'unpaid', 'paused'])(
+      'refuses a second subscription checkout while one is %s',
+      async (status) => {
+        const prisma = makePrisma({
+          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_live', status },
+        });
+        const svc = makeService(prisma);
+        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+        await expect(svc.createCheckoutSession('org-1', {
+          plan: 'growth',
+          idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+          successPath: '/dashboard/billing',
+          cancelPath: '/dashboard/billing',
+        }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
+        expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      },
+    );
+
+    /**
+     * An abandoned or cancelled attempt leaves the subscription id on the row
+     * with nothing live behind it, so a fresh Checkout is the normal recovery
+     * path and must stay open.
+     */
+    it.each(['incomplete', 'incomplete_expired', 'canceled'])(
+      'still allows checkout when the recorded subscription is %s',
+      async (status) => {
+        const prisma = makePrisma({
+          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_dead', status },
+        });
+        const svc = makeService(prisma);
+        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+        await expect(svc.createCheckoutSession('org-1', {
+          plan: 'growth',
+          idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+          successPath: '/dashboard/billing',
+          cancelPath: '/dashboard/billing',
+        }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+      },
+    );
   });
 
   describe('createTopUpCheckoutSession', () => {
@@ -338,12 +396,16 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await svc.createTopUpCheckoutSession('org-1', topUpDto);
+      await svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR);
 
       expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
         expect.objectContaining({
           customer: 'cus_123',
           mode: 'payment',
+          // Card only: a delayed-notification method completes Checkout with
+          // `payment_status: 'unpaid'` and settles days later on an event we do
+          // not subscribe to, so the pack would be paid for and never granted.
+          payment_method_types: ['card'],
           line_items: [{ price: 'price_minute_pack', quantity: 1 }],
           metadata: expect.objectContaining({
             organizationId: 'org-1',
@@ -379,7 +441,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         BillingUnavailableError,
       );
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
@@ -403,7 +465,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto)).rejects.toBeInstanceOf(
+      await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         ForbiddenPlanError,
       );
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
@@ -415,8 +477,12 @@ describe('BillingService', () => {
       id: '5f7d4d3a-9a1f-4a2f-8f1a-2b3c4d5e6f70',
       plan: 'growth',
       status: 'active',
-      currentPeriodStart: new Date('2026-08-01T00:00:00.000Z'),
-      currentPeriodEnd: new Date('2026-09-01T00:00:00.000Z'),
+      // Relative on purpose. The summary asserts a funded `growth` plan, and
+      // paid access now requires a period that has not already ended, so a
+      // hard-coded date would turn this suite red on a calendar day rather than
+      // on a code change.
+      currentPeriodStart: new Date(Date.now() - 5 * 24 * 60 * 60 * 1_000),
+      currentPeriodEnd: new Date(Date.now() + 25 * 24 * 60 * 60 * 1_000),
       cancelAtPeriodEnd: false,
       trialEnd: null,
       concurrentCallLimitOverride: null,
@@ -455,7 +521,7 @@ describe('BillingService', () => {
         status: 'active',
         paidAccess: true,
         catalogVersion: BILLING_CATALOG_VERSION,
-        currentPeriodEnd: '2026-09-01T00:00:00.000Z',
+        currentPeriodEnd: growthSubscription.currentPeriodEnd.toISOString(),
         cancelAtPeriodEnd: false,
         includedSeconds: 3_000,
         purchasedSeconds: 6_000,
@@ -542,7 +608,7 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       await expect(
-        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
       ).rejects.toMatchObject({
         errorCode: 'BILLING_UNAVAILABLE',
       });
@@ -568,7 +634,7 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       await expect(
-        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
       ).resolves.toEqual({ url: 'https://billing.stripe.com/session' });
     });
 
@@ -577,7 +643,7 @@ describe('BillingService', () => {
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
-      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' });
+      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
 
       expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith({
         customer: 'cus_123',
@@ -590,6 +656,24 @@ describe('BillingService', () => {
             resourceType: 'subscription',
           }),
         }),
+      );
+    });
+
+    /**
+     * With no configuration the portal renders Stripe's account default feature
+     * set — whatever was last saved in the dashboard — so what a customer can
+     * cancel or switch to is not under this product's control.
+     */
+    it('opens the portal against the configured feature set when one is set', async () => {
+      Object.assign(env, { STRIPE_PORTAL_CONFIGURATION_ID: 'bpc_123' });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
+
+      expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith(
+        expect.objectContaining({ configuration: 'bpc_123' }),
       );
     });
   });
@@ -715,6 +799,26 @@ describe('BillingService', () => {
       expect(await free.checkFeatureGate('org-fake', 'byo_telephony')).toBe(false);
       expect(await starter.checkFeatureGate('org-fake', 'tools')).toBe(true);
       expect(await starter.checkFeatureGate('org-fake', 'byo_telephony')).toBe(true);
+    });
+
+    /**
+     * Provisioning a carrier number spends platform money every month for as
+     * long as the number is held, so an unfunded organization must never reach
+     * the purchase. `paid_but_unfunded` is the case that matters: the plan name
+     * says growth, nothing is paying for it.
+     */
+    it('keeps managed telephony behind a funded paid plan', async () => {
+      const free = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+      const noSubscription = makeService(makePrisma({ subscription: null }));
+      const pastDue = makeService(
+        makePrisma({ subscription: { plan: 'growth', status: 'past_due' } }),
+      );
+      const starter = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      expect(await free.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await noSubscription.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await pastDue.checkFeatureGate('org-fake', 'managed_telephony')).toBe(false);
+      expect(await starter.checkFeatureGate('org-fake', 'managed_telephony')).toBe(true);
     });
 
     it('treats expired trialing as free plan for feature gates', async () => {

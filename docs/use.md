@@ -263,10 +263,19 @@ Builder → /dashboard/agents/[agentId]/builder
 
 ### Authentication
 
-All endpoints require a Supabase Auth session. The browser holds the Supabase
+Most endpoints require a Supabase Auth session. The browser holds the Supabase
 session cookie; the Next.js server extracts the access token and sends it to the
 API as `Authorization: Bearer` plus `x-internal-key`, and the API verifies the
-JWT. Webhook endpoints use signature verification instead.
+JWT. There are four entry modes in total (see
+`apps/api/src/auth/internal-auth.guard.ts`):
+
+- **User session** — `x-internal-key` + bearer token. Every endpoint listed above.
+- **Internal platform call** — `x-internal-key` with no bearer token. Accepted
+  only on `@InternalOnly()` routes, which our own runtime calls; refused on any
+  other route and refused if user-context headers are present.
+- **`@Public()` routes** — health and metrics, no credentials.
+- **Webhooks** — `@Public()` plus provider signature verification (Stripe,
+  Twilio, voice).
 
 ### Workspace Guard
 
@@ -298,7 +307,8 @@ Standard pagination with `skip`/`take` query params.
 | `DATABASE_URL` | Supabase pooler connection | Yes |
 | `DIRECT_URL` | Supabase direct connection | Yes |
 | `REDIS_URL` | Redis for BullMQ queues | No |
-| `SUPABASE_URL` | Supabase project URL | Yes |
+| `SUPABASE_URL` | Supabase project URL (API; falls back to `NEXT_PUBLIC_SUPABASE_URL`) | Yes |
+| `NEXT_PUBLIC_SUPABASE_URL` | Same project URL for the web app's browser client, middleware and provider | Yes |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (web app) | Yes |
 | `INTERNAL_API_KEY` | Shared secret the web app sends as `x-internal-key` | Yes |
 | `SUPABASE_JWT_SECRET` | Verifies session JWTs locally | One of this or `SUPABASE_SERVICE_ROLE_KEY` |

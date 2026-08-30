@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { CreateCrmRoutingRuleDto } from './crm-routing.schemas';
+import { CreateCrmRoutingRuleDtoSchema, type CreateCrmRoutingRuleDto } from './crm-routing.schemas';
 
 export interface RoutingRule {
   id: string;
@@ -34,7 +35,15 @@ const DEFAULT_RULES: Record<string, RoutingRule> = {
 export class CrmRoutingService {
   private readonly logger = new Logger(CrmRoutingService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // Required, not @Optional(): an optional dependency plus `this.audit?.log`
+    // is a silent-skip path, and a routing rule committing with no audit row is
+    // the exact defect this dependency exists to close. AuditModule is @Global,
+    // so DI always supplies it; the two security tests that construct this
+    // service by hand pass a stub.
+    private readonly audit: AuditService,
+  ) {}
 
   async getRulesForAgent(workspaceId: string, agentId: string): Promise<RoutingRule[]> {
     const custom = await this.prisma.crmRoutingRule.findMany({
@@ -76,7 +85,17 @@ export class CrmRoutingService {
   // `z.infer` reports every property as optional and an all-optional argument
   // will not satisfy a hand-written required one. Sharing the type makes both
   // sides degrade identically instead of disagreeing.
-  async createRule(workspaceId: string, dto: CreateCrmRoutingRuleDto): Promise<RoutingRule> {
+  //
+  // The controller's ZodValidationPipe is not the only entry: orchestrator.worker
+  // calls this directly, so the same schema is applied here, at the service
+  // boundary, where both paths meet. With `strict: false` the compiler cannot
+  // catch a half-built object either.
+  async createRule(
+    workspaceId: string,
+    input: CreateCrmRoutingRuleDto,
+    actorUserId?: string | null,
+  ): Promise<RoutingRule> {
+    const dto = CreateCrmRoutingRuleDtoSchema.parse(input);
     const created = await this.prisma.crmRoutingRule.create({
       data: {
         workspaceId,
@@ -86,6 +105,21 @@ export class CrmRoutingService {
         action: dto.action,
         priority: 100,
         active: true,
+      },
+    });
+    // Routing rules decide which CRM a caller's contact data is shipped to, so
+    // the change belongs in the tenant's audit trail like every sibling write.
+    await this.audit.log({
+      workspaceId,
+      actorUserId: actorUserId ?? null,
+      action: 'crm_routing_rule.create',
+      resourceType: 'crm_routing_rule',
+      resourceId: created.id,
+      metadata: {
+        keyword: dto.keyword,
+        provider: dto.provider,
+        rule_action: dto.action,
+        agent_id: dto.agent_id ?? null,
       },
     });
     return {

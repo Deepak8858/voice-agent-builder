@@ -20,6 +20,11 @@ const calls = {
 };
 const campaigns = {
   incrementStat: vi.fn(),
+  getCampaign: vi.fn(),
+  readSchedule: vi.fn(),
+  dispatchContact: vi.fn(),
+  advanceCursor: vi.fn(),
+  markCompleted: vi.fn(),
 };
 const prisma = {
   telephonyPhoneNumber: {
@@ -27,6 +32,9 @@ const prisma = {
   },
   outboundCampaign: {
     updateMany: vi.fn(),
+  },
+  call: {
+    count: vi.fn(),
   },
 };
 const telephony = {
@@ -48,6 +56,17 @@ describe('OutboundCallWorker', () => {
     });
     prisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
     prisma.outboundCampaign.updateMany.mockResolvedValue({ count: 1 });
+    prisma.call.count.mockResolvedValue(0);
+    campaigns.getCampaign.mockResolvedValue({
+      id: 'camp-1',
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      status: 'running',
+      contacts: [{ phone: '+15551111111' }, { phone: '+15552222222' }],
+      schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+    });
+    campaigns.readSchedule.mockReturnValue({ maxCallsPerHour: 10, maxConcurrent: 3 });
+    campaigns.dispatchContact.mockResolvedValue(true);
   });
 
   function makeWorker() {
@@ -170,6 +189,41 @@ describe('OutboundCallWorker', () => {
     });
   });
 
+  // F-028: pausing used to fall through to the chaining block below, which
+  // enqueued contact index+1 and advanced the cursor past a contact that was
+  // never dialled. `start()` resumes from `dispatchedCount`, so that contact was
+  // silently lost for good.
+  it('stops the chain on a blocking denial, leaving the cursor at the undialled contact', async () => {
+    campaigns.getCampaign.mockResolvedValue({
+      id: 'camp-1',
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      status: 'running',
+      dispatchedCount: 4,
+      contacts: [{ phone: '+15551111111' }, { phone: '+15552222222' }],
+      schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+    });
+    calls.startOutboundCall.mockRejectedValue(
+      new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'subscription_inactive' }),
+    );
+
+    await expect(
+      makeWorker().processor({
+        data: { ...(job as any).data, contactIndex: 4, dispatchToken: 7 },
+      } as never),
+    ).resolves.toBeUndefined();
+
+    expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+      where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
+      data: { status: 'paused' },
+    });
+    // Nothing further enqueued, and the cursor stays at 4 so a resume re-dials
+    // the contact billing refused rather than starting at 5.
+    expect(campaigns.dispatchContact).not.toHaveBeenCalled();
+    expect(campaigns.advanceCursor).not.toHaveBeenCalled();
+    expect(campaigns.markCompleted).not.toHaveBeenCalled();
+  });
+
   it('pauses before recording failure statistics so a stats error cannot leave dispatch running', async () => {
     calls.startOutboundCall.mockRejectedValue(
       new AppError('PLAN_LIMIT_EXCEEDED', 'no credit', 403, { reason: 'credit_insufficient' }),
@@ -185,6 +239,160 @@ describe('OutboundCallWorker', () => {
     expect(prisma.outboundCampaign.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
       campaigns.incrementStat.mock.invocationCallOrder[0]!,
     );
+  });
+
+  // F-021: a pause has to stop the dial, not just relabel the campaign.
+  it('does not dial for a campaign that is no longer running', async () => {
+    campaigns.getCampaign.mockResolvedValue({
+      id: 'camp-1',
+      workspaceId: 'ws-1',
+      status: 'paused',
+      contacts: [{ phone: '+15551111111' }],
+      schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+    });
+
+    await makeWorker().processor({ data: { ...(job as any).data, contactIndex: 0 } } as never);
+
+    expect(calls.startOutboundCall).not.toHaveBeenCalled();
+    expect(telephony.startOutboundCall).not.toHaveBeenCalled();
+    expect(campaigns.dispatchContact).not.toHaveBeenCalled();
+    expect(campaigns.advanceCursor).not.toHaveBeenCalled();
+  });
+
+  // A delayed job that survived a pause must not re-dial a contact the resumed
+  // chain has already passed, and must not fork a second chain.
+  it('drops a chain link the dispatch cursor has already moved past', async () => {
+    campaigns.getCampaign.mockResolvedValue({
+      id: 'camp-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      dispatchedCount: 3,
+      contacts: [{ phone: '+15551111111' }],
+      schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+    });
+
+    await makeWorker().processor({ data: { ...(job as any).data, contactIndex: 1 } } as never);
+
+    expect(calls.startOutboundCall).not.toHaveBeenCalled();
+    expect(campaigns.dispatchContact).not.toHaveBeenCalled();
+  });
+
+  // F-027: max_calls_per_hour is the gap between chained jobs.
+  it('chains the next contact spaced by max_calls_per_hour and advances the cursor', async () => {
+    campaigns.readSchedule.mockReturnValue({ maxCallsPerHour: 60, maxConcurrent: 3 });
+
+    await makeWorker().processor({
+      data: { ...(job as any).data, contactIndex: 0, dispatchToken: 1234 },
+    } as never);
+
+    expect(campaigns.dispatchContact).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'camp-1' }),
+      1,
+      'user-1',
+      60_000,
+      1234,
+    );
+    expect(campaigns.advanceCursor).toHaveBeenCalledWith('camp-1', 'ws-1', 1);
+    expect(calls.startOutboundCall).toHaveBeenCalled();
+  });
+
+  // F-027: max_concurrent was persisted and enforced nowhere.
+  it('defers the contact instead of dialling when the campaign is at max_concurrent', async () => {
+    campaigns.readSchedule.mockReturnValue({ maxCallsPerHour: 60, maxConcurrent: 2 });
+    prisma.call.count.mockResolvedValue(2);
+
+    await makeWorker().processor({
+      data: { ...(job as any).data, contactIndex: 0, dispatchToken: 1234 },
+    } as never);
+
+    expect(calls.startOutboundCall).not.toHaveBeenCalled();
+    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    // Same contact, re-queued under a fresh token so the delayed job is not
+    // deduplicated against the one currently running.
+    expect(campaigns.dispatchContact).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'camp-1' }),
+      0,
+      'user-1',
+      30_000,
+      1235,
+    );
+    expect(campaigns.advanceCursor).not.toHaveBeenCalled();
+    expect(prisma.call.count).toHaveBeenCalledWith({
+      where: expect.objectContaining({ workspaceId: 'ws-1', agentId: 'agent-1' }),
+    });
+  });
+
+  // F-022: the worker used to throw here and rely on a BullMQ retry that was
+  // never configured. A paced job holds the contact instead, so a denial that
+  // outlasts the retry budget cannot end the chain.
+  it('holds a contact on a retryable admission denial instead of failing the job', async () => {
+    calls.startOutboundCall.mockRejectedValue(
+      new AppError('PLAN_LIMIT_EXCEEDED', 'denied', 403, {
+        reason: 'organization_concurrency_reached',
+      }),
+    );
+
+    await expect(
+      makeWorker().processor({
+        data: { ...(job as any).data, contactIndex: 0, dispatchToken: 7 },
+      } as never),
+    ).resolves.toBeUndefined();
+
+    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.dispatchContact).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      'user-1',
+      30_000,
+      8,
+    );
+    // The chain must not advance past a contact that was never called.
+    expect(campaigns.advanceCursor).not.toHaveBeenCalled();
+  });
+
+  it('holds a contact when the agent call window has closed, and burns one that is on a DNC list', async () => {
+    const blocked = (code: string) =>
+      new AppError('COMPLIANCE_BLOCKED', 'blocked', 422, {
+        reasons: [{ code, message: code, severity: 'blocking' }],
+      });
+
+    calls.startOutboundCall.mockRejectedValue(blocked('outside_call_window'));
+    await makeWorker().processor({
+      data: { ...(job as any).data, contactIndex: 0, dispatchToken: 7 },
+    } as never);
+
+    expect(campaigns.dispatchContact).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      'user-1',
+      15 * 60_000,
+      8,
+    );
+    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    prisma.call.count.mockResolvedValue(0);
+    campaigns.getCampaign.mockResolvedValue({ id: 'camp-1', status: 'running', schedule: {} });
+    campaigns.readSchedule.mockReturnValue({ maxCallsPerHour: 10, maxConcurrent: 3 });
+    campaigns.dispatchContact.mockResolvedValue(true);
+    calls.startOutboundCall.mockRejectedValue(blocked('dnc_match'));
+
+    await makeWorker().processor({
+      data: { ...(job as any).data, contactIndex: 0, dispatchToken: 7 },
+    } as never);
+
+    // A permanent block is a failed dial, and the chain moves on.
+    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    expect(campaigns.advanceCursor).toHaveBeenCalledWith('camp-1', 'ws-1', 1);
+  });
+
+  it('marks the campaign completed once the last contact has been dispatched', async () => {
+    campaigns.dispatchContact.mockResolvedValue(false);
+
+    await makeWorker().processor({ data: { ...(job as any).data, contactIndex: 1 } } as never);
+
+    expect(calls.startOutboundCall).toHaveBeenCalled();
+    expect(campaigns.markCompleted).toHaveBeenCalledWith('camp-1', 'ws-1');
   });
 
   it('counts a non-billing dispatch error as a failed dial and keeps the campaign running', async () => {

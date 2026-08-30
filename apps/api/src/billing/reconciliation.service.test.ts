@@ -8,6 +8,9 @@ interface BalanceRow {
   organizationId: string;
   availableSeconds: number;
   reservedSeconds: number;
+  /** Only the clearing tests care; the rest of the suite leaves these unset. */
+  status?: string;
+  reviewReason?: string | null;
 }
 
 interface BucketRow {
@@ -25,7 +28,10 @@ interface CallUsageRow {
   reservedSeconds: number;
   debitedSeconds: number;
   createdAt: Date;
-  finalizationState?: 'pending' | 'releasing';
+  finalizationState?: 'pending' | 'releasing' | 'connected';
+  /** Only the abandoned-after-connect arm reads these two. */
+  connectedAt?: Date | null;
+  billableSeconds?: number;
 }
 
 interface LeaseRow {
@@ -67,7 +73,7 @@ function makeService(
     stripeInvoices?: Array<{
       id: string;
       customer: unknown;
-      subscription: unknown;
+      parent: { type: string; subscription_details?: { subscription?: unknown } | null } | null;
       amount_paid: number;
     }>;
     stripeSessions?: Array<{
@@ -223,6 +229,7 @@ function makeService(
   };
   const providerCosts = {
     estimateMissingCallCosts: vi.fn(async () => 0),
+    recordNumberRentals: vi.fn(async () => 0),
     costCoverage: vi.fn(async () => ({
       finalizedCalls: 0,
       callsMissingCost: 0,
@@ -580,6 +587,55 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     );
   });
 
+  /**
+   * A call that connected and then stopped reporting was left in `connected`
+   * forever: nothing moved it to `finalized`, and `estimateMissingCallCosts`
+   * only costs finalized rows, so the provider cost of a real, billed call was
+   * never recorded — and `costCoverage`, whose denominator is also
+   * finalized-only, showed 100% while doing it.
+   */
+  it('finalizes a call abandoned after connect without refunding its debits', async () => {
+    const { service, callUsageUpdateMany, creditLedger, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 0 }],
+      staleCalls: [
+        {
+          id: 'usage-1',
+          organizationId: ORG,
+          callId: 'call-1',
+          finalizationState: 'connected',
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+          billableSeconds: 120,
+          reservedSeconds: 0,
+          debitedSeconds: 120,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const report = await service.finalizeStaleCalls();
+
+    expect(report.staleCallsFinalized).toBe(1);
+    expect(callUsageUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          finalizationState: 'finalized',
+          disposition: 'abandoned_after_connect',
+          // Billed minutes, not wall clock: the customer paid for exactly these.
+          endedAt: new Date('2026-01-01T00:02:00.000Z'),
+        }),
+      }),
+    );
+    // The minutes were committed, so releasing the reservation would refund
+    // revenue for a call that really happened.
+    expect(creditLedger.releaseReservation).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.abandoned_call_finalized',
+        resourceId: 'call-1',
+      }),
+    );
+  });
+
   it('flags an ambiguous call for review instead of guessing its duration', async () => {
     const { service, callUsageUpdateMany, balanceUpdateMany, audit } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 60 }],
@@ -604,11 +660,51 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     expect(callUsageUpdateMany).not.toHaveBeenCalled();
     expect(balanceUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: 'review', reviewReason: 'stale_call_with_debits' },
+        data: {
+          status: 'review',
+          reviewReason: 'stale_call_with_debits',
+          version: { increment: 1 },
+        },
       }),
     );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'billing.manual_review_created' }),
+    );
+  });
+
+  /**
+   * The flag itself dedupes, so only the first reason is kept — but the early
+   * return that used to follow the dedupe threw away every later incident's
+   * audit record too, leaving one stale call and two hundred of them
+   * indistinguishable to whoever clears the review.
+   */
+  it('audits a repeat incident on an organization already held for review', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 60 }],
+      staleCalls: [
+        {
+          id: 'usage-2',
+          organizationId: ORG,
+          callId: 'call-2',
+          reservedSeconds: 60,
+          debitedSeconds: 120,
+          createdAt: new Date(),
+        },
+      ],
+    });
+    // Already flagged: the `reviewReason: null` compare-and-set matches nothing.
+    balanceUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const report = await service.finalizeStaleCalls();
+
+    // No transition, so nothing new to report as created...
+    expect(report.manualReviewsCreated).toBe(0);
+    // ...but the incident is still on the record, with the call that caused it.
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.manual_review_incident',
+        metadata: { callId: 'call-2', reason: 'stale_call_with_debits' },
+      }),
     );
   });
 
@@ -666,9 +762,14 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
 
     const report = await service.finalizeStaleCalls();
 
+    // One of the two abandonment shapes the sweep now reads in a single query.
     expect(prisma.callUsage.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
+        where: {
+          OR: expect.arrayContaining([
+            expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
+          ]),
+        },
       }),
     );
     // The claim has to match a row that is already `releasing`, otherwise a
@@ -767,6 +868,22 @@ describe('ReconciliationService.reconcileProviderCosts', () => {
     expect(report.costEventsEstimated).toBe(7);
   });
 
+  it('books the monthly carrier number rentals and reports them', async () => {
+    const { service, providerCosts, metrics } = makeService();
+    providerCosts.recordNumberRentals.mockResolvedValueOnce(3);
+
+    const report = await service.reconcileProviderCosts(25);
+
+    // Every rental missing from the cost side is margin overstated by a
+    // recurring charge nobody sees, so the sweep has to run in this pass and be
+    // counted in this report.
+    expect(providerCosts.recordNumberRentals).toHaveBeenCalledWith(25);
+    expect(report.numberRentalsRecorded).toBe(3);
+    expect(metrics.billingReconciliationCorrectionsTotal.labels).toHaveBeenCalledWith(
+      'number_rental',
+    );
+  });
+
   it('alerts when more than one percent of calls have no provider cost', async () => {
     const { service, providerCosts } = makeService();
     providerCosts.costCoverage.mockResolvedValueOnce({
@@ -796,8 +913,15 @@ describe('ReconciliationService.reportStripeDrift', () => {
   /** A paid invoice, a paid minute pack and a subscription, all for one org. */
   function driftFixture() {
     return {
+      // Basil moved the subscription off the top level of the Invoice object; this
+      // is the shape the pinned API version actually returns.
       stripeInvoices: [
-        { id: 'in_1', customer: CUSTOMER, subscription: 'sub_1', amount_paid: 9_900 },
+        {
+          id: 'in_1',
+          customer: CUSTOMER,
+          parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_1' } },
+          amount_paid: 9_900,
+        },
       ],
       stripeSessions: [
         {
@@ -963,6 +1087,15 @@ describe('ReconciliationService.runAll', () => {
     expect(report.stripePaidPacksWithoutCredit).toBe(2);
     expect(report.stripeSubscriptionDrift).toBe(1);
   });
+
+  it('carries the number-rental counter through the merge', async () => {
+    const { service, providerCosts } = makeService();
+    providerCosts.recordNumberRentals.mockResolvedValueOnce(5);
+
+    const report = await service.runAll();
+
+    expect(report.numberRentalsRecorded).toBe(5);
+  });
 });
 
 describe('ReconciliationService.publishMarginMetrics', () => {
@@ -984,12 +1117,152 @@ describe('ReconciliationService.publishMarginMetrics', () => {
     metrics.planContributionMarginRatio.labels.mockReturnValue({ set });
     // One Starter subscription at $99/month against $99 of provider cost.
     prisma.subscription.findMany.mockImplementation(async (args) =>
-      args?.where?.['plan'] === 'starter' ? [{ organizationId: ORG }] : [],
+      args?.where?.['plan'] === 'starter' ? [{ organizationId: ORG, status: 'active' }] : [],
     );
 
     await service.publishMarginMetrics();
 
     expect(metrics.planContributionMarginRatio.labels).toHaveBeenCalledWith('starter');
     expect(set).toHaveBeenCalledWith(0);
+  });
+
+  /**
+   * A trial bills nothing. Counting it at list price reported $99 of revenue
+   * against real provider cost, so a plan whose trials were burning money for
+   * free showed a positive margin — the gauge said the opposite of the truth.
+   */
+  it('excludes trials from revenue while keeping their provider cost', async () => {
+    const set = vi.fn();
+    const { service, metrics, prisma } = makeService({ costSum: 99 });
+    metrics.planContributionMarginRatio.labels.mockReturnValue({ set });
+    // One paying Starter subscription and one trial, $99 of cost across both.
+    prisma.subscription.findMany.mockImplementation(async (args) =>
+      args?.where?.['plan'] === 'starter'
+        ? [
+            { organizationId: ORG, status: 'active' },
+            { organizationId: 'org-trial', status: 'trialing' },
+          ]
+        : [],
+    );
+
+    await service.publishMarginMetrics();
+
+    // $99 revenue, not $198: (99 - 99) / 99 = 0, and the trial's cost is in it.
+    expect(set).toHaveBeenCalledWith(0);
+    // The trial is still aggregated, so its burn is not hidden from the ratio.
+    expect(prisma.providerCostEvent.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: { in: [ORG, 'org-trial'] },
+        }),
+      }),
+    );
+  });
+});
+
+describe('ReconciliationService.clearBalanceReview', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const stuck = (status: string, reviewReason: string | null): BalanceRow[] => [
+    { organizationId: ORG, availableSeconds: 300, reservedSeconds: 0, status, reviewReason },
+  ];
+
+  // Both writers that push the status out of `active` have to be clearable:
+  // `flagForReview` above writes `review`, and the partial-refund path in
+  // credit-ledger writes `blocked`. entitlement.service refuses calls on any
+  // non-`active` status, so either one is a total calling outage.
+  it.each([
+    ['review', 'stale_call_with_debits'],
+    ['blocked', 'refund_manual_review:cs_123:120s'],
+  ])('clears a %s balance and resets reviewReason', async (status, reason) => {
+    const { service, prisma, balanceUpdateMany, audit } = makeService({
+      balances: stuck(status, reason),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: true,
+      previousStatus: status,
+      previousReviewReason: reason,
+    });
+    expect(balanceUpdateMany).toHaveBeenCalledWith({
+      // Compare-and-set on the values just read, so a concurrent flag or a
+      // second operator loses the race rather than being overwritten.
+      where: { organizationId: ORG, status, reviewReason: reason },
+      data: { status: 'active', reviewReason: null, version: { increment: 1 } },
+    });
+    expect(audit.log).toHaveBeenCalledWith({
+      organizationId: ORG,
+      action: 'billing.manual_review_cleared',
+      resourceType: 'organization_credit_balance',
+      resourceId: ORG,
+      metadata: {
+        clearedBy: 'ops@voiceforge.ai',
+        previousStatus: status,
+        previousReviewReason: reason,
+      },
+    });
+    // Restores permission to call; it does not hand out credit. Nothing but
+    // the two status columns may move, and no other row may be touched.
+    expect(prisma.organizationCreditBalance.update).not.toHaveBeenCalled();
+    expect(prisma.billingCreditBucket.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('clears a stale reviewReason left on an already-active balance', async () => {
+    // reviewReason: null IS flagForReview's dedupe guard, so a non-null reason
+    // on an active balance leaves review permanently disarmed for this org.
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('active', 'stale_call_with_debits'),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result.cleared).toBe(true);
+    expect(balanceUpdateMany).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op on a balance that is already active and unflagged', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('active', null),
+    });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: false,
+      previousStatus: 'active',
+      previousReviewReason: null,
+    });
+    expect(balanceUpdateMany).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('does not invent a balance row for an organization that has none', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({ balances: [] });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    expect(result).toEqual({
+      cleared: false,
+      previousStatus: null,
+      previousReviewReason: null,
+    });
+    expect(balanceUpdateMany).not.toHaveBeenCalled();
+    expect(audit.log).not.toHaveBeenCalled();
+  });
+
+  it('reports not-cleared and writes no audit entry when the compare-and-set loses', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: stuck('review', 'stale_call_with_debits'),
+    });
+    balanceUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const result = await service.clearBalanceReview(ORG, 'ops@voiceforge.ai');
+
+    // An audit entry for a write that did not happen is worse than none.
+    expect(result.cleared).toBe(false);
+    expect(audit.log).not.toHaveBeenCalled();
   });
 });

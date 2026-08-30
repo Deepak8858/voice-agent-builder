@@ -11,6 +11,7 @@ import { RetentionController } from './retention.controller';
 import { RetentionService } from './retention.service';
 import { EmailModule } from '../email/email.module';
 import { KnowledgeModule } from '../knowledge/knowledge.module';
+import { PhoneNumbersModule } from '../phone-numbers/phone-numbers.module';
 
 @Module({
   controllers: [ContactsController, ComplianceController, ErasureController, ComplianceManifestController, RetentionController],
@@ -18,12 +19,10 @@ import { KnowledgeModule } from '../knowledge/knowledge.module';
   exports: [ComplianceService, ErasureService, RetentionService],
   // KnowledgeModule supplies KNOWLEDGE_FILE_STORAGE_TOKEN so GDPR erasure can
   // delete the customer files behind knowledge sources, not just their rows.
-  imports: [EmailModule, KnowledgeModule],
+  // PhoneNumbersModule supplies PhoneNumbersService so erasure hands each number
+  // back to the carrier before the cascade destroys its Twilio SID. No cycle:
+  // that module's imports are [PrismaModule, BillingModule] and neither of those
+  // imports anything at all.
+  imports: [EmailModule, KnowledgeModule, PhoneNumbersModule],
 })
 export class ComplianceModule {}
-
-@Module({
-  providers: [RetentionService],
-  exports: [RetentionService],
-})
-export class RetentionModule {}

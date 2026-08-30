@@ -8,7 +8,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Logo } from '@/components/logo';
 
-const MIN_PASSWORD_LENGTH = 8;
+// Must match supabase/config.toml `minimum_password_length`, otherwise the
+// browser accepts a short password and Supabase rejects it after the round trip.
+const MIN_PASSWORD_LENGTH = 12;
 
 export default function ResetPasswordPage() {
   const supabase = createBrowserSupabaseClient();
@@ -18,6 +20,8 @@ export default function ResetPasswordPage() {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSession, setHasSession] = useState<boolean | null>(null);
+  const [nonce, setNonce] = useState('');
+  const [needsNonce, setNeedsNonce] = useState(false);
 
   useEffect(() => {
     // The recovery link signs the user in with a temporary session
@@ -53,14 +57,31 @@ export default function ResetPasswordPage() {
     }
 
     setLoading(true);
-    const { error } = await supabase.auth.updateUser({ password });
-    setLoading(false);
+    const { error } = await supabase.auth.updateUser(
+      nonce ? { password, nonce } : { password },
+    );
 
     if (error) {
-      setError(error.message);
+      // supabase/config.toml sets secure_password_change, so Supabase demands an
+      // emailed nonce whenever the session behind this reset is older than 24h.
+      // Without this branch updateUser just keeps returning the same error and
+      // the form offers no way forward. Ask for the code and retry with it.
+      if (error.code === 'reauthentication_needed') {
+        const sent = await supabase.auth.reauthenticate();
+        setNeedsNonce(true);
+        setError(
+          sent.error
+            ? sent.error.message
+            : 'For security, enter the 6-digit code we just emailed you and submit again.',
+        );
+      } else {
+        setError(error.message);
+      }
+      setLoading(false);
       return;
     }
 
+    setLoading(false);
     setDone(true);
   }
 
@@ -126,6 +147,20 @@ export default function ResetPasswordPage() {
                 autoComplete="new-password"
               />
             </div>
+            {needsNonce && (
+              <div className="space-y-2">
+                <Label htmlFor="nonce">Email verification code</Label>
+                <Input
+                  id="nonce"
+                  inputMode="numeric"
+                  placeholder="123456"
+                  value={nonce}
+                  onChange={(e) => setNonce(e.target.value)}
+                  required
+                  autoComplete="one-time-code"
+                />
+              </div>
+            )}
             <Button type="submit" className="w-full" loading={loading} disabled={hasSession === null}>
               Update password
             </Button>

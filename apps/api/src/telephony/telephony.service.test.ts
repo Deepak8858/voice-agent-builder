@@ -19,6 +19,15 @@ function makeAdmission() {
   };
 }
 
+/**
+ * A billing double whose `byo_telephony` gate is satisfied. Every entry point
+ * that touches provider connections or numbers consults it, so a `{}` stand-in
+ * only worked while the gate fail-opened on a missing dependency.
+ */
+function allowByoTelephony() {
+  return { checkFeatureGate: vi.fn(async () => true) };
+}
+
 const INBOUND_VOICE_PAYLOAD = { CallSid: 'CA123', From: '+14155559876', To: '+14155551234' };
 const INBOUND_VOICE_REQUEST = {
   headers: { 'x-twilio-signature': 'good-signature' },
@@ -1309,7 +1318,7 @@ describe('TelephonyService', () => {
         decryptJson: vi.fn(),
       } as never,
       audit as never,
-      {} as never,
+      allowByoTelephony() as never,
       {} as never,
       {} as never,
       makeAdmission() as never,
@@ -1358,6 +1367,44 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('refuses to import provider numbers when the plan excludes BYO telephony', async () => {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      telephonyProviderConnection: { findFirst: vi.fn() },
+      telephonyPhoneNumber: { findUnique: vi.fn(), create: vi.fn() },
+    };
+    const billing = {
+      checkFeatureGate: vi.fn(
+        async (_organizationId: string, gate: string) => gate !== 'byo_telephony',
+      ),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      billing as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.importNumbers('workspace-1', 'user-1', {
+        connection_id: 'connection-1',
+        numbers: [{ provider_number_id: 'trunk-1', phone_number: '+912271264217' }],
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenPlanError);
+
+    expect(billing.checkFeatureGate).toHaveBeenCalledWith('org-1', 'byo_telephony');
+    // Refused before the connection is even resolved, so nothing is imported.
+    expect(prisma.telephonyProviderConnection.findFirst).not.toHaveBeenCalled();
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
   it('rejects trunk-only Vobiz imports without the user-specific SIP domain', async () => {
     const prisma = {
       workspace: {
@@ -1383,7 +1430,7 @@ describe('TelephonyService', () => {
       { adapterFor: vi.fn() } as never,
       { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
       { log: vi.fn() } as never,
-      {} as never,
+      allowByoTelephony() as never,
       {} as never,
       {} as never,
       makeAdmission() as never,
@@ -1434,7 +1481,7 @@ describe('TelephonyService', () => {
       { adapterFor: vi.fn() } as never,
       { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
       { log: vi.fn() } as never,
-      {} as never,
+      allowByoTelephony() as never,
       {} as never,
       {} as never,
       makeAdmission() as never,

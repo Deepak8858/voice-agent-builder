@@ -84,6 +84,86 @@ describe('EntitlementService', () => {
       ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
     });
 
+    /**
+     * `status` alone is not proof of funding. Stripe advances the period when it
+     * generates the renewal invoice, so a row whose `currentPeriodEnd` is still
+     * days in the past is one whose renewal webhook never arrived — and it used
+     * to read as `active`, and therefore paid, forever.
+     */
+    it('refuses paid access to an active subscription whose period ended and was never renewed', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            currentPeriodEnd: new Date(Date.now() - 3 * 86_400_000),
+          },
+        }),
+      );
+
+      const plan = await svc.getEffectivePlan('org-1');
+
+      expect(plan.paidAccess).toBe(false);
+      expect(plan.plan).toBe('free');
+    });
+
+    /**
+     * The refusal must not read as "subscribe to continue". A lapsed period
+     * leaves `status` at `active` and downgrades `plan` to free, so the reason is
+     * the only field left that can tell a missed renewal webhook apart from an
+     * organization that never subscribed — and the remedies differ: one is a
+     * payment fix, the other is a purchase.
+     */
+    it('reports a lapsed period as inactive rather than as never having subscribed', async () => {
+      const lapsed = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            currentPeriodEnd: new Date(Date.now() - 3 * 86_400_000),
+          },
+        }),
+      );
+      const neverSubscribed = makeService(makePrisma({ subscription: null }));
+
+      await expect(
+        lapsed.check('org-1', { kind: 'paid_call', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'subscription_inactive' });
+      await expect(
+        neverSubscribed.check('org-2', { kind: 'paid_call', minimumSeconds: 60 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'subscription_required' });
+    });
+
+    it('keeps paid access through the renewal window while the period-end webhook is in flight', async () => {
+      const svc = makeService(
+        makePrisma({
+          subscription: {
+            plan: 'growth',
+            status: 'active',
+            // Just past the boundary: Stripe finalizes and pays the renewal
+            // invoice about an hour after it is created, so downgrading here
+            // would cut off every paying customer at every renewal.
+            currentPeriodEnd: new Date(Date.now() - 60 * 60 * 1000),
+          },
+        }),
+      );
+
+      await expect(svc.getEffectivePlan('org-1')).resolves.toMatchObject({
+        paidAccess: true,
+        plan: 'growth',
+      });
+    });
+
+    it('treats a subscription with no recorded period as funded, not expired', async () => {
+      // The checkout upsert creates the row before Stripe reports a period, and
+      // a subscription event that omits it persists null on purpose.
+      const svc = makeService(
+        makePrisma({ subscription: { plan: 'starter', status: 'active', currentPeriodEnd: null } }),
+      );
+
+      await expect(svc.getEffectivePlan('org-1')).resolves.toMatchObject({ paidAccess: true });
+    });
+
     it('allows an unexpired paid trial and rejects an expired paid trial', async () => {
       const unexpired = makeService(
         makePrisma({
@@ -250,6 +330,38 @@ describe('EntitlementService', () => {
       await expect(
         svc.check('org-1', { kind: 'integration_connect', current: 10 }),
       ).resolves.toMatchObject({ allowed: false, reason: 'integration_limit_reached' });
+    });
+
+    /**
+     * A provisioned number is recurring carrier rent on the platform's own
+     * Twilio account, so the switch must answer this kind with a real quota
+     * rather than falling through and returning undefined - which would read as
+     * "no decision" at the one call site that spends money.
+     */
+    it('answers a phone_number_create request from the plan quota', async () => {
+      const svc = makeService(makePrisma({ subscription: { plan: 'starter', status: 'active' } }));
+
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 1 }),
+      ).resolves.toMatchObject({ allowed: true, reason: 'allowed', current: 1, limit: 2 });
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 2 }),
+      ).resolves.toMatchObject({
+        allowed: false,
+        reason: 'phone_number_limit_reached',
+        current: 2,
+        limit: 2,
+      });
+    });
+
+    it('allows Free no phone numbers at all', async () => {
+      // Free is refused managed_telephony and byo_telephony outright, so a
+      // non-zero limit here would contradict the capability gate.
+      const svc = makeService(makePrisma({ subscription: { plan: 'free', status: 'active' } }));
+
+      await expect(
+        svc.check('org-1', { kind: 'phone_number_create', current: 0 }),
+      ).resolves.toMatchObject({ allowed: false, reason: 'phone_number_limit_reached', limit: 0 });
     });
 
     it('blocks Free outbound PSTN even when legacy UsageRecord rows exist', async () => {

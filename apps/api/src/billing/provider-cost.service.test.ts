@@ -14,7 +14,19 @@ interface UpsertArgs {
   update: Record<string, unknown>;
 }
 
-function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
+/** A `twilio_phone_numbers` row as the rental sweep reads it. */
+interface PhoneNumberRow {
+  id: string;
+  phoneNumber: string;
+  status: string;
+  costPerMonth: number;
+  workspaceId: string;
+  workspace: { organizationId: string };
+}
+
+function makeService(
+  opts: { callUsages?: unknown[]; counts?: number[]; phoneNumbers?: PhoneNumberRow[] } = {},
+) {
   const rows = new Map<
     string,
     { amount: unknown; isEstimate: boolean; serviceCategory: string }
@@ -37,6 +49,36 @@ function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
     const key = args.where.provider_idempotencyKey;
     return rows.get(rowKey(key.provider, key.idempotencyKey)) ?? null;
   });
+  // Derived from the rows the upserts above actually wrote, so the replay test
+  // exercises the real exclusion path instead of a canned answer.
+  const costEventFindMany = vi.fn(
+    async (args: { where: { serviceCategory: string; idempotencyKey: { endsWith: string } } }) =>
+      [...rows.entries()]
+        .filter(([mapKey, row]) => {
+          const idempotencyKey = mapKey.split('\0')[1] ?? '';
+          return (
+            row.serviceCategory === args.where.serviceCategory &&
+            idempotencyKey.endsWith(args.where.idempotencyKey.endsWith)
+          );
+        })
+        .map(([mapKey]) => ({ idempotencyKey: mapKey.split('\0')[1] ?? '' })),
+  );
+  const phoneNumberFindMany = vi.fn(
+    async (args: {
+      where: { status?: string; costPerMonth?: { gt: number }; id?: { notIn: string[] } };
+      take?: number;
+    }) => {
+      const excluded = new Set(args.where.id?.notIn ?? []);
+      return (opts.phoneNumbers ?? [])
+        .filter(
+          (row) =>
+            row.status === args.where.status &&
+            row.costPerMonth > (args.where.costPerMonth?.gt ?? -1) &&
+            !excluded.has(row.id),
+        )
+        .slice(0, args.take);
+    },
+  );
   const countQueue = [...(opts.counts ?? [])];
   const metricChildren = new Map<string, { inc: ReturnType<typeof vi.fn>; dec: ReturnType<typeof vi.fn> }>();
   const labels = vi.fn((provider: string, category: string, estimate: string) => {
@@ -49,7 +91,8 @@ function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
     return child;
   });
   const prisma = {
-    providerCostEvent: { upsert, findUnique },
+    providerCostEvent: { upsert, findUnique, findMany: costEventFindMany },
+    twilioPhoneNumber: { findMany: phoneNumberFindMany },
     callUsage: {
       findMany: vi.fn(async () => opts.callUsages ?? []),
       count: vi.fn(async () => countQueue.shift() ?? 0),
@@ -63,6 +106,7 @@ function makeService(opts: { callUsages?: unknown[]; counts?: number[] } = {}) {
   return {
     prisma,
     upsert,
+    phoneNumberFindMany,
     metrics,
     metricChildren,
     service: new ProviderCostService(prisma as never, metrics as never),
@@ -359,6 +403,113 @@ describe('ProviderCostService.estimateMissingCallCosts', () => {
     upsert.mockRejectedValueOnce(new Error('unique violation'));
 
     await expect(service.estimateMissingCallCosts(10)).resolves.toBe(1);
+  });
+});
+
+describe('ProviderCostService.recordNumberRentals', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const month = () => new Date().toISOString().slice(0, 7);
+  const rented = (over: Partial<PhoneNumberRow> = {}): PhoneNumberRow => ({
+    id: 'pn-1',
+    phoneNumber: '+15550001111',
+    status: 'active',
+    costPerMonth: 1.15,
+    workspaceId: 'ws-1',
+    workspace: { organizationId: ORG },
+    ...over,
+  });
+
+  it('books the monthly rental as a cost event keyed per number per month', async () => {
+    const { service, upsert } = makeService({ phoneNumbers: [rented()] });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(1);
+
+    const args = upsertArgs(upsert);
+    expect(args.where.provider_idempotencyKey).toEqual({
+      provider: 'twilio',
+      idempotencyKey: `phone_number:pn-1:${month()}`,
+    });
+    expect(Number(args.create.amount)).toBeCloseTo(1.15, 6);
+    expect(Number(args.create.quantity)).toBe(1);
+    expect(args.create.measuredUnit).toBe('month');
+    expect(args.create.serviceCategory).toBe(PROVIDER_COST_CATEGORIES.numberRental);
+    expect(args.create.organizationId).toBe(ORG);
+    expect(args.create.workspaceId).toBe('ws-1');
+    // A rental belongs to no call, which is exactly why no call-derived cost
+    // event could ever stand in for it.
+    expect(args.create.callId).toBeNull();
+    expect(args.create.isEstimate).toBe(false);
+  });
+
+  /**
+   * Cost events are kept for accounting and are not deleted when an organization
+   * is erased, while the `twilioPhoneNumber` row is. A raw E.164 number copied
+   * into this metadata would therefore survive a GDPR erasure inside billing.
+   * The number id is enough to reconcile a rental.
+   */
+  it('books the rental without copying the raw phone number into the metadata', async () => {
+    const { service, upsert } = makeService({ phoneNumbers: [rented()] });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(1);
+
+    const metadata = upsertArgs(upsert).create.metadata as Record<string, unknown>;
+    expect(metadata).toEqual({ phoneNumberId: 'pn-1', month: month() });
+    expect(JSON.stringify(metadata)).not.toContain('+1555');
+  });
+
+  it('does not book a second rental for the same number in the same month', async () => {
+    const { service, upsert } = makeService({ phoneNumbers: [rented()] });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(1);
+    // The second pass must find the number already recorded and skip it, or a
+    // reconciler that runs hourly would bill a month's rental every hour.
+    await expect(service.recordNumberRentals(10)).resolves.toBe(0);
+
+    expect(upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('books nothing for a BYO number that carries no monthly cost', async () => {
+    const { service, upsert } = makeService({
+      phoneNumbers: [rented({ id: 'pn-byo', costPerMonth: 0 })],
+    });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(0);
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('attributes each rental to the organization owning that number workspace', async () => {
+    const { service, upsert } = makeService({
+      phoneNumbers: [
+        rented({ id: 'pn-a', workspaceId: 'ws-a', workspace: { organizationId: 'org-a' } }),
+        rented({ id: 'pn-b', workspaceId: 'ws-b', workspace: { organizationId: 'org-b' } }),
+      ],
+    });
+
+    await expect(service.recordNumberRentals(10)).resolves.toBe(2);
+
+    // One tenant's carrier rental must never land on another tenant's cost side.
+    expect(
+      upsert.mock.calls.map((call) => {
+        const args = call[0] as UpsertArgs;
+        return [args.create.organizationId, args.create.workspaceId];
+      }),
+    ).toEqual([
+      ['org-a', 'ws-a'],
+      ['org-b', 'ws-b'],
+    ]);
+  });
+
+  it('bounds one pass to the batch limit so a large fleet is worked down', async () => {
+    const { service, upsert, phoneNumberFindMany } = makeService({
+      phoneNumbers: [rented({ id: 'pn-a' }), rented({ id: 'pn-b' }), rented({ id: 'pn-c' })],
+    });
+
+    await expect(service.recordNumberRentals(2)).resolves.toBe(2);
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect((phoneNumberFindMany.mock.calls[0]?.[0] as { take: number }).take).toBe(2);
+    // The remainder is picked up next pass, because recorded numbers drop out.
+    await expect(service.recordNumberRentals(2)).resolves.toBe(1);
   });
 });
 

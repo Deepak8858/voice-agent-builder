@@ -144,13 +144,15 @@ const EnvSchema = z
     // downgrades token verification to "trust any issuer". Accepts
     // NEXT_PUBLIC_SUPABASE_URL as the source because deployments that only set
     // the frontend variable booted fine before this became required.
-    SUPABASE_URL: z.preprocess(
-      (value) =>
-        typeof value === 'string' && value.trim() !== ''
-          ? value
-          : process.env.NEXT_PUBLIC_SUPABASE_URL,
-      z.string().min(1, 'SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) is required'),
-    ),
+    // Trimmed and URL-checked, not merely non-empty: this value becomes the
+    // Supabase client base URL, the expected JWT `issuer` and the base of every
+    // /auth/v1 request URL. A whitespace-only or malformed value passed a
+    // non-empty check and then failed per-request instead of at boot.
+    SUPABASE_URL: z.preprocess((value) => {
+      const direct = typeof value === 'string' ? value.trim() : '';
+      if (direct !== '') return direct;
+      return process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || undefined;
+    }, z.string().url('SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) must be an absolute URL')),
     SUPABASE_JWT_SECRET: z.string().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
     SUPABASE_KNOWLEDGE_BUCKET: z.string().min(1).optional(),
@@ -194,6 +196,12 @@ const EnvSchema = z
     STRIPE_GROWTH_PRICE_ID: z.string().optional(),
     STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
     STRIPE_MINUTE_PACK_PRICE_ID: z.string().optional(),
+    // Which Customer Portal feature set to open. Deliberately *not* in
+    // STRIPE_PORTAL_REQUIRED_ENV: unset means Stripe's account default, which
+    // still lets a customer fix a failing card. Requiring it would 503 the
+    // portal — and, because that list is spread into the subscription and
+    // top-up lists, would 503 both Checkout entry points too.
+    STRIPE_PORTAL_CONFIGURATION_ID: z.string().optional(),
     // Tax collection stays off until the tax registrations are confirmed.
     STRIPE_TAX_ENABLED: BooleanEnvSchema.default(false),
     BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
@@ -308,6 +316,28 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['ALLOWED_ORIGINS'],
         message: 'ALLOWED_ORIGINS must contain at least one explicit origin in production',
+      });
+    }
+    // Supabase Auth has exactly two ways to establish a session's claims, and
+    // supabase-auth.service.ts tries them in order: local HS256 verification
+    // with SUPABASE_JWT_SECRET, then token introspection against
+    // /auth/v1/user with SUPABASE_SERVICE_ROLE_KEY. With neither set,
+    // resolveClaims() falls straight through to `return null` and the API
+    // rejects every single authenticated request while /health stays green and
+    // boot logs stay clean. Same failure shape INTERNAL_API_KEY's `.min(32)`
+    // exists to prevent: an unsatisfiable check is a config bug, not a mode.
+    // Trimmed: ' ' is truthy, so a whitespace-only credential satisfied a plain
+    // presence check and then failed every verification and introspection call.
+    if (
+      value.NODE_ENV === 'production' &&
+      !value.SUPABASE_JWT_SECRET?.trim() &&
+      !value.SUPABASE_SERVICE_ROLE_KEY?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['SUPABASE_JWT_SECRET'],
+        message:
+          'One of SUPABASE_JWT_SECRET or SUPABASE_SERVICE_ROLE_KEY is required in production; with neither, every session is rejected',
       });
     }
     if (value.NODE_ENV === 'production' && !value.VOICE_WEBHOOK_SECRET) {

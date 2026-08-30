@@ -25,6 +25,12 @@ export const PROVIDER_COST_CATEGORIES = {
   agentRuntime: 'agent_runtime',
   /** PSTN/SIP trunking minutes. */
   sipTrunk: 'sip_trunk',
+  /**
+   * Recurring carrier rental for a phone number. Charged per number per month
+   * whether or not the number takes a single call, so it is a cost the minute
+   * categories above can never account for.
+   */
+  numberRental: 'number_rental',
 } as const;
 
 export type ProviderCostCategory =
@@ -254,6 +260,112 @@ export class ProviderCostService {
       }
     }
     return estimated;
+  }
+
+  /**
+   * Record this calendar month's carrier rental for each active phone number.
+   *
+   * `costPerMonth` was written on every provisioned number and read by nothing,
+   * so reported margin counted every customer-facing minute and none of the
+   * recurring rentals underneath them. A rented number costs money every month
+   * whether or not it takes a call, and no call-derived cost event can ever
+   * represent it — hence `callId` is left null.
+   *
+   * The key is `phone_number:<id>:<YYYY-MM>`: one row per number per month, so
+   * re-running inside the same month updates in place instead of double
+   * counting. Numbers already recorded for the month are excluded from the
+   * candidate query, which is what lets `limit` work a large fleet down over
+   * successive runs instead of rewriting the same first page every pass.
+   *
+   * The run stamps the CURRENT month, because that is the month whose traffic
+   * the rental is paying for: the margin gauge sums a trailing window, and a
+   * current-month row lands inside the same window as the revenue it supported.
+   * Stamping a closed month would push cost out of that window.
+   *
+   * No pro-rating. The carrier bills a full month at provisioning and again on
+   * each monthly anniversary, and nothing here knows that anniversary date, so
+   * any fraction would be invented.
+   * ponytail: a number provisioned or released mid-month is booked at a full
+   * month, which overstates cost for that month — the safe direction for a
+   * margin alert. Pro-rate only when the carrier invoice is imported, which
+   * would supersede these figures through the same idempotency key anyway.
+   */
+  async recordNumberRentals(limit = 100): Promise<number> {
+    const occurredAt = new Date();
+    const month = occurredAt.toISOString().slice(0, 7);
+
+    // Which numbers already have this month's row, so the batch makes progress
+    // instead of re-recording the same page forever.
+    // ponytail: the exclusion list grows with the rented fleet (one id per
+    // number recorded this month). Add a `phoneNumberId` column on
+    // ProviderCostEvent and anti-join on it if that list ever gets unwieldy.
+    const alreadyRecorded = await this.prisma.providerCostEvent.findMany({
+      where: {
+        serviceCategory: PROVIDER_COST_CATEGORIES.numberRental,
+        idempotencyKey: { endsWith: `:${month}` },
+      },
+      select: { idempotencyKey: true },
+    });
+    const recordedNumberIds = alreadyRecorded.map((row) => row.idempotencyKey.split(':')[1] ?? '');
+
+    // `costPerMonth: { gt: 0 }` is what excludes BYO: a brought-in number is
+    // stored at 0 because that tenant pays its own carrier, so the platform has
+    // no rental to book for it.
+    //
+    // No predicate here is comment-only on purpose: the tenant-scope analyzer
+    // substitutes file-wide identifier initializers into the `where` text it
+    // tests, so a comment inside the literal that happens to name a local
+    // holding a `select: { workspaceId }` makes this platform-wide sweep look
+    // tenant-scoped and silently drop out of the ratchet.
+    const rentedNumbers = await this.prisma.twilioPhoneNumber.findMany({
+      where: {
+        status: 'active',
+        costPerMonth: { gt: 0 },
+        ...(recordedNumberIds.length > 0 ? { id: { notIn: recordedNumberIds } } : {}),
+      },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+      select: {
+        id: true,
+        costPerMonth: true,
+        workspaceId: true,
+        // A number is workspace-scoped and a cost event needs an organization.
+        // It is read from this number's own workspace so one tenant's rental can
+        // never be attributed to another.
+        workspace: { select: { organizationId: true } },
+      },
+    });
+
+    let recorded = 0;
+    for (const number of rentedNumbers) {
+      try {
+        await this.recordActualCost({
+          organizationId: number.workspace.organizationId,
+          workspaceId: number.workspaceId,
+          provider: 'twilio',
+          serviceCategory: PROVIDER_COST_CATEGORIES.numberRental,
+          idempotencyKey: `phone_number:${number.id}:${month}`,
+          measuredUnit: 'month',
+          quantity: 1,
+          amountUsd: Number(number.costPerMonth),
+          occurredAt,
+          // The raw E.164 number is deliberately NOT copied in here. Erasing an
+          // organization releases and deletes its `twilioPhoneNumber` rows, but
+          // cost events are kept for accounting, so a number stored in this
+          // metadata would outlive the erasure that was supposed to remove it.
+          // `phoneNumberId` identifies the rental for any reconciliation, and the
+          // number itself can be resolved from that row while it still exists.
+          metadata: { phoneNumberId: number.id, month },
+        });
+        recorded += 1;
+      } catch (err) {
+        // One malformed row must not stop the batch.
+        this.logger.error(
+          `Failed to record the monthly rental for phone number ${number.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return recorded;
   }
 
   /**

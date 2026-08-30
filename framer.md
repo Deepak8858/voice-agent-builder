@@ -540,24 +540,49 @@ Do not claim legal certification or compliance guarantees. Phrase regulated-indu
 
 ### Pricing page
 
-Preserve four plans:
+Preserve four plans. Prices, quotas, labels and CTAs are owned by the shared
+billing catalog (`packages/shared/src/billing/catalog.ts`, catalog version
+`2026-08-23`). Take them from there; do not invent numbers:
 
-- Free
-- Starter
-- Growth
-- Enterprise
+- **Free** — `$0`. 10 min/mo (recurring, not lifetime), 1 agent, 1 workspace, 1 concurrent call, 50 contacts, 0 phone numbers. In-house (`standard`) pipeline only; browser tests draw from the same 10 minutes. CTA "Start free"; in the dashboard the CTA is the non-action label "Current plan".
+- **Starter** — `$99`/mo. 200 min/mo, 3 agents, 1 workspace, 2 concurrent calls, 2 integrations, 500 contacts, 2 phone numbers. **This is the emphasized plan** (`highlight: true`).
+- **Growth** — `$299`/mo. 1,000 min/mo, 10 agents, 5 workspaces, 10 concurrent calls, 10 integrations, 5,000 contacts, 10 phone numbers, white-label.
+- **Enterprise** — `From $999/month`. 3,000 min/mo, 30 agents, 15 workspaces, 25 concurrent calls (50 by contract), 25 integrations, 25,000 contacts, white-label.
+
+Also show the prepaid minute pack: **100 minutes for $39**, expiring **365 days**
+after purchase. Packs are consumed after included minutes and are sold only to an
+organization on a paid plan with an active subscription.
+
+Only **Starter and Growth** have self-service checkout. Free is the default
+state and Enterprise is sales-assisted, so neither shows a checkout button.
 
 The page must include:
 
 - Clear plan cards
 - Current-plan state
-- Most-relevant-plan emphasis
+- Starter emphasized as the most relevant plan
 - Usage estimator
 - Feature comparison
-- Demo billing or checkout-paused notice
-- Checkout failure state
-- Enterprise sales path
+- Enterprise sales path ("Contact sales" / "Talk to sales")
 - FAQ
+
+**The Free plan must never expose a paid affordance.** On Free, the minute-pack
+and billing-portal entry points are absent — not rendered as plausible-looking
+buttons that fail on click — and the only paid path is the upgrade CTA.
+
+**Three independent billing actions, three independent states.** `GET
+/workspaces/:workspaceId/billing/status` returns a separate boolean per action
+(`liveCheckoutEnabled`, `topUpEnabled`, `portalEnabled`), so each needs its own
+paused, failed and disabled variant. Never a single global "checkout paused"
+banner — one action being unavailable says nothing about the other two:
+
+1. **Subscription checkout** — *paused* when live checkout is unconfigured (demo-billing notice); *disabled* on Free, on Enterprise, and when a live subscription already exists ("change or cancel it from the billing portal instead"); *failed* on a declined card or Stripe error.
+2. **Minute-pack top-up** — *paused* when top-up is unconfigured; *disabled* without paid access, with the two reasons distinguished ("no subscription" vs "subscription inactive"); *failed* on a payment error.
+3. **Customer portal** — *paused* when the portal is unconfigured; *absent* on Free as a paid affordance; *failed* on a Stripe error.
+
+All three actions, and the invoice list, are owner/admin-only. Members below
+admin see plan, usage and limits but get a permission-denied state on the
+actions rather than a dead button.
 
 On mobile, do not compress the comparison table into unreadable columns. Convert it into plan-by-plan comparison sections or an accessible selected-plan comparator.
 
@@ -759,6 +784,13 @@ Do not bury these inside tabs without context. Explain who each path suits.
 
 ### AI generation
 
+Generation is **asynchronous**, and the design has to show that. Sending a
+message returns **202 Accepted** with a session snapshot whose status is
+`generating`; the client then **polls** `GET .../agent-gen-sessions/:sessionId`
+until the status changes (`apps/api/src/agent-gen/agent-gen.controller.ts:32-117`).
+A composer plus a preview is not enough — without the states below a prototype
+cannot show completion or recover a failed session.
+
 Design a focused generation workspace:
 
 - Large instruction composer
@@ -769,6 +801,23 @@ Design a focused generation workspace:
 - Validation progress
 - Editable assumptions
 - Clear save-as-draft action
+
+Session states, matching the server's own status values (`awaiting_user`,
+`generating`, `finalizing`, `completed`, `failed`), and the transitions between
+them:
+
+1. **No session** — composer only. `POST .../agent-gen-sessions` creates or resumes the user's session.
+2. **Generating** (202) — request accepted, result not ready. Polling indicator, composer locked, discard still reachable. Not a spinner over an otherwise-live form.
+3. **Awaiting user** — a spec came back. Preview populated, assumptions editable, another message / finalize / discard available. Retry is not offered here: only a failed generation can be retried.
+4. **Failed** — generation errored, or a stuck job was swept out by the staleness timeout ("Operation timed out. Please try again."). Show the reason and a **Retry** action (`POST .../:sessionId/retry`, also 202 → back to Generating). Retry re-runs the existing history and never appends a duplicate message. A failed session is recoverable, not a dead end.
+5. **Already running** (409) — a second send or retry while a generation is in flight is refused. Explain that generation is still running and keep the composer's text.
+6. **Rate-limited** (429) — the per-user generation limit was hit; show the retry-after wait rather than a generic error.
+7. **Resumed after refresh** — on entry, `GET .../agent-gen-sessions/active` returns `{ session }`, null when there is none. A reload mid-generation must land back in Generating with its history, not on an empty composer.
+8. **Finalizing → Completed** — `POST .../:sessionId/finalize` creates the real agent (optionally publishing it) and hands off to the builder; it is busy-guarded the same way, and a completed session cannot take further messages ("Start a new one").
+9. **Discarded** — `DELETE .../:sessionId` for "start over", behind a destructive confirmation.
+
+Sessions are per-user within the workspace: a teammate never sees another
+member's session, so an empty state here does not mean the workspace is empty.
 
 The generation experience should visually communicate that VoiceForge is producing structured configuration—not improvising an opaque prompt.
 
@@ -1239,17 +1288,21 @@ Custom colors must be mapped to safe semantic tokens. If a client-selected color
 
 Include:
 
-- Current plan
+- Current plan, with the catalog values from the Pricing page section
 - Renewal state
 - Trial state
-- Usage
+- Usage against the plan's included minutes
 - Limits
-- Overage risk
-- Invoices
+- Overage risk, plus remaining prepaid pack minutes and their expiry
+- Invoices (owner/admin only)
 - Payment method
 - Upgrade/downgrade
+- Buy a 100-minute pack for $39 (paid plans with an active subscription only)
+- Manage subscription and card in the Stripe customer portal
 - Demo-billing mode
-- Checkout paused/failure states
+- Separate paused / failed / disabled states for subscription checkout, minute-pack top-up and the customer portal, driven by the three independent `liveCheckoutEnabled` / `topUpEnabled` / `portalEnabled` flags — see the Pricing page section
+- Permission-denied state for members below admin: checkout, top-up, portal and invoices are owner/admin-only
+- On Free: no top-up and no portal entry point at all; the only paid path is upgrade
 
 Use progress bars only when there is a meaningful limit. Pair visual bars with exact values.
 
@@ -1258,11 +1311,11 @@ Use progress bars only when there is a meaningful limit. Pair visual bars with e
 Group settings into:
 
 - Profile
-- Organization
+- Organization — including **rename workspace** (owner/admin only)
 - Workspaces
 - Team
 - Roles and permissions
-- Audit log
+- Audit log (**owner/admin only**)
 - CRM
 - Phone numbers
 - Data retention
@@ -1270,6 +1323,13 @@ Group settings into:
 - Danger zone
 
 Do not make every setting a tab in one horizontal strip. Use secondary side navigation on larger screens and section navigation on mobile.
+
+Two of these are role-gated server-side, so both need an owner/admin affordance
+*and* a permission-denied state for members and viewers — the section is
+reachable, the action is not:
+
+- **Audit log** — `owner` or `admin` only (`apps/api/src/audit/audit.controller.ts:16-18`). For other roles, do not render the log with an error toast: show the permission-denied state in place of the table, and keep the nav entry honest about it.
+- **Rename workspace** — `owner` or `admin` only (`apps/api/src/workspaces/workspaces.controller.ts:34-36`). A rename changes what every other member and the white-label branding sees, so it belongs in Organization settings with the name field read-only for other roles. Name is 1–120 characters, validated inline.
 
 Audit logs should be structured, filterable, and readable:
 
@@ -1280,6 +1340,13 @@ Audit logs should be structured, filterable, and readable:
 - Time
 - Result
 - Metadata detail
+
+Filtering matches the API: a free-text action filter (case-insensitive
+substring) and cursor paging with a page size of 20, capped at 100 — design
+"load more", not numbered pages. The organization-wide export (date range, CSV
+or JSON) is also owner/admin, at the org level. The operator-only admin export
+and regulator report are not tenant surfaces; do not design entry points for
+them.
 
 ### Data retention
 
@@ -1636,7 +1703,13 @@ For every major screen, include applicable variants for:
 - Compliance blocked
 - Trial
 - Subscription past due
-- Checkout paused
+- Subscription checkout paused / failed / disabled
+- Minute-pack top-up paused / failed / disabled
+- Customer portal paused / failed / absent on Free
+- Generating (accepted, polling for the result)
+- Generation failed with retry
+- Generation already running (refused)
+- Generation session resumed after refresh
 - Destructive confirmation
 - Success
 - Mobile

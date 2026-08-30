@@ -5,7 +5,9 @@ import type { ImprovementSuggestionsResponse } from '@voiceforge/shared';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useApi } from '@/lib/use-api';
+import { getPlanLimitRedirect } from '@/lib/plan-limit';
 import { Lightbulb, AlertTriangle, Info, XCircle } from 'lucide-react';
+import Link from 'next/link';
 
 interface SuggestionsPanelProps {
   workspaceId: string;
@@ -34,6 +36,8 @@ export function SuggestionsPanel({ workspaceId, agentId }: SuggestionsPanelProps
       ),
   });
 
+  const planLimit = getPlanLimitRedirect(data.error);
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -41,10 +45,23 @@ export function SuggestionsPanel({ workspaceId, agentId }: SuggestionsPanelProps
           <Lightbulb className="h-4 w-4 text-primary" />
           Suggestions
         </CardTitle>
-        <Badge variant="secondary">{data.data?.suggestions.length ?? 0}</Badge>
+        {/* A "0" beside the upgrade prompt would read as "no issues found". */}
+        {planLimit ? null : (
+          <Badge variant="secondary">{data.data?.suggestions.length ?? 0}</Badge>
+        )}
       </CardHeader>
       <CardContent>
-        {data.isLoading ? (
+        {/* This route is gated on `ai_insights`, so Free reads a 403. Show the
+            upgrade path rather than an empty "agent looks healthy" panel, which
+            would be a false all-clear. */}
+        {planLimit ? (
+          <div className="flex flex-col items-start gap-3">
+            <p className="text-sm text-muted-foreground">{planLimit.message}</p>
+            <Link href={planLimit.upgradePath} className="text-sm font-medium text-primary hover:underline">
+              View plans
+            </Link>
+          </div>
+        ) : data.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : data.data?.suggestions.length === 0 ? (
           <p className="text-xs text-muted-foreground">

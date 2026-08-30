@@ -32,6 +32,118 @@ describe('env validation', () => {
     await expect(import('./env')).rejects.toThrow(/VOICE_WEBHOOK_SECRET/);
   });
 
+  /**
+   * Neither variable is individually required, and supabase-auth.service.ts
+   * treats both as optional, so a production deployment with neither boots
+   * clean, passes /health, and then rejects every authenticated request —
+   * resolveClaims() skips local verification and getSupabaseUser() returns null
+   * before it issues a request. Boot has to refuse instead.
+   */
+  it.each([
+    ['the JWT secret alone', { SUPABASE_JWT_SECRET: 'production-supabase-jwt-secret' }],
+    ['the service-role key alone', { SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key' }],
+  ])('accepts %s as a claims source in production', async (_label, claimsSource) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      ...claimsSource,
+    });
+
+    await expect(import('./env')).resolves.toBeDefined();
+  });
+
+  /**
+   * `' '` is truthy, so a whitespace-only credential used to satisfy the
+   * presence check above: boot stayed clean and then local verification had no
+   * usable secret and introspection sent a blank service-role key, so every
+   * authenticated request was rejected.
+   */
+  it.each([
+    ['a whitespace-only JWT secret', { SUPABASE_JWT_SECRET: '   ' }],
+    ['a whitespace-only service-role key', { SUPABASE_SERVICE_ROLE_KEY: '\t' }],
+    [
+      'whitespace-only values for both',
+      { SUPABASE_JWT_SECRET: ' ', SUPABASE_SERVICE_ROLE_KEY: ' ' },
+    ],
+  ])('refuses to boot in production on %s', async (_label, claimsSource) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      ...claimsSource,
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_JWT_SECRET/);
+  });
+
+  /**
+   * SUPABASE_URL becomes the Supabase client base URL, the expected JWT issuer
+   * and the base of every /auth/v1 request URL, so a whitespace-only or
+   * malformed value has to fail at boot rather than per request. Whitespace-only
+   * counts as absent, which is why the fallback variable is consulted for it.
+   */
+  it.each([
+    ['whitespace only', '   '],
+    ['not a URL at all', 'test-project.supabase.co'],
+    ['a URL with a leading space that is still malformed', ' supabase'],
+  ])('rejects a Supabase URL that is %s', async (_label, supabaseUrl) => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      SUPABASE_URL: supabaseUrl,
+      NEXT_PUBLIC_SUPABASE_URL: '  ',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_URL/);
+  });
+
+  it('trims the selected Supabase URL and falls back past a whitespace-only value', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'development',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      SUPABASE_URL: ' \t ',
+      NEXT_PUBLIC_SUPABASE_URL: '  https://fallback-project.supabase.co  ',
+    });
+
+    const mod = await import('./env');
+    expect(mod.env.SUPABASE_URL).toBe('https://fallback-project.supabase.co');
+  });
+
+  it('refuses to boot in production with no Supabase claims source at all', async () => {
+    vi.resetModules();
+    restoreEnv();
+    Object.assign(process.env, {
+      NODE_ENV: 'production',
+      REDIS_URL: 'redis://localhost:6379',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+    });
+
+    await expect(import('./env')).rejects.toThrow(/SUPABASE_JWT_SECRET/);
+  });
+
   it('rejects the mock voice provider in production', async () => {
     vi.resetModules();
     restoreEnv();
@@ -77,6 +189,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'vapi',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
       VAPI_API_KEY: 'stale-vapi-key',
       RETELL_VOICE_ID: '11labs-Adrian',
     });
@@ -126,6 +239,10 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      // Production requires a Supabase claims source. vitest.setup.ts supplies
+      // SUPABASE_URL but deliberately not this, so every production fixture has
+      // to name it or the schema rejects before reaching what it is testing.
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
     const azureBase = {
       AZURE_OPENAI_ENDPOINT: 'https://voiceforge.openai.azure.com',
@@ -364,6 +481,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
 
     it.each([
@@ -454,6 +572,7 @@ describe('env validation', () => {
       VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
       VOICE_PROVIDER: 'openai-realtime',
       LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
     };
 
     it.each([

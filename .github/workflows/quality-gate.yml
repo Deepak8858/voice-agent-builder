@@ -79,7 +79,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Scan repository for secrets
-        uses: gitleaks/gitleaks-action@v2
+        # @v3 is @v2 with the action runtime moved from Node 20 to Node 24 (no
+        # input, output or behaviour change). GitHub-hosted runners drop Node 20
+        # on 2026-09-16, which would fail this step before the scan even starts.
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Named explicitly rather than relying on gitleaks auto-detecting
@@ -87,6 +90,12 @@ jobs:
           # discovery rules cannot silently drop the allowlist and fail the gate
           # on the same test fixtures again.
           GITLEAKS_CONFIG: .gitleaks.toml
+          # The action defaults to gitleaks 8.24.3, which predates root-level
+          # `[[allowlists]]` (added in 8.25.0) and silently IGNORES every block
+          # in our config — the sentinel exemptions were dead and the gate
+          # failed on historical test-fixture commits. Pin a version that
+          # actually parses the config it is handed.
+          GITLEAKS_VERSION: "8.30.1"
 
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level=high

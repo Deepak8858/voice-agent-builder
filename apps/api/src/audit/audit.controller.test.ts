@@ -138,6 +138,8 @@ describe('AuditController.list limit clamping', () => {
     ['negative', '-2', 1],
     ['zero', '0', 20],
     ['not a number', 'all', 20],
+    // `parseInt` stops at the first non-digit, so this used to page at 5.
+    ['partially numeric', '5junk', 20],
   ])('clamps a %s limit', async (_name, limit, expected) => {
     expect(await takeFor(limit as string | undefined)).toBe(expected);
   });

@@ -112,9 +112,9 @@ const ROLE_EXEMPT: Record<string, string> = {
   'white-label/white-label.controller.ts:InviteAcceptController.accept':
     'the invite token is the authorization, verified against the caller email in acceptInvite',
   'referral/referral.controller.ts:ReferralController.createReferral':
-    'per-user action on own session workspace; credit tier decision pending before any gate',
+    'per-user action on own session workspace; records a referral, grants no credit (see ReferralService)',
   'referral/referral.controller.ts:ReferralController.acceptReferral':
-    'per-user action on own session workspace; credit tier decision pending before any gate',
+    'per-user action on own session workspace; records a referral, grants no credit (see ReferralService)',
 
   // Internal runtime caller holds no membership row; a role gate breaks it.
   'calendar/calendar.controller.ts:CalendarController.connect':
@@ -160,16 +160,12 @@ const ROLE_EXEMPT: Record<string, string> = {
   'compliance/contacts.controller.ts:ContactsController.optOut':
     'not yet gated; consent/contact capture needs a tier decision before gating',
 
-  // Dead module still mounted in app.module.ts; unmounting is its own plan
-  // item and the ground rules forbid touching it meanwhile.
-  'phone-numbers/phone-numbers.controller.ts:PhoneNumbersController.provision':
-    'dead code, do-not-touch until unmounted',
-  'phone-numbers/phone-numbers.controller.ts:PhoneNumbersController.addByo':
-    'dead code, do-not-touch until unmounted',
-  'phone-numbers/phone-numbers.controller.ts:PhoneNumbersController.assign':
-    'dead code, do-not-touch until unmounted',
-  'phone-numbers/phone-numbers.controller.ts:PhoneNumbersController.release':
-    'dead code, do-not-touch until unmounted',
+  // The four `phone-numbers` routes were exempted here as "dead code, do-not-touch
+  // until unmounted". That premise was false: `PhoneNumbersModule` has been in
+  // `app.module.ts`'s `imports:` array since the initial commit, and the routes are
+  // browser-reachable through the web proxy's `/workspaces` prefix. They are now
+  // `@RequiredRole('owner', 'admin')` like their `telephony.controller.ts`
+  // equivalents, so the exemptions are gone rather than re-justified.
 };
 
 describe('role coverage baseline', () => {
@@ -184,7 +180,7 @@ describe('role coverage baseline', () => {
   });
 
   it('pins the exemption count and rejects stale entries', () => {
-    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(28);
+    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(24);
 
     // An exemption whose route was since gated or deleted must be removed, or
     // the list rots into cover for the next ungated route.

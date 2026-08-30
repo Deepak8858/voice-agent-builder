@@ -3,7 +3,12 @@ import { WorkspacesService } from './workspaces.service';
 
 describe('WorkspacesService.update', () => {
   it('revokes list, access and session caches for every member, not just the actor', async () => {
-    const members = [{ userId: 'u-actor' }, { userId: 'u-other' }];
+    // The second member has no Supabase identity yet (`authUserId` is nullable),
+    // so the subject-keyed key must simply be skipped for them.
+    const members = [
+      { userId: 'u-actor', user: { authUserId: 'auth-actor' } },
+      { userId: 'u-other', user: { authUserId: null } },
+    ];
     const prisma = {
       workspace: {
         update: vi.fn(async ({ where, data }: { where: { id: string }; data: object }) => ({
@@ -29,12 +34,20 @@ describe('WorkspacesService.update', () => {
 
     await svc.update('ws-1', 'u-actor', { name: 'Renamed' });
 
-    // Every member's sidebar list, workspace:access entry and session
-    // snapshot cache the old name; a rename must clear all of them.
-    for (const { userId } of members) {
+    // Every member's sidebar list, workspace:access entry and BOTH session
+    // snapshots cache the old name; a rename must clear all of them. The
+    // subject-keyed session:user entry is the one getSessionUser reads first.
+    for (const { userId, user } of members) {
       expect(invalidator.invalidateWorkspaceList).toHaveBeenCalledWith(userId);
       expect(invalidator.invalidateWorkspaceAccess).toHaveBeenCalledWith('ws-1', userId);
-      expect(invalidator.invalidateSession).toHaveBeenCalledWith({ appUserId: userId });
+      expect(invalidator.invalidateSession).toHaveBeenCalledWith({
+        appUserId: userId,
+        supabaseUserId: user.authUserId ?? undefined,
+      });
     }
+    expect(prisma.membership.findMany).toHaveBeenCalledWith({
+      where: { workspaceId: 'ws-1' },
+      select: { userId: true, user: { select: { authUserId: true } } },
+    });
   });
 });

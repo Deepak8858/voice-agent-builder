@@ -1315,7 +1315,6 @@ export class TelephonyService {
   }
 
   private async assertByoTelephonyAllowed(organizationId: string): Promise<void> {
-    if (typeof this.billing?.checkFeatureGate !== 'function') return;
     const allowed = await this.billing.checkFeatureGate(organizationId, 'byo_telephony');
     if (!allowed) {
       throw new ForbiddenPlanError(

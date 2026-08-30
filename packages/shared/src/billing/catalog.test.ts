@@ -54,6 +54,26 @@ describe('plan catalog', () => {
     expect(MINUTE_PACK).toEqual({ minutes: 100, priceUsd: 39, expiresAfterDays: 365 });
   });
 
+  /**
+   * A provisioned number is rented on VoiceForge's own Twilio account at a
+   * recurring ~$1.15/month, so this quota bounds platform spend rather than
+   * customer capacity. Free must be 0: it is refused `managed_telephony` and
+   * `byo_telephony` outright, and every paid plan must be able to hold at least
+   * one number or the capability it pays for is unusable.
+   */
+  it('caps held phone numbers at the plan concurrency, and at zero on Free', () => {
+    expect(getPlanEntitlements('free').phoneNumbers).toBe(0);
+    for (const plan of ['starter', 'growth', 'enterprise'] as const) {
+      const entitlements = getPlanEntitlements(plan);
+      expect(entitlements.phoneNumbers, `${plan} must be able to hold a number`).toBeGreaterThan(0);
+      // A number is an inbound call lane; more numbers than the plan can answer
+      // at once buys nothing and only adds carrier rent.
+      expect(entitlements.phoneNumbers, `${plan} numbers track concurrency`).toBe(
+        entitlements.concurrentCalls,
+      );
+    }
+  });
+
   it('funds browser tests from the monthly allowance on every plan', () => {
     // A separate lifetime test grant used to cap Free at a single 180-second
     // session, which made the recurring monthly allowance unspendable. No plan

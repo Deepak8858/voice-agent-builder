@@ -1,8 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import { hasLiveSubscription } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditService } from '../audit/audit.service';
 import { CacheInvalidator } from '../common/cache-invalidator';
+import { PhoneNumbersService } from '../phone-numbers/phone-numbers.service';
 import {
   KNOWLEDGE_FILE_STORAGE_TOKEN,
   type KnowledgeFileStorage,
@@ -21,10 +22,13 @@ export class ErasureService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly audit: AuditService,
+    // No AuditService: every audit row this service writes has to be inserted by
+    // the same transaction client as the deletion it attests to, which
+    // AuditService cannot accept. See eraseContact.
     @Inject(KNOWLEDGE_FILE_STORAGE_TOKEN)
     private readonly fileStorage: KnowledgeFileStorage,
     private readonly invalidator: CacheInvalidator,
+    private readonly phoneNumbers: PhoneNumbersService,
   ) {}
 
   async eraseContact(workspaceId: string, contactId: string): Promise<ErasureResult> {
@@ -35,15 +39,6 @@ export class ErasureService {
       return { success: false, error: 'Contact not found' };
     }
 
-    // Log before deletion (audit trail)
-    await this.audit.log({
-      workspaceId,
-      action: 'gdpr.contact.erased',
-      resourceType: 'contact',
-      resourceId: contactId,
-      metadata: { contactPhone: contact.phone, erasedAt: new Date().toISOString() },
-    });
-
     // Cascade: contact → consent_records (has cascade), calls (has cascade), compliance_checks (has cascade)
     // Additional: analytics_events, tool_invocations linked to those calls
     const calls = await this.prisma.call.findMany({
@@ -53,6 +48,41 @@ export class ErasureService {
     const callIds = calls.map(c => c.id);
 
     await this.prisma.$transaction(async (tx) => {
+      // The audit row is written inside the transaction, and before the deletes.
+      //
+      // Inside, because an erasure log exists to attest that a deletion
+      // happened: a row committed ahead of a transaction that then rolls back is
+      // a false attestation to a regulator, which is worse than no row at all.
+      // Writing it after the commit instead only swaps that for a permanent gap
+      // (crash or a failed insert between commit and log leaves a real deletion
+      // unrecorded, and the retry finds nothing left to erase). Inside the
+      // transaction there is no failure direction to choose: the claim and the
+      // deletion commit together or neither does.
+      //
+      // Written with `tx`, not `AuditService.log()`, because AuditService holds
+      // its own `this.prisma` and takes no transaction client -- calling it from
+      // in here would insert on a different connection and commit independently,
+      // which is the same defect wearing a disguise. Several services already
+      // write `auditLog.create` directly (billing, entitlement, stripe-webhook).
+      // `organizationId` is taken from the contact row rather than resolved from
+      // the workspace, which is what AuditService.log would have done.
+      //
+      // Before the deletes, because `audit_logs.workspace_id` and
+      // `actor_user_id` are real foreign keys (per `schema.prisma`, and created
+      // by `20260724090000_production_billing`); an insert naming a row this
+      // transaction has already deleted fails, and in Postgres one failed
+      // statement aborts the whole transaction.
+      await tx.auditLog.create({
+        data: {
+          workspaceId,
+          organizationId: contact.organizationId,
+          action: 'gdpr.contact.erased',
+          resourceType: 'contact',
+          resourceId: contactId,
+          metadata: { contactPhone: contact.phone, erasedAt: new Date().toISOString() },
+        },
+      });
+
       // Delete analytics events for these calls
       if (callIds.length > 0) {
         await tx.analyticsEvent.deleteMany({ where: { callId: { in: callIds } } });
@@ -72,18 +102,92 @@ export class ErasureService {
     const org = await this.prisma.organization.findUnique({ where: { id: orgId } });
     if (!org) return { success: false, error: 'Organization not found' };
 
-    await this.audit.log({
-      action: 'gdpr.organization_deleted',
-      resourceType: 'organization',
-      resourceId: orgId,
-      metadata: { orgName: org.name, erasedAt: new Date().toISOString() },
+    // `subscriptions.organization_id` is ON DELETE CASCADE, and that row is the
+    // only place the Stripe customer/subscription ids are stored. Read it before
+    // the delete: afterwards there is nothing left to cancel the subscription by.
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { organizationId: orgId },
+      select: { stripeCustomerId: true, stripeSubscriptionId: true, status: true },
     });
+
+    // Ordering, deliberately: cancel-then-delete is the only recoverable order.
+    // Cancel first and the delete fails -> the customer is un-billed but not yet
+    // erased, and erasure can simply be retried. Delete first and the cancel
+    // fails -> Stripe keeps charging the card every month and the id needed to
+    // stop it went away with the cascade, which is unrecoverable through this
+    // product. Nothing in this codebase can cancel a Stripe subscription (the
+    // only Stripe writes are customers.create, checkout.sessions and
+    // billingPortal.sessions), so the cancel half has to happen outside it: this
+    // refuses instead of destroying the handle. Erasure is therefore delayed by
+    // one operator action, never blocked on a Stripe call from this process --
+    // Stripe returning 500 cannot wedge it, because it makes no Stripe call.
+    // `stripeSubscriptionId` is the discriminator, not `status` alone: a free
+    // org that merely opened the billing portal has a customer row with the
+    // default status 'active' and no subscription.
+    if (subscription?.stripeSubscriptionId && hasLiveSubscription(subscription.status)) {
+      return this.refuseOrganizationErasure(
+        orgId,
+        'live_stripe_subscription',
+        {
+          stripeCustomerId: subscription.stripeCustomerId,
+          stripeSubscriptionId: subscription.stripeSubscriptionId,
+          stripeSubscriptionStatus: subscription.status,
+        },
+        `Organization ${orgId} still has a live Stripe subscription `
+        + `(${subscription.stripeSubscriptionId}, status "${subscription.status}"). Cancel it in `
+        + `Stripe first, then retry: deleting the organization removes the only record of that id.`,
+      );
+    }
 
     const workspaces = await this.prisma.workspace.findMany({
       where: { organizationId: orgId },
       select: { id: true },
     });
     const workspaceIds = workspaces.map((ws) => ws.id);
+
+    // The same ordering rule as the Stripe refusal above, applied to the
+    // carrier. `twilio_phone_numbers.workspace_id` is ON DELETE CASCADE, so the
+    // workspace delete below drops every number row -- and with it `twilioSid`,
+    // the only handle that can ever release the number -- while the number keeps
+    // billing monthly on VoiceForge's own Twilio account. Release-then-delete is
+    // recoverable (retry; the number is already off the account);
+    // delete-then-release is unrecoverable through this product. Enumerated
+    // before the delete for the same reason as the memberships below: afterwards
+    // there is nothing left to say which numbers existed. Outside the
+    // transaction deliberately -- an external HTTP call must not hold one open,
+    // and Postgres aborts the whole transaction on the first failed statement,
+    // so a refusal could not be recovered from inside it.
+    const numbers = workspaceIds.length === 0
+      ? []
+      : await this.prisma.twilioPhoneNumber.findMany({
+          where: { workspaceId: { in: workspaceIds } },
+          select: { id: true, workspaceId: true, phoneNumber: true },
+        });
+    for (const number of numbers) {
+      // PhoneNumbersService.release already calls the carrier first and only
+      // then drops the row, skips `type === 'byo'`, tolerates a concurrent
+      // release and writes the `phone_number.release` audit entry.
+      try {
+        await this.phoneNumbers.release(number.workspaceId, number.id);
+      } catch (err) {
+        // Numbers released before this one stay released, which is the intended
+        // end state for them; their rows are gone so a retry will not revisit
+        // them. Refusing here leaves the rest of the tenant's data intact and
+        // erasable on retry, whereas proceeding would strand this number.
+        const carrierError = err instanceof Error ? err.message : String(err);
+        return this.refuseOrganizationErasure(
+          orgId,
+          'carrier_release_refused',
+          // `phone_number` is already recorded in the clear by
+          // PhoneNumbersService.release's own audit row, and it is the tenant's
+          // carrier-billed number, not a data subject's contact detail.
+          { phoneNumber: number.phoneNumber, carrierError },
+          `Organization ${orgId} still holds phone number ${number.phoneNumber} at the carrier: `
+          + `${carrierError}. Release it, then retry: `
+          + `deleting the workspace removes the only record of its Twilio SID.`,
+        );
+      }
+    }
 
     // Collect the stored objects before the rows are deleted; afterwards the
     // metadata that tells us which bucket/key to remove is gone forever.
@@ -99,6 +203,34 @@ export class ErasureService {
         });
 
     await this.prisma.$transaction(async (tx) => {
+      // Inside the transaction and before the deletes, for the reasons set out
+      // in eraseContact: today every organization that has ever paid an invoice
+      // or placed a call fails the delete below on an ON DELETE RESTRICT foreign
+      // key, so the rolled-back case is the common case -- and it used to leave a
+      // committed row claiming the organization had been erased.
+      //
+      // The two refusals above (live Stripe subscription, un-released number)
+      // return before reaching this transaction and record themselves with a
+      // distinct action; see refuseOrganizationErasure.
+      await tx.auditLog.create({
+        data: {
+          organizationId: orgId,
+          action: 'gdpr.organization_deleted',
+          resourceType: 'organization',
+          resourceId: orgId,
+          metadata: {
+            orgName: org.name,
+            erasedAt: new Date().toISOString(),
+            // Keeps the Stripe handles findable after the cascade removes the
+            // subscription row. `audit_logs.organization_id` has no foreign key,
+            // so this row outlives the organization it names.
+            stripeCustomerId: subscription?.stripeCustomerId ?? null,
+            stripeSubscriptionId: subscription?.stripeSubscriptionId ?? null,
+            stripeSubscriptionStatus: subscription?.status ?? null,
+          },
+        },
+      });
+
       for (const workspaceId of workspaceIds) {
         await this.deleteWorkspaceChildren(tx, workspaceId);
         await tx.workspace.delete({ where: { id: workspaceId } });
@@ -132,6 +264,45 @@ export class ErasureService {
   }
 
   /**
+   * Records a refused organization erasure, then returns the refusal.
+   *
+   * A refusal is a data-subject-request outcome and has to be answerable later:
+   * which organization was asked about, when, and on what grounds. Both callers
+   * return immediately afterwards, so this method is the only place the refusal
+   * is recorded.
+   *
+   * Written through `this.prisma`, outside any transaction, which is the inverse
+   * of the rule set out in eraseContact for the inverse situation: a refusal
+   * commits no mutation, so there is nothing for the row to over-claim -- it is
+   * true the moment it is written and cannot be falsified by a rollback. Both
+   * refusal paths also have to stay outside a transaction for their own reasons
+   * (the carrier call must not hold one open, and Postgres aborts a whole
+   * transaction on the first failed statement).
+   *
+   * No `actorUserId`: `DELETE admin/orgs/:orgId` is `@InternalOnly()`, which
+   * rejects any request carrying user context, so no user id reaches this
+   * service -- the same reason the success row above records none either.
+   */
+  private async refuseOrganizationErasure(
+    orgId: string,
+    reason: string,
+    metadata: Record<string, string | null>,
+    error: string,
+  ): Promise<ErasureResult> {
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: orgId,
+        action: 'gdpr.organization_erasure_refused',
+        resourceType: 'organization',
+        resourceId: orgId,
+        metadata: { reason, refusedAt: new Date().toISOString(), ...metadata },
+      },
+    });
+    this.logger.warn({ orgId, reason }, 'GDPR organization erasure refused');
+    return { success: false, error };
+  }
+
+  /**
    * Deletes every workspace-scoped row that does not have an ON DELETE CASCADE
    * foreign key back to `workspaces`.
    *
@@ -160,6 +331,18 @@ export class ErasureService {
     await tx.contact.deleteMany(scope);
     await tx.dncEntry.deleteMany(scope);
     await tx.integrationTool.deleteMany(scope);
+
+    // A workspace's own templates carry its prompt text in `template_spec`. The
+    // workspace foreign key is SET NULL, so without this the content survives
+    // the erasure detached from any tenant instead of being removed.
+    await tx.agentTemplate.deleteMany(scope);
+
+    // `referrals.referrer_workspace_id` is ON DELETE RESTRICT, so a workspace
+    // that ever sent a referral invite cannot be deleted while its rows exist --
+    // this is the constraint that aborts erasure for any tenant that used the
+    // referral programme. The mirror column `referred_workspace_id` is SET NULL
+    // and those rows belong to the *referring* tenant, so they are left alone.
+    await tx.referral.deleteMany({ where: { referrerWorkspaceId: workspaceId } });
 
     // Agents are referenced by knowledge sources (SET NULL) and calls, so they
     // are removed only after both are gone.
@@ -242,14 +425,6 @@ export class ErasureService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) return { success: false, error: 'User not found' };
 
-    await this.audit.log({
-      actorUserId: userId,
-      action: 'gdpr.user_deleted',
-      resourceType: 'user',
-      resourceId: userId,
-      metadata: { userEmail: user.email, erasedAt: new Date().toISOString() },
-    });
-
     // Enumerate before deleteMany: the rows are the only record of which
     // workspace access caches this user holds.
     const memberships = await this.prisma.membership.findMany({
@@ -258,6 +433,25 @@ export class ErasureService {
     });
 
     await this.prisma.$transaction(async (tx) => {
+      // Inside the transaction and before the delete, for the reasons set out in
+      // eraseContact. This method is self-service (the controller passes the
+      // caller's own id), so the erased user is genuinely the actor -- but
+      // `audit_logs.actor_user_id` is a foreign key with ON DELETE SET NULL, so
+      // the column is emptied by the delete two statements below regardless of
+      // when the row is written. The durable attribution is `resource_id` and
+      // `metadata.userEmail`, neither of which has a foreign key. Ordering it the
+      // other way round would not preserve the actor either, it would abort the
+      // transaction on a foreign key violation and make erasure impossible.
+      await tx.auditLog.create({
+        data: {
+          actorUserId: userId,
+          action: 'gdpr.user_deleted',
+          resourceType: 'user',
+          resourceId: userId,
+          metadata: { userEmail: user.email, erasedAt: new Date().toISOString() },
+        },
+      });
+
       // Delete memberships
       await tx.membership.deleteMany({ where: { userId } });
       await tx.workspaceMembership.deleteMany({ where: { userId } });

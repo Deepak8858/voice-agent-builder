@@ -30,9 +30,12 @@ type BucketRecord = {
   expiresAt: Date;
   priority: number;
   status: string;
+  stripePaymentIntentId: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
+
+type StripeEventRecord = { stripeEventId: string; processedAt: Date | null };
 
 type LedgerRecord = {
   id: string;
@@ -71,6 +74,13 @@ type TransactionContext = {
     buckets: BucketRecord[];
     ledger: LedgerRecord[];
   } | null;
+  /**
+   * Stripe event rows this transaction's client changed, and what they were
+   * before. Only these revert on rollback — a write issued through the root
+   * client is its own transaction in Postgres and would survive, so undoing
+   * every event row here would hide exactly the bug this models.
+   */
+  stripeEventUndo: Array<[string, StripeEventRecord]>;
 };
 
 function mutateNumber(current: number, mutation: NumberMutation | undefined): number {
@@ -85,10 +95,13 @@ class MemoryPrisma {
   readonly ledger: LedgerRecord[] = [];
   readonly workspaces = new Map<string, { id: string; organizationId: string }>();
   readonly calls = new Map<string, { id: string; organizationId: string; workspaceId: string }>();
+  readonly stripeEvents = new Map<string, StripeEventRecord>();
   readonly transactionEvents: TransactionEvent[] = [];
 
   private sequence = 0;
   private transactionSequence = 0;
+  /** Armed by {@link failNextBucketRead}; makes one bucket read blow up. */
+  private pendingBucketReadFault: string | null = null;
   private readonly organizationLockTails = new Map<string, Promise<void>>();
 
   readonly organizationCreditBalance = {
@@ -161,6 +174,16 @@ class MemoryPrisma {
           bucket.sourceId === input.data.sourceId,
       );
       if (duplicate) throw new Error('duplicate bucket');
+      // Mirrors credit_bucket_payment_intent_uidx: one bucket per real payment,
+      // NULLs unconstrained. Without this the double would happily mint a second
+      // paid-for pack from a replayed Checkout that the database would reject.
+      const paymentIntentId = input.data.stripePaymentIntentId ?? null;
+      if (
+        paymentIntentId !== null &&
+        this.buckets.some((bucket) => bucket.stripePaymentIntentId === paymentIntentId)
+      ) {
+        throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+      }
 
       const now = new Date();
       const created: BucketRecord = {
@@ -176,15 +199,22 @@ class MemoryPrisma {
       where: {
         organizationId: string;
         status?: string;
+        sourceType?: string;
         validFrom?: { lte: Date };
         expiresAt?: { gt: Date };
         remainingSeconds?: { gt: number };
       };
       orderBy?: Array<Record<string, 'asc' | 'desc'>>;
     }): Promise<BucketRecord[]> => {
+      if (this.pendingBucketReadFault !== null) {
+        const message = this.pendingBucketReadFault;
+        this.pendingBucketReadFault = null;
+        throw new Error(message);
+      }
       const filtered = this.buckets.filter((bucket) => {
         if (bucket.organizationId !== input.where.organizationId) return false;
         if (input.where.status && bucket.status !== input.where.status) return false;
+        if (input.where.sourceType && bucket.sourceType !== input.where.sourceType) return false;
         if (
           input.where.validFrom?.lte &&
           bucket.validFrom.getTime() > input.where.validFrom.lte.getTime()
@@ -212,6 +242,17 @@ class MemoryPrisma {
           left.id.localeCompare(right.id),
       );
       return structuredClone(filtered);
+    },
+    findFirst: async (input: {
+      where: { organizationId: string; stripePaymentIntentId?: string | null };
+      select?: { id: true };
+    }): Promise<BucketRecord | null> => {
+      const bucket = this.buckets.find(
+        (candidate) =>
+          candidate.organizationId === input.where.organizationId &&
+          candidate.stripePaymentIntentId === (input.where.stripePaymentIntentId ?? null),
+      );
+      return bucket ? structuredClone(bucket) : null;
     },
     findUnique: async (input: {
       where: {
@@ -322,6 +363,21 @@ class MemoryPrisma {
     },
   };
 
+  readonly stripeEvent = {
+    updateMany: async (input: {
+      where: { stripeEventId: string; processedAt: null };
+      data: { processedAt: Date };
+    }): Promise<{ count: number }> => {
+      const record = this.stripeEvents.get(input.where.stripeEventId);
+      if (!record || record.processedAt !== null) return { count: 0 };
+      this.stripeEvents.set(input.where.stripeEventId, {
+        ...record,
+        processedAt: input.data.processedAt,
+      });
+      return { count: 1 };
+    },
+  };
+
   readonly workspace = {
     findFirst: async (input: {
       where: { id: string; organizationId: string };
@@ -363,6 +419,7 @@ class MemoryPrisma {
       lockedOrganizationId: null,
       releaseLock: null,
       snapshot: null,
+      stripeEventUndo: [],
     };
     try {
       return await operation(this.createTransactionClient(context));
@@ -426,6 +483,10 @@ class MemoryPrisma {
         this.assertLockedAccess(context, 'bucket.findMany', input.where.organizationId);
         return this.billingCreditBucket.findMany(input);
       },
+      findFirst: async (input) => {
+        this.assertLockedAccess(context, 'bucket.findFirst', input.where.organizationId);
+        return this.billingCreditBucket.findFirst(input);
+      },
       findUnique: async (input) => {
         const organizationId = input.where.organizationId_sourceType_sourceId.organizationId;
         this.assertLockedAccess(context, 'bucket.findUnique', organizationId);
@@ -460,6 +521,22 @@ class MemoryPrisma {
       },
     };
 
+    const stripeEvent: MemoryPrisma['stripeEvent'] = {
+      updateMany: async (input) => {
+        // No organization on a Stripe event row, so it cannot assert a lock the
+        // way the others do; the recorded event still proves it ran inside the
+        // grant's transaction rather than after it.
+        this.recordTransactionEvent(
+          context,
+          'stripe_event.mark_processed',
+          context.lockedOrganizationId ?? 'unlocked',
+        );
+        const before = this.stripeEvents.get(input.where.stripeEventId);
+        if (before) context.stripeEventUndo.push([before.stripeEventId, structuredClone(before)]);
+        return this.stripeEvent.updateMany(input);
+      },
+    };
+
     const workspace: MemoryPrisma['workspace'] = {
       findFirst: async (input) => {
         this.assertLockedAccess(context, 'workspace.findFirst', input.where.organizationId);
@@ -478,6 +555,7 @@ class MemoryPrisma {
       organizationCreditBalance,
       billingCreditBucket,
       billingLedgerEntry,
+      stripeEvent,
       workspace,
       call,
       $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) =>
@@ -613,6 +691,10 @@ class MemoryPrisma {
   }
 
   private restoreTransactionSnapshot(context: TransactionContext): void {
+    for (const [id, record] of context.stripeEventUndo.reverse()) {
+      this.stripeEvents.set(id, record);
+    }
+    context.stripeEventUndo.length = 0;
     if (!context.snapshot || !context.lockedOrganizationId) return;
     const organizationId = context.lockedOrganizationId;
     if (context.snapshot.balance) {
@@ -666,9 +748,25 @@ class MemoryPrisma {
       expiresAt: new Date('2027-07-01T00:00:00.000Z'),
       priority: input.priority,
       status: 'active',
+      stripePaymentIntentId: null,
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  /**
+   * Arms a one-shot failure on the next bucket read. `grantPurchasedCredits`
+   * reads buckets only in the balance projection it builds last, which is the
+   * one point where a transaction can still roll back *after* it has
+   * acknowledged its Stripe event.
+   */
+  failNextBucketRead(message: string): void {
+    this.pendingBucketReadFault = message;
+  }
+
+  /** An unprocessed webhook row, so a grant has something to acknowledge. */
+  seedStripeEvent(stripeEventId: string): void {
+    this.stripeEvents.set(stripeEventId, { stripeEventId, processedAt: null });
   }
 
   seedRuntimeScope(input: { organizationId: string; workspaceId: string; callId: string }): void {
@@ -790,6 +888,317 @@ describe('CreditLedgerService', () => {
     expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
   });
 
+  it('records the payment intent that funded a purchased bucket', async () => {
+    const { prisma, service } = makeService();
+
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi',
+      checkoutSessionId: 'cs_pi',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_funded',
+    });
+
+    expect(prisma.buckets).toMatchObject([{ stripePaymentIntentId: 'pi_funded' }]);
+  });
+
+  /**
+   * The Checkout session id is the only thing keying this grant, and Stripe can
+   * deliver the same payment under a second session id (a recovered session, a
+   * replay after a session was recreated). The idempotency key does not catch
+   * that. Granting once is the money property and it held before, by way of the
+   * unique index — but the rejection rolled the transaction back including the
+   * acknowledgement, so Stripe redelivered the same event until it gave up. The
+   * second delivery must settle instead: no second pack, and the event marked
+   * processed.
+   */
+  it('acknowledges a second pack funded by a payment intent that already bought one', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-replay',
+      checkoutSessionId: 'cs_pi_first',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_once',
+    });
+    prisma.seedStripeEvent('evt_pi_replay');
+
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-replay',
+      checkoutSessionId: 'cs_pi_second',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_once',
+      stripeEventId: 'evt_pi_replay',
+    });
+
+    expect(prisma.buckets).toHaveLength(1);
+    expect(prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant')).toHaveLength(1);
+    expect(prisma.stripeEvents.get('evt_pi_replay')?.processedAt).toBeInstanceOf(Date);
+    const balance = await service.getBalance('org-pi-replay');
+    expectExactSeconds(balance, { available: 6_000, reserved: 0, totalOwned: 6_000 });
+  });
+
+  /**
+   * The acknowledgement above is scoped to the organization, so it can never
+   * hand another tenant's purchase to this one. A payment intent that funded a
+   * different organization's pack has to fall through to the create and be
+   * rejected by the index — one payment, one pack, whoever asks.
+   */
+  it('refuses a pack funded by another organization payment intent', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-owner',
+      checkoutSessionId: 'cs_pi_owner',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_owned',
+    });
+
+    await expect(
+      service.grantPurchasedCredits({
+        organizationId: 'org-pi-thief',
+        checkoutSessionId: 'cs_pi_thief',
+        purchasedAt: NOW,
+        paymentIntentId: 'pi_owned',
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+    expect(prisma.buckets).toHaveLength(1);
+    const balance = await service.getBalance('org-pi-thief');
+    expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
+  });
+
+  it('replays a checkout naming the same payment intent without granting twice', async () => {
+    const { prisma, service } = makeService();
+    const input = {
+      organizationId: 'org-pi-idem',
+      checkoutSessionId: 'cs_pi_idem',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_idem',
+    };
+
+    const first = await service.grantPurchasedCredits(input);
+    const replay = await service.grantPurchasedCredits(input);
+
+    expect(replay).toEqual(first);
+    expect(prisma.buckets).toHaveLength(1);
+  });
+
+  it('rejects a replay that claims a different payment intent for the same checkout', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-pi-conflict',
+      checkoutSessionId: 'cs_pi_conflict',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_original',
+    });
+
+    await expect(
+      service.grantPurchasedCredits({
+        organizationId: 'org-pi-conflict',
+        checkoutSessionId: 'cs_pi_conflict',
+        purchasedAt: NOW,
+        paymentIntentId: 'pi_substituted',
+      }),
+    ).rejects.toMatchObject({
+      code: 'credit_ledger_invariant',
+      reasonCode: 'idempotency_conflict',
+    });
+    expect(prisma.buckets).toHaveLength(1);
+  });
+
+  /**
+   * The webhook's "processed" write used to be a separate statement after the
+   * grant's transaction committed. A crash in between left the event row
+   * `processing`, and once its lease expired the next redelivery re-dispatched
+   * an event whose credit had already been granted — every non-idempotent side
+   * effect of that handler ran twice. Acknowledging inside the grant makes the
+   * two commit together.
+   */
+  it('acknowledges the Stripe event inside the grant transaction', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedStripeEvent('evt_grant');
+
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-ack',
+      invoiceId: 'in_ack',
+      includedMinutes: 10,
+      periodEnd: PERIOD_END,
+      stripeEventId: 'evt_grant',
+    });
+
+    expect(prisma.stripeEvents.get('evt_grant')?.processedAt).toBeInstanceOf(Date);
+    const actions = prisma.transactionEvents.map((event) => event.action);
+    expect(actions).toContain('stripe_event.mark_processed');
+    // Same transaction as the ledger write, and after it.
+    const marked = prisma.transactionEvents.findIndex(
+      (event) => event.action === 'stripe_event.mark_processed',
+    );
+    const ledgerWrite = prisma.transactionEvents.findIndex(
+      (event) => event.action === 'ledger.create',
+    );
+    expect(ledgerWrite).toBeGreaterThanOrEqual(0);
+    expect(marked).toBeGreaterThan(ledgerWrite);
+    expect(prisma.transactionEvents[marked]!.transactionId).toBe(
+      prisma.transactionEvents[ledgerWrite]!.transactionId,
+    );
+  });
+
+  it('leaves the Stripe event unacknowledged when the grant rolls back', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedStripeEvent('evt_rollback');
+    // Fails after the grant has acknowledged the event but before the
+    // transaction commits, which is the only shape in which the two can
+    // disagree. Written through the root client instead of `tx`, the
+    // acknowledgement would survive this and the grant would not.
+    prisma.failNextBucketRead('connection reset while projecting balance');
+
+    await expect(
+      service.grantPurchasedCredits({
+        organizationId: 'org-rollback',
+        checkoutSessionId: 'cs_rollback',
+        purchasedAt: NOW,
+        paymentIntentId: 'pi_rollback',
+        stripeEventId: 'evt_rollback',
+      }),
+    ).rejects.toThrow('connection reset while projecting balance');
+    expect(prisma.stripeEvents.get('evt_rollback')?.processedAt).toBeNull();
+    expect(prisma.buckets).toHaveLength(0);
+  });
+
+  /**
+   * A mid-cycle upgrade makes Stripe issue a second invoice inside one billing
+   * period. Keying the grant by invoice stops the *same* invoice granting twice
+   * but not two invoices stacking, so an upgrade used to hand out a second full
+   * allowance — cheapest immediately before period end.
+   */
+  it('forfeits the outgoing included allowance when the next invoice grants one', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-upgrade',
+      invoiceId: 'in_starter',
+      includedMinutes: 200,
+      periodEnd: PERIOD_END,
+    });
+
+    const upgraded = await service.grantSubscriptionCredits({
+      organizationId: 'org-upgrade',
+      invoiceId: 'in_growth',
+      includedMinutes: 1_000,
+      periodEnd: PERIOD_END,
+    });
+
+    expectExactSeconds(upgraded, {
+      available: 60_000,
+      reserved: 0,
+      totalOwned: 60_000,
+    });
+    expect(prisma.buckets).toMatchObject([
+      { sourceId: 'in_starter', remainingSeconds: 0, status: 'expired' },
+      { sourceId: 'in_growth', remainingSeconds: 60_000, status: 'active' },
+    ]);
+    expect(prisma.ledger).toMatchObject([
+      { idempotencyKey: 'stripe:invoice:in_starter:included', seconds: 12_000 },
+      {
+        idempotencyKey: 'stripe:invoice:in_growth:supersede',
+        entryType: 'included_grant_superseded',
+        seconds: -12_000,
+      },
+      { idempotencyKey: 'stripe:invoice:in_growth:included', seconds: 60_000 },
+    ]);
+  });
+
+  /** Only the unused remainder is forfeited; spent seconds are already gone. */
+  it('forfeits only the unspent part of a superseded allowance', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-upgrade-partial',
+      invoiceId: 'in_partial_a',
+      includedMinutes: 10,
+      periodEnd: PERIOD_END,
+    });
+    prisma.buckets[0]!.remainingSeconds = 100;
+    prisma.balances.get('org-upgrade-partial')!.availableSeconds = 100;
+
+    const upgraded = await service.grantSubscriptionCredits({
+      organizationId: 'org-upgrade-partial',
+      invoiceId: 'in_partial_b',
+      includedMinutes: 10,
+      periodEnd: PERIOD_END,
+    });
+
+    expectExactSeconds(upgraded, { available: 600, reserved: 0, totalOwned: 600 });
+    expect(prisma.ledger).toMatchObject([
+      { idempotencyKey: 'stripe:invoice:in_partial_a:included' },
+      { idempotencyKey: 'stripe:invoice:in_partial_b:supersede', seconds: -100 },
+      { idempotencyKey: 'stripe:invoice:in_partial_b:included' },
+    ]);
+  });
+
+  /**
+   * The redelivery the supersede sweep used to trap. Invoice A grants, invoice B
+   * expires A's bucket, and Stripe then redelivers A's event — as it does, for
+   * days. Asserting the *live* bucket status on replay made that an
+   * `idempotency_conflict`, which rolled back the acknowledgement with it, so the
+   * event never cleared and Stripe retried forever. It must settle instead: no
+   * second grant, and the event marked processed.
+   */
+  it('settles a redelivered invoice whose bucket a later invoice superseded', async () => {
+    const { prisma, service } = makeService();
+    const invoiceA = {
+      organizationId: 'org-redelivery',
+      invoiceId: 'in_redelivered',
+      includedMinutes: 200,
+      periodEnd: PERIOD_END,
+    };
+    await service.grantSubscriptionCredits(invoiceA);
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-redelivery',
+      invoiceId: 'in_supersedes',
+      includedMinutes: 1_000,
+      periodEnd: PERIOD_END,
+    });
+    expect(prisma.buckets[0]).toMatchObject({ sourceId: 'in_redelivered', status: 'expired' });
+    prisma.seedStripeEvent('evt_redelivered');
+    const stateBeforeReplay = snapshotCreditState(prisma);
+
+    const replay = await service.grantSubscriptionCredits({
+      ...invoiceA,
+      stripeEventId: 'evt_redelivered',
+    });
+
+    expectExactSeconds(replay, { available: 60_000, reserved: 0, totalOwned: 60_000 });
+    expect(prisma.stripeEvents.get('evt_redelivered')?.processedAt).toBeInstanceOf(Date);
+    expect(snapshotCreditState(prisma)).toEqual(stateBeforeReplay);
+  });
+
+  /**
+   * The same shape on a pack: a refund marks the bucket `refunded` well inside
+   * the window in which Stripe is still redelivering the Checkout event.
+   */
+  it('settles a redelivered checkout whose pack was refunded', async () => {
+    const { prisma, service } = makeService();
+    const purchase = {
+      organizationId: 'org-refund-redelivery',
+      checkoutSessionId: 'cs_refund_redelivery',
+      purchasedAt: NOW,
+    };
+    await service.grantPurchasedCredits(purchase);
+    await service.reversePurchasedCredits({
+      organizationId: 'org-refund-redelivery',
+      checkoutSessionId: 'cs_refund_redelivery',
+      refundId: 're_redelivery',
+    });
+    expect(prisma.buckets[0]).toMatchObject({ status: 'refunded' });
+    prisma.seedStripeEvent('evt_refunded_checkout');
+
+    await service.grantPurchasedCredits({
+      ...purchase,
+      stripeEventId: 'evt_refunded_checkout',
+    });
+
+    expect(prisma.stripeEvents.get('evt_refunded_checkout')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.buckets).toHaveLength(1);
+    const balance = await service.getBalance('org-refund-redelivery');
+    expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
+  });
+
   it('grants the free monthly allowance once per organization per month', async () => {
     const { prisma, service } = makeService();
     const input = { organizationId: 'org-free', monthKey: CURRENT_MONTH_KEY };
@@ -856,6 +1265,65 @@ describe('CreditLedgerService', () => {
     // Total owned still reflects both grants.
     expect(balance.availableSeconds).toBe(1_200);
     expect(balance.includedMinutesRemaining).toBe(10);
+  });
+
+  /**
+   * The mirror of the supersede sweep. An organization that paid for the period
+   * and then lapsed reads as Free, so the monthly sweep offered it the free
+   * allowance on top of the invoice bucket it still holds for that same period —
+   * two included allowances in one month, which is exactly what the upgrade
+   * direction forfeits a bucket to prevent. Spending the paid allowance first
+   * must not turn a cancellation into a refill.
+   */
+  it('withholds the free allowance while a paid period still covers the month', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-lapsed',
+      invoiceId: 'in_lapsed',
+      includedMinutes: 20,
+      periodEnd: new Date('2026-07-28T00:00:00.000Z'),
+    });
+    // Burned to zero: the allowance was received, so there is nothing left to
+    // top up even though the bucket is empty. The projection is decremented with
+    // the bucket, or this models a full allowance rather than a consumed one and
+    // the assertion below would hold no matter what the withholding did.
+    prisma.buckets[0]!.remainingSeconds = 0;
+    prisma.balances.get('org-lapsed')!.availableSeconds = 0;
+
+    const balance = await service.grantFreeMonthlyCredits({
+      organizationId: 'org-lapsed',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual(['in_lapsed']);
+    expect(prisma.ledger.map((entry) => entry.entryType)).toEqual(['subscription_grant']);
+    // Nothing was granted, so the consumed allowance stays consumed.
+    expect(balance.availableSeconds).toBe(0);
+  });
+
+  /**
+   * The withholding is scoped to the period that overlaps, not to having ever
+   * paid: once the invoice bucket's period ends the organization is a free
+   * customer and must receive the allowance again.
+   */
+  it('grants the free allowance for a month no paid period covers', async () => {
+    const { prisma, service } = makeService();
+    await service.grantSubscriptionCredits({
+      organizationId: 'org-lapsed-later',
+      invoiceId: 'in_lapsed_later',
+      includedMinutes: 20,
+      periodEnd: MONTH_START,
+    });
+
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-lapsed-later',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    expect(prisma.buckets.map((bucket) => bucket.sourceId)).toEqual([
+      'in_lapsed_later',
+      'free_grant_org-lapsed-later_2026-07',
+    ]);
   });
 
   it('rolls a December allowance into the following January', async () => {
@@ -1295,17 +1763,18 @@ describe('CreditLedgerService', () => {
   it('uses bucket ID as the stable allocation tie-breaker in the test double', async () => {
     const { prisma, service } = makeService();
     const organizationId = 'org-stable-bucket-order';
-    await service.grantSubscriptionCredits({
+    // Two packs, not two invoices: a second included grant now supersedes the
+    // first (one period's allowance at a time), so only purchased buckets can
+    // coexist with an identical priority and expiry for the ID to break.
+    await service.grantPurchasedCredits({
       organizationId,
-      invoiceId: 'in-stable-b',
-      includedMinutes: 1,
-      periodEnd: PERIOD_END,
+      checkoutSessionId: 'cs-stable-b',
+      purchasedAt: NOW,
     });
-    await service.grantSubscriptionCredits({
+    await service.grantPurchasedCredits({
       organizationId,
-      invoiceId: 'in-stable-a',
-      includedMinutes: 1,
-      periodEnd: PERIOD_END,
+      checkoutSessionId: 'cs-stable-a',
+      purchasedAt: NOW,
     });
     prisma.seedRuntimeScope({
       organizationId,
@@ -2562,7 +3031,6 @@ describe('CreditLedgerService', () => {
       ({ bucket }) => (bucket.expiresAt = new Date('2026-08-26T12:00:00.000Z')),
     ],
     ['the bucket priority differs', ({ bucket }) => (bucket.priority = 11)],
-    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
     [
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),
@@ -2616,7 +3084,6 @@ describe('CreditLedgerService', () => {
       ({ bucket }) => (bucket.expiresAt = new Date('2027-07-26T12:00:00.000Z')),
     ],
     ['the bucket priority differs', ({ bucket }) => (bucket.priority = 21)],
-    ['the bucket status differs', ({ bucket }) => (bucket.status = 'refunded')],
     [
       'the ledger workspace is non-null',
       ({ entry }) => (entry.workspaceId = 'workspace-unexpected'),

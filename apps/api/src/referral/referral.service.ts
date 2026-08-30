@@ -1,12 +1,37 @@
+import { randomInt } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AppError } from '../common/errors';
 
+/**
+ * The bonus a converted referral *promises*, recorded on the referral row so
+ * the commitment is auditable. Nothing in this module grants it: credit lives
+ * in `CreditLedgerService`, and no referral grant path exists there yet (see
+ * the note on {@link ReferralService}). Treat this as the tracked promise, not
+ * as a balance.
+ */
 export const REFERRAL_BONUS_MINUTES = 100;
-export const REFERRAL_BONUS_PAID_MINUTES = 500;
 export const REFERRAL_EXPIRY_DAYS = 30;
 
+/**
+ * Referral *tracking*. This service issues invite tokens and records
+ * conversions; it does not move money.
+ *
+ * It used to claim it credited minutes, and what it actually wrote was a
+ * `UsageRecord` with `billableMetric: 'minutes'` — the same row `calls.service`
+ * writes when a call *consumes* minutes, and one of the rows
+ * `BillingService.getWorkspaceUsage` sums into the usage figure shown against
+ * the plan limit. So every invite created charged its author 100 minutes of
+ * reported usage and every acceptance charged the invitee another 100: the
+ * exact inverse of the promise, on both sides. Those writes are gone.
+ *
+ * Granting the bonus for real means one new grant path in
+ * `CreditLedgerService` (the only mint in the system) and a decision on the
+ * amount, the credit's source type/priority, and its expiry — none of which
+ * exist in the billing catalog. Until they do, this module records the promise
+ * and says so, rather than corrupting usage while appearing to honour it.
+ */
 @Injectable()
 export class ReferralService {
   constructor(
@@ -15,8 +40,11 @@ export class ReferralService {
   ) {}
 
   /**
-   * Creates a referral with an invite token and credits the referrer
-   * with bonus minutes. The invite token is returned for sharing.
+   * Creates a referral with an invite token, returned for sharing.
+   *
+   * No credit is granted here even once one exists: an invite is not a
+   * conversion, and crediting on creation would let one user mint an unbounded
+   * bonus by calling this in a loop.
    */
   async createReferral(args: {
     actorUserId: string;
@@ -30,9 +58,6 @@ export class ReferralService {
     if (!workspace) throw new AppError('UNAUTHORIZED', 'Referrer workspace not found', 401);
 
     const inviteToken = this.generateToken();
-
-    // Record bonus minutes for referrer
-    await this.recordBonusMinutes(args.referrerWorkspaceId, workspace.organizationId, REFERRAL_BONUS_MINUTES);
 
     await this.prisma.referral.create({
       data: {
@@ -57,8 +82,11 @@ export class ReferralService {
   }
 
   /**
-   * Accepts a referral invitation, links the referred user, and credits
-   * bonus minutes to the new user's workspace.
+   * Accepts a referral invitation and links the referred user.
+   *
+   * No credit is granted; see the note on this class. What this does record is
+   * the conversion a future grant would pay out on, so the eligibility checks
+   * below are the ones that keep such a grant honest.
    */
   async acceptReferral(args: {
     inviteToken: string;
@@ -83,20 +111,35 @@ export class ReferralService {
       select: { organizationId: true },
     });
     if (!referredWorkspace) throw new AppError('UNAUTHORIZED', 'Referred workspace not found', 401);
+    // The user-id check above only catches one person holding both ends. Two
+    // seats in the same organization referring each other are two different
+    // users, so without this an organization could convert its own invites — and
+    // any bonus attached to a conversion would be paid to the tenant that spent
+    // nothing. Referral means bringing in another tenant.
+    if (referral.referrerOrganizationId === referredWorkspace.organizationId) {
+      throw new AppError('VALIDATION_ERROR', 'Cannot refer your own organization', 400);
+    }
 
-    await this.prisma.$transaction([
-      this.prisma.referral.update({
-        where: { id: referral.id },
-        data: {
-          referredUserId: args.referredUserId,
-          referredWorkspaceId: args.referredWorkspaceId,
-          referredOrganizationId: referredWorkspace.organizationId,
-          status: 'converted',
-          bonusAwardedAt: new Date(),
-        },
-      }),
-      this.createBonusUsageRecord(args.referredWorkspaceId, referredWorkspace.organizationId, REFERRAL_BONUS_MINUTES),
-    ]);
+    // Compare-and-set on `status`, not a bare update: two concurrent accepts of
+    // one token both read `pending` above, and the loser must be told the
+    // referral is already converted rather than silently rewriting who converted
+    // it. This is also the single place a conversion is stamped, so it is the
+    // hook a future credit grant hangs its per-referral idempotency off — which
+    // is why `bonusAwardedAt` is deliberately left null here: nothing is granted
+    // on conversion, and stamping it would make that idempotency guard skip the
+    // credit the customer earned.
+    const converted = await this.prisma.referral.updateMany({
+      where: { id: referral.id, status: 'pending' },
+      data: {
+        referredUserId: args.referredUserId,
+        referredWorkspaceId: args.referredWorkspaceId,
+        referredOrganizationId: referredWorkspace.organizationId,
+        status: 'converted',
+      },
+    });
+    if (converted.count === 0) {
+      throw new AppError('INVALID_STATUS', 'Referral already converted', 400);
+    }
 
     await this.audit.log({
       workspaceId: args.referredWorkspaceId,
@@ -112,40 +155,6 @@ export class ReferralService {
     });
 
     return { status: 'converted', bonusMinutes: REFERRAL_BONUS_MINUTES };
-  }
-
-  /**
-   * Awards bonus minutes to referrer when the referred user converts to paid.
-   */
-  async awardPaidConversionBonus(args: {
-    referralId: string;
-  }): Promise<void> {
-    const referral = await this.prisma.referral.findUnique({
-      where: { id: args.referralId },
-    });
-
-    if (!referral) return;
-    if (referral.status === 'bonus_awarded') return;
-
-    await this.recordBonusMinutes(
-      referral.referrerWorkspaceId,
-      referral.referrerOrganizationId,
-      REFERRAL_BONUS_PAID_MINUTES,
-    );
-
-    await this.prisma.referral.update({
-      where: { id: referral.id },
-      data: { status: 'bonus_awarded' },
-    });
-
-    await this.audit.log({
-      workspaceId: referral.referrerWorkspaceId,
-      actorUserId: referral.referrerUserId,
-      action: 'referral.bonus_paid',
-      resourceType: 'referral',
-      resourceId: referral.id,
-      metadata: { bonusMinutes: REFERRAL_BONUS_PAID_MINUTES },
-    });
   }
 
   /**
@@ -176,56 +185,18 @@ export class ReferralService {
 
   // -------------------------------------------------------------------------
 
-  private createBonusUsageRecord(
-    workspaceId: string,
-    organizationId: string,
-    minutes: number,
-  ) {
-    const periodStart = new Date();
-    periodStart.setDate(1);
-    periodStart.setHours(0, 0, 0, 0);
-    const periodEnd = new Date(periodStart);
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
-    return this.prisma.usageRecord.create({
-      data: {
-        workspaceId,
-        organizationId,
-        billableMetric: 'minutes',
-        quantity: minutes,
-        periodStart,
-        periodEnd,
-      },
-    });
-  }
-
-  private async recordBonusMinutes(
-    workspaceId: string,
-    organizationId: string,
-    minutes: number,
-  ): Promise<void> {
-    const periodStart = new Date();
-    periodStart.setDate(1);
-    periodStart.setHours(0, 0, 0, 0);
-    const periodEnd = new Date(periodStart);
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
-
-    await this.prisma.usageRecord.create({
-      data: {
-        workspaceId,
-        organizationId,
-        billableMetric: 'minutes',
-        quantity: minutes,
-        periodStart,
-        periodEnd,
-      },
-    });
-  }
-
+  /**
+   * The token is the whole authorization for `acceptReferral`, so it is drawn
+   * from `node:crypto` rather than `Math.random()`. V8's PRNG state is
+   * recoverable from a handful of outputs, which made previously-issued tokens
+   * guessable — and a guessed token lets a stranger consume someone else's
+   * invite (and, once a bonus exists, claim it).
+   */
   private generateToken(): string {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     let token = '';
     for (let i = 0; i < 24; i++) {
-      token += chars[Math.floor(Math.random() * chars.length)];
+      token += chars[randomInt(chars.length)];
     }
     return token;
   }

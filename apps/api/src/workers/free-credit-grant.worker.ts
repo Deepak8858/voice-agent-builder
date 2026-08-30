@@ -165,6 +165,13 @@ export class FreeCreditGrantWorker
    * here. The subscription table only tells us which plan was *sold*; whether it
    * currently funds usage (status, expired trial) is `EntitlementService`'s
    * decision, and duplicating that logic in a query is how the two would drift.
+   *
+   * The `status: 'active'` filter is also the free-credit-farming kill switch.
+   * A farmed organization has no subscription at all, so `grantOne` resolves it
+   * to `'none'` (not `'unknown'`) and grants — the only lever that stops it is
+   * this filter. `scripts/flag-farmed-organizations.ts` sets flagged rows to
+   * `credit_hold`, which this predicate excludes; keep the predicate an equality
+   * on `'active'` so any new hold status is excluded by default.
    */
   private async sweep(monthKey: string): Promise<void> {
     const queue = this.queues.queue(FREE_CREDIT_GRANT_QUEUE);

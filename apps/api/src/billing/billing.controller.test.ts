@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
+import type { SessionUser } from '@voiceforge/shared';
 import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
 import { ForbiddenError, UnauthorizedError } from '../common/errors';
 import { RoleGuard } from '../common/role.guard';
@@ -72,6 +73,9 @@ const checkoutDto = {
   successPath: '/dashboard/billing?checkout=success',
   cancelPath: '/dashboard/billing?checkout=cancel',
 };
+
+/** The signed-in caller the money routes must audit, from the session only. */
+const USER = { id: 'user-1' } as unknown as SessionUser;
 
 const MONEY_ROUTES = ['createCheckout', 'createTopUpCheckout', 'createPortal', 'getInvoices'] as const;
 
@@ -154,6 +158,7 @@ describe('BillingController authorization', () => {
       return (controller[name as 'createCheckout'] as (...args: unknown[]) => unknown)(
         'ws-1',
         checkoutDto,
+        USER,
       );
     };
 
@@ -168,13 +173,14 @@ describe('BillingController authorization', () => {
   it('resolves the organization from the path workspace', async () => {
     const { controller, billing, prisma } = makeController();
 
-    await controller.createCheckout('ws-1', checkoutDto);
+    await controller.createCheckout('ws-1', checkoutDto, USER);
 
     expect(prisma.workspace.findUnique).toHaveBeenCalledWith({
       where: { id: 'ws-1' },
       select: { organizationId: true, parentWorkspaceId: true, type: true },
     });
-    expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto);
+    // The actor is threaded from the session, so the audit row names who paid.
+    expect(billing.createCheckoutSession).toHaveBeenCalledWith('org-1', checkoutDto, 'user-1');
   });
 
   it('keeps billing summary readable by viewers', async () => {
@@ -210,14 +216,15 @@ describe('BillingController client-workspace escalation', () => {
   it.each([
     ['subscription', (c: BillingController) => c.getSubscription('ws-client')],
     ['summary', (c: BillingController) => c.getSummary('ws-client')],
-    ['checkout', (c: BillingController) => c.createCheckout('ws-client', checkoutDto)],
+    ['checkout', (c: BillingController) => c.createCheckout('ws-client', checkoutDto, USER)],
     ['top-up checkout', (c: BillingController) =>
       c.createTopUpCheckout('ws-client', {
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?topup=success',
         cancelPath: '/dashboard/billing?topup=cancel',
-      })],
-    ['portal', (c: BillingController) => c.createPortal('ws-client', { returnPath: '/dashboard/billing' })],
+      }, USER)],
+    ['portal', (c: BillingController) =>
+      c.createPortal('ws-client', { returnPath: '/dashboard/billing' }, USER)],
     ['invoices', (c: BillingController) => c.getInvoices('ws-client')],
   ])("denies a client workspace owner the agency's %s", async (_name, invoke) => {
     const { controller, billing } = clientWorkspaceController();

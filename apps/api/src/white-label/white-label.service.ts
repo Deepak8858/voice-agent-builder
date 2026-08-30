@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CacheInvalidator } from '../common/cache-invalidator';
 import { AppError, ForbiddenError, ValidationError } from '../common/errors';
+import { EntitlementService } from '../billing/entitlement.service';
 import { PostHogService } from '../posthog/posthog.service';
 
 const DEFAULT_USAGE_WINDOW_DAYS = 30;
@@ -41,6 +42,7 @@ export class WhiteLabelService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly invalidator: CacheInvalidator,
+    private readonly entitlements: EntitlementService,
     @Optional() private readonly posthog?: PostHogService,
   ) {}
 
@@ -59,6 +61,14 @@ export class WhiteLabelService {
     actorUserId: string,
     dto: UpdateWhiteLabelSettingsDto,
   ): Promise<WhiteLabelSettings> {
+    // Role gating (owner/admin on the route) says *who* may repaint the tenant;
+    // it says nothing about whether the tenant bought white-labelling at all.
+    // Growth is the first plan with `whiteLabel: true`, so without this the
+    // Free tier could store branding and have it served on its public share
+    // pages — see PublicAgentsController, which revokes it on the read side.
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+    await this.entitlements.assertAllowed(organizationId, { kind: 'white_label' });
+
     if (dto.custom_domain) {
       if (!isValidDomain(dto.custom_domain)) {
         throw new ValidationError('Invalid custom domain format.', { custom_domain: dto.custom_domain });
@@ -165,6 +175,18 @@ export class WhiteLabelService {
         slug: dto.slug,
       });
     }
+
+    // This is the only tenant-reachable workspace-creation path (signup
+    // bootstraps the first one), so it is where the per-plan workspace quota
+    // has to hold. Free and Starter sell 1 workspace, Growth 5, Enterprise 15;
+    // without this every plan could mint unlimited client workspaces.
+    const workspaceCount = await this.prisma.workspace.count({
+      where: { organizationId: agency.organizationId },
+    });
+    await this.entitlements.assertAllowed(agency.organizationId, {
+      kind: 'workspace_create',
+      current: workspaceCount,
+    });
 
     const created = await this.prisma.$transaction(async (tx) => {
       // Promote the parent to "agency" if it was direct.

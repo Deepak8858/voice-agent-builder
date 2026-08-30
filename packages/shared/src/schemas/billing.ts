@@ -26,6 +26,30 @@ export const SubscriptionStatusSchema = z.enum([
 ]);
 export type SubscriptionStatus = z.infer<typeof SubscriptionStatusSchema>;
 
+/**
+ * Statuses in which Stripe still holds a live subscription object. Starting a
+ * second subscription Checkout in any of these creates a *second* Stripe
+ * subscription and bills the customer twice, while only one id can be stored
+ * locally — the other is orphaned and never cancelled. `canceled`,
+ * `incomplete` and `incomplete_expired` have nothing live to collide with, so a
+ * fresh Checkout there is the normal recovery path.
+ *
+ * Shared because the API refuses such a Checkout and the billing panel must
+ * hide the button that would attempt one. Two copies of this set drifting is
+ * how a paying customer gets a 400 from a button we rendered for them.
+ */
+const LIVE_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
+  'active',
+  'trialing',
+  'past_due',
+  'unpaid',
+  'paused',
+]);
+
+export function hasLiveSubscription(status: string): boolean {
+  return LIVE_SUBSCRIPTION_STATUSES.has(status);
+}
+
 export const UsageTypeSchema = z.enum(['calls', 'minutes', 'tools', 'agents']);
 export type UsageType = z.infer<typeof UsageTypeSchema>;
 
@@ -163,6 +187,13 @@ export const EntitlementReasonSchema = z.enum([
   'agent_limit_reached',
   'workspace_limit_reached',
   'integration_limit_reached',
+  /**
+   * The organization already holds every phone number its plan allows. Counted
+   * across both doors that add one — a provisioned carrier number and a
+   * registered BYO number — because both leave a live inbound route behind and
+   * only one of them is free.
+   */
+  'phone_number_limit_reached',
   'organization_concurrency_reached',
   'platform_concurrency_reached',
   'billing_temporarily_unavailable',
@@ -222,6 +253,14 @@ export interface EffectivePlan {
   catalogVersion: string;
   entitlements: PlanEntitlements;
   paidAccess: boolean;
+  /**
+   * A paid subscription that would otherwise fund usage, whose billing period
+   * ended and was never renewed. `status` stays `active` and `plan` is already
+   * downgraded to free in that case, so without this flag a missed renewal
+   * webhook is indistinguishable from "never subscribed" — and the customer is
+   * told to subscribe when what they need is a payment fix.
+   */
+  periodExpired?: boolean;
 }
 
 export const PAID_CALL_MINIMUM_SECONDS = 60 as const;
@@ -245,6 +284,12 @@ export type EntitlementRequest =
   | { kind: 'agent_create'; current: number }
   | { kind: 'workspace_create'; current: number }
   | { kind: 'integration_connect'; current: number }
+  /**
+   * Adding a phone number to the organization, whether by renting one from the
+   * carrier on the platform's account or by registering one the customer
+   * already owns. One kind for both because the quota is on numbers *held*.
+   */
+  | { kind: 'phone_number_create'; current: number }
   | { kind: 'white_label' }
   | { kind: 'campaign_launch' };
 
@@ -391,5 +436,13 @@ export const FeatureGateSchema = z.enum([
   'multiple_workspaces',
   'tools',
   'byo_telephony',
+  /**
+   * Buying a PSTN number on VoiceForge's own carrier account. Distinct from
+   * `outbound` (may this org place paid calls) and from `byo_telephony` (may it
+   * bind a number it already pays for): this one spends platform money on a
+   * recurring carrier rental, so it is the gate the provisioning route must
+   * name in its refusal.
+   */
+  'managed_telephony',
 ]);
 export type FeatureGate = z.infer<typeof FeatureGateSchema>;

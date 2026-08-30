@@ -17,8 +17,47 @@ describe('validateOutboundUrl', () => {
     'https://[::1]/',
     'https://[fd00::1]/',
     'https://[::ffff:127.0.0.1]/',
+    // WHATWG URL serialises a v4-mapped literal to hex-group form, so this is
+    // the string the block list actually sees for the case above. Asserted
+    // separately because it pins BlockList's native `::ffff:` un-mapping, which
+    // the NAT64 reasoning in safe-fetch.ts depends on.
+    'https://[::ffff:7f00:1]/',
   ])('rejects unsafe destination %s', async (url) => {
     await expect(validateOutboundUrl(url)).rejects.toBeInstanceOf(UnsafeOutboundUrlError);
+  });
+
+  /**
+   * RFC 6052 NAT64. `64:ff9b::<v4>` is a public-looking IPv6 address that a
+   * NAT64 gateway forwards to the embedded IPv4 address, so without the mirrored
+   * subnets this is a complete SSRF bypass straight to the metadata endpoint.
+   *
+   * `::` compression means one address has several spellings; all of them must
+   * be caught, which is why the equivalent forms are listed rather than assumed.
+   */
+  it.each([
+    ['loopback', 'https://[64:ff9b::7f00:1]/'],
+    ['metadata endpoint', 'https://[64:ff9b::a9fe:a9fe]/latest/meta-data'],
+    ['RFC1918', 'https://[64:ff9b::a00:1]/'],
+    ['uncompressed form of loopback', 'https://[64:ff9b:0:0:0:0:7f00:1]/'],
+    ['partly-compressed form of loopback', 'https://[64:ff9b::0:7f00:1]/'],
+  ])('blocks NAT64-embedded %s', async (_label, url) => {
+    await expect(validateOutboundUrl(url)).rejects.toThrow('private or reserved');
+  });
+
+  it('still allows NAT64 to a public IPv4 address', async () => {
+    // Blocking `64:ff9b::/96` wholesale would pass the tests above and break
+    // every IPv6-only deployment's route to the v4 internet. 8.8.8.8.
+    await expect(validateOutboundUrl('https://[64:ff9b::808:808]/'))
+      .resolves.toMatchObject({ address: { address: '64:ff9b::808:808' } });
+  });
+
+  it('blocks a NAT64 address returned by the resolver, not just a URL literal', async () => {
+    // DNS64 synthesises these records, so the resolver path must be covered
+    // too. Both paths funnel through isBlockedAddress, so this is the proof.
+    await expect(validateOutboundUrl(
+      'https://dns64.example/hook',
+      async () => [{ address: '64:ff9b::a9fe:a9fe', family: 6 }],
+    )).rejects.toThrow('private or reserved');
   });
 
   it('rejects a public-looking hostname when DNS resolves to metadata IP space', async () => {
