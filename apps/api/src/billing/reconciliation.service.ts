@@ -418,11 +418,27 @@ export class ReconciliationService {
   }
 
   /**
-   * Finalize calls that were dispatched but never reported a connection.
+   * Finalize calls the runtime abandoned, in either of the two ways it can.
    *
-   * Without this, a runtime crash between dispatch and `call_connected` holds
-   * the caller's reserved seconds forever and permanently reduces their usable
-   * balance.
+   * NEVER CONNECTED (`pending`/`releasing` with no `connectedAt`): a crash
+   * between dispatch and `call_connected` holds the caller's reserved seconds
+   * forever and permanently reduces their usable balance, so the reservation is
+   * released.
+   *
+   * ABANDONED AFTER CONNECT (`connected`): nothing owes the customer anything
+   * here — the reserved minute was committed on connect — but nothing finalized
+   * the row either. `onEnded` is the only writer of `finalized` for a connected
+   * call and it never arrives when the runtime dies mid-call, so the row sat at
+   * `connected` for good. `estimateMissingCallCosts` only looks at `finalized`
+   * rows, so the call's provider cost was never recorded and margin was
+   * overstated by it — invisibly, because `costCoverage` counts only finalized
+   * calls too, so the gap never reached the coverage alarm.
+   *
+   * Both shapes are read by one query and settled through one update, so this
+   * sweep stays a single reviewed unscoped call site rather than three.
+   * Staleness for the connected shape is measured on `updatedAt`, not
+   * `createdAt`: a live call touches the row on every minute boundary, so a
+   * `createdAt` cutoff would finalize long calls that are still up.
    */
   async finalizeStaleCalls(limit = this.batchSize): Promise<BillingReconciliationReport> {
     const report = emptyReconciliationReport();
@@ -430,9 +446,14 @@ export class ReconciliationService {
 
     const stale = await this.prisma.callUsage.findMany({
       where: {
-        finalizationState: { in: ['pending', 'releasing'] },
-        connectedAt: null,
-        createdAt: { lt: cutoff },
+        OR: [
+          {
+            finalizationState: { in: ['pending', 'releasing'] },
+            connectedAt: null,
+            createdAt: { lt: cutoff },
+          },
+          { finalizationState: 'connected', updatedAt: { lt: cutoff } },
+        ],
       },
       orderBy: { createdAt: 'asc' },
       take: limit,
@@ -440,18 +461,23 @@ export class ReconciliationService {
         id: true,
         organizationId: true,
         callId: true,
+        connectedAt: true,
         reservedSeconds: true,
+        billableSeconds: true,
         debitedSeconds: true,
         createdAt: true,
+        finalizationState: true,
       },
     });
 
     for (const usage of stale) {
       try {
-        // A call with debited seconds did connect and something else went wrong.
-        // Guessing at its duration would corrupt the customer's balance, so it is
-        // routed to review instead.
-        if (usage.debitedSeconds > 0) {
+        const abandonedAfterConnect = usage.finalizationState === 'connected';
+
+        // A never-connected call with debited seconds did connect and something
+        // else went wrong. Guessing at its duration would corrupt the
+        // customer's balance, so it is routed to review instead.
+        if (!abandonedAfterConnect && usage.debitedSeconds > 0) {
           const flagged = await this.flagForReview(
             usage.organizationId,
             usage.callId,
@@ -461,49 +487,81 @@ export class ReconciliationService {
           continue;
         }
 
-        // Claim the usage before touching the ledger. A failed release remains
-        // retryable as `releasing`, while the ledger serializes a late
-        // call_connected commit against this idempotent release.
-        const claimed = await this.prisma.callUsage.updateMany({
-          where: {
-            id: usage.id,
-            finalizationState: { in: ['pending', 'releasing'] },
-            connectedAt: null,
-            debitedSeconds: 0,
-          },
-          data: { finalizationState: 'releasing' },
-        });
-        if (claimed.count === 0) continue;
+        if (!abandonedAfterConnect) {
+          // Claim the usage before touching the ledger. A failed release remains
+          // retryable as `releasing`, while the ledger serializes a late
+          // call_connected commit against this idempotent release.
+          const claimed = await this.prisma.callUsage.updateMany({
+            where: {
+              id: usage.id,
+              finalizationState: { in: ['pending', 'releasing'] },
+              connectedAt: null,
+              debitedSeconds: 0,
+            },
+            data: { finalizationState: 'releasing' },
+          });
+          if (claimed.count === 0) continue;
 
-        await this.creditLedger.releaseReservation({
-          organizationId: usage.organizationId,
-          callId: usage.callId,
-          idempotencyKey: `reconciliation:stale:${usage.callId}:release`,
-        });
+          await this.creditLedger.releaseReservation({
+            organizationId: usage.organizationId,
+            callId: usage.callId,
+            idempotencyKey: `reconciliation:stale:${usage.callId}:release`,
+          });
+        }
 
         const finalized = await this.prisma.callUsage.updateMany({
-          where: { id: usage.id, finalizationState: 'releasing', connectedAt: null },
-          data: {
-            finalizationState: 'finalized',
-            disposition: 'not_connected',
-            endedAt: new Date(),
-            reservedSeconds: 0,
-            billableSeconds: 0,
+          where: {
+            id: usage.id,
+            // Compare-and-set on the state this row was read in, so a live
+            // `call_ended` that lands first wins and this pass does nothing.
+            ...(abandonedAfterConnect
+              ? { finalizationState: 'connected' }
+              : { finalizationState: 'releasing', connectedAt: null }),
           },
+          data: abandonedAfterConnect
+            ? {
+                finalizationState: 'finalized',
+                disposition: 'abandoned_after_connect',
+                // Ends the call where its metering stopped rather than at
+                // `now`, so the provider cost this unblocks is attributed to
+                // when the call actually ran. `rawConnectedSeconds` is left at
+                // 0 deliberately: the runtime never reported a duration, and
+                // `estimateMissingCallCosts` already falls back to the seconds
+                // the customer was billed.
+                endedAt: new Date(
+                  (usage.connectedAt ?? usage.createdAt).getTime() +
+                    usage.billableSeconds * 1000,
+                ),
+              }
+            : {
+                finalizationState: 'finalized',
+                disposition: 'not_connected',
+                endedAt: new Date(),
+                reservedSeconds: 0,
+                billableSeconds: 0,
+              },
         });
         if (finalized.count === 0) continue;
 
         report.staleCallsFinalized += 1;
         await this.audit.log({
           organizationId: usage.organizationId,
-          action: 'billing.stale_call_finalized',
+          action: abandonedAfterConnect
+            ? 'billing.abandoned_call_finalized'
+            : 'billing.stale_call_finalized',
           resourceType: 'call_usage',
           resourceId: usage.callId,
-          metadata: {
-            releasedSeconds: usage.reservedSeconds,
-            dispatchedAt: usage.createdAt.toISOString(),
-            timeoutMinutes: env.BILLING_STALE_CALL_TIMEOUT_MINUTES,
-          },
+          metadata: abandonedAfterConnect
+            ? {
+                billedSeconds: usage.billableSeconds,
+                connectedAt: usage.connectedAt?.toISOString() ?? null,
+                timeoutMinutes: env.BILLING_STALE_CALL_TIMEOUT_MINUTES,
+              }
+            : {
+                releasedSeconds: usage.reservedSeconds,
+                dispatchedAt: usage.createdAt.toISOString(),
+                timeoutMinutes: env.BILLING_STALE_CALL_TIMEOUT_MINUTES,
+              },
         });
       } catch (err) {
         this.logger.error(
@@ -601,11 +659,17 @@ export class ReconciliationService {
       // `stripe.subscriptions` look tenant-scoped and drop out of the ratchet.
       const planSubscriptions = await this.prisma.subscription.findMany({
         where: { plan, status: { in: ['active', 'trialing'] } },
-        select: { organizationId: true },
+        select: { organizationId: true, status: true },
       });
       if (planSubscriptions.length === 0) continue;
 
-      const revenue = planSubscriptions.length * this.monthlyPriceUsd(plan);
+      // A trial bills nothing until it converts, so counting it at list price
+      // invented revenue this business never collected — and reported a healthy
+      // margin for a plan whose trials were burning provider cost for free,
+      // which is the single thing this gauge exists to catch. Trials stay in the
+      // cost aggregate below, because their minutes are real money out.
+      const payingCount = planSubscriptions.filter((s) => s.status === 'active').length;
+      const revenue = payingCount * this.monthlyPriceUsd(plan);
       if (revenue <= 0) continue;
 
       // Aggregated in fixed-size chunks. A single `IN` list over every
@@ -1008,7 +1072,21 @@ export class ReconciliationService {
     }, emptyReconciliationReport());
   }
 
-  /** Mark a balance for human review without altering any customer figure. */
+  /**
+   * Mark a balance for human review without altering any customer figure.
+   *
+   * `reviewReason: null` in the `where` is a dedupe on the *flag*, not on the
+   * incidents: it keeps the first reason (the one an operator will read) from
+   * being overwritten by later ones. It used to short-circuit the audit write
+   * too, so every incident after the first vanished — an organization flagged
+   * for one stale call looked identical to one flagged for two hundred, and the
+   * operator clearing the review had no way to tell. Each incident is now
+   * audited whether or not it is the one that set the flag; only the return
+   * value (which feeds `manualReviewsCreated`) still counts flag transitions.
+   *
+   * `version` is bumped with the flag so cache/ETag readers of the projection
+   * see the status change, the same way `clearBalanceReview` bumps it back.
+   */
   private async flagForReview(
     organizationId: string,
     callId: string,
@@ -1016,18 +1094,18 @@ export class ReconciliationService {
   ): Promise<boolean> {
     const changed = await this.prisma.organizationCreditBalance.updateMany({
       where: { organizationId, reviewReason: null },
-      data: { status: 'review', reviewReason: reason },
+      data: { status: 'review', reviewReason: reason, version: { increment: 1 } },
     });
-    if (changed.count === 0) return false;
 
     await this.audit.log({
       organizationId,
-      action: 'billing.manual_review_created',
+      action:
+        changed.count > 0 ? 'billing.manual_review_created' : 'billing.manual_review_incident',
       resourceType: 'organization_credit_balance',
       resourceId: organizationId,
       metadata: { callId, reason },
     });
-    return true;
+    return changed.count > 0;
   }
 
   /**

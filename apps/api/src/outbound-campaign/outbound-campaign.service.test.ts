@@ -29,6 +29,7 @@ describe('OutboundCampaignService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPrisma.agent.findFirst.mockResolvedValue({ id: 'agent-1' });
+    mockPrisma.outboundCampaign.updateMany.mockResolvedValue({ count: 1 });
     service = new OutboundCampaignService(mockPrisma as any, mockQueue as any, mockAudit as any);
   });
 
@@ -117,44 +118,129 @@ describe('OutboundCampaignService', () => {
   });
 
   describe('start', () => {
-    it('queues outbound calls for each contact', async () => {
+    const twoContacts = [
+      { phone: '+15551111111', full_name: 'Alice' },
+      { phone: '+15552222222', full_name: 'Bob' },
+    ];
+
+    it('queues only the first contact and leaves the chain to the worker', async () => {
       mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
         id: 'camp-1',
         workspaceId: 'ws-1',
         agentId: 'agent-1',
         status: 'draft',
-        contacts: [
-          { phone: '+15551111111', full_name: 'Alice' },
-          { phone: '+15552222222', full_name: 'Bob' },
-        ],
+        dispatchedCount: 0,
+        contacts: twoContacts,
       });
 
       await service.start('ws-1', 'camp-1', 'user-1');
 
-      expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
-      expect(mockQueue.enqueue).toHaveBeenNthCalledWith(1, 'outbound_call', 'call', {
-        campaignId: 'camp-1',
-        agentId: 'agent-1',
-        workspaceId: 'ws-1',
-        actorUserId: 'user-1',
-        to: '+15551111111',
-        contactName: 'Alice',
-        customData: undefined,
-      });
-      expect(mockQueue.enqueue).toHaveBeenNthCalledWith(2, 'outbound_call', 'call', {
-        campaignId: 'camp-1',
-        agentId: 'agent-1',
-        workspaceId: 'ws-1',
-        actorUserId: 'user-1',
-        to: '+15552222222',
-        contactName: 'Bob',
-        customData: undefined,
-      });
-      expect(mockPrisma.outboundCampaign.update).toHaveBeenCalledTimes(1);
-      expect(mockPrisma.outboundCampaign.update).toHaveBeenCalledWith({
-        where: { id: 'camp-1' },
+      expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(
+        'outbound_call',
+        'call',
+        expect.objectContaining({
+          campaignId: 'camp-1',
+          agentId: 'agent-1',
+          workspaceId: 'ws-1',
+          actorUserId: 'user-1',
+          to: '+15551111111',
+          contactName: 'Alice',
+          contactIndex: 0,
+        }),
+        expect.objectContaining({ delay: 0 }),
+      );
+      expect(mockPrisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+        where: { id: 'camp-1', workspaceId: 'ws-1', status: 'draft' },
         data: expect.objectContaining({ status: 'running', stats: expect.any(Object) }),
       });
+    });
+
+    // F-021: restarting a paused campaign re-enqueued every contact, so everyone
+    // already called got called again.
+    it('resumes a paused campaign at the dispatch cursor instead of replaying the list', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'paused',
+        dispatchedCount: 1,
+        stats: { total: 2, completed: 0, failed: 1, in_progress: 0 },
+        contacts: twoContacts,
+      });
+
+      await service.start('ws-1', 'camp-1', 'user-1');
+
+      expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(
+        'outbound_call',
+        'call',
+        expect.objectContaining({ to: '+15552222222', contactIndex: 1 }),
+        expect.any(Object),
+      );
+      // Counters recorded before the pause survive the resume.
+      expect(mockPrisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+        where: { id: 'camp-1', workspaceId: 'ws-1', status: 'paused' },
+        data: { status: 'running', stats: { total: 2, completed: 0, failed: 1, in_progress: 0 } },
+      });
+    });
+
+    it('completes a campaign whose contacts were all dispatched without dialling again', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'paused',
+        dispatchedCount: 2,
+        contacts: twoContacts,
+      });
+
+      await service.start('ws-1', 'camp-1', 'user-1');
+
+      expect(mockQueue.enqueue).not.toHaveBeenCalled();
+      expect(mockPrisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
+        where: { id: 'camp-1', workspaceId: 'ws-1', status: 'paused' },
+        data: expect.objectContaining({ status: 'completed' }),
+      });
+    });
+
+    it('rejects a second concurrent start rather than launching a second chain', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'draft',
+        dispatchedCount: 0,
+        contacts: twoContacts,
+      });
+      mockPrisma.outboundCampaign.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.start('ws-1', 'camp-1', 'user-1')).rejects.toMatchObject({
+        errorCode: 'INVALID_STATUS',
+      });
+      expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    });
+
+    // F-022: the worker throws on a "not now" admission denial to request a
+    // retry, which BullMQ drops unless the job was enqueued with `attempts`.
+    it('enqueues dispatch jobs with a retry budget and a deduplicating job id', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'draft',
+        dispatchedCount: 0,
+        contacts: twoContacts,
+      });
+
+      await service.start('ws-1', 'camp-1', 'user-1');
+
+      const options = mockQueue.enqueue.mock.calls[0]![3];
+      expect(options).toMatchObject({
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 15_000 },
+      });
+      expect(options.jobId).toMatch(/^camp-1:0:\d+$/);
     });
 
     it('scopes campaign start by workspace', async () => {

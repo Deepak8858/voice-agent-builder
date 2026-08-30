@@ -22,6 +22,7 @@ import { AgentNotFoundError } from '../common/errors';
 import { CurrentUser } from '../common/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
 import { AgentsService, type UpdateFlowBody } from './agents.service';
+import { EntitlementService } from '../billing/entitlement.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 const FlowNodeSchema = z.object({
@@ -179,6 +180,7 @@ export class AgentsController {
 export class PublicAgentsController {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly entitlements: EntitlementService,
   ) {}
 
   @Public()
@@ -237,7 +239,16 @@ export class PublicAgentsController {
         });
 
     const spec = version?.specJson as Record<string, unknown> ?? {};
-    const workspaceName = agent.workspace?.whiteLabel?.brandName ?? agent.workspace?.name ?? 'VoiceForge Agent';
+
+    // Stored branding is not the same as entitled branding. `getEffectivePlan`
+    // collapses an unfunded, cancelled or expired-trial subscription back to
+    // Free, so a downgrade stops the paid look-and-feel — in particular
+    // `hidePlatformBranding`, which is the whole thing Growth sells here —
+    // from continuing to be served off a row that outlived the plan.
+    const { entitlements } = await this.entitlements.getEffectivePlan(agent.organizationId);
+    const whiteLabel = entitlements.whiteLabel ? agent.workspace?.whiteLabel : null;
+
+    const workspaceName = whiteLabel?.brandName ?? agent.workspace?.name ?? 'VoiceForge Agent';
     const shareSlug = this.buildShareSlug(agent.name, agent.id);
 
     return {
@@ -255,12 +266,12 @@ export class PublicAgentsController {
       },
       workspaceName,
       organizationName: agent.organization?.name ?? null,
-      branding: agent.workspace?.whiteLabel
+      branding: whiteLabel
         ? {
-            brandName: agent.workspace.whiteLabel.brandName,
-            logoUrl: agent.workspace.whiteLabel.logoUrl,
-            primaryColor: agent.workspace.whiteLabel.primaryColor,
-            hidePlatformBranding: agent.workspace.whiteLabel.hidePlatformBranding,
+            brandName: whiteLabel.brandName,
+            logoUrl: whiteLabel.logoUrl,
+            primaryColor: whiteLabel.primaryColor,
+            hidePlatformBranding: whiteLabel.hidePlatformBranding,
           }
         : null,
       publishedAt: version?.createdAt ?? agent.createdAt,

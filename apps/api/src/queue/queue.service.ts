@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { Queue, type ConnectionOptions } from 'bullmq';
+import { Queue, type ConnectionOptions, type JobsOptions } from 'bullmq';
 import IORedis, { type Redis, type RedisOptions } from 'ioredis';
 import { createConnection } from 'net';
 import { env } from '../config/env';
@@ -95,9 +95,21 @@ export class QueueService implements OnModuleDestroy {
     return q;
   }
 
-  async enqueue<T extends object>(queueName: string, jobName: string, payload: T): Promise<void> {
+  /**
+   * `options` is per-call rather than a queue-wide default on purpose: BullMQ
+   * treats a job with no `attempts` as single-shot, so a worker that throws to
+   * request a retry is simply dropped. Only the callers whose jobs are safe to
+   * re-run ask for retries; defaulting them here would silently re-run every
+   * non-idempotent job in the system (usage, reconciliation, billing).
+   */
+  async enqueue<T extends object>(
+    queueName: string,
+    jobName: string,
+    payload: T,
+    options?: JobsOptions,
+  ): Promise<void> {
     const q = this.queue(queueName);
-    await q.add(jobName, payload);
+    await q.add(jobName, payload, options);
   }
 
   /** Round-trip ping; useful for readiness probes. */

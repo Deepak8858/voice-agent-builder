@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import type {
+  SessionUser,
   BillingSummaryDto,
   CreateCheckoutSessionDto,
   CreatePortalSessionDto,
@@ -20,6 +21,7 @@ import {
   CreatePortalSessionDtoSchema,
   CreateTopUpCheckoutDtoSchema,
 } from '@voiceforge/shared';
+import { CurrentUser } from '../common/current-user.decorator';
 import { RequiredRole } from '../common/decorators/required-role.decorator';
 import { ForbiddenError } from '../common/errors';
 import { RoleGuard } from '../common/role.guard';
@@ -108,10 +110,11 @@ export class BillingController {
   async createCheckout(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateCheckoutSessionDtoSchema)) dto: CreateCheckoutSessionDto,
+    @CurrentUser() user: SessionUser,
   ): Promise<{ url: string }> {
     const orgId = await this.getOrgId(workspaceId);
     try {
-      return await this.billing.createCheckoutSession(orgId, dto);
+      return await this.billing.createCheckoutSession(orgId, dto, user.id);
     } catch (err) {
       if (err instanceof ForbiddenPlanError) throw err;
       throw err;
@@ -128,9 +131,10 @@ export class BillingController {
   async createTopUpCheckout(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreateTopUpCheckoutDtoSchema)) dto: CreateTopUpCheckoutDto,
+    @CurrentUser() user: SessionUser,
   ): Promise<{ url: string }> {
     const orgId = await this.getOrgId(workspaceId);
-    return this.billing.createTopUpCheckoutSession(orgId, dto);
+    return this.billing.createTopUpCheckoutSession(orgId, dto, user.id);
   }
 
   @Post('portal')
@@ -139,9 +143,10 @@ export class BillingController {
   async createPortal(
     @Param('workspaceId') workspaceId: string,
     @Body(new ZodValidationPipe(CreatePortalSessionDtoSchema)) dto: CreatePortalSessionDto,
+    @CurrentUser() user: SessionUser,
   ): Promise<{ url: string }> {
     const orgId = await this.getOrgId(workspaceId);
-    return this.billing.createPortalSession(orgId, dto);
+    return this.billing.createPortalSession(orgId, dto, user.id);
   }
 
   // The one admin-gated read: invoices carry the organization's billing

@@ -185,6 +185,7 @@ export class BillingService {
   async createCheckoutSession(
     organizationId: string,
     dto: CreateCheckoutSessionDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_SUBSCRIPTION_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
@@ -233,7 +234,7 @@ export class BillingService {
       },
     }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
-    await this.logBillingAudit(organizationId, 'billing.checkout_started', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.checkout_started', {
       plan: dto.plan,
       priceId,
       stripeCustomerId: customerId,
@@ -251,6 +252,7 @@ export class BillingService {
   async createTopUpCheckoutSession(
     organizationId: string,
     dto: CreateTopUpCheckoutDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_TOPUP_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
@@ -307,7 +309,7 @@ export class BillingService {
       },
     }, { idempotencyKey: dto.idempotencyKey });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
-    await this.logBillingAudit(organizationId, 'billing.topup_checkout_started', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.topup_checkout_started', {
       priceId,
       stripeCustomerId: customerId,
       catalogVersion: BILLING_CATALOG_VERSION,
@@ -327,6 +329,7 @@ export class BillingService {
   async createPortalSession(
     organizationId: string,
     dto: CreatePortalSessionDto,
+    actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertStripeConfigured(STRIPE_PORTAL_REQUIRED_ENV);
     if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
@@ -337,7 +340,7 @@ export class BillingService {
       return_url: returnUrl,
     });
     if (!session.url) throw new InternalServerErrorException('Stripe returned no portal URL.');
-    await this.logBillingAudit(organizationId, 'billing.portal_opened', {
+    await this.logBillingAudit(organizationId, actorUserId, 'billing.portal_opened', {
       stripeCustomerId: customerId,
     });
     return { url: session.url };
@@ -394,14 +397,28 @@ export class BillingService {
     return `${url}${url.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`;
   }
 
+  /**
+   * `actorUserId` is required, not optional: every one of these three actions is
+   * started by a signed-in owner or admin, and the rows were being written with
+   * a null actor — so an audit log that exists to answer "who moved the money"
+   * could not answer it for the routes that move the most. It is threaded from
+   * `@CurrentUser()` in the controller, the same way ~15 other modules do it,
+   * and never taken from the request body, which the caller controls.
+   *
+   * `ipAddress`/`userAgent` stay unset because no non-test caller anywhere in
+   * this API supplies them; adding them here alone would only make this module's
+   * rows look different, not more traceable.
+   */
   private async logBillingAudit(
     organizationId: string,
+    actorUserId: string,
     action: string,
     metadata: Record<string, unknown>,
   ): Promise<void> {
     await this.prisma.auditLog.create({
       data: {
         organizationId,
+        actorUserId,
         action,
         resourceType: 'subscription',
         metadata: metadata as Prisma.InputJsonValue,

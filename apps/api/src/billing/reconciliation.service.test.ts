@@ -28,7 +28,10 @@ interface CallUsageRow {
   reservedSeconds: number;
   debitedSeconds: number;
   createdAt: Date;
-  finalizationState?: 'pending' | 'releasing';
+  finalizationState?: 'pending' | 'releasing' | 'connected';
+  /** Only the abandoned-after-connect arm reads these two. */
+  connectedAt?: Date | null;
+  billableSeconds?: number;
 }
 
 interface LeaseRow {
@@ -583,6 +586,55 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     );
   });
 
+  /**
+   * A call that connected and then stopped reporting was left in `connected`
+   * forever: nothing moved it to `finalized`, and `estimateMissingCallCosts`
+   * only costs finalized rows, so the provider cost of a real, billed call was
+   * never recorded — and `costCoverage`, whose denominator is also
+   * finalized-only, showed 100% while doing it.
+   */
+  it('finalizes a call abandoned after connect without refunding its debits', async () => {
+    const { service, callUsageUpdateMany, creditLedger, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 0 }],
+      staleCalls: [
+        {
+          id: 'usage-1',
+          organizationId: ORG,
+          callId: 'call-1',
+          finalizationState: 'connected',
+          connectedAt: new Date('2026-01-01T00:00:00.000Z'),
+          billableSeconds: 120,
+          reservedSeconds: 0,
+          debitedSeconds: 120,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
+    });
+
+    const report = await service.finalizeStaleCalls();
+
+    expect(report.staleCallsFinalized).toBe(1);
+    expect(callUsageUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          finalizationState: 'finalized',
+          disposition: 'abandoned_after_connect',
+          // Billed minutes, not wall clock: the customer paid for exactly these.
+          endedAt: new Date('2026-01-01T00:02:00.000Z'),
+        }),
+      }),
+    );
+    // The minutes were committed, so releasing the reservation would refund
+    // revenue for a call that really happened.
+    expect(creditLedger.releaseReservation).not.toHaveBeenCalled();
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.abandoned_call_finalized',
+        resourceId: 'call-1',
+      }),
+    );
+  });
+
   it('flags an ambiguous call for review instead of guessing its duration', async () => {
     const { service, callUsageUpdateMany, balanceUpdateMany, audit } = makeService({
       balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 60 }],
@@ -607,11 +659,51 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
     expect(callUsageUpdateMany).not.toHaveBeenCalled();
     expect(balanceUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { status: 'review', reviewReason: 'stale_call_with_debits' },
+        data: {
+          status: 'review',
+          reviewReason: 'stale_call_with_debits',
+          version: { increment: 1 },
+        },
       }),
     );
     expect(audit.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'billing.manual_review_created' }),
+    );
+  });
+
+  /**
+   * The flag itself dedupes, so only the first reason is kept — but the early
+   * return that used to follow the dedupe threw away every later incident's
+   * audit record too, leaving one stale call and two hundred of them
+   * indistinguishable to whoever clears the review.
+   */
+  it('audits a repeat incident on an organization already held for review', async () => {
+    const { service, balanceUpdateMany, audit } = makeService({
+      balances: [{ organizationId: ORG, availableSeconds: 0, reservedSeconds: 60 }],
+      staleCalls: [
+        {
+          id: 'usage-2',
+          organizationId: ORG,
+          callId: 'call-2',
+          reservedSeconds: 60,
+          debitedSeconds: 120,
+          createdAt: new Date(),
+        },
+      ],
+    });
+    // Already flagged: the `reviewReason: null` compare-and-set matches nothing.
+    balanceUpdateMany.mockResolvedValueOnce({ count: 0 });
+
+    const report = await service.finalizeStaleCalls();
+
+    // No transition, so nothing new to report as created...
+    expect(report.manualReviewsCreated).toBe(0);
+    // ...but the incident is still on the record, with the call that caused it.
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'billing.manual_review_incident',
+        metadata: { callId: 'call-2', reason: 'stale_call_with_debits' },
+      }),
     );
   });
 
@@ -669,9 +761,14 @@ describe('ReconciliationService.finalizeStaleCalls', () => {
 
     const report = await service.finalizeStaleCalls();
 
+    // One of the two abandonment shapes the sweep now reads in a single query.
     expect(prisma.callUsage.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
+        where: {
+          OR: expect.arrayContaining([
+            expect.objectContaining({ finalizationState: { in: ['pending', 'releasing'] } }),
+          ]),
+        },
       }),
     );
     // The claim has to match a row that is already `releasing`, otherwise a
@@ -987,13 +1084,46 @@ describe('ReconciliationService.publishMarginMetrics', () => {
     metrics.planContributionMarginRatio.labels.mockReturnValue({ set });
     // One Starter subscription at $99/month against $99 of provider cost.
     prisma.subscription.findMany.mockImplementation(async (args) =>
-      args?.where?.['plan'] === 'starter' ? [{ organizationId: ORG }] : [],
+      args?.where?.['plan'] === 'starter' ? [{ organizationId: ORG, status: 'active' }] : [],
     );
 
     await service.publishMarginMetrics();
 
     expect(metrics.planContributionMarginRatio.labels).toHaveBeenCalledWith('starter');
     expect(set).toHaveBeenCalledWith(0);
+  });
+
+  /**
+   * A trial bills nothing. Counting it at list price reported $99 of revenue
+   * against real provider cost, so a plan whose trials were burning money for
+   * free showed a positive margin — the gauge said the opposite of the truth.
+   */
+  it('excludes trials from revenue while keeping their provider cost', async () => {
+    const set = vi.fn();
+    const { service, metrics, prisma } = makeService({ costSum: 99 });
+    metrics.planContributionMarginRatio.labels.mockReturnValue({ set });
+    // One paying Starter subscription and one trial, $99 of cost across both.
+    prisma.subscription.findMany.mockImplementation(async (args) =>
+      args?.where?.['plan'] === 'starter'
+        ? [
+            { organizationId: ORG, status: 'active' },
+            { organizationId: 'org-trial', status: 'trialing' },
+          ]
+        : [],
+    );
+
+    await service.publishMarginMetrics();
+
+    // $99 revenue, not $198: (99 - 99) / 99 = 0, and the trial's cost is in it.
+    expect(set).toHaveBeenCalledWith(0);
+    // The trial is still aggregated, so its burn is not hidden from the ratio.
+    expect(prisma.providerCostEvent.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: { in: [ORG, 'org-trial'] },
+        }),
+      }),
+    );
   });
 });
 

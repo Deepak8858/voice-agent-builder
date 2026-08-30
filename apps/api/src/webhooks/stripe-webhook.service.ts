@@ -467,6 +467,25 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
     customerId: string,
     subscriptionId: string | null,
   ): Promise<{ field: string; current: string; incoming: string } | null> {
+    // A null `stripeCustomerId` on our row is not evidence that the incoming
+    // customer is unclaimed. The organization here comes from Checkout metadata,
+    // so a session naming an organization that has never had a customer id used
+    // to fall straight through this function and have the *paying* customer's id
+    // written onto that organization's row — the payer's future invoices then
+    // granted credit to someone else's balance. Ownership is checked the same way
+    // `handleMinutePackPurchase` checks it, before any link is written.
+    const foreignOwner = await this.prisma.subscription.findFirst({
+      where: { stripeCustomerId: customerId, organizationId: { not: orgId } },
+      select: { organizationId: true },
+    });
+    if (foreignOwner && foreignOwner.organizationId !== orgId) {
+      return {
+        field: 'stripeCustomerId',
+        current: `held by organization ${foreignOwner.organizationId}`,
+        incoming: customerId,
+      };
+    }
+
     const existing = await this.prisma.subscription.findUnique({
       where: { organizationId: orgId },
       select: { stripeCustomerId: true, stripeSubscriptionId: true },
@@ -1044,23 +1063,21 @@ export class StripeWebhookService implements OnModuleInit, OnModuleDestroy {
       stripeCustomerId: customerId,
       status: 'past_due',
     });
-    // Queue dunning email notification (best-effort)
-    try {
-      const sub = await this.prisma.subscription.findUnique({
-        where: { organizationId: resolved.organizationId },
-        include: { organization: { select: { id: true, name: true } } },
-      });
-      if (sub?.organization) {
-        await this.queueService.enqueue('notifications', 'dunning_email', {
-          organizationId: sub.organization.id,
-          organizationName: sub.organization.name,
-          customerId,
-        });
-        this.logger.log(`Dunning email queued for org ${sub.organization.id}`);
-      }
-    } catch (err) {
-      this.logger.warn(`Failed to queue dunning email: ${err}`);
-    }
+    // No dunning email is enqueued here, deliberately. `'notifications'` is not
+    // one of the queues any worker consumes (`WorkersModule` registers
+    // agent-gen, analytics, audit, billing-reconciliation, call-lease-renewal,
+    // digest, embeddings, evaluation, free-credit-grant, orchestrator and
+    // outbound-campaign), and `EmailService` has no dunning template — so the
+    // enqueue that used to be here delivered nothing, logged "Dunning email
+    // queued" as if it had, and left a job in Redis that nothing would ever
+    // drain. The customer-visible gap is real and is tracked as a feature: it
+    // needs an `EmailService` template, a worker to drain it, and that worker
+    // registered in `WorkersModule`. Until all three exist, the audited
+    // `billing.payment_failed` record above is the honest trace of the event.
+    this.logger.warn(
+      `Payment failed for org ${resolved.organizationId} (customer ${customerId}); ` +
+        `no dunning email is sent — recovery relies on Stripe's own retries.`,
+    );
   }
 
   private extractPriceId(data: Record<string, unknown>): string | null {
