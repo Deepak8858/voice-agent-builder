@@ -96,6 +96,8 @@ function hasControlCharacter(value: string): boolean {
 
 const CHECKOUT_UNCONFIGURED_MESSAGE =
   'Stripe checkout is temporarily unavailable. No plan change was made and no free allowance was granted.';
+const STRIPE_TEMPORARY_FAILURE_MESSAGE =
+  'Checkout is temporarily unavailable. No plan change was made. Please try again in a few minutes.';
 const SUBSCRIPTION_CACHE_TTL_SECONDS = 60;
 const NO_SUBSCRIPTION = '__none__';
 
@@ -212,7 +214,7 @@ export class BillingService {
     const successUrl = this.withCheckoutSessionId(this.buildAppUrl(dto.successPath));
     const cancelUrl = this.buildAppUrl(dto.cancelPath);
     const integrationIdentifier = this.newIntegrationIdentifier();
-    const session = await this.stripe.checkout.sessions.create({
+    const session = await this.createStripeCheckoutSession({
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
@@ -232,7 +234,7 @@ export class BillingService {
       subscription_data: {
         metadata: { organizationId, plan: dto.plan, catalogVersion: BILLING_CATALOG_VERSION },
       },
-    }, { idempotencyKey: dto.idempotencyKey });
+    }, dto.idempotencyKey);
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
     await this.logBillingAudit(organizationId, actorUserId, 'billing.checkout_started', {
       plan: dto.plan,
@@ -278,7 +280,7 @@ export class BillingService {
 
     const customerId = await this.getOrCreateCustomer(organizationId);
     const integrationIdentifier = this.newIntegrationIdentifier();
-    const session = await this.stripe.checkout.sessions.create({
+    const session = await this.createStripeCheckoutSession({
       customer: customerId,
       mode: 'payment',
       // Card only, deliberately. A delayed-notification method (ACH, SEPA debit,
@@ -307,7 +309,7 @@ export class BillingService {
           catalogVersion: BILLING_CATALOG_VERSION,
         },
       },
-    }, { idempotencyKey: dto.idempotencyKey });
+    }, dto.idempotencyKey);
     if (!session.url) throw new InternalServerErrorException('Stripe returned no URL.');
     await this.logBillingAudit(organizationId, actorUserId, 'billing.topup_checkout_started', {
       priceId,
@@ -324,6 +326,55 @@ export class BillingService {
    */
   private newIntegrationIdentifier(): string {
     return `vf_${randomBytes(12).toString('hex')}`;
+  }
+
+  /**
+   * Single Stripe Checkout call site, so every self-service payment path maps a
+   * Stripe failure the same way instead of letting a raw `StripeError` reach the
+   * global filter, which masks it to "Unexpected server error." in production.
+   */
+  private async createStripeCheckoutSession(
+    params: Record<string, unknown>,
+    idempotencyKey: string,
+  ): Promise<StripeSession> {
+    if (!this.stripe) throw new InternalServerErrorException('Stripe is not configured.');
+    try {
+      return await this.stripe.checkout.sessions.create(params, { idempotencyKey });
+    } catch (error) {
+      this.throwMappedStripeError(error);
+    }
+  }
+
+  /**
+   * Turns a Stripe failure into a real HTTP response.
+   *
+   * Card and invalid-request errors describe something the account owner can act
+   * on — a declined card, or an account restriction such as an unregistered
+   * Indian business that cannot accept international payments. Stripe's own
+   * message is the actionable detail, so it is surfaced with a 400.
+   *
+   * Authentication, permission, rate-limit, connection and API errors are either
+   * our own configuration or a transient Stripe outage, so the caller is told
+   * checkout is unavailable without leaking the internal cause.
+   *
+   * A non-Stripe error is re-thrown unchanged.
+   */
+  private throwMappedStripeError(error: unknown): never {
+    if (error instanceof Stripe.errors.StripeError) {
+      // Mapping to a 4xx stops the global filter from mirroring this to error
+      // tracking, so this log line is the record ops keeps of the real cause.
+      this.logger.warn(
+        `Stripe rejected a checkout request: type=${error.type} code=${error.code ?? 'none'} requestId=${error.requestId ?? 'none'}`,
+      );
+      if (
+        error instanceof Stripe.errors.StripeCardError ||
+        error instanceof Stripe.errors.StripeInvalidRequestError
+      ) {
+        throw new BadRequestException(error.message);
+      }
+      throw new BillingUnavailableError(STRIPE_TEMPORARY_FAILURE_MESSAGE);
+    }
+    throw error;
   }
 
   async createPortalSession(

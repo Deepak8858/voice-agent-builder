@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
+import Stripe from 'stripe';
 import { BILLING_CATALOG_VERSION } from '@voiceforge/shared';
 import { BillingService, BillingUnavailableError, ForbiddenPlanError } from './billing.service';
 import { CreditLedgerService } from './credit-ledger.service';
@@ -374,6 +375,76 @@ describe('BillingService', () => {
         }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
       },
     );
+
+    /**
+     * The reported failure: Stripe refused the session because the account is an
+     * Indian business that cannot accept international payments. That message is
+     * the actionable detail, so it reaches the caller as a 400 instead of the
+     * masked "Unexpected server error." a raw StripeError becomes in production.
+     */
+    it('surfaces a Stripe account-restriction message as a 400', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      const message =
+        'Your account cannot currently make live charges because it is an Indian business that is not registered to accept international payments.';
+      mockStripe.checkout.sessions.create.mockRejectedValueOnce(
+        new Stripe.errors.StripeInvalidRequestError({ message, type: 'invalid_request_error' }),
+      );
+
+      const promise = svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing',
+        cancelPath: '/dashboard/billing',
+      }, ACTOR);
+
+      await expect(promise).rejects.toBeInstanceOf(BadRequestException);
+      await expect(promise).rejects.toMatchObject({ message });
+      // A refused attempt is not a started checkout.
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a declined-card message as a 400', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      const message = 'Your card was declined.';
+      mockStripe.checkout.sessions.create.mockRejectedValueOnce(
+        new Stripe.errors.StripeCardError({ message, type: 'card_error' }),
+      );
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing',
+        cancelPath: '/dashboard/billing',
+      }, ACTOR)).rejects.toMatchObject({ message });
+    });
+
+    /**
+     * A Stripe-side outage is neither the caller's fault nor actionable, so it
+     * becomes a 503 with a generic message rather than leaking the internal
+     * cause.
+     */
+    it('reports a Stripe outage as unavailable without leaking the cause', async () => {
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      mockStripe.checkout.sessions.create.mockRejectedValueOnce(
+        new Stripe.errors.StripeAPIError({ message: 'stripe internal detail', type: 'api_error' }),
+      );
+
+      const promise = svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing',
+        cancelPath: '/dashboard/billing',
+      }, ACTOR);
+
+      await expect(promise).rejects.toMatchObject({ errorCode: 'BILLING_UNAVAILABLE' });
+      await expect(promise).rejects.not.toMatchObject({ message: 'stripe internal detail' });
+    });
   });
 
   describe('createTopUpCheckoutSession', () => {
