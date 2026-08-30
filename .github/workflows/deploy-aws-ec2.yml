@@ -432,17 +432,38 @@ jobs:
             SUPABASE_JWT_SECRET SUPABASE_SERVICE_ROLE_KEY INTERNAL_API_KEY
             NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY
+            WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
+            LLM_PROVIDER LLM_API_KEY
+          )
+          stripe_required=(
             STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
             STRIPE_GROWTH_PRICE_ID STRIPE_MINUTE_PACK_PRICE_ID
             STRIPE_ENTERPRISE_PRICE_ID
-            WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
-            LLM_PROVIDER LLM_API_KEY
           )
           missing=()
           invalid=()
           for name in "${required[@]}"; do
             if [ -z "$(env_value "$name")" ]; then missing+=("$name"); fi
           done
+          # Billing has exactly two sanctioned production states, chosen on the
+          # host: fully live, or explicitly OFF while the Stripe account is not
+          # yet activated. BILLING_DISABLED=true demands every Stripe variable
+          # be EMPTY — a leftover test-mode key would boot the API into selling
+          # real credits for test cards, which is the exact state the live-key
+          # check below exists to prevent. The API is built for the empty state:
+          # every Stripe client is constructed only when the key is present, and
+          # each billing entry point reports itself unavailable.
+          if [ "$(env_value BILLING_DISABLED)" = true ]; then
+            for name in "${stripe_required[@]}"; do
+              if [ -n "$(env_value "$name")" ]; then
+                invalid+=("$name (must be empty when BILLING_DISABLED=true)")
+              fi
+            done
+          else
+            for name in "${stripe_required[@]}"; do
+              if [ -z "$(env_value "$name")" ]; then missing+=("$name"); fi
+            done
+          fi
           if [ "${#missing[@]}" -ne 0 ]; then
             printf 'Missing required production variable: %s\n' "${missing[@]}" >&2
             exit 1
