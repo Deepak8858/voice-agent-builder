@@ -433,7 +433,8 @@ jobs:
             NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL NEXT_PUBLIC_SUPABASE_URL
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY
             STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
-            STRIPE_GROWTH_PRICE_ID STRIPE_ENTERPRISE_PRICE_ID BILLING_MODE
+            STRIPE_GROWTH_PRICE_ID STRIPE_MINUTE_PACK_PRICE_ID
+            STRIPE_ENTERPRISE_PRICE_ID
             WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
             LLM_PROVIDER LLM_API_KEY
           )
@@ -447,7 +448,18 @@ jobs:
             exit 1
           fi
           [ "$(env_value NODE_ENV)" = production ] || invalid+=(NODE_ENV)
-          [ "$(env_value BILLING_MODE)" = live ] || invalid+=(BILLING_MODE)
+          # BILLING_MODE used to be required here and validated `= live`. It is not
+          # checked any more because nothing reads it: it is absent from the API's
+          # config schema, `apps/web/lib/billing-mode.ts` was deleted, and billing
+          # is live whenever the STRIPE_* variables above are complete. Setting it
+          # on the host is harmless; requiring it only implied a control that does
+          # not exist. NEXT_PUBLIC_BILLING_MODE is unrelated — it is a GitHub
+          # Actions variable baked into the web image, not a host env value.
+          # The API also refuses to boot on a test-mode key, but that failure would
+          # land after the old container is already stopped. Catch it pre-flight.
+          case "$(env_value STRIPE_SECRET_KEY)" in
+            sk_test_*|rk_test_*) invalid+=(STRIPE_SECRET_KEY) ;;
+          esac
           printf '%s' "$(env_value WEB_BASE_URL)" | grep -Eq '^https://' || invalid+=(WEB_BASE_URL)
           case "$(env_value WEB_BASE_URL)" in
             *localhost*|*127.0.0.1*) invalid+=(WEB_BASE_URL) ;;

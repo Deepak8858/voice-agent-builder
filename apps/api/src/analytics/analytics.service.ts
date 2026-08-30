@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type {
   AgentMetricsResponse,
@@ -60,6 +60,7 @@ export class AnalyticsService {
     workspaceId: string,
     dto: RecordAnalyticsEventDto,
   ): Promise<AnalyticsEvent> {
+    await this.assertOwnedReferences(workspaceId, dto);
     const organizationId = await this.prisma.organizationIdFor(workspaceId);
     const row = await this.prisma.analyticsEvent.create({
       data: {
@@ -73,6 +74,34 @@ export class AnalyticsService {
       },
     });
     return this.toEventDto(row);
+  }
+
+  /**
+   * `agent_id` and `call_id` come from the client and were only checked for
+   * UUID *shape* (`packages/shared/src/schemas/analytics.ts:46-47`). The
+   * foreign keys prove the row exists somewhere, not that it belongs to this
+   * workspace, so a member could file events against another tenant's agent —
+   * and a UUID that exists nowhere surfaced as a 500 from the FK instead of a
+   * 400. Both references are re-read under the workspace predicate.
+   */
+  private async assertOwnedReferences(
+    workspaceId: string,
+    dto: RecordAnalyticsEventDto,
+  ): Promise<void> {
+    if (dto.agent_id) {
+      const agent = await this.prisma.agent.findFirst({
+        where: { id: dto.agent_id, workspaceId },
+        select: { id: true },
+      });
+      if (!agent) throw new BadRequestException('agent_id is not in this workspace');
+    }
+    if (dto.call_id) {
+      const call = await this.prisma.call.findFirst({
+        where: { id: dto.call_id, workspaceId },
+        select: { id: true },
+      });
+      if (!call) throw new BadRequestException('call_id is not in this workspace');
+    }
   }
 
   /**

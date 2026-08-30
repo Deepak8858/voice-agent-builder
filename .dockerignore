@@ -41,12 +41,32 @@ docs
 *.md
 !README.md
 
-# Test / local env
+# Test / local env.
+#
+# The `**/` prefixes matter and their absence was a real leak: Docker matches
+# ignore patterns against the whole context-relative path, so a bare `.env`
+# excludes only the root file and leaves `apps/api/.env` and
+# `apps/web/.env.local` in the context — where `COPY apps/api apps/api`
+# (Dockerfile.api) and `COPY apps/web apps/web` (Dockerfile.web) copy them into
+# the build stage and `next build` reads `.env.local` automatically. Both files
+# hold real secrets. Same reason `**/node_modules` above is not bare
+# `node_modules`.
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!**/.env.example
 coverage
 .nyc_output
+
+# Agent and CI scratch trees. Each is a full copy of the repository, several
+# carry their own env files, and nothing in any Dockerfile copies from them —
+# so they are pure build-context weight and pure secret exposure.
+.worktrees
+.claude
+.depot
+.work-tools
 
 # Misc
 *.log

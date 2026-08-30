@@ -1,8 +1,0 @@
-# Intentional non-secret Stripe-shaped sentinel used by env validation tests.
-57d15813eac46f6b7d032089225801b2fa122d65:apps/api/src/config/env.test.ts:stripe-access-token:112
-# Intentional non-secret internal-key sentinel ('test-internal-api-key-with-32-chars')
-# used by the InternalAuthGuard trust-boundary tests.
-ccd5d5d3332466733133249f251d3072c06a2704:apps/api/src/auth/internal-auth.guard.test.ts:generic-api-key:97
-ccd5d5d3332466733133249f251d3072c06a2704:apps/api/src/auth/internal-auth.guard.test.ts:generic-api-key:108
-ccd5d5d3332466733133249f251d3072c06a2704:apps/api/src/auth/internal-auth.guard.test.ts:generic-api-key:122
-ccd5d5d3332466733133249f251d3072c06a2704:apps/api/src/auth/internal-auth.guard.test.ts:generic-api-key:143

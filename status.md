@@ -43,7 +43,7 @@ it.
 | Database | Supabase Postgres via Prisma |
 | Queues | BullMQ + ioredis; in-process fallback when `REDIS_URL` is unset |
 | Auth | Supabase Auth; JWT verified with pinned algorithm, `audience`, and `issuer` (`apps/api/src/auth/supabase-auth.service.ts:119-123`) |
-| Voice | Vapi, Retell, OpenAI Realtime, LiveKit; mock is dev/test only (`apps/api/src/config/env.ts:16-17,142-148`) |
+| Voice | OpenAI Realtime, LiveKit, Twilio; Vapi and Retell are removed and their config is ignored with a warning (`apps/api/src/config/env.ts:16-23,528-537`); mock is rejected in production (`env.ts:37,302-308`) |
 | LLM | Provider adapters under `apps/api/src/llm/` |
 | Validation | Shared Zod schemas via `@voiceforge/shared` |
 
@@ -57,11 +57,12 @@ supplies the credentials to run it.
 
 **LiveKit / BYO telephony — implemented; production configuration unverified.**
 `apps/livekit-agent/` and `apps/api/src/livekit/` exist and are tested. All LiveKit
-env vars are optional (`apps/api/src/config/env.ts:52-59`). The Azure deploy starts
-the `livekit` compose profile only when `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
-`LIVEKIT_API_SECRET` are all present, and aborts on a partial set
-(`.github/workflows/deploy-azure-vm.yml:197-206`). Whether production supplies them
-cannot be determined from this repo.
+env vars are optional (`apps/api/src/config/env.ts:77-84`). The AWS deploy enables
+LiveKit only when `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` are
+all present in `/opt/voiceforge/.env`, and aborts on a partial set
+(`.github/workflows/deploy-aws-ec2.yml:488-497`). Whether production supplies them
+cannot be determined from this repo — the deploy validates a host env file it does
+not write.
 
 **Email — implemented; delivery unconfigured by default, and not scheduled.**
 `EmailService` sends via Resend and returns
@@ -73,13 +74,18 @@ built, tenant-scoped to owners/admins, and non-throwing per recipient
 `sendWeeklyDigest` has no non-test caller. It is a complete feature with no
 trigger.
 
-**Billing — implemented; runs in demo mode unless explicitly switched.**
-`BILLING_MODE` defaults to `demo` (`apps/api/src/config/env.ts:111`), and the web
-client treats anything other than `live` as demo, disabling checkout
-(`apps/web/lib/billing-mode.ts:22-30`). All `STRIPE_*` variables are optional in
-config. The Azure deploy does require `BILLING_MODE=live` plus non-empty Stripe
-variables before it will proceed (`.github/workflows/deploy-azure-vm.yml:170-171,189`),
-so a successful production deploy implies live billing was configured.
+**Billing — implemented; live or unavailable, with no demo mode.** There is no
+`BILLING_MODE` variable and no demo billing path: missing configuration never
+grants a free allowance, it returns 503. All `STRIPE_*` variables are optional at
+boot, so each entry point is gated at request time on the variables it actually
+needs — subscription checkout, minute-pack top-up and the customer portal have
+separate lists (`apps/api/src/config/env.ts:425-471`,
+`apps/api/src/billing/billing.service.ts:337-354`), so one unset price ID
+disables one action rather than all three. A production boot warns which actions
+are disabled and names the missing variables (`env.ts:539-563`), and the deploy
+gate refuses to proceed unless the host env sets all five plus a live-mode secret
+key (`.github/workflows/deploy-aws-ec2.yml:435-436,460-462`). A successful
+production deploy therefore implies live billing was configured.
 
 **Google Calendar — implemented, including token refresh.** Tokens are encrypted
 at rest (`apps/api/src/calendar/calendar.service.ts:44-45`), refreshed ahead of
@@ -91,49 +97,40 @@ exchanged through a dedicated OAuth client
 
 ## Production deployment
 
-The live Azure VM deployment is **currently healthy but was built by hand and is
-not traceable to a commit**. There is no recorded mapping from the running
-containers to a source revision, so the deployed code cannot be verified from this
-repository.
+The production target is AWS EC2. Azure and GCP are gone: `deploy-azure-vm.yml`,
+`deploy-gcp.yml` and `ci-cd-ec2.yml` no longer exist, and `.github/workflows/`
+now holds exactly two files — `deploy-aws-ec2.yml` and `quality-gate.yml`. Any
+older reference to an Azure VM, an Azure Container Registry or a staging
+environment in `docs/` is historical; no ACR ever existed.
 
-A traceable, operator-initiated replacement now exists at
-`.github/workflows/deploy-azure-vm.yml`. It:
+`.github/workflows/deploy-aws-ec2.yml` is operator-initiated
+(`workflow_dispatch` only, lines 21-31) and:
 
 - requires a typed `deploy-production` confirmation and a full 40-character SHA
-  (lines 12-15, 43-52);
-- verifies the requested revision resolves to that exact commit (lines 55-60);
-- requires all four SSH secrets and uses `StrictHostKeyChecking=yes` against a
-  pinned `known_hosts` (lines 63-84, 96-100);
-- builds registry-free images on the VM tagged with the commit SHA (lines 262-272);
-- validates required production env var **names** without printing values
-  (lines 163-195);
-- runs migrations before replacement and rolls services back to the previously
-  recorded SHA on failure (lines 274-282, 238-260);
-- health-checks both loopback and public endpoints before recording success
-  (lines 284-305).
+  (lines 24-31);
+- builds API, web and LiveKit images on Depot via GitHub OIDC, with no static
+  cloud tokens (lines 20, 88, 231);
+- **validates a hand-maintained `/opt/voiceforge/.env` on the host — it does not
+  write it.** The file must already exist and be non-empty (line 416); values are
+  read with an `awk` helper (lines 426-428) and 27 required names are checked
+  (lines 429-440), rejecting a test-mode `STRIPE_SECRET_KEY` and reporting
+  offenders **by name only** (lines 483-486);
+- requires all three LiveKit variables or none (lines 488-497);
+- keeps the previous release bundle for rollback (lines 520-528).
 
-This workflow has not yet been used for a production deploy. Doing so is the step
-that closes the untraceability gap.
-
-Earlier documentation claimed an Azure Container Registry and a staging
-environment. **No ACR exists.** Those claims were false and have been deleted. The
-Azure deploy builds images directly on the VM and never pushes to a registry
-(`deploy-azure-vm.yml:3-4,262-272`).
+Because the workflow validates rather than writes the host env file, **the env
+files in this repository are not the deployed configuration** and nothing here
+can tell you what the running instance is set to.
 
 ## CI status
 
-There is no automatic CI. All three workflows are `workflow_dispatch`-only:
+Automatic CI exists. `.github/workflows/quality-gate.yml` runs on every pull
+request and on pushes to `main` (lines 13-17): gitleaks secret scanning,
+`pnpm audit --prod --audit-level=high`, typecheck, lint, test, plus a web image
+build. It never deploys and needs no cloud credentials.
 
-- `.github/workflows/ci-cd-ec2.yml:13-14` — legacy AWS EC2 path, retained for
-  decommissioning.
-- `.github/workflows/deploy-gcp.yml:5-6`
-- `.github/workflows/deploy-azure-vm.yml:5-12`
-
-The quality gate — gitleaks secret scanning, `pnpm audit --prod --audit-level=high`,
-typecheck, lint, test — is defined in `ci-cd-ec2.yml:34-76` but, because that
-workflow is dispatch-only, **it never runs on a push or pull request**. Nothing
-automatically blocks a bad merge. This is the single largest process gap and is
-tracked in `ROADMAP.md`.
+One hazard: `.depot/workflows/quality-gate.yml` is a near-duplicate of it. A
+change applied to one and not the other drifts silently.
 
 ## Known toolchain issues
 
@@ -145,10 +142,10 @@ now matches: `package.json:33-44` and `pnpm-lock.yaml:7-17` agree on all ten pin
 Any future change to `pnpm.overrides` must regenerate the lockfile in the same
 commit.
 
-**Open: pnpm version is not pinned in the repo.** The root `package.json` has no
-`packageManager` field. The version is pinned only in workflow env
-(`.github/workflows/ci-cd-ec2.yml:27`), so local installs can silently use a
-different pnpm than CI.
+**Resolved: pnpm version is pinned.** `package.json:32` declares
+`"packageManager": "pnpm@10.33.2"`, so a local install and CI resolve the same
+pnpm. The Node floor is pinned separately in `quality-gate.yml:23-46` with the
+dependency constraints that set it.
 
 **Open, latent: phantom `express` dependency.** `express` is not declared in
 `apps/api/package.json` — only `@nestjs/platform-express` (line 24) and
@@ -166,14 +163,15 @@ depends on the hoisting layout.
    fallback. In production the instance must be reachable on the private network,
    never exposed publicly.
 3. **Voice provider credentials** — for the selected `VOICE_PROVIDER`. `mock` is
-   rejected in production (`apps/api/src/config/env.ts:142-148`).
+   rejected in production (`apps/api/src/config/env.ts:302-308`).
 4. **Security keys** — `JWT_SECRET` (min 32 chars, must not be the development
-   default in production, `env.ts:97-100`), `ENCRYPTION_KEY`, `INTERNAL_API_KEY`,
+   default in production, `env.ts:161-167`), `ENCRYPTION_KEY`, `INTERNAL_API_KEY`,
    `VOICE_WEBHOOK_SECRET`, and explicit `ALLOWED_ORIGINS`; the last two are
-   required non-empty in production (`env.ts:128-141`).
+   required non-empty in production (`env.ts:288-301`).
 5. **Optional integrations** — `RESEND_API_KEY` for email, `GOOGLE_CLIENT_ID` /
-   `GOOGLE_CLIENT_SECRET` for calendar, `STRIPE_*` plus `BILLING_MODE=live` for
-   real billing, and the three LiveKit variables for BYO telephony.
+   `GOOGLE_CLIENT_SECRET` for calendar, the five `STRIPE_*` variables for billing
+   (secret key, webhook secret, starter/growth/minute-pack price IDs — there is no
+   `BILLING_MODE`), and the three LiveKit variables for BYO telephony.
 
 Concrete hostnames, IP addresses, project references, and connection strings are
 deliberately excluded from this file. They belong in the deployment environment and
@@ -183,8 +181,11 @@ secret store.
 
 See `ROADMAP.md` for the prioritized list. The top three:
 
-1. Add a push/PR-triggered CI workflow so the existing quality gate actually runs.
-2. Perform one deployment through `deploy-azure-vm.yml` to establish a traceable
+1. Read `/opt/voiceforge/.env` on the running instance and record whether
+   `STRIPE_SECRET_KEY` is live-mode and `STRIPE_MINUTE_PACK_PRICE_ID` is set. The
+   deploy gate validates that file but never writes it, so nothing in this
+   repository answers the question.
+2. Perform one deployment through `deploy-aws-ec2.yml` to establish a traceable
    commit-to-production mapping.
-3. Remove the still-tracked `supabase/.temp/` files, plus the duplicate copy inside
-   the stale `.claude/worktrees/` snapshots, and rotate anything they describe.
+3. Keep `.depot/workflows/quality-gate.yml` and `.github/workflows/quality-gate.yml`
+   in sync, or delete one — they are near-duplicates that drift silently.

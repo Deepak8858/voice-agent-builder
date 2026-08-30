@@ -101,14 +101,23 @@ export type CreatePortalSessionDto = z.infer<typeof CreatePortalSessionDtoSchema
 
 /**
  * Runtime availability of Stripe Checkout and the Customer Portal. There is no
- * "demo" billing mode: Checkout is either fully configured with server-owned
- * prices or it is temporarily unavailable. Missing configuration never grants a
- * recurring free allowance.
+ * "demo" billing mode: an action is either fully configured with the
+ * server-owned prices it needs or it is temporarily unavailable. Missing
+ * configuration never grants a recurring free allowance.
+ *
+ * Reported per entry point, because they fail independently: a deployment
+ * missing only the minute-pack price cannot sell packs while subscription
+ * checkout and the portal keep working. The client must gate each button on its
+ * own flag — a single global flag hid three different outages behind one word.
  */
 export const BillingStatusDtoSchema = z
   .object({
-    checkoutConfigured: z.boolean(),
+    /** Subscription Checkout — plan upgrades. */
     liveCheckoutEnabled: z.boolean(),
+    /** One-time minute-pack Checkout. */
+    topUpEnabled: z.boolean(),
+    /** Stripe Customer Portal — payment method, invoices, cancellation. */
+    portalEnabled: z.boolean(),
     message: z.string().min(1),
   })
   .strict();

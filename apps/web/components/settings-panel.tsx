@@ -29,7 +29,8 @@ interface AuditLog {
   id: string;
   action: string;
   createdAt: string;
-  user: { email: string; name: string | null } | null;
+  /** The API includes this as `actor`; reading `user` showed "System" for every row. */
+  actor: { email: string; name: string | null } | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -42,6 +43,10 @@ export function SettingsPanel() {
   const [loading, setLoading] = useState(false);
 
   const currentWorkspaceId = me?.active_workspace_id ?? me?.workspaces?.[0]?.id;
+  // The API restricts audit-log reads to owners and admins, so offering the tab
+  // to anyone else is a tab that can only 403.
+  const canReadAuditLog =
+    me?.active_workspace_role === 'owner' || me?.active_workspace_role === 'admin';
 
   useEffect(() => {
     call<MeResponse>('/auth/me').then(setMe).catch(console.error);
@@ -55,14 +60,14 @@ export function SettingsPanel() {
         .catch(console.error)
         .finally(() => setLoading(false));
     }
-    if (activeTab === 'audit' && currentWorkspaceId) {
+    if (activeTab === 'audit' && currentWorkspaceId && canReadAuditLog) {
       setLoading(true);
       call<{ items: AuditLog[] }>(`/workspaces/${currentWorkspaceId}/audit-logs`)
         .then((res) => setAuditLogs(res.items))
         .catch(console.error)
         .finally(() => setLoading(false));
     }
-  }, [activeTab, currentWorkspaceId, call]);
+  }, [activeTab, currentWorkspaceId, canReadAuditLog, call]);
 
   return (
     <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as Tab)} className="w-full">
@@ -75,10 +80,12 @@ export function SettingsPanel() {
           <Users className="h-3.5 w-3.5" />
           Team
         </TabsTrigger>
-        <TabsTrigger value="audit" className="gap-1.5">
-          <ClipboardList className="h-3.5 w-3.5" />
-          Audit
-        </TabsTrigger>
+        {canReadAuditLog && (
+          <TabsTrigger value="audit" className="gap-1.5">
+            <ClipboardList className="h-3.5 w-3.5" />
+            Audit
+          </TabsTrigger>
+        )}
       </TabsList>
 
       <TabsContent value="general" className="mt-6">
@@ -140,7 +147,7 @@ export function SettingsPanel() {
                   <div className="flex flex-col">
                     <span className="text-sm font-medium text-foreground">{log.action}</span>
                     <span className="text-xs text-muted-foreground">
-                      {log.user?.name ?? log.user?.email ?? 'System'} &middot;{' '}
+                      {log.actor?.name ?? log.actor?.email ?? 'System'} &middot;{' '}
                       {new Date(log.createdAt).toLocaleString()}
                     </span>
                   </div>

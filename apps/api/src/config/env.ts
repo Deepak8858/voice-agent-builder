@@ -306,6 +306,19 @@ const EnvSchema = z
         message: 'VOICE_PROVIDER=mock is not allowed in production',
       });
     }
+    // A test-mode key in production is a silent revenue outage, not an error:
+    // Checkout sessions open and never settle, and live-mode webhook signatures
+    // will not verify against a test secret. Nothing else here or in the deploy
+    // gate inspects the key's mode and /health cannot see it, so refuse at boot
+    // the way VOICE_PROVIDER=mock does above. Restricted keys carry the same
+    // mode segment, hence the (sk|rk) alternation.
+    if (value.NODE_ENV === 'production' && /^(sk|rk)_test_/.test(value.STRIPE_SECRET_KEY ?? '')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['STRIPE_SECRET_KEY'],
+        message: 'STRIPE_SECRET_KEY must be a live-mode key in production, not a test-mode key',
+      });
+    }
     // A deployment that enables the in-house pipeline without complete Azure
     // configuration would accept free-plan calls and then fail once the caller is
     // already connected. Fail at boot naming the missing variable instead.
@@ -380,7 +393,17 @@ const EnvSchema = z
     // deployment with working Stripe credentials that omits it takes payments and
     // then bounces the customer to a dead address. That failure is invisible to a
     // boot check, hence this guard.
-    if (isStripeCheckoutConfigured(value)) {
+    //
+    // Fires as soon as *either* paying entry point is usable, not only when every
+    // variable is set: since these lists were split, a deployment with the
+    // subscription prices but no minute-pack price takes real payments, and this
+    // guard has to cover it. A deployment with no prices at all cannot charge
+    // anyone, so its localhost default stays harmless and boot stays quiet — that
+    // is the ordinary local-development configuration.
+    if (
+      missingStripeEnv(STRIPE_SUBSCRIPTION_REQUIRED_ENV, value).length === 0 ||
+      missingStripeEnv(STRIPE_TOPUP_REQUIRED_ENV, value).length === 0
+    ) {
       let parsed: URL | null = null;
       try {
         parsed = new URL(value.WEB_BASE_URL);
@@ -400,24 +423,51 @@ const EnvSchema = z
   });
 
 /**
- * Checkout is only usable when every server-owned identifier is present. A
- * partially configured deployment fails closed rather than sending a customer
- * to Stripe and then being unable to grant what they paid for.
+ * What each Stripe entry point needs, in one place. These lists are the single
+ * source of truth: the refinement above, BillingService's runtime gates, the
+ * boot warning below and the deploy workflow's `required[]` list all derive from
+ * them, because three hand-maintained copies had already drifted into mirror
+ * images of each other — the deploy gate required STRIPE_ENTERPRISE_PRICE_ID and
+ * omitted STRIPE_MINUTE_PACK_PRICE_ID while the code required the minute pack
+ * and never read enterprise. A deployment could therefore pass every gate and
+ * still return 503 from subscription checkout, top-up and the customer portal,
+ * with no health check that would notice.
+ *
+ * They are separate lists because missing configuration must disable only the
+ * entry point it actually affects. One unset price ID used to take down all
+ * three at once; that is a total revenue outage on a single typo.
+ *
+ * The portal needs no price, but it does need the webhook secret: a plan change
+ * or cancellation a customer makes there reaches us only as a webhook, so an
+ * unverifiable webhook feed means those changes silently never apply.
  */
-function isStripeCheckoutConfigured(value: {
-  STRIPE_SECRET_KEY?: string | undefined;
-  STRIPE_WEBHOOK_SECRET?: string | undefined;
-  STRIPE_STARTER_PRICE_ID?: string | undefined;
-  STRIPE_GROWTH_PRICE_ID?: string | undefined;
-  STRIPE_MINUTE_PACK_PRICE_ID?: string | undefined;
-}): boolean {
-  return Boolean(
-    value.STRIPE_SECRET_KEY &&
-    value.STRIPE_WEBHOOK_SECRET &&
-    value.STRIPE_STARTER_PRICE_ID &&
-    value.STRIPE_GROWTH_PRICE_ID &&
-    value.STRIPE_MINUTE_PACK_PRICE_ID,
-  );
+export const STRIPE_PORTAL_REQUIRED_ENV = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'] as const;
+
+export const STRIPE_SUBSCRIPTION_REQUIRED_ENV = [
+  ...STRIPE_PORTAL_REQUIRED_ENV,
+  'STRIPE_STARTER_PRICE_ID',
+  'STRIPE_GROWTH_PRICE_ID',
+] as const;
+
+export const STRIPE_TOPUP_REQUIRED_ENV = [
+  ...STRIPE_PORTAL_REQUIRED_ENV,
+  'STRIPE_MINUTE_PACK_PRICE_ID',
+] as const;
+
+/** The union: what a fully live deployment sets, and what the deploy gate checks. */
+export const STRIPE_CHECKOUT_REQUIRED_ENV = [
+  ...STRIPE_SUBSCRIPTION_REQUIRED_ENV,
+  'STRIPE_MINUTE_PACK_PRICE_ID',
+] as const;
+
+export type StripeEnvName = (typeof STRIPE_CHECKOUT_REQUIRED_ENV)[number];
+
+/** The names in `required` that `source` does not set, in list order. */
+export function missingStripeEnv(
+  required: readonly StripeEnvName[],
+  source: Partial<Record<StripeEnvName, string | undefined>>,
+): StripeEnvName[] {
+  return required.filter((name) => !source[name]);
 }
 
 function isLocalHostname(hostname: string): boolean {
@@ -484,6 +534,32 @@ if (removedVoiceEnvVars.length > 0) {
       'openai-realtime. Delete these and configure VOICE_STANDARD_PIPELINE_ENABLED with the ' +
       'AZURE_SPEECH_* / AZURE_OPENAI_* variables instead.',
   );
+}
+
+/**
+ * Nothing else in production reports an incomplete Stripe configuration. Every
+ * STRIPE_* field here is optional, /health checks db/redis/llm only, and the
+ * first symptom of a missing price ID is a 503 on a paying customer's upgrade
+ * click. Name the disabled entry points and the exact variables at boot instead.
+ */
+if (env.NODE_ENV === 'production') {
+  const disabled = (
+    [
+      ['subscription checkout', STRIPE_SUBSCRIPTION_REQUIRED_ENV],
+      ['minute-pack top-up', STRIPE_TOPUP_REQUIRED_ENV],
+      ['customer portal', STRIPE_PORTAL_REQUIRED_ENV],
+    ] as const
+  )
+    .map(([label, required]) => [label, missingStripeEnv(required, env)] as const)
+    .filter(([, missing]) => missing.length > 0);
+  if (disabled.length > 0) {
+    console.warn(
+      '[env] Stripe is incompletely configured; these actions will return 503: ' +
+        `${disabled
+          .map(([label, missing]) => `${label} (missing ${missing.join(', ')})`)
+          .join('; ')}.`,
+    );
+  }
 }
 
 export function isProduction(): boolean {

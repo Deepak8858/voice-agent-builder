@@ -108,28 +108,66 @@ describe('BillingService', () => {
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       expect(svc.getBillingStatus()).toEqual({
-        checkoutConfigured: true,
         liveCheckoutEnabled: true,
+        topUpEnabled: true,
+        portalEnabled: true,
         message: 'Live Stripe checkout and customer portal actions are enabled.',
       });
     });
 
     /**
-     * A partially configured deployment must fail closed. It reports checkout
-     * as unavailable rather than advertising a free allowance, because the
-     * webhook that grants what a customer pays for would not be verifiable.
+     * The pack price disables packs and nothing else. Subscription checkout and
+     * the portal are configured independently, and reporting them as unavailable
+     * turned one unset variable into a total revenue outage: the client disabled
+     * every billing button on this one flag.
      */
-    it('reports checkout unavailable when the minute-pack price is missing', () => {
+    it('reports only top-up unavailable when the minute-pack price is missing', () => {
       Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
       const prisma = makePrisma();
       const svc = makeService(prisma);
       Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
 
       expect(svc.getBillingStatus()).toEqual({
-        checkoutConfigured: false,
-        liveCheckoutEnabled: false,
+        liveCheckoutEnabled: true,
+        topUpEnabled: false,
+        portalEnabled: true,
         message:
           'Stripe checkout is temporarily unavailable. No plan change was made and no free allowance was granted.',
+      });
+    });
+
+    /**
+     * The webhook secret is the one variable every entry point needs: without a
+     * verifiable feed, a portal cancellation or a completed Checkout never
+     * reaches us, so the customer is charged and nothing changes on our side.
+     */
+    it('reports every entry point unavailable when the webhook secret is missing', () => {
+      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
+      const prisma = makePrisma();
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      expect(svc.getBillingStatus()).toMatchObject({
+        liveCheckoutEnabled: false,
+        topUpEnabled: false,
+        portalEnabled: false,
+      });
+    });
+
+    /**
+     * Packs are sold from a paid plan, so a deployment that can sell packs but
+     * has no plan prices is misconfigured in the direction that matters most.
+     */
+    it('reports subscription checkout unavailable when a plan price is missing', () => {
+      Object.assign(env, { STRIPE_GROWTH_PRICE_ID: undefined });
+      const prisma = makePrisma();
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      expect(svc.getBillingStatus()).toMatchObject({
+        liveCheckoutEnabled: false,
+        topUpEnabled: true,
+        portalEnabled: true,
       });
     });
   });
@@ -152,6 +190,25 @@ describe('BillingService', () => {
 
       expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The split's whole point, as behaviour rather than a status flag: an unset
+     * minute-pack price must not stop anyone from upgrading. Before the entry
+     * points had separate configuration lists, this call returned 503.
+     */
+    it('still takes a subscription payment when the minute-pack price is missing', async () => {
+      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing?checkout=success',
+        cancelPath: '/dashboard/billing?checkout=cancel',
+      })).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
     });
 
     it('maps plan to server-owned price and enables production Checkout defaults', async () => {
@@ -492,6 +549,27 @@ describe('BillingService', () => {
 
       expect(mockStripe.billingPortal.sessions.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The portal sells nothing, so it needs no Price. Blocking it on the price
+     * IDs meant an existing subscriber could not update a failing card or
+     * download an invoice — which converts a checkout misconfiguration into
+     * involuntary churn.
+     */
+    it('opens the portal with no price IDs configured at all', async () => {
+      Object.assign(env, {
+        STRIPE_STARTER_PRICE_ID: undefined,
+        STRIPE_GROWTH_PRICE_ID: undefined,
+        STRIPE_MINUTE_PACK_PRICE_ID: undefined,
+      });
+      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+
+      await expect(
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }),
+      ).resolves.toEqual({ url: 'https://billing.stripe.com/session' });
     });
 
     it('builds the Customer Portal return URL from WEB_BASE_URL', async () => {

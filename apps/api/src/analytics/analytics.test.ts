@@ -115,6 +115,13 @@ function makePrisma(state: {
           return inRange(c.createdAt, where.createdAt?.gte, where.createdAt?.lte);
         });
       }),
+      // 'ws-1' is the only workspace this stub holds rows for, so any other
+      // workspaceId predicate must miss — that is what makes the ownership
+      // check in recordEvent testable.
+      findFirst: vi.fn(async ({ where }: { where: any }) => {
+        if (where.workspaceId && where.workspaceId !== 'ws-1') return null;
+        return state.calls.find((c) => c.id === where.id) ?? null;
+      }),
     },
     complianceCheck: {
       count: vi.fn(async ({ where }: { where: any }) => {
@@ -147,6 +154,10 @@ function makePrisma(state: {
     agent: {
       findMany: vi.fn(async ({ where }: { where: any }) => {
         return state.agents.filter((a) => !where.id || a.id === where.id);
+      }),
+      findFirst: vi.fn(async ({ where }: { where: any }) => {
+        if (where.workspaceId && where.workspaceId !== 'ws-1') return null;
+        return state.agents.find((a) => a.id === where.id) ?? null;
       }),
     },
     toolInvocation: {
@@ -709,6 +720,7 @@ describe('AnalyticsService.recordEvent', () => {
 
   it('writes a row and returns the DTO', async () => {
     const state = defaultState();
+    state.agents.push({ id: UUID_A, name: 'Booking' });
     const svc = new AnalyticsService(makePrisma(state) as never);
     const e = await svc.recordEvent('ws-1', {
       event_type: 'appointment.booked',
@@ -721,6 +733,7 @@ describe('AnalyticsService.recordEvent', () => {
 
   it('persists payload + occurred_at when provided', async () => {
     const state = defaultState();
+    state.agents.push({ id: UUID_A, name: 'Booking' });
     const svc = new AnalyticsService(makePrisma(state) as never);
     const occurred = '2026-04-25T12:00:00.000Z';
     const e = await svc.recordEvent('ws-1', {
@@ -739,6 +752,46 @@ describe('AnalyticsService.recordEvent', () => {
     const e = await svc.recordEvent('ws-1', { event_type: 'workspace.touched' });
     expect(e.agent_id).toBeNull();
     expect(e.call_id).toBeNull();
+  });
+
+  // The DTO only checks that these are UUIDs, and the foreign key only checks
+  // that the row exists — neither proves it is this tenant's row.
+  it('refuses an agent_id from another workspace', async () => {
+    const state = defaultState();
+    const svc = new AnalyticsService(makePrisma(state) as never);
+
+    await expect(
+      svc.recordEvent('ws-2', { event_type: 'appointment.booked', agent_id: 'a1' }),
+    ).rejects.toThrow(/agent_id/);
+    expect(state.events).toHaveLength(0);
+  });
+
+  it('refuses a call_id from another workspace', async () => {
+    const state = defaultState();
+    const svc = new AnalyticsService(makePrisma(state) as never);
+
+    await expect(
+      svc.recordEvent('ws-2', { event_type: 'call.ended', call_id: 'c1' }),
+    ).rejects.toThrow(/call_id/);
+    expect(state.events).toHaveLength(0);
+  });
+
+  it('refuses an agent_id that exists nowhere', async () => {
+    const state = defaultState();
+    const svc = new AnalyticsService(makePrisma(state) as never);
+
+    await expect(
+      svc.recordEvent('ws-1', { event_type: 'appointment.booked', agent_id: UUID_A }),
+    ).rejects.toThrow(/agent_id/);
+  });
+
+  it('accepts a call_id owned by the workspace', async () => {
+    const state = defaultState();
+    const svc = new AnalyticsService(makePrisma(state) as never);
+
+    const e = await svc.recordEvent('ws-1', { event_type: 'call.ended', call_id: 'c1' });
+
+    expect(e.call_id).toBe('c1');
   });
 });
 
