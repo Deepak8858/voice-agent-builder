@@ -1,13 +1,18 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useApi } from '@/lib/use-api';
-import { User, Users, ClipboardList } from 'lucide-react';
+import { User, ClipboardList } from 'lucide-react';
 
-type Tab = 'general' | 'team' | 'audit';
+/**
+ * The Team tab used to live here and fetched `GET /workspaces/:id/members`, a
+ * route the API does not define (S-036). The proxy 404 was swallowed by the
+ * `.catch(console.error)`, so the tab rendered "No team members found" for every
+ * workspace, including ones with members — worse than not offering it. Both the
+ * call and the tab are gone; a real members endpoint is a feature, not a fix.
+ */
+type Tab = 'general' | 'audit';
 
 interface MeResponse {
   id: string;
@@ -15,14 +20,6 @@ interface MeResponse {
   active_workspace_name?: string | null;
   active_workspace_role?: string | null;
   workspaces?: Array<{ id: string; name: string; role: string }>;
-}
-
-interface Member {
-  id: string;
-  email: string;
-  name: string | null;
-  role: string;
-  createdAt: string;
 }
 
 interface AuditLog {
@@ -38,7 +35,6 @@ export function SettingsPanel() {
   const { call } = useApi();
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [me, setMe] = useState<MeResponse | null>(null);
-  const [members, setMembers] = useState<Member[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -53,13 +49,6 @@ export function SettingsPanel() {
   }, [call]);
 
   useEffect(() => {
-    if (activeTab === 'team' && currentWorkspaceId) {
-      setLoading(true);
-      call<{ items: Member[] }>(`/workspaces/${currentWorkspaceId}/members`)
-        .then((res) => setMembers(res.items))
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    }
     if (activeTab === 'audit' && currentWorkspaceId && canReadAuditLog) {
       setLoading(true);
       call<{ items: AuditLog[] }>(`/workspaces/${currentWorkspaceId}/audit-logs`)
@@ -75,10 +64,6 @@ export function SettingsPanel() {
         <TabsTrigger value="general" className="gap-1.5">
           <User className="h-3.5 w-3.5" />
           General
-        </TabsTrigger>
-        <TabsTrigger value="team" className="gap-1.5">
-          <Users className="h-3.5 w-3.5" />
-          Team
         </TabsTrigger>
         {canReadAuditLog && (
           <TabsTrigger value="audit" className="gap-1.5">
@@ -106,30 +91,6 @@ export function SettingsPanel() {
             </div>
           </CardContent>
         </Card>
-      </TabsContent>
-
-      <TabsContent value="team" className="mt-6">
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading members…</p>
-        ) : members.length === 0 ? (
-          <Card className="py-12 text-center">
-            <CardDescription className="text-muted-foreground">No team members found.</CardDescription>
-          </Card>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {members.map((member) => (
-              <Card key={member.id}>
-                <CardContent className="py-4 flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <span className="text-sm font-medium text-foreground">{member.name ?? member.email}</span>
-                    <span className="text-xs text-muted-foreground">{member.email}</span>
-                  </div>
-                  <Badge variant="secondary">{member.role}</Badge>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
       </TabsContent>
 
       <TabsContent value="audit" className="mt-6">

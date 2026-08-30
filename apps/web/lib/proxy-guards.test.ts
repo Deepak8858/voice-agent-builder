@@ -14,14 +14,17 @@ describe('isAllowedProxyPath', () => {
     expect(isAllowedProxyPath('/invites/accept')).toBe(true);
     expect(isAllowedProxyPath('/agents/generate')).toBe(true);
     expect(isAllowedProxyPath('/agents/generate/a1')).toBe(true);
-    expect(isAllowedProxyPath('/v1/workspaces/me/retention')).toBe(true);
+    // CS-40: the retention route lost its doubled `v1/` prefix, so it is covered
+    // by the plain `/workspaces` prefix and the old spelling is now refused.
+    expect(isAllowedProxyPath('/workspaces/me/retention')).toBe(true);
   });
 
   it('rejects internal-only API surfaces', () => {
     expect(isAllowedProxyPath('/admin/retention')).toBe(false);
     expect(isAllowedProxyPath('/internal/anything')).toBe(false);
-    // The doubled-v1 namespace also mounts erasure endpoints; only the
-    // retention path the web app actually calls may pass.
+    // Nothing under the doubled-v1 namespace is proxied any more: the erasure
+    // endpoints still mount there and the retention route no longer does.
+    expect(isAllowedProxyPath('/v1/workspaces/me/retention')).toBe(false);
     expect(isAllowedProxyPath('/v1/users/me/erasure')).toBe(false);
     expect(isAllowedProxyPath('/v1/workspaces/me/contacts/c1/erasure')).toBe(false);
   });

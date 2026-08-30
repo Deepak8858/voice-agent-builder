@@ -17,7 +17,7 @@ export default function RetentionSettingsPage() {
     e.preventDefault();
     setError('');
     try {
-      await call('/v1/workspaces/me/retention', {
+      await call('/workspaces/me/retention', {
         method: 'PATCH',
         body: JSON.stringify({ retentionDays }),
       });

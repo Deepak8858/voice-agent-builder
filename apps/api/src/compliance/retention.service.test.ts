@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditPayload } from '../audit/audit.service';
 import { RetentionService } from './retention.service';
@@ -6,14 +8,44 @@ interface FakeCall {
   id: string;
   createdAt: Date;
   expiresAt: Date | null;
-  workspaceId?: string;
+  workspaceId: string;
   retentionDays?: number;
+}
+
+/**
+ * A crm_fanout_log row. `contactData` is the reason this table matters to a
+ * retention sweep: it holds the contact's name, phone and email as they were
+ * handed to the CRM, and `call_id` is ON DELETE SET NULL, so deleting the call
+ * leaves the row behind with nothing left to find it by.
+ */
+interface FakeFanout {
+  id: string;
+  callId: string | null;
+  workspaceId: string | null;
+  contactData: { phone: string };
 }
 
 interface FakeWhere {
   expiresAt?: { lt: Date };
   workspaceId?: string;
   id?: { in: string[] };
+}
+
+interface FakeFanoutWhere {
+  callId?: { in: string[] };
+  workspaceId?: { in: string[] };
+}
+
+/**
+ * Same "honour only the clauses that are present" rule as `matching`: dropping
+ * either predicate from the service shows up as fan-out rows destroyed for calls
+ * that were never swept.
+ */
+function matchingFanout(rows: FakeFanout[], where: FakeFanoutWhere): FakeFanout[] {
+  return rows.filter(r =>
+    (where.callId === undefined || (r.callId !== null && where.callId.in.includes(r.callId)))
+    && (where.workspaceId === undefined
+      || (r.workspaceId !== null && where.workspaceId.in.includes(r.workspaceId))));
 }
 
 /**
@@ -30,6 +62,8 @@ function matching(calls: FakeCall[], where: FakeWhere): FakeCall[] {
 
 interface FakeState {
   calls: FakeCall[];
+  /** crm_fanout_log rows, which the sweep must remove before the calls go. */
+  fanoutLogs?: FakeFanout[];
   /** Last raw statement the service issued, so tests can pin its shape. */
   raw?: { sql: string; values: unknown[] };
   /** Last workspace row written. */
@@ -60,13 +94,21 @@ function makeService(state: FakeState) {
         const batch = matching(state.calls, where)
           .sort((a, b) => (orderBy.expiresAt === 'asc' ? a.expiresAt!.getTime() - b.expiresAt!.getTime() : 0))
           .slice(0, take)
-          .map(c => ({ id: c.id }));
+          .map(c => ({ id: c.id, workspaceId: c.workspaceId }));
         state.afterBatchSelected?.();
         return batch;
       }),
       deleteMany: vi.fn(async ({ where }: { where: FakeWhere }) => {
         const doomed = matching(state.calls, where);
         state.calls = state.calls.filter(c => !doomed.includes(c));
+        return { count: doomed.length };
+      }),
+    },
+    crmFanoutLog: {
+      deleteMany: vi.fn(async ({ where }: { where: FakeFanoutWhere }) => {
+        const rows = state.fanoutLogs ?? [];
+        const doomed = matchingFanout(rows, where);
+        state.fanoutLogs = rows.filter(r => !doomed.includes(r));
         return { count: doomed.length };
       }),
     },
@@ -188,6 +230,7 @@ describe('RetentionService', () => {
         cutoff: now.toISOString(),
         deleted: 2,
         remaining: 0,
+        crmFanoutLogsDeleted: 0,
         // Longest-expired first, matching the delete order.
         callIds: ['call-a1', 'call-a2'],
       });
@@ -231,6 +274,51 @@ describe('RetentionService', () => {
 
       expect(result).toEqual({ deleted: 0, remaining: 0 });
       expect(state.audits).toBeUndefined();
+    });
+
+    /**
+     * `crm_fanout_log.call_id` is ON DELETE SET NULL and `contact_data` holds the
+     * contact's name, phone and email as they were handed to the CRM. Without
+     * this delete the sweep purges the recording and transcript and leaves the
+     * contact's personal data behind forever, with no call id left to find it by.
+     */
+    it('destroys the CRM fan-out rows of the calls it purges, before the calls', async () => {
+      const state = twoWorkspaces();
+      state.fanoutLogs = [
+        { id: 'f-a1', callId: 'call-a1', workspaceId: 'ws-a', contactData: { phone: '+14155550111' } },
+        { id: 'f-a2', callId: 'call-a2', workspaceId: 'ws-a', contactData: { phone: '+14155550222' } },
+        { id: 'f-a3', callId: 'call-a3', workspaceId: 'ws-a', contactData: { phone: '+14155550333' } },
+      ];
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: { call: { deleteMany: ReturnType<typeof vi.fn> }; crmFanoutLog: { deleteMany: ReturnType<typeof vi.fn> } };
+      }).prisma;
+
+      const result = await service.sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(result.deleted).toBe(2);
+      // Only the unexpired call's row survives.
+      expect(state.fanoutLogs.map(r => r.id)).toEqual(['f-a3']);
+      // Before the calls: afterwards `call_id` is already NULL and the rows are
+      // unreachable by id, which is the whole defect.
+      expect(prisma.crmFanoutLog.deleteMany.mock.invocationCallOrder[0])
+        .toBeLessThan(prisma.call.deleteMany.mock.invocationCallOrder[0]);
+    });
+
+    it('leaves another workspace fan-out rows alone, and counts what it destroyed', async () => {
+      const state = twoWorkspaces();
+      state.fanoutLogs = [
+        { id: 'f-a1', callId: 'call-a1', workspaceId: 'ws-a', contactData: { phone: '+14155550111' } },
+        // Expired too, but in another tenant: a scoped run must not touch it.
+        { id: 'f-b1', callId: 'call-b1', workspaceId: 'ws-b', contactData: { phone: '+14155550999' } },
+      ];
+      await makeService(state).sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(state.fanoutLogs.map(r => r.id)).toEqual(['f-b1']);
+      expect(state.audits![0]!.payload.metadata!['crmFanoutLogsDeleted']).toBe(1);
+      // Counted, never listed: the ids would be a surviving pointer to the
+      // contact data the sweep just destroyed.
+      expect(JSON.stringify(state.audits![0]!.payload.metadata)).not.toContain('f-a1');
     });
 
     // Known, deliberately unfixed gap: `expires_at IS NULL` is never < now, so
@@ -346,6 +434,61 @@ describe('RetentionService', () => {
       expect(tx).toHaveBeenCalledTimes(1);
       expect(tx.mock.calls[0]![0]).toHaveLength(3);
       expect(state.audits).toHaveLength(1);
+    });
+  });
+
+  /**
+   * `sweepExpiredCalls` issues one bulk DELETE on `calls`. Everything the
+   * database cascades from it is destroyed with no code path able to object, so
+   * the disposition of each foreign key pointing at `calls` is a property of the
+   * schema, not of any function -- and it is pinned here, against the schema
+   * file, because nothing else in this suite can see it.
+   */
+  describe('what a purged call takes with it', () => {
+    const repoRoot = path.resolve(__dirname, '../../../..');
+    const schema = fs.readFileSync(path.join(repoRoot, 'apps/api/prisma/schema.prisma'), 'utf8');
+
+    function modelBody(name: string): string {
+      const match = new RegExp(`^model ${name} \\{([\\s\\S]*?)^\\}`, 'm').exec(schema);
+      expect(match, `model ${name} is missing from schema.prisma`).not.toBeNull();
+      return match![1]!;
+    }
+
+    // The money rows. Cascading these away meant the sweep destroyed the only
+    // evidence that a customer had been charged for the call at all, which is
+    // what forbade ever scheduling it.
+    it.each(['CallUsage', 'RuntimeUsageEvent'])(
+      '%s survives its call, keeping the charge and nulling the pointer',
+      (name) => {
+        const body = modelBody(name);
+        expect(body).toMatch(/callId\s+String\?\s/);
+        expect(body).toMatch(/call\s+Call\?\s+@relation\([^)]*onDelete: SetNull/);
+      },
+    );
+
+    // The content rows. Destroying these IS the sweep, so the fix above must not
+    // be copied onto them: SET NULL here would leave the transcript and the
+    // recording pointer in place, detached from any tenant.
+    it.each(['CallEvent', 'CallEvaluation'])('%s is still cascaded away', (name) => {
+      expect(modelBody(name)).toMatch(/call\s+Call\s+@relation\([^)]*onDelete: Cascade/);
+    });
+
+    // The Prisma schema does not change the database. Without the migration the
+    // production foreign key stays ON DELETE CASCADE and the P0 is still live.
+    it('ships the migration that relaxes both foreign keys in Postgres', () => {
+      const sql = fs.readFileSync(
+        path.join(
+          repoRoot,
+          'apps/api/prisma/migrations/20260830100000_billing_survives_call_deletion/migration.sql',
+        ),
+        'utf8',
+      );
+      for (const table of ['call_usages', 'runtime_usage_events']) {
+        expect(sql).toContain(`ALTER TABLE "${table}" ALTER COLUMN "call_id" DROP NOT NULL;`);
+        expect(sql).toMatch(
+          new RegExp(`ADD CONSTRAINT "${table}_call_id_fkey"[\\s\\S]*?ON DELETE SET NULL`),
+        );
+      }
     });
   });
 });

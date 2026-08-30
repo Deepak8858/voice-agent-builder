@@ -320,6 +320,12 @@ model KnowledgeSource {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
+  // Bumped by every embedding reset (reindex / backfill) in the same statement
+  // that nulls this source's vectors. The embeddings worker compares it before
+  // each batch write and stops when it moved, so a worker still draining the
+  // previous reset cannot write vectors computed from superseded content.
+  embeddingGeneration Int @default(0) @map("embedding_generation")
+
   workspace Workspace        @relation(fields: [workspaceId], references: [id])
   agent     Agent?           @relation(fields: [agentId], references: [id])
   creator   User?            @relation("KnowledgeSourceCreatedBy", fields: [createdBy], references: [id])
@@ -877,7 +883,12 @@ model CallUsage {
   id                         String    @id @default(uuid()) @db.Uuid
   organizationId             String    @map("organization_id") @db.Uuid
   workspaceId                String    @map("workspace_id") @db.Uuid
-  callId                     String    @unique @map("call_id") @db.Uuid
+  // Nullable + SET NULL, not Cascade: this row is the billing record for the
+  // call, and the retention sweep deletes calls. Cascading destroyed the
+  // evidence that a customer was charged at all, so the money outlives the
+  // recording it paid for. Postgres admits many NULLs in a unique index, so the
+  // one-usage-row-per-call guarantee is unaffected for live calls.
+  callId                     String?   @unique @map("call_id") @db.Uuid
   provider                   String
   providerCallId             String?   @map("provider_call_id")
   direction                  String
@@ -896,7 +907,7 @@ model CallUsage {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  call         Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+  call         Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, finalizationState])
   @@index([workspaceId, createdAt])
@@ -907,7 +918,11 @@ model CallUsage {
 model RuntimeUsageEvent {
   id               String    @id @default(uuid()) @db.Uuid
   organizationId   String    @map("organization_id") @db.Uuid
-  callId           String    @map("call_id") @db.Uuid
+  // Nullable + SET NULL for the same reason as CallUsage.callId: this row is the
+  // metered minute the customer was charged for, and the retention sweep deletes
+  // the call. The idempotency key is (organizationId, eventId), so replay
+  // protection does not depend on the call still existing.
+  callId           String?   @map("call_id") @db.Uuid
   eventId          String    @map("event_id")
   eventType        String    @map("event_type")
   occurredAt       DateTime  @map("occurred_at")
@@ -919,7 +934,7 @@ model RuntimeUsageEvent {
   createdAt        DateTime  @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  call         Call         @relation(fields: [callId], references: [id], onDelete: Cascade)
+  call         Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, eventId])
   @@index([callId, occurredAt])

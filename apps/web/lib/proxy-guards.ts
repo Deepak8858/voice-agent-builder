@@ -16,11 +16,11 @@ import { siteUrl } from '@/lib/site-url';
  * first segment, and paths containing a `.`/`..` segment or a backslash are
  * refused outright so an allowed prefix cannot be walked out of.
  *
- * `/v1/workspaces/me/retention` is the retention page's doubled-v1 path: the
- * proxy base already ends in `/api/v1` and the API deliberately mounts that
- * controller at `v1/workspaces`, so the upstream path is `/api/v1/v1/...`.
- * The entry must stay this specific — a broad `/v1` prefix would also expose
- * the erasure endpoints mounted under the same doubled namespace.
+ * The retention page used to need its own `/v1/workspaces/me/retention` entry
+ * because SettingsController doubled the global `api/v1` prefix. That prefix is
+ * gone (CS-40), so the route now sits under the existing `/workspaces` prefix
+ * and no `/v1` entry exists at all — the erasure endpoints still mounted under
+ * the doubled namespace stay unreachable from the browser, as before.
  *
  * proxy-guards.test.ts extracts every proxy call site in apps/web and asserts
  * both directions: every requested path matches a prefix here, and every
@@ -33,7 +33,6 @@ export const ALLOWED_PROXY_PREFIXES = [
   '/templates',
   '/invites/accept',
   '/agents/generate',
-  '/v1/workspaces/me/retention',
 ] as const;
 
 /**

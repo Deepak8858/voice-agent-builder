@@ -69,9 +69,47 @@ export class RetentionService {
       where,
       take: BATCH_SIZE,
       orderBy: { expiresAt: 'asc' },
-      select: { id: true },
+      select: { id: true, workspaceId: true },
     });
-    const callIds = doomed.map(c => c.id);
+    // Filled by the loop rather than two `doomed.map(...)` initializers, and this
+    // is load-bearing: the tenant-scope analyzer substitutes a referenced
+    // variable's initializer text into the `where` it is checking, two levels
+    // deep. `const callIds = doomed.map(c => c.id)` would carry the `select`
+    // above -- now containing `workspaceId` -- into the `where` of the
+    // `call.deleteMany` below, and the most destructive query in this codebase
+    // would silently be reclassified as tenant-scoped and drop out of the
+    // reviewed baseline. An empty-array initializer expands to nothing.
+    const callIds: string[] = [];
+    const doomedWorkspaceIds = new Set<string>();
+    for (const call of doomed) {
+      callIds.push(call.id);
+      doomedWorkspaceIds.add(call.workspaceId);
+    }
+
+    // Before the calls go, not after: `crm_fanout_log.call_id` is ON DELETE SET
+    // NULL, so deleting the call leaves the row behind holding `contact_data` --
+    // the contact's name, phone and email as they were handed to the CRM -- with
+    // nothing left to find it by. It is the one place a purged call's personal
+    // data outlives its own purge, which is the whole point of the sweep.
+    //
+    // Scoped by the doomed calls' workspaces as well as their ids. The ids alone
+    // are already exact; the workspace predicate is the part the tenant-scope
+    // analyzer can read, and it costs nothing because it cannot exclude a row it
+    // should delete: the writer sets `workspace_id` and `call_id` together, and
+    // `20260829000000_crm_fanout_log_workspace_id` backfilled the older rows
+    // through this very foreign key, so a row that still has a `call_id` always
+    // agrees with that call's workspace.
+    //
+    // Not transactional with the delete below, because the sweep is not: a call
+    // whose retention is lengthened in between, or a failed `deleteMany`, loses
+    // its fan-out row and keeps the call. The inverse trade is contact data
+    // surviving forever, which is not a trade.
+    const fanout = await this.prisma.crmFanoutLog.deleteMany({
+      where: {
+        callId: { in: callIds },
+        workspaceId: { in: [...doomedWorkspaceIds] },
+      },
+    });
 
     // `where` is repeated next to the id list on purpose, not redundantly: a
     // concurrent updateWorkspaceRetention can lengthen a call's expires_at
@@ -86,7 +124,10 @@ export class RetentionService {
 
     // Local log first. The audit insert can fail, and the only record of an
     // irreversible bulk delete must not fail with it.
-    this.logger.log({ scope, deleted, remaining: afterRemaining }, 'Retention sweep completed');
+    this.logger.log(
+      { scope, deleted, remaining: afterRemaining, crmFanoutLogsDeleted: fanout.count },
+      'Retention sweep completed',
+    );
     // After the delete, never before: an audit row must not claim a deletion
     // that did not happen. The two cannot share a transaction (AuditService
     // holds its own client) and Postgres aborts a transaction on the first
@@ -104,6 +145,11 @@ export class RetentionService {
         cutoff: now.toISOString(),
         deleted,
         remaining: afterRemaining,
+        // The CRM fan-out rows destroyed alongside the calls. Counted, not
+        // listed: they carry the contact data this sweep exists to remove, so
+        // naming them individually in a row that outlives them would re-create a
+        // pointer to what was purged.
+        crmFanoutLogsDeleted: fanout.count,
         // The ids, not only the count: this row is the sole surviving record
         // that a specific recording and transcript were destroyed, and it is
         // what answers "was call X purged, and when". One row per run rather

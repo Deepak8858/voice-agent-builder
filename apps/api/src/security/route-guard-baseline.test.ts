@@ -137,18 +137,13 @@ const ROLE_EXEMPT: Record<string, string> = {
     'not yet gated; content authoring (owner/admin/editor when gated)',
   'agent-gen/agent-gen.controller.ts:AgentGenController.remove':
     'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.create':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.upload':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.update':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.remove':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.reindex':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
-  'knowledge/knowledge.controller.ts:KnowledgeController.backfill':
-    'not yet gated; content authoring (owner/admin/editor when gated)',
+  // The six mutating `knowledge` routes were exempted here as "not yet gated".
+  // They are now bound: create/upload/update are
+  // `@RequiredRole('owner', 'admin', 'editor')` like their agents.controller.ts
+  // equivalents, and remove/reindex/backfill — which delete a source or null
+  // every embedding vector in the workspace — are
+  // `@RequiredRole(['owner', 'admin'], { fresh: true })`. Only
+  // `KnowledgeController.search` stays exempt above, as a read-shaped POST.
   'compliance/contacts.controller.ts:ContactsController.upsert':
     'not yet gated; consent/contact capture needs a tier decision before gating',
   'compliance/contacts.controller.ts:ContactsController.update':
@@ -180,7 +175,10 @@ describe('role coverage baseline', () => {
   });
 
   it('pins the exemption count and rejects stale entries', () => {
-    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(24);
+    // 24 → 18: the six mutating knowledge routes are gated now, so their
+    // exemptions are gone. The count only ever moves down without a written
+    // reason per new entry.
+    expect(Object.keys(ROLE_EXEMPT)).toHaveLength(18);
 
     // An exemption whose route was since gated or deleted must be removed, or
     // the list rots into cover for the next ungated route.

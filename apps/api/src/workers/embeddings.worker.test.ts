@@ -19,6 +19,7 @@ const mockQueueService = {
 const prisma = {
   $queryRaw: vi.fn(),
   $executeRaw: vi.fn(async () => 1),
+  knowledgeSource: { findMany: vi.fn(async () => [] as Array<{ id: string; embeddingGeneration: number }>) },
 };
 
 const embedder = {
@@ -43,7 +44,13 @@ function sqlOf(call: unknown[]): string {
 describe('EmbeddingsWorker', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // mockReset, not just clearAllMocks: a test that stops early leaves its
+    // unconsumed mockResolvedValueOnce queued, and it would then answer the next
+    // test's first query.
+    prisma.$queryRaw.mockReset();
+    prisma.knowledgeSource.findMany.mockReset();
     prisma.$executeRaw.mockResolvedValue(1);
+    prisma.knowledgeSource.findMany.mockResolvedValue([]);
   });
 
   it('scopes the batch query to the workspace and to null vectors only', async () => {
@@ -133,6 +140,65 @@ describe('EmbeddingsWorker', () => {
     expect(sqlOf(call)).toContain("COALESCE(metadata, '{}'::jsonb) || ?::jsonb");
     expect(sqlOf(call)).toContain('workspace_id = ?::uuid');
     expect(call).toContain(JSON.stringify({ embedder: 'test-embedder', dimensions: 3 }));
+  });
+
+  /**
+   * The reset flow is "null every vector, bump the source's generation, enqueue".
+   * A worker still draining the previous reset holds chunk text selected before
+   * the new one landed; writing its vectors would both store superseded content
+   * AND make the chunk non-null, so the newer job's `embedding IS NULL` filter
+   * skips it and the stale vector never gets corrected.
+   */
+  it('writes nothing and stops when the source moved to a newer generation', async () => {
+    // Bounded so a worker that ignored the generation finishes and fails the
+    // assertions below instead of looping on a result set that never shrinks.
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'a', content: 'one', source_id: SOURCE_ID }])
+      .mockResolvedValueOnce([]);
+    prisma.knowledgeSource.findMany.mockResolvedValue([{ id: SOURCE_ID, embeddingGeneration: 7 }]);
+
+    await build().processor(job({ workspaceId: WORKSPACE_ID, sourceId: SOURCE_ID, generation: 6 }));
+
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+    // Stopped, not looped: a second SELECT would return the same rows forever.
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('embeds normally when the source is still on the generation the job owns', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'a', content: 'one', source_id: SOURCE_ID }])
+      .mockResolvedValueOnce([]);
+    prisma.knowledgeSource.findMany.mockResolvedValue([{ id: SOURCE_ID, embeddingGeneration: 6 }]);
+
+    await build().processor(job({ workspaceId: WORKSPACE_ID, sourceId: SOURCE_ID, generation: 6 }));
+
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    // The generation re-read is tenant-scoped, like every other query here.
+    expect(prisma.knowledgeSource.findMany).toHaveBeenCalledWith({
+      where: { workspaceId: WORKSPACE_ID, id: { in: [SOURCE_ID] } },
+      select: { id: true, embeddingGeneration: true },
+    });
+  });
+
+  /**
+   * Jobs queued before the payload carried a generation are still in Redis, so
+   * they must run — and still stop if a reset lands while they drain. The
+   * generation seen on the first batch is the one such a job owns.
+   */
+  it('stops a generation-less job when the generation moves mid-drain', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'a', content: 'one', source_id: SOURCE_ID }])
+      .mockResolvedValueOnce([{ id: 'b', content: 'two', source_id: SOURCE_ID }])
+      .mockResolvedValueOnce([]);
+    prisma.knowledgeSource.findMany
+      .mockResolvedValueOnce([{ id: SOURCE_ID, embeddingGeneration: 3 }])
+      .mockResolvedValueOnce([{ id: SOURCE_ID, embeddingGeneration: 4 }]);
+
+    await build().processor(job({ workspaceId: WORKSPACE_ID, sourceId: SOURCE_ID }));
+
+    // First batch owned generation 3 and was written; the second stopped.
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
 
   it('stops instead of looping forever when a batch writes no embeddings', async () => {

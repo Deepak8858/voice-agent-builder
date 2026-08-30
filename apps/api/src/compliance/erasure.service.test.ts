@@ -30,11 +30,27 @@ const WORKSPACE_SCOPED_MODELS = [
   'agentTemplate',
   'agent',
   'membership',
+  // `crm_fanout_log` has no foreign key to `workspaces` at all -- only `call_id`
+  // and `agent_id`, both ON DELETE SET NULL -- so nothing cascades it and the
+  // contact name, phone and email in `contact_data` outlived every erasure.
+  'crmFanoutLog',
 ] as const;
 
 interface KnowledgeRow {
   fileUrl: string | null;
   metadata: unknown;
+}
+
+/**
+ * A `provider_cost_events` row. Rows written before the fix that stopped
+ * recording it still carry the tenant's phone number in `metadata.phoneNumber`,
+ * and the row itself is a financial record with an ON DELETE RESTRICT foreign key
+ * to the organization, so erasure has to strip the key rather than delete it.
+ */
+interface CostEventRow {
+  id: string;
+  organizationId: string;
+  metadata: Record<string, unknown>;
 }
 
 interface PhoneNumberRow {
@@ -62,6 +78,7 @@ describe('ErasureService', () => {
       status: string;
     } | null;
     phoneNumbers?: PhoneNumberRow[];
+    providerCostEvents?: CostEventRow[];
   }) {
     const deletedContacts: string[] = [];
     const deletedWorkspaces: string[] = [];
@@ -180,6 +197,31 @@ describe('ErasureService', () => {
       }
     }
 
+    // Stands in for the parameterised jsonb-key-removal UPDATE: applies the WHERE
+    // the service bound, so cross-tenant leakage shows up as another
+    // organization's rows mutated. Mirrors retention.service.test.ts.
+    const costEvents: CostEventRow[] = (opts.providerCostEvents ?? []).map((row) => ({
+      ...row,
+      metadata: { ...row.metadata },
+    }));
+    const rawStatements: Array<{ sql: string; values: unknown[] }> = [];
+    prisma.$executeRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.raw.join('?');
+      rawStatements.push({ sql, values });
+      // Honour the tenant predicate only if the statement actually has one, so
+      // dropping the WHERE shows up as another organization's rows redacted.
+      const scoped = /where\s+organization_id\s*=/i.test(sql);
+      const orgId = values[0] as string;
+      let count = 0;
+      for (const row of costEvents) {
+        if (scoped && row.organizationId !== orgId) continue;
+        if (!('phoneNumber' in row.metadata)) continue;
+        delete row.metadata.phoneNumber;
+        count += 1;
+      }
+      return count;
+    });
+
     // The transaction client is a separate object with its own `auditLog`, so the
     // mock can tell a `tx.auditLog.create` from a `this.prisma.auditLog.create`.
     // Only the former rolls back -- which is the whole point of the fix.
@@ -250,6 +292,8 @@ describe('ErasureService', () => {
       deletedFiles,
       deletedNumbers,
       deleteOrder,
+      costEvents,
+      rawStatements,
       auditLogs,
       // `tx.auditLog.create`, i.e. the in-transaction path.
       auditLogCreate: txAuditCreate,
@@ -364,6 +408,65 @@ describe('ErasureService', () => {
       ).toHaveBeenCalledWith({ where: { referrerWorkspaceId: 'ws-1' } });
       expect(deleteOrder.indexOf('referral')).toBeLessThan(deleteOrder.indexOf('workspace:ws-1'));
       expect(deletedOrganizations).toEqual(['org-1']);
+    });
+
+    /**
+     * `provider_cost_events` rows written before the fix that stopped recording it
+     * carry the tenant's phone number in `metadata.phoneNumber`. The rows
+     * themselves are financial records with an ON DELETE RESTRICT foreign key to
+     * the organization, so they stay and the personal datum is stripped out of
+     * them -- otherwise the number outlives every erasure.
+     */
+    it('strips the historical phone number from this organization cost events only', async () => {
+      const { service, costEvents, rawStatements } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        providerCostEvents: [
+          {
+            id: 'pce-1',
+            organizationId: 'org-1',
+            metadata: { phoneNumber: '+14155550123', phoneNumberId: 'pn-1', month: '2026-01' },
+          },
+          { id: 'pce-2', organizationId: 'org-2', metadata: { phoneNumber: '+14155559999' } },
+        ],
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(true);
+      // Only the key goes: the rental this row accounts for is still identifiable
+      // and still costs what it cost.
+      expect(costEvents[0]!.metadata).toEqual({ phoneNumberId: 'pn-1', month: '2026-01' });
+      // Another tenant's rows must be untouched.
+      expect(costEvents[1]!.metadata).toEqual({ phoneNumber: '+14155559999' });
+      // The tenant-scope analyzer cannot read raw SQL, so pin the organization
+      // predicate and the fact that the id is bound, never interpolated.
+      expect(rawStatements).toHaveLength(1);
+      expect(rawStatements[0]!.sql).toContain('WHERE organization_id = ?::uuid');
+      expect(rawStatements[0]!.values).toEqual(['org-1']);
+    });
+
+    it('strips the phone number even when the erasure transaction rolls back', async () => {
+      // The common case, not the rare one: `provider_cost_events` and
+      // `billing_ledger_entries` are ON DELETE RESTRICT, so the transaction fails
+      // for any organization that ever placed a call. A redaction inside it would
+      // roll back and leave the number in place on exactly those erasures.
+      const { service, costEvents, prisma } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        providerCostEvents: [
+          { id: 'pce-1', organizationId: 'org-1', metadata: { phoneNumber: '+14155550123' } },
+        ],
+      });
+      (prisma.organization as { delete: ReturnType<typeof vi.fn> }).delete = vi.fn(async () => {
+        throw new Error(
+          'update or delete on table "organizations" violates foreign key constraint '
+          + '"provider_cost_events_organization_id_fkey"',
+        );
+      });
+
+      await expect(service.eraseOrganization('org-1')).rejects.toThrow('violates foreign key');
+      expect(costEvents[0]!.metadata).toEqual({});
     });
 
     /**

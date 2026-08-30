@@ -202,6 +202,34 @@ export class ErasureService {
           select: { workspaceId: true, userId: true },
         });
 
+    // Historical `provider_cost_events` rows carry the tenant's phone number in
+    // `metadata.phoneNumber`. Today's writer records `phoneNumberId` instead, but
+    // the rows written before that change were never rewritten, and
+    // `provider_cost_events.organization_id` is ON DELETE RESTRICT: these are
+    // financial records that outlive the organization on purpose. So the row
+    // stays and only the personal datum is stripped.
+    //
+    // Before the transaction and outside it, deliberately. That transaction fails
+    // for any organization that ever placed a call -- on the RESTRICT constraint
+    // held by these very rows -- which is the common case, so a redaction inside
+    // it would roll back and leave the number in place on exactly the erasures
+    // that need it removed. The redaction over-claims nothing if the delete then
+    // fails: it destroys no financial figure, it is idempotent, and the erasure
+    // request that asked for it was real whether or not the delete succeeded.
+    //
+    // Removing a jsonb key is not expressible in Prisma, so this is one
+    // parameterised raw UPDATE, organization-scoped in its WHERE with the id
+    // bound, never interpolated. Precedent: the retention re-stamp in
+    // retention.service.ts. `jsonb_exists(...)` rather than the `?` operator so
+    // the statement carries no character that a placeholder-rewriting driver
+    // could mistake for a parameter.
+    const redactedCostEvents = await this.prisma.$executeRaw`
+      UPDATE provider_cost_events
+         SET metadata = metadata - 'phoneNumber'
+       WHERE organization_id = ${orgId}::uuid
+         AND jsonb_exists(metadata, 'phoneNumber')
+    `;
+
     await this.prisma.$transaction(async (tx) => {
       // Inside the transaction and before the deletes, for the reasons set out
       // in eraseContact: today every organization that has ever paid an invoice
@@ -257,7 +285,13 @@ export class ErasureService {
 
     const erasedAt = new Date().toISOString();
     this.logger.log(
-      { orgId, workspaces: workspaceIds.length, filesPurged: purged, filesFound: storedFiles.length },
+      {
+        orgId,
+        workspaces: workspaceIds.length,
+        filesPurged: purged,
+        filesFound: storedFiles.length,
+        redactedCostEvents,
+      },
       'GDPR organization erasure completed',
     );
     return { success: true, erasedAt };
@@ -325,6 +359,15 @@ export class ErasureService {
     await tx.complianceCheck.deleteMany(scope);
     await tx.knowledgeChunk.deleteMany(scope);
     await tx.knowledgeSource.deleteMany(scope);
+
+    // `crm_fanout_log` has no foreign key to `workspaces` at all -- only
+    // `call_id` and `agent_id`, both ON DELETE SET NULL -- so nothing cascades it
+    // and the deletes below would leave every row behind holding `contact_data`:
+    // the contact's name, phone and email as they were handed to the CRM. Its own
+    // `workspace_id` column (added by 20260829000000_crm_fanout_log_workspace_id)
+    // is what makes the rows reachable here, including the ones whose call or
+    // agent link was nulled years ago.
+    await tx.crmFanoutLog.deleteMany(scope);
 
     await tx.call.deleteMany(scope);
     await tx.consentRecord.deleteMany(scope);

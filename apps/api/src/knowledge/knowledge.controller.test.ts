@@ -1,4 +1,11 @@
+import 'reflect-metadata';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { Reflector } from '@nestjs/core';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { REQUIRED_ROLE_KEY } from '../common/decorators/required-role.decorator';
+import { ForbiddenError } from '../common/errors';
+import { RoleGuard } from '../common/role.guard';
+import { WorkspaceGuard } from '../common/workspace.guard';
 import { KnowledgeController } from './knowledge.controller';
 import { EMBEDDINGS_QUEUE } from '../workers/embeddings.worker';
 
@@ -17,6 +24,106 @@ function build(): KnowledgeController {
 }
 
 const user = { id: 'user-1' } as never;
+
+const proto = KnowledgeController.prototype;
+
+/**
+ * WorkspaceGuard alone proves membership, not seat, so until these bindings
+ * landed a viewer could null every vector in the workspace through backfill.
+ * The bindings are pinned by metadata on the real class: a RoleGuard the test
+ * constructs by hand says nothing about whether Nest runs it on this route.
+ */
+describe('KnowledgeController authorization', () => {
+  it('is protected by the workspace guard', () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, KnowledgeController) ?? []).toContain(
+      WorkspaceGuard,
+    );
+  });
+
+  it.each([
+    { handler: 'create', roles: ['owner', 'admin', 'editor'], fresh: false },
+    { handler: 'upload', roles: ['owner', 'admin', 'editor'], fresh: false },
+    { handler: 'update', roles: ['owner', 'admin', 'editor'], fresh: false },
+    { handler: 'remove', roles: ['owner', 'admin'], fresh: true },
+    { handler: 'reindex', roles: ['owner', 'admin'], fresh: true },
+    { handler: 'backfill', roles: ['owner', 'admin'], fresh: true },
+  ] as const)('binds RoleGuard on $handler with roles $roles', ({ handler, roles, fresh }) => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, proto[handler])).toEqual([RoleGuard]);
+    expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, proto[handler])).toEqual({ roles, fresh });
+  });
+
+  it.each(['list', 'get', 'search', 'listForAgent'] as const)(
+    'leaves %s open to every member',
+    (handler) => {
+      expect(Reflect.getMetadata(GUARDS_METADATA, proto[handler])).toBeUndefined();
+      expect(Reflect.getMetadata(REQUIRED_ROLE_KEY, proto[handler])).toBeUndefined();
+    },
+  );
+});
+
+/**
+ * Runs the real RoleGuard against the real metadata on each handler, so a
+ * widened role set fails here even though the binding assertions above still
+ * pass — see crm-routing.controller.test.ts for the pattern.
+ */
+function guardContext(handler: keyof KnowledgeController, membershipRole: string | null) {
+  const prisma = {
+    membership: {
+      findUnique: vi.fn(async () => (membershipRole ? { role: membershipRole } : null)),
+    },
+  };
+  const cache = { get: vi.fn(async () => null), set: vi.fn(async () => undefined) };
+  const req = {
+    params: { workspaceId: WORKSPACE_ID },
+    user: {
+      id: 'user-1',
+      active_workspace_id: WORKSPACE_ID,
+      active_workspace_role: membershipRole,
+    },
+  };
+  const ctx = {
+    switchToHttp: () => ({ getRequest: () => req }),
+    getHandler: () => proto[handler],
+    getClass: () => KnowledgeController,
+  };
+  return { guard: new RoleGuard(prisma as never, cache as never, new Reflector()), ctx };
+}
+
+describe('KnowledgeController RoleGuard enforcement', () => {
+  const destructive = ['remove', 'reindex', 'backfill'] as const;
+
+  it.each(destructive)('%s denies a viewer', async (handler) => {
+    const { guard, ctx } = guardContext(handler, 'viewer');
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  // The tier split is the point: an editor may author content but must not
+  // destroy embeddings.
+  it.each(destructive)('%s denies an editor', async (handler) => {
+    const { guard, ctx } = guardContext(handler, 'editor');
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it.each(destructive)('%s allows an admin', async (handler) => {
+    const { guard, ctx } = guardContext(handler, 'admin');
+
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+
+  it.each(['create', 'upload', 'update'] as const)('%s denies a viewer', async (handler) => {
+    const { guard, ctx } = guardContext(handler, 'viewer');
+
+    await expect(guard.canActivate(ctx as never)).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it.each(['create', 'upload', 'update'] as const)('%s allows an editor', async (handler) => {
+    const { guard, ctx } = guardContext(handler, 'editor');
+
+    await expect(guard.canActivate(ctx as never)).resolves.toBe(true);
+  });
+});
 
 describe('KnowledgeController embedding jobs', () => {
   beforeEach(() => vi.clearAllMocks());

@@ -7,7 +7,6 @@ name: Deploy production to AWS EC2
 #   DEPOT_WEB_PROJECT_ID         Depot project in us-east-1 for the web image
 #   DEPOT_LIVEKIT_PROJECT_ID     Depot project in us-east-1 for the LiveKit image
 #   NEXT_PUBLIC_API_URL, NEXT_PUBLIC_APP_URL, NEXT_PUBLIC_SUPABASE_URL
-#   NEXT_PUBLIC_BILLING_MODE      Public billing behavior baked into the web image
 # Optional repository variables:
 #   NEXT_PUBLIC_POSTHOG_ENABLED, NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN,
 #   NEXT_PUBLIC_POSTHOG_HOST      Browser analytics, inlined into the web bundle
@@ -93,7 +92,6 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: |
@@ -104,7 +102,7 @@ jobs:
             DEPOT_WEB_PROJECT_ID \
             DEPOT_LIVEKIT_PROJECT_ID AWS_EC2_HOST AWS_EC2_USER AWS_EC2_SSH_KEY \
             AWS_EC2_KNOWN_HOSTS NEXT_PUBLIC_API_URL NEXT_PUBLIC_APP_URL \
-            NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_BILLING_MODE \
+            NEXT_PUBLIC_SUPABASE_URL \
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY NEXT_PUBLIC_SUPABASE_ANON_KEY; do
             if [ -z "${!name:-}" ]; then missing+=("$name"); fi
           done
@@ -182,7 +180,6 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_BILLING_MODE: ${{ vars.NEXT_PUBLIC_BILLING_MODE }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           # Repository variables, not secrets: the project token is a public,
@@ -197,7 +194,7 @@ jobs:
           # values, then use the digest in the immutable image tag.
           config_digest="$(printf '%s\0' \
             "$NEXT_PUBLIC_API_URL" "$NEXT_PUBLIC_APP_URL" \
-            "$NEXT_PUBLIC_SUPABASE_URL" "$NEXT_PUBLIC_BILLING_MODE" \
+            "$NEXT_PUBLIC_SUPABASE_URL" \
             "$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" "$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
             "$NEXT_PUBLIC_POSTHOG_ENABLED" "$NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN" \
             "$NEXT_PUBLIC_POSTHOG_HOST" production "$DEPLOY_SHA" \
@@ -215,7 +212,6 @@ jobs:
               --build-arg "NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL" \
               --build-arg "NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL" \
               --build-arg "NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL" \
-              --build-arg "NEXT_PUBLIC_BILLING_MODE=$NEXT_PUBLIC_BILLING_MODE" \
               --build-arg "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=$NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" \
               --build-arg "NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY" \
               --build-arg "NEXT_PUBLIC_POSTHOG_ENABLED=$NEXT_PUBLIC_POSTHOG_ENABLED" \
@@ -474,8 +470,8 @@ jobs:
           # config schema, `apps/web/lib/billing-mode.ts` was deleted, and billing
           # is live whenever the STRIPE_* variables above are complete. Setting it
           # on the host is harmless; requiring it only implied a control that does
-          # not exist. NEXT_PUBLIC_BILLING_MODE is unrelated — it is a GitHub
-          # Actions variable baked into the web image, not a host env value.
+          # not exist. Its NEXT_PUBLIC_ twin was a required web build arg for the
+          # same non-existent control and has now been dropped everywhere too.
           # The API also refuses to boot on a test-mode key, but that failure would
           # land after the old container is already stopped. Catch it pre-flight.
           case "$(env_value STRIPE_SECRET_KEY)" in
