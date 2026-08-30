@@ -1,16 +1,20 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { Request } from 'express';
-import type { SessionUser } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
-import { ForbiddenError } from '../common/errors';
+import { RequiredRole } from '../common/decorators/required-role.decorator';
+import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 
 // Audit logs are the record of who did what inside a tenant, so an unguarded
 // read here is a disclosure of another tenant's activity. The `workspaceId`
 // predicate below is only meaningful once membership in the URL's workspace has
 // been verified.
-@UseGuards(WorkspaceGuard)
+//
+// Membership is not enough. Every row names its actor by email, and
+// who-did-what inside a tenant is administrative data — same bar as
+// billing (`billing.controller.ts:38-43`).
+@UseGuards(WorkspaceGuard, RoleGuard)
+@RequiredRole('owner', 'admin')
 @Controller('workspaces/:workspaceId/audit-logs')
 export class AuditController {
   constructor(private readonly prisma: PrismaService) {}
@@ -18,18 +22,10 @@ export class AuditController {
   @Get()
   async list(
     @Param('workspaceId') workspaceId: string,
-    @Req() req: Request,
     @Query('cursor') cursor: string | undefined,
     @Query('limit') limit: string | undefined,
     @Query('action') action: string | undefined,
   ) {
-    // Membership is not enough. Every row names its actor by email, and
-    // who-did-what inside a tenant is administrative data — same bar as
-    // billing (`billing.controller.ts:38-43`).
-    const role = (req as Request & { user?: SessionUser }).user?.active_workspace_role;
-    if (role !== 'owner' && role !== 'admin') {
-      throw new ForbiddenError('Only workspace owners and admins can read the audit log.');
-    }
     // `parseInt` gives NaN on junk and a negative on `?limit=-2`; a negative
     // `take` makes Prisma page backwards, which returned one row for a
     // zero-length page and then crashed on `items[-1].id`.

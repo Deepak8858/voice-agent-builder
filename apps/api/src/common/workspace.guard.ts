@@ -12,10 +12,19 @@ import type { SessionUser } from '@voiceforge/shared';
 
 const WORKSPACE_ACCESS_TTL_SECONDS = 300;
 
-interface CachedWorkspaceAccess {
+export interface CachedWorkspaceAccess {
   id: string;
   name: string;
   role: SessionUser['active_workspace_role'];
+}
+
+/**
+ * Exported so RoleGuard reads the same cache entry this guard writes. Two
+ * separately-formatted keys for the same membership fact would let the two
+ * guards disagree about a caller's role for up to a full TTL window.
+ */
+export function workspaceAccessCacheKey(workspaceId: string, userId: string): string {
+  return `workspace:access:${workspaceId}:${userId}`;
 }
 
 /**
@@ -56,7 +65,7 @@ export class WorkspaceGuard implements CanActivate {
       throw new ForbiddenError('This route is not workspace-scoped.');
     }
 
-    const accessKey = this.workspaceAccessKey(workspaceId, user.id);
+    const accessKey = workspaceAccessCacheKey(workspaceId, user.id);
     const cached = await this.cache.get<CachedWorkspaceAccess>(accessKey);
     if (cached) {
       req.user = {
@@ -118,10 +127,6 @@ export class WorkspaceGuard implements CanActivate {
       ctx.getHandler(),
       ctx.getClass(),
     ]) === true;
-  }
-
-  private workspaceAccessKey(workspaceId: string, userId: string): string {
-    return `workspace:access:${workspaceId}:${userId}`;
   }
 }
 

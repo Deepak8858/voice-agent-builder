@@ -20,7 +20,9 @@ import { SupabaseAuthService } from './supabase-auth.service';
  *
  * Public routes (health, metrics, provider webhooks) opt out via @Public().
  * Routes that our own runtime calls and a user must never reach, even through
- * the frontend proxy, declare @InternalOnly().
+ * the frontend proxy, declare @InternalOnly(). The key with no bearer token
+ * is accepted only on those routes; on every other route it is a half
+ * credential and is refused.
  */
 @Injectable()
 export class InternalAuthGuard implements CanActivate {
@@ -51,14 +53,25 @@ export class InternalAuthGuard implements CanActivate {
       throw new UnauthorizedError();
     }
 
+    const internalOnly = this.isInternalOnly(ctx);
     const authorization = headerString(req, 'authorization');
     if (!authorization) {
       if (headerString(req, 'x-user-id') || headerString(req, 'x-app-user-id')) {
         this.logger.warn('Rejecting user context without a Supabase bearer token.');
         throw new UnauthorizedError();
       }
-      // No user context: allow internal platform calls, but workspace routes
-      // will still fail in WorkspaceGuard because req.user is absent.
+      // The internal key alone is not a universal credential. A bare-key
+      // request may proceed ONLY to an @InternalOnly() route, because those
+      // are the only routes our runtime calls without acting as a user.
+      // Everywhere else it is refused here: relying on WorkspaceGuard to stop
+      // it was wrong, since @SessionScoped() routes return true there before
+      // req.user is ever read, leaving them reachable with no user at all.
+      if (!internalOnly) {
+        this.logger.warn(
+          `Rejecting key-only request without a user session to ${req.method} ${req.path}.`,
+        );
+        throw new UnauthorizedError();
+      }
       return true;
     }
 
@@ -67,7 +80,7 @@ export class InternalAuthGuard implements CanActivate {
     // browser asks for. A request carrying user context is by definition not
     // our runtime, so it is refused before the handler can act on a body it
     // would otherwise trust as machine-issued.
-    if (this.isInternalOnly(ctx)) {
+    if (internalOnly) {
       this.logger.warn(
         `Rejecting user-authenticated request to internal-only route ${req.method} ${req.path}.`,
       );

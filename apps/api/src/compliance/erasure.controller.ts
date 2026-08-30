@@ -3,6 +3,7 @@ import type { SessionUser } from '@voiceforge/shared';
 import { ErasureService } from './erasure.service';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
 import { CurrentUser } from '../common/current-user.decorator';
+import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { ForbiddenError, UnauthorizedError } from '../common/errors';
 
 @Controller()
@@ -35,7 +36,11 @@ export class ErasureController {
     return this.erasure.eraseContact(this.requireWorkspace(user), contactId);
   }
 
-  // Organization deletion: internal admin only
+  // Organization deletion: internal admin only. The proxy attaches the
+  // internal key to any path a signed-in user requests, so authentication
+  // alone would let a tenant user delete an arbitrary organization by id.
+  // @InternalOnly() refuses any request that carries user context.
+  @InternalOnly()
   @Delete('admin/orgs/:orgId')
   @UseGuards(InternalAuthGuard)
   async eraseOrganization(@Param('orgId') orgId: string) {

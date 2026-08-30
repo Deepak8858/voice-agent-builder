@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Param, Query, Body, UseGuards } from '@nestjs/common';
 import { AuditExportService } from './audit-export.service';
 import { InternalAuthGuard } from '../auth/internal-auth.guard';
+import { InternalOnly } from '../common/decorators/internal-only.decorator';
 import { OrganizationGuard } from '../common/organization.guard';
 
 @Controller()
@@ -35,7 +36,13 @@ export class AuditExportController {
     });
   }
 
-  // Internal admin full export
+  // Internal admin full export. `@UseGuards(InternalAuthGuard)` only
+  // authenticates — the guard is global anyway — and the Next.js proxy
+  // attaches the internal key to any path a signed-in user requests, so
+  // without @InternalOnly() any tenant user could export every tenant's
+  // audit log. @InternalOnly() refuses user-carrying requests, leaving the
+  // route reachable only by an operator holding the bare key.
+  @InternalOnly()
   @Get('admin/audit/export')
   @UseGuards(InternalAuthGuard)
   async adminExport(
@@ -54,7 +61,9 @@ export class AuditExportController {
     });
   }
 
-  // Regulator signed URL
+  // Regulator signed URL. Same reasoning as the export above: operator-only,
+  // so user context must be refused, not just authenticated.
+  @InternalOnly()
   @Post('admin/audit/report')
   @UseGuards(InternalAuthGuard)
   async generateReport(
