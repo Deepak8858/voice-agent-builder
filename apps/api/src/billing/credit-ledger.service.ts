@@ -541,6 +541,22 @@ export class CreditLedgerService {
           }),
         },
       });
+      await this.auditMoneyMove(tx, {
+        organizationId: input.organizationId,
+        action: 'billing.credit_granted',
+        resourceType: 'billing_credit_bucket',
+        resourceId: bucket.id,
+        metadata: {
+          initiator: input.actorId ?? 'stripe_webhook',
+          source: 'subscription_invoice',
+          invoiceId: input.invoiceId,
+          stripeEventId: input.stripeEventId ?? null,
+          includedMinutes: input.includedMinutes,
+          seconds,
+          periodEnd: input.periodEnd.toISOString(),
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+        },
+      });
       await this.markStripeEventProcessed(tx, input.stripeEventId);
 
       return this.buildCreditBalance(tx, updatedBalance);
@@ -629,6 +645,22 @@ export class CreditLedgerService {
             forfeitedSeconds: bucket.remainingSeconds,
           })),
         }),
+      },
+    });
+    // The balance, not a bucket: the sweep retires however many included buckets
+    // it finds, and the one thing every one of them changed is this projection.
+    await this.auditMoneyMove(tx, {
+      organizationId,
+      action: 'billing.credit_superseded',
+      resourceType: 'organization_credit_balance',
+      resourceId: organizationId,
+      metadata: {
+        initiator: 'stripe_webhook',
+        source: 'subscription_invoice',
+        invoiceId,
+        forfeitedSeconds,
+        supersededBucketIds: outgoing.map((bucket) => bucket.id),
+        balanceAfterSeconds: this.totalOwned(updatedBalance),
       },
     });
   }
@@ -808,6 +840,22 @@ export class CreditLedgerService {
           }),
         },
       });
+      await this.auditMoneyMove(tx, {
+        organizationId: input.organizationId,
+        action: 'billing.credit_granted',
+        resourceType: 'billing_credit_bucket',
+        resourceId: bucket.id,
+        metadata: {
+          initiator: input.actorId ?? 'free_credit_worker',
+          source: 'free_monthly_allowance',
+          monthKey: input.monthKey,
+          sourceId,
+          seconds,
+          periodStart: periodStart.toISOString(),
+          periodEnd: periodEnd.toISOString(),
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
+        },
+      });
 
       return this.buildCreditBalance(tx, updatedBalance);
     });
@@ -961,6 +1009,23 @@ export class CreditLedgerService {
             expiresAt: expiresAt.toISOString(),
             priority: 20,
           }),
+        },
+      });
+      await this.auditMoneyMove(tx, {
+        organizationId: input.organizationId,
+        action: 'billing.credit_granted',
+        resourceType: 'billing_credit_bucket',
+        resourceId: bucket.id,
+        metadata: {
+          initiator: input.actorId ?? 'stripe_webhook',
+          source: 'stripe_checkout',
+          checkoutSessionId: input.checkoutSessionId,
+          paymentIntentId: input.paymentIntentId ?? null,
+          stripeEventId: input.stripeEventId ?? null,
+          seconds: PURCHASED_PACK_SECONDS,
+          purchasedAt: input.purchasedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
         },
       });
       await this.markStripeEventProcessed(tx, input.stripeEventId);
@@ -1433,6 +1498,26 @@ export class CreditLedgerService {
             }),
           },
         });
+        // The balance is what this branch changed: the credit stays, the
+        // organization is blocked until a human resolves it.
+        await this.auditMoneyMove(tx, {
+          organizationId: input.organizationId,
+          action: 'billing.credit_reversal_blocked',
+          resourceType: 'organization_credit_balance',
+          resourceId: input.organizationId,
+          metadata: {
+            initiator: 'stripe_webhook',
+            sourceType: input.sourceType,
+            sourceId: input.checkoutSessionId,
+            refundId: input.refundId,
+            bucketId: bucket.id,
+            originalSeconds: bucket.originalSeconds,
+            unusedSecondsPreserved: unusedSeconds,
+            consumedOrReservedSeconds,
+            reviewReason,
+            balanceAfterSeconds: this.totalOwned(blockedBalance),
+          },
+        });
         return this.buildCreditBalance(tx, blockedBalance);
       }
 
@@ -1475,6 +1560,22 @@ export class CreditLedgerService {
             consumedOrReservedSeconds,
             reviewReason: null,
           }),
+        },
+      });
+      await this.auditMoneyMove(tx, {
+        organizationId: input.organizationId,
+        action: 'billing.credit_reversed',
+        resourceType: 'billing_credit_bucket',
+        resourceId: bucket.id,
+        metadata: {
+          initiator: 'stripe_webhook',
+          sourceType: input.sourceType,
+          sourceId: input.checkoutSessionId,
+          refundId: input.refundId,
+          originalSeconds: bucket.originalSeconds,
+          secondsRemoved: unusedSeconds,
+          consumedOrReservedSeconds,
+          balanceAfterSeconds: this.totalOwned(updatedBalance),
         },
       });
 
@@ -2383,6 +2484,51 @@ export class CreditLedgerService {
 
   private jsonMetadata(value: Record<string, Prisma.JsonValue>): Prisma.InputJsonValue {
     return value as Prisma.InputJsonValue;
+  }
+
+  /**
+   * One audit row per money move, written as a statement of the caller's own
+   * transaction.
+   *
+   * Deliberately `tx.auditLog.create` rather than `AuditService.log`: that
+   * service holds its own client and commits independently, so a rolled-back
+   * grant would still leave a row claiming credit was granted — and a grant that
+   * committed before the process died would leave none at all, which is how the
+   * webhook's post-grant audit writes can already lose the trail. Here the claim
+   * and the money commit together or neither does (precedent:
+   * retention.service.ts).
+   *
+   * `actorUserId` is always null: every path into this ledger is a Stripe
+   * webhook or the free-credit worker, and `audit_logs.actor_user_id` has an FK
+   * to `users`, so a Stripe or system identifier cannot be stored there. The
+   * initiator is named in `metadata.initiator` instead (precedent:
+   * scripts/flag-farmed-organizations.ts).
+   *
+   * Only called on paths that actually moved money. An idempotent replay returns
+   * before reaching one of these, on purpose: a row per Stripe redelivery buries
+   * the single row that records the grant.
+   */
+  private async auditMoneyMove(
+    tx: TransactionClient,
+    row: {
+      organizationId: string;
+      action: string;
+      resourceType: 'billing_credit_bucket' | 'organization_credit_balance';
+      resourceId: string;
+      metadata: Record<string, Prisma.JsonValue>;
+    },
+  ): Promise<void> {
+    await tx.auditLog.create({
+      data: {
+        organizationId: row.organizationId,
+        workspaceId: null,
+        actorUserId: null,
+        action: row.action,
+        resourceType: row.resourceType,
+        resourceId: row.resourceId,
+        metadata: this.jsonMetadata(row.metadata),
+      },
+    });
   }
 }
 

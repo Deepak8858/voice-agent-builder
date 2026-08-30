@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { WhiteLabelService } from './white-label.service';
 import { WhiteLabelSettingsSchema, UpdateWhiteLabelSettingsDtoSchema } from '@voiceforge/shared/schemas/white-label';
@@ -846,6 +847,108 @@ describe('WhiteLabelService invites', () => {
     await expect(svc.acceptInvite('user-2', 'tok-y')).rejects.toBeInstanceOf(
       ValidationError,
     );
+  });
+
+  // S-007: `client_invites.token` used to hold the bearer token itself, so one
+  // read of the table handed out every pending seat on every client workspace.
+  it('stores only the digest of the token it returns once', async () => {
+    const state = freshState();
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator, entitlements);
+    const inv = await svc.createInvite(AGENCY, ACTOR, {
+      email: 'client@example.com',
+      role: 'admin',
+      expires_in_days: 7,
+    });
+    expect(state.invites[0].token).not.toBe(inv.token);
+    expect(state.invites[0].token).toBe(
+      createHash('sha256').update(inv.token).digest('hex'),
+    );
+  });
+
+  it('accepts the plaintext token handed back by createInvite', async () => {
+    const state = freshState();
+    state.workspaces.push({
+      id: 'child',
+      organizationId: ORG,
+      parentWorkspaceId: AGENCY,
+      type: 'client',
+      name: 'C',
+      slug: 'c',
+      status: 'active',
+      createdAt: new Date(),
+    });
+    state.users.push({ id: 'user-2', email: 'a@b.com' });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator, entitlements);
+    const inv = await svc.createInvite(AGENCY, ACTOR, {
+      email: 'a@b.com',
+      role: 'admin',
+      client_workspace_id: 'child',
+      expires_in_days: 7,
+    });
+    const accepted = await svc.acceptInvite('user-2', inv.token);
+    expect(accepted.status).toBe('accepted');
+  });
+
+  // The stored digest is not a second copy of the credential: replaying the
+  // value a database read yields must not accept the invite.
+  it('refuses the stored digest presented as the token', async () => {
+    const state = freshState();
+    state.workspaces.push({
+      id: 'child',
+      organizationId: ORG,
+      parentWorkspaceId: AGENCY,
+      type: 'client',
+      name: 'C',
+      slug: 'c',
+      status: 'active',
+      createdAt: new Date(),
+    });
+    state.users.push({ id: 'user-2', email: 'a@b.com' });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator, entitlements);
+    await svc.createInvite(AGENCY, ACTOR, {
+      email: 'a@b.com',
+      role: 'admin',
+      client_workspace_id: 'child',
+      expires_in_days: 7,
+    });
+    await expect(svc.acceptInvite('user-2', state.invites[0].token)).rejects.toBeInstanceOf(
+      AppError,
+    );
+    expect(state.invites[0].status).toBe('pending');
+  });
+
+  // Invites outstanding when hashing shipped still hold the plaintext.
+  it('accepts a pre-hash plaintext row and upgrades it to a digest', async () => {
+    const state = freshState();
+    state.workspaces.push({
+      id: 'child',
+      organizationId: ORG,
+      parentWorkspaceId: AGENCY,
+      type: 'client',
+      name: 'C',
+      slug: 'c',
+      status: 'active',
+      createdAt: new Date(),
+    });
+    const legacy = 'a'.repeat(48);
+    state.invites.push({
+      id: 'inv1',
+      agencyWorkspaceId: AGENCY,
+      clientWorkspaceId: 'child',
+      email: 'a@b.com',
+      role: 'admin',
+      token: legacy,
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 86400_000),
+      acceptedAt: null,
+      invitedBy: ACTOR,
+      createdAt: new Date(),
+    });
+    state.users.push({ id: 'user-2', email: 'a@b.com' });
+    const svc = new WhiteLabelService(makePrisma(state) as never, audit, invalidator, entitlements);
+    const r = await svc.acceptInvite('user-2', legacy);
+    expect(r.status).toBe('accepted');
+    expect(state.invites[0].token).toBe(createHash('sha256').update(legacy).digest('hex'));
   });
 
   it('rejects when user email does not match invite email', async () => {

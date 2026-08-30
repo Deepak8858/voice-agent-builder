@@ -25,6 +25,19 @@ interface FakeFanout {
   contactData: { phone: string };
 }
 
+/**
+ * A telephony_webhook_events row. `rawPayloadJson` is why it matters here: for a
+ * Twilio delivery it is the provider's own form body, `From` and `To` included.
+ * `call_id` is a bare column with no foreign key, so nothing cascades the row and
+ * nothing nulls the pointer either -- it just stays.
+ */
+interface FakeWebhookEvent {
+  id: string;
+  callId: string | null;
+  workspaceId: string | null;
+  rawPayloadJson: { From: string };
+}
+
 interface FakeWhere {
   expiresAt?: { lt: Date };
   workspaceId?: string;
@@ -34,6 +47,29 @@ interface FakeWhere {
 interface FakeFanoutWhere {
   callId?: { in: string[] };
   workspaceId?: { in: string[] };
+}
+
+interface FakeWebhookEventWhere {
+  callId?: { in: string[] };
+  OR?: Array<{ workspaceId: { in: string[] } | null }>;
+}
+
+/**
+ * Same "honour only the clauses that are present" rule again, and the OR is
+ * honoured branch by branch: dropping the NULL branch shows up as a purged
+ * call's payload surviving, and dropping the whole OR shows up as another
+ * tenant's row destroyed by a scoped run.
+ */
+function matchingWebhookEvent(
+  rows: FakeWebhookEvent[],
+  where: FakeWebhookEventWhere,
+): FakeWebhookEvent[] {
+  return rows.filter(r =>
+    (where.callId === undefined || (r.callId !== null && where.callId.in.includes(r.callId)))
+    && (where.OR === undefined
+      || where.OR.some(branch => (branch.workspaceId === null
+        ? r.workspaceId === null
+        : r.workspaceId !== null && branch.workspaceId.in.includes(r.workspaceId)))));
 }
 
 /**
@@ -64,6 +100,8 @@ interface FakeState {
   calls: FakeCall[];
   /** crm_fanout_log rows, which the sweep must remove before the calls go. */
   fanoutLogs?: FakeFanout[];
+  /** telephony_webhook_events rows, likewise: no foreign key cleans them up. */
+  webhookEvents?: FakeWebhookEvent[];
   /** Last raw statement the service issued, so tests can pin its shape. */
   raw?: { sql: string; values: unknown[] };
   /** Last workspace row written. */
@@ -109,6 +147,14 @@ function makeService(state: FakeState) {
         const rows = state.fanoutLogs ?? [];
         const doomed = matchingFanout(rows, where);
         state.fanoutLogs = rows.filter(r => !doomed.includes(r));
+        return { count: doomed.length };
+      }),
+    },
+    telephonyWebhookEvent: {
+      deleteMany: vi.fn(async ({ where }: { where: FakeWebhookEventWhere }) => {
+        const rows = state.webhookEvents ?? [];
+        const doomed = matchingWebhookEvent(rows, where);
+        state.webhookEvents = rows.filter(r => !doomed.includes(r));
         return { count: doomed.length };
       }),
     },
@@ -231,6 +277,7 @@ describe('RetentionService', () => {
         deleted: 2,
         remaining: 0,
         crmFanoutLogsDeleted: 0,
+        telephonyWebhookEventsDeleted: 0,
         // Longest-expired first, matching the delete order.
         callIds: ['call-a1', 'call-a2'],
       });
@@ -319,6 +366,71 @@ describe('RetentionService', () => {
       // Counted, never listed: the ids would be a surviving pointer to the
       // contact data the sweep just destroyed.
       expect(JSON.stringify(state.audits![0]!.payload.metadata)).not.toContain('f-a1');
+    });
+
+    /**
+     * `telephony_webhook_events.call_id` has no foreign key at all, so the sweep
+     * destroys the recording and the transcript and leaves the provider's own
+     * webhook body behind -- `From` and `To`, i.e. the caller's number -- past the
+     * retention period the sweep exists to enforce.
+     */
+    it('destroys the telephony webhook payloads of the calls it purges, before the calls', async () => {
+      const state = twoWorkspaces();
+      state.webhookEvents = [
+        { id: 'w-a1', callId: 'call-a1', workspaceId: 'ws-a', rawPayloadJson: { From: '+14155550111' } },
+        { id: 'w-a2', callId: 'call-a2', workspaceId: 'ws-a', rawPayloadJson: { From: '+14155550222' } },
+        { id: 'w-a3', callId: 'call-a3', workspaceId: 'ws-a', rawPayloadJson: { From: '+14155550333' } },
+      ];
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: {
+          call: { deleteMany: ReturnType<typeof vi.fn> };
+          telephonyWebhookEvent: { deleteMany: ReturnType<typeof vi.fn> };
+        };
+      }).prisma;
+
+      const result = await service.sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(result.deleted).toBe(2);
+      // Only the unexpired call's payload survives.
+      expect(state.webhookEvents.map(r => r.id)).toEqual(['w-a3']);
+      // Before the calls: there is no foreign key here, so after the delete the
+      // call ids these rows name point at nothing and no later pass can tell
+      // which of them belonged to a purged call.
+      expect(prisma.telephonyWebhookEvent.deleteMany.mock.invocationCallOrder[0])
+        .toBeLessThan(prisma.call.deleteMany.mock.invocationCallOrder[0]);
+      expect(state.audits![0]!.payload.metadata!['telephonyWebhookEventsDeleted']).toBe(2);
+    });
+
+    it('leaves another workspace webhook payloads alone, and never lists the ones it destroyed', async () => {
+      const state = twoWorkspaces();
+      state.webhookEvents = [
+        { id: 'w-a1', callId: 'call-a1', workspaceId: 'ws-a', rawPayloadJson: { From: '+14155550111' } },
+        // Expired too, but another tenant's: a scoped run must not touch it.
+        { id: 'w-b1', callId: 'call-b1', workspaceId: 'ws-b', rawPayloadJson: { From: '+14155550999' } },
+      ];
+      await makeService(state).sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(state.webhookEvents.map(r => r.id)).toEqual(['w-b1']);
+      expect(state.audits![0]!.payload.metadata!['telephonyWebhookEventsDeleted']).toBe(1);
+      // Counted, never listed, for the same reason as the fan-out rows.
+      expect(JSON.stringify(state.audits![0]!.payload.metadata)).not.toContain('w-a1');
+    });
+
+    /**
+     * `recordWebhookEvent` takes `workspace_id` from the phone number the event
+     * arrived on and `call_id` from a call resolved separately, so a LiveKit event
+     * whose phone number could not be resolved has a call id and a NULL workspace.
+     * A workspace-only predicate would skip exactly those rows.
+     */
+    it('purges a payload whose workspace column is null but whose call is being purged', async () => {
+      const state = twoWorkspaces();
+      state.webhookEvents = [
+        { id: 'w-orphan', callId: 'call-a1', workspaceId: null, rawPayloadJson: { From: '+14155550111' } },
+      ];
+      await makeService(state).sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(state.webhookEvents).toEqual([]);
     });
 
     // Known, deliberately unfixed gap: `expires_at IS NULL` is never < now, so

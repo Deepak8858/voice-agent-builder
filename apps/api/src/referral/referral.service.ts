@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
@@ -13,6 +13,9 @@ import { AppError } from '../common/errors';
  */
 export const REFERRAL_BONUS_MINUTES = 100;
 export const REFERRAL_EXPIRY_DAYS = 30;
+
+/** Length of a token from `generateToken`; anything else is not a legacy value. */
+const TOKEN_LENGTH = 24;
 
 /**
  * Referral *tracking*. This service issues invite tokens and records
@@ -45,6 +48,10 @@ export class ReferralService {
    * No credit is granted here even once one exists: an invite is not a
    * conversion, and crediting on creation would let one user mint an unbounded
    * bonus by calling this in a loop.
+   *
+   * The returned value is the only time the plaintext token exists outside the
+   * caller's hands: the row keeps its digest, so reading `referrals` yields
+   * nothing that can be redeemed.
    */
   async createReferral(args: {
     actorUserId: string;
@@ -64,7 +71,7 @@ export class ReferralService {
         referrerUserId: args.actorUserId,
         referrerWorkspaceId: args.referrerWorkspaceId,
         referrerOrganizationId: workspace.organizationId,
-        inviteToken,
+        inviteToken: this.tokenDigest(inviteToken),
         status: 'pending',
         bonusMinutes: REFERRAL_BONUS_MINUTES,
       },
@@ -93,9 +100,7 @@ export class ReferralService {
     referredUserId: string;
     referredWorkspaceId: string;
   }): Promise<{ status: string; bonusMinutes: number }> {
-    const referral = await this.prisma.referral.findUnique({
-      where: { inviteToken: args.inviteToken },
-    });
+    const referral = await this.findByInviteToken(args.inviteToken);
 
     if (!referral) throw new AppError('NOT_FOUND', 'Invalid referral token', 404);
     if (referral.status !== 'pending') throw new AppError('INVALID_STATUS', `Referral already ${referral.status}`, 400);
@@ -178,12 +183,45 @@ export class ReferralService {
       id: r.id,
       status: r.status,
       bonusMinutes: r.bonusMinutes,
-      inviteToken: r.inviteToken,
+      // Show-once: `createReferral` is the only place the plaintext exists, and
+      // the stored value is now a digest — echoing it back would hand out a
+      // string that redeems nothing while looking like the invite link.
+      inviteToken: '',
       createdAt: r.createdAt.toISOString(),
     }));
   }
 
   // -------------------------------------------------------------------------
+
+  private tokenDigest(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
+   * Referrals created before tokens were hashed hold the plaintext in the same
+   * column, so a digest miss retries the presented value and re-stamps the row:
+   * links already shared keep converting, with no backfill.
+   *
+   * The length guard is what stops the fallback from re-opening the hole: a
+   * stored digest is a 64-char string, so a digest read out of the database
+   * would otherwise match its own row and convert the referral.
+   *
+   * Delete the fallback once no pre-hash referral can remain — they expire
+   * REFERRAL_EXPIRY_DAYS after creation.
+   */
+  private async findByInviteToken(inviteToken: string) {
+    const hashed = this.tokenDigest(inviteToken);
+    const byDigest = await this.prisma.referral.findUnique({ where: { inviteToken: hashed } });
+    if (byDigest) return byDigest;
+    if (inviteToken.length !== TOKEN_LENGTH) return null;
+    const legacy = await this.prisma.referral.findUnique({ where: { inviteToken } });
+    if (!legacy) return null;
+    await this.prisma.referral.update({
+      where: { id: legacy.id },
+      data: { inviteToken: hashed },
+    });
+    return legacy;
+  }
 
   /**
    * The token is the whole authorization for `acceptReferral`, so it is drawn

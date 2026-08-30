@@ -292,6 +292,23 @@ const EnvSchema = z
     VOICE_WEBHOOK_SECRET: z.string().optional(),
     WORKERS_ENABLED: BooleanEnvSchema.default(false),
 
+    /**
+     * Kill switch for the retention sweep — the only automation in this product
+     * that permanently destroys customer data (calls, their recordings and
+     * transcripts, the CRM fan-out rows holding contact data and the webhook
+     * payloads holding caller numbers).
+     *
+     * Default false, and a second flag on top of `WORKERS_ENABLED` deliberately,
+     * against the "no second feature flag" argument in digest.worker.ts: that
+     * argument is about a *dormant feature* nobody notices, and the failure mode
+     * here is the inverse. `20260830120000_backfill_call_expires_at` stamps every
+     * historical call with its workspace's declared retention, so the first run
+     * after this is switched on deletes everything already past that period. The
+     * blast radius is an operator decision, not a side effect of enabling
+     * background work in general.
+     */
+    RETENTION_SWEEP_ENABLED: BooleanEnvSchema.default(false),
+
     // PostHog product analytics. Entirely optional: when the flag is off or the
     // project token is absent the API never constructs a client. Host validation
     // happens only when configuration is resolved so disabled analytics can never

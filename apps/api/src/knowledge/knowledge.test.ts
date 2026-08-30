@@ -107,7 +107,9 @@ describe('KnowledgeService.clearEmbeddings', () => {
     const prisma = {
       // Typed with the tagged-template signature so `mock.calls[0]` destructures
       // without a cast.
-      $executeRaw: vi.fn(async (_strings: string[], ..._values: unknown[]) => 4),
+      $queryRaw: vi.fn(async (_strings: string[], ..._values: unknown[]) => [
+        { id: 'source-9', generation: 1, cleared: 4 },
+      ]),
       knowledgeChunk: { updateMany: vi.fn() },
     };
     const service = new KnowledgeService(
@@ -123,10 +125,13 @@ describe('KnowledgeService.clearEmbeddings', () => {
   it('clears a whole workspace with raw SQL, never updateMany', async () => {
     const { prisma, service } = createService();
 
-    await expect(service.clearEmbeddings('ws-1')).resolves.toBe(4);
+    await expect(service.clearEmbeddings('ws-1')).resolves.toEqual({
+      cleared: 4,
+      generations: { 'source-9': 1 },
+    });
 
     expect(prisma.knowledgeChunk.updateMany).not.toHaveBeenCalled();
-    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    const [strings, ...values] = prisma.$queryRaw.mock.calls[0];
     expect(strings.join('?')).toContain('SET embedding = NULL');
     expect(values).toEqual(['ws-1']);
   });
@@ -138,7 +143,7 @@ describe('KnowledgeService.clearEmbeddings', () => {
 
     // Both predicates, in this order. Source id alone would let a caller who
     // guessed an id wipe another tenant's vectors.
-    const [strings, ...values] = prisma.$executeRaw.mock.calls[0];
+    const [strings, ...values] = prisma.$queryRaw.mock.calls[0];
     const sql = strings.join('?');
     expect(sql).toContain('workspace_id =');
     expect(sql).toContain('source_id =');

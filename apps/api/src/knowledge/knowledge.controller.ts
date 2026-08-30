@@ -184,7 +184,7 @@ export class KnowledgeController {
     // Clearing is not optional. The worker selects only chunks whose vector IS
     // NULL, and ingest always writes a vector, so without this the job would
     // select zero rows and reindex would return 202 having done nothing.
-    const cleared = await this.knowledge.clearEmbeddings(workspaceId, sourceId);
+    const { cleared, generations } = await this.knowledge.clearEmbeddings(workspaceId, sourceId);
     // The audit write is in `finally` so a failed enqueue still leaves a record:
     // the vectors are already gone at this point, which is the state an operator
     // most needs to be able to trace back to an actor.
@@ -193,6 +193,11 @@ export class KnowledgeController {
       await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
         workspaceId,
         sourceId,
+        // The generation the clear above just produced. Without it the worker
+        // adopts whatever it reads on its first batch, which may already be a
+        // later reset's number — and it would then keep writing vectors that
+        // reset superseded.
+        generation: generations[sourceId],
       });
       enqueued = true;
     } finally {
@@ -225,11 +230,15 @@ export class KnowledgeController {
   ): Promise<{ jobId: string; message: string }> {
     // Mark all existing embeddings as null so the worker — which only embeds
     // null vectors — picks up the whole workspace.
-    const cleared = await this.knowledge.clearEmbeddings(workspaceId);
+    const { cleared, generations } = await this.knowledge.clearEmbeddings(workspaceId);
     let enqueued = false;
     try {
+      // The per-source map lets the worker refuse each source it no longer
+      // owns immediately, instead of discovering it one embed pass late via
+      // its snapshot fallback.
       await this.queue.enqueue(EMBEDDINGS_QUEUE, 'generate-embeddings', {
         workspaceId,
+        generations,
       });
       enqueued = true;
     } finally {

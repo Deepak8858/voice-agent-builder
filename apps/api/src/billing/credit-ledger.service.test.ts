@@ -54,6 +54,18 @@ type LedgerRecord = {
   createdAt: Date;
 };
 
+type AuditRecord = {
+  id: string;
+  organizationId: string | null;
+  workspaceId: string | null;
+  actorUserId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  metadata: unknown;
+  createdAt: Date;
+};
+
 type NumberMutation = number | { increment?: number; decrement?: number };
 
 type TransactionEvent = {
@@ -73,6 +85,7 @@ type TransactionContext = {
     balance: BalanceRecord | null;
     buckets: BucketRecord[];
     ledger: LedgerRecord[];
+    auditLogs: AuditRecord[];
   } | null;
   /**
    * Stripe event rows this transaction's client changed, and what they were
@@ -93,6 +106,7 @@ class MemoryPrisma {
   readonly balances = new Map<string, BalanceRecord>();
   readonly buckets: BucketRecord[] = [];
   readonly ledger: LedgerRecord[] = [];
+  readonly auditLogs: AuditRecord[] = [];
   readonly workspaces = new Map<string, { id: string; organizationId: string }>();
   readonly calls = new Map<string, { id: string; organizationId: string; workspaceId: string }>();
   readonly stripeEvents = new Map<string, StripeEventRecord>();
@@ -363,6 +377,20 @@ class MemoryPrisma {
     },
   };
 
+  readonly auditLog = {
+    create: async (input: {
+      data: Omit<AuditRecord, 'id' | 'createdAt'>;
+    }): Promise<AuditRecord> => {
+      const created: AuditRecord = {
+        ...input.data,
+        id: this.nextId('audit'),
+        createdAt: new Date(),
+      };
+      this.auditLogs.push(created);
+      return structuredClone(created);
+    },
+  };
+
   readonly stripeEvent = {
     updateMany: async (input: {
       where: { stripeEventId: string; processedAt: null };
@@ -521,6 +549,16 @@ class MemoryPrisma {
       },
     };
 
+    // Lock-asserted like every other write, which is what proves the audit row
+    // is a statement of the money's own transaction rather than a later commit
+    // on another client: a row written outside it could not pass this.
+    const auditLog: MemoryPrisma['auditLog'] = {
+      create: async (input) => {
+        this.assertLockedAccess(context, 'audit.create', input.data.organizationId ?? undefined);
+        return this.auditLog.create(input);
+      },
+    };
+
     const stripeEvent: MemoryPrisma['stripeEvent'] = {
       updateMany: async (input) => {
         // No organization on a Stripe event row, so it cannot assert a lock the
@@ -555,6 +593,7 @@ class MemoryPrisma {
       organizationCreditBalance,
       billingCreditBucket,
       billingLedgerEntry,
+      auditLog,
       stripeEvent,
       workspace,
       call,
@@ -687,6 +726,7 @@ class MemoryPrisma {
       balance: this.balances.get(organizationId) ?? null,
       buckets: this.buckets.filter((bucket) => bucket.organizationId === organizationId),
       ledger: this.ledger.filter((entry) => entry.organizationId === organizationId),
+      auditLogs: this.auditLogs.filter((row) => row.organizationId === organizationId),
     });
   }
 
@@ -715,6 +755,13 @@ class MemoryPrisma {
       this.ledger.length,
       ...otherLedger,
       ...structuredClone(context.snapshot.ledger),
+    );
+    const otherAuditLogs = this.auditLogs.filter((row) => row.organizationId !== organizationId);
+    this.auditLogs.splice(
+      0,
+      this.auditLogs.length,
+      ...otherAuditLogs,
+      ...structuredClone(context.snapshot.auditLogs),
     );
   }
 
@@ -833,6 +880,9 @@ function snapshotCreditState(prisma: MemoryPrisma) {
     ),
     buckets: [...prisma.buckets].sort((left, right) => left.id.localeCompare(right.id)),
     ledger: [...prisma.ledger].sort((left, right) => left.id.localeCompare(right.id)),
+    // Included so every existing "a replay changes nothing" assertion also holds
+    // the audit trail still: one row per money move, not one per redelivery.
+    auditLogs: [...prisma.auditLogs].sort((left, right) => left.id.localeCompare(right.id)),
   });
 }
 
@@ -1060,6 +1110,128 @@ describe('CreditLedgerService', () => {
     ).rejects.toThrow('connection reset while projecting balance');
     expect(prisma.stripeEvents.get('evt_rollback')?.processedAt).toBeNull();
     expect(prisma.buckets).toHaveLength(0);
+    // No credit was granted, so no row may claim it was. That the row is a
+    // statement of *this* transaction is pinned by the ordering assertion in
+    // 'audits a subscription grant inside the grant transaction'; the double
+    // rolls its audit table back by organization either way.
+    expect(prisma.auditLogs).toHaveLength(0);
+  });
+
+  /**
+   * Money used to move here with no who/why record beyond the ledger row itself.
+   * The audit row has to be a statement of the grant's own transaction: written
+   * through AuditService it would commit independently, so a rolled-back grant
+   * could leave a row claiming credit was granted and a crash right after the
+   * commit could leave none at all.
+   */
+  it('audits a subscription grant inside the grant transaction', async () => {
+    const { prisma, service } = makeService();
+    prisma.seedStripeEvent('evt_audited');
+    const input = {
+      organizationId: 'org-audit',
+      invoiceId: 'in_audited',
+      includedMinutes: 10,
+      periodEnd: PERIOD_END,
+      stripeEventId: 'evt_audited',
+    };
+
+    await service.grantSubscriptionCredits(input);
+
+    expect(prisma.auditLogs).toMatchObject([
+      {
+        organizationId: 'org-audit',
+        workspaceId: null,
+        // FK to users: a Stripe identifier cannot be stored here, so the
+        // initiator is named in the metadata instead.
+        actorUserId: null,
+        action: 'billing.credit_granted',
+        resourceType: 'billing_credit_bucket',
+        resourceId: prisma.buckets[0]!.id,
+        metadata: {
+          initiator: 'stripe_webhook',
+          source: 'subscription_invoice',
+          invoiceId: 'in_audited',
+          stripeEventId: 'evt_audited',
+          includedMinutes: 10,
+          seconds: 600,
+          balanceAfterSeconds: 600,
+        },
+      },
+    ]);
+    const audited = prisma.transactionEvents.findIndex((event) => event.action === 'audit.create');
+    const ledgerWrite = prisma.transactionEvents.findIndex(
+      (event) => event.action === 'ledger.create',
+    );
+    expect(ledgerWrite).toBeGreaterThanOrEqual(0);
+    expect(audited).toBeGreaterThan(ledgerWrite);
+    expect(prisma.transactionEvents[audited]!.transactionId).toBe(
+      prisma.transactionEvents[ledgerWrite]!.transactionId,
+    );
+  });
+
+  /**
+   * An audit row per Stripe redelivery buries the one row that records the grant,
+   * so the idempotent paths that return without granting must write none: the
+   * ledger-key replay, and the pack whose payment intent already bought one.
+   */
+  it('writes no audit row for a replayed grant', async () => {
+    const { prisma, service } = makeService();
+    await service.grantPurchasedCredits({
+      organizationId: 'org-audit-replay',
+      checkoutSessionId: 'cs_audit_first',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_audit_once',
+    });
+    expect(prisma.auditLogs).toHaveLength(1);
+
+    await service.grantPurchasedCredits({
+      organizationId: 'org-audit-replay',
+      checkoutSessionId: 'cs_audit_first',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_audit_once',
+    });
+    await service.grantPurchasedCredits({
+      organizationId: 'org-audit-replay',
+      checkoutSessionId: 'cs_audit_second',
+      purchasedAt: NOW,
+      paymentIntentId: 'pi_audit_once',
+    });
+
+    expect(prisma.auditLogs).toHaveLength(1);
+    expect(prisma.auditLogs[0]).toMatchObject({
+      action: 'billing.credit_granted',
+      metadata: {
+        source: 'stripe_checkout',
+        checkoutSessionId: 'cs_audit_first',
+        paymentIntentId: 'pi_audit_once',
+        seconds: 6_000,
+      },
+    });
+  });
+
+  /** The system-initiated grant: no Stripe event, no user, worker in metadata. */
+  it('audits the free monthly grant as a system initiator', async () => {
+    const { prisma, service } = makeService();
+
+    await service.grantFreeMonthlyCredits({
+      organizationId: 'org-audit-free',
+      monthKey: CURRENT_MONTH_KEY,
+    });
+
+    expect(prisma.auditLogs).toMatchObject([
+      {
+        actorUserId: null,
+        action: 'billing.credit_granted',
+        resourceId: prisma.buckets[0]!.id,
+        metadata: {
+          initiator: 'free_credit_worker',
+          source: 'free_monthly_allowance',
+          monthKey: CURRENT_MONTH_KEY,
+          sourceId: 'free_grant_org-audit-free_2026-07',
+          seconds: 600,
+        },
+      },
+    ]);
   });
 
   /**
@@ -1102,6 +1274,21 @@ describe('CreditLedgerService', () => {
       },
       { idempotencyKey: 'stripe:invoice:in_growth:included', seconds: 60_000 },
     ]);
+    // The forfeiture is a money move of its own, so it carries its own row.
+    expect(prisma.auditLogs.map((row) => row.action)).toEqual([
+      'billing.credit_granted',
+      'billing.credit_superseded',
+      'billing.credit_granted',
+    ]);
+    expect(prisma.auditLogs[1]).toMatchObject({
+      resourceType: 'organization_credit_balance',
+      resourceId: 'org-upgrade',
+      metadata: {
+        invoiceId: 'in_growth',
+        forfeitedSeconds: 12_000,
+        supersededBucketIds: [prisma.buckets[0]!.id],
+      },
+    });
   });
 
   /** Only the unused remainder is forfeited; spent seconds are already gone. */
@@ -1826,6 +2013,21 @@ describe('CreditLedgerService', () => {
       balanceAfterSeconds: 0,
       idempotencyKey: 'stripe:refund:re_unused:topup_reversal',
     });
+    expect(prisma.auditLogs.at(-1)).toMatchObject({
+      actorUserId: null,
+      action: 'billing.credit_reversed',
+      resourceType: 'billing_credit_bucket',
+      resourceId: prisma.buckets[0]!.id,
+      metadata: {
+        initiator: 'stripe_webhook',
+        sourceType: 'purchased',
+        sourceId: 'cs_refund',
+        refundId: 're_unused',
+        secondsRemoved: 6_000,
+        consumedOrReservedSeconds: 0,
+        balanceAfterSeconds: 0,
+      },
+    });
   });
 
   it('blocks the organization for manual review when refunded credit was consumed', async () => {
@@ -1866,6 +2068,20 @@ describe('CreditLedgerService', () => {
     expect(prisma.buckets[0]).toMatchObject({
       remainingSeconds: 5_940,
       status: 'active',
+    });
+    // Blocking an organization is the money decision here, and it is the one a
+    // human has to answer for later, so it is recorded as its own action.
+    expect(prisma.auditLogs.at(-1)).toMatchObject({
+      action: 'billing.credit_reversal_blocked',
+      resourceType: 'organization_credit_balance',
+      resourceId: 'org-review',
+      metadata: {
+        refundId: 're_consumed',
+        bucketId: prisma.buckets[0]!.id,
+        unusedSecondsPreserved: 5_940,
+        consumedOrReservedSeconds: 60,
+        reviewReason: reversed.reviewReason,
+      },
     });
   });
 

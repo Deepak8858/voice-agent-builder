@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import type {
   ClientInvite,
   ClientUsage,
@@ -26,6 +26,18 @@ const DOMAIN_REGEX = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0
 function isValidDomain(domain: string): boolean {
   return DOMAIN_REGEX.test(domain) && domain.length <= 253;
 }
+
+/**
+ * An invite token is a bearer credential: whoever holds it gets the seat. Stored
+ * in the clear, a single read of `client_invites` handed out every pending seat,
+ * so the column holds the digest and the plaintext is shown once at creation.
+ */
+function tokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/** sha256-hex shape — see the fallback in `findInviteByToken`. */
+const DIGEST_SHAPE = /^[0-9a-f]{64}$/;
 
 function isValidLogoUrl(url: string): boolean {
   try {
@@ -332,7 +344,7 @@ export class WhiteLabelService {
         // (CreateClientInviteDtoSchema); this fallback covers callers that
         // construct the DTO without the pipe.
         role: dto.role ?? 'viewer',
-        token,
+        token: tokenDigest(token),
         status: 'pending',
         expiresAt,
         invitedBy: actorUserId,
@@ -349,8 +361,9 @@ export class WhiteLabelService {
     });
 
     // The raw token appears in exactly one response: this one, for the
-    // creator to hand to the invitee. Every other path returns it redacted.
-    return { ...this.toInviteDto(row), token: row.token };
+    // creator to hand to the invitee. It is never persisted or re-read — the
+    // stored `row.token` is only its digest.
+    return { ...this.toInviteDto(row), token };
   }
 
   async revokeInvite(
@@ -391,7 +404,7 @@ export class WhiteLabelService {
     actorUserId: string,
     token: string,
   ): Promise<ClientInvite> {
-    const invite = await this.prisma.clientInvite.findUnique({ where: { token } });
+    const invite = await this.findInviteByToken(token);
     if (!invite) {
       throw new AppError('NOT_FOUND', 'Invite token not found.', HttpStatus.NOT_FOUND);
     }
@@ -454,6 +467,32 @@ export class WhiteLabelService {
   }
 
   // --- helpers --------------------------------------------------------
+
+  /**
+   * Invites issued before tokens were hashed hold the plaintext in the same
+   * column, so a digest miss retries the presented value as-is and re-stamps
+   * that row — outstanding invites keep working without a backfill.
+   *
+   * The shape guard is what stops the fallback from becoming the hole it
+   * closes: a stored digest is itself a 64-hex string, so presenting a digest
+   * read out of the database would otherwise match a hashed row exactly.
+   * Tokens minted here are 48 hex chars, so no genuine legacy row is missed.
+   *
+   * Delete the fallback (and this comment) once no pre-hash invite can remain:
+   * every invite expires within `expires_in_days` of creation, 14 by default.
+   */
+  private async findInviteByToken(token: string) {
+    const hashed = tokenDigest(token);
+    const byDigest = await this.prisma.clientInvite.findUnique({ where: { token: hashed } });
+    if (byDigest) return byDigest;
+    if (DIGEST_SHAPE.test(token)) return null;
+    const legacy = await this.prisma.clientInvite.findUnique({ where: { token } });
+    if (!legacy) return null;
+    return this.prisma.clientInvite.update({
+      where: { id: legacy.id },
+      data: { token: hashed },
+    });
+  }
 
   private toSettingsDto(row: {
     workspaceId: string;
