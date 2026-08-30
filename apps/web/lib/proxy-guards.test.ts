@@ -27,10 +27,13 @@ describe('isAllowedProxyPath', () => {
   it('rejects internal-only API surfaces', () => {
     expect(isAllowedProxyPath('/admin/retention')).toBe(false);
     expect(isAllowedProxyPath('/internal/anything')).toBe(false);
-    // Nothing under the doubled-v1 namespace is proxied: only
-    // `GET v1/orgs/:orgId/audit-logs` still mounts there, and the retention and
-    // erasure routes no longer do, so their old spellings are refused too.
+    // Nothing under the doubled-v1 namespace is proxied, and nothing mounts
+    // there any more either — the org audit-log route was the last one and has
+    // dropped the doubled segment. Both spellings are pinned: the old one so a
+    // revived doubled path is not silently proxied, and the NEW one because
+    // dropping the prefix must not have handed the browser an org-admin export.
     expect(isAllowedProxyPath('/v1/orgs/o1/audit-logs')).toBe(false);
+    expect(isAllowedProxyPath('/orgs/o1/audit-logs')).toBe(false);
     expect(isAllowedProxyPath('/v1/workspaces/me/retention')).toBe(false);
     expect(isAllowedProxyPath('/v1/users/me/erasure')).toBe(false);
     // The API serves this at its new path; the browser is not given `/users`.

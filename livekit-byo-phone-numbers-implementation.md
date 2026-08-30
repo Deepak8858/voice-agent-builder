@@ -192,20 +192,22 @@ LIVEKIT_URL=wss://your-livekit-project.livekit.cloud
 LIVEKIT_API_KEY=replace-with-livekit-api-key
 LIVEKIT_API_SECRET=replace-with-livekit-api-secret
 LIVEKIT_SIP_HOST=replace-with-livekit-sip-host
-LIVEKIT_WEBHOOK_SECRET=replace-with-livekit-webhook-secret
 LIVEKIT_ROOM_PREFIX=call
 LIVEKIT_AGENT_NAME_PREFIX=voiceforge-agent
 
 # Optional platform-level Twilio fallback config
 TWILIO_WEBHOOK_AUTH_TOKEN=
 TWILIO_STATUS_CALLBACK_URL=
-
-# Optional Vobiz fallback config
-VOBIZ_WEBHOOK_SECRET=
 ```
 
 Rules:
 
+- No global webhook secret is configured. As built, LiveKit webhooks are verified
+  by the SDK's `WebhookReceiver` against `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET`,
+  and Vobiz/Twilio webhooks against a per-phone-number secret stored encrypted on
+  the number. This block used to list `LIVEKIT_WEBHOOK_SECRET` and
+  `VOBIZ_WEBHOOK_SECRET`; they were added to `.env.example` and the env schema and
+  never read by anything, so do not reintroduce them.
 - `LIVEKIT_API_SECRET` must only be used on the backend.
 - Provider secrets must only be used on the backend.
 - Frontend may receive short-lived LiveKit room tokens only.

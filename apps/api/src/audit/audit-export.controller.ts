@@ -37,8 +37,14 @@ export class AuditExportController {
    * against the same derivation (any workspace of the org, plus outright
    * ownership). `@RequiredRole` + `RoleGuard` cannot be used here: RoleGuard
    * refuses every `:orgId` route by design.
+   *
+   * The path used to start `v1/`, which `main.ts`'s global `api/v1` prefix
+   * already supplies, so it served at `/api/v1/v1/orgs/...` (CS-40). This was
+   * the last handler still carrying the doubled segment. Reachability does not
+   * change: `/orgs` is not in ALLOWED_PROXY_PREFIXES, so the browser proxy
+   * refuses both spellings and only a direct API caller reaches it either way.
    */
-  @Get('v1/orgs/:orgId/audit-logs')
+  @Get('orgs/:orgId/audit-logs')
   @UseGuards(OrganizationGuard)
   @RequiredOrgRole('owner', 'admin')
   async getOrgAuditLogs(

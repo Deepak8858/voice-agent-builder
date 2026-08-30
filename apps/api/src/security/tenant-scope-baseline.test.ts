@@ -115,6 +115,16 @@ const REVIEWED_BASELINE: readonly string[] = [
   'compliance/retention.service.ts:call.findMany',
   'compliance/retention.service.ts:call.findUnique',
   'compliance/retention.service.ts:call.update',
+  // sweepStaleTelephonyWebhookEvents() picks the oldest batch of webhook rows
+  // past the age ceiling. It is the same kind of query as call.findMany above and
+  // unscoped for the same reason -- a retention sweep observes every tenant -- but
+  // here there is a second reason it cannot carry a tenant predicate: the rows it
+  // exists for are precisely the ones with a NULL workspace_id, written when the
+  // delivery had no phone number to resolve one from. A workspace predicate would
+  // exclude exactly the rows nothing else can ever remove. The delete it feeds
+  // *is* scoped (by the batch's own ids plus those rows' workspaces), so the
+  // destructive half stays readable to this analyzer.
+  'compliance/retention.service.ts:telephonyWebhookEvent.findMany',
   'workers/digest.worker.ts:workspace.findMany',
 
   // -- Background jobs keyed on an internal id ----------------------------
@@ -268,6 +278,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'compliance/retention.service.ts:call.findMany': 1,
   'compliance/retention.service.ts:call.findUnique': 1,
   'compliance/retention.service.ts:call.update': 1,
+  'compliance/retention.service.ts:telephonyWebhookEvent.findMany': 1,
   'evaluations/evaluations.service.ts:agentVersion.findUnique': 1,
   'evaluations/evaluations.service.ts:call.findUnique': 1,
   'evaluations/evaluations.service.ts:callEvaluation.upsert': 1,

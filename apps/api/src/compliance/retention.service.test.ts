@@ -36,6 +36,12 @@ interface FakeWebhookEvent {
   callId: string | null;
   workspaceId: string | null;
   rawPayloadJson: { From: string };
+  /**
+   * Optional because only the age-out sweep reads it: the call-keyed delete
+   * matches on `call_id` alone, and a row without a date here simply never
+   * satisfies an age cutoff, which is the safe direction for a fake.
+   */
+  createdAt?: Date;
 }
 
 interface FakeWhere {
@@ -51,6 +57,8 @@ interface FakeFanoutWhere {
 
 interface FakeWebhookEventWhere {
   callId?: { in: string[] };
+  id?: { in: string[] };
+  createdAt?: { lt: Date };
   OR?: Array<{ workspaceId: { in: string[] } | null }>;
 }
 
@@ -66,6 +74,11 @@ function matchingWebhookEvent(
 ): FakeWebhookEvent[] {
   return rows.filter(r =>
     (where.callId === undefined || (r.callId !== null && where.callId.in.includes(r.callId)))
+    && (where.id === undefined || where.id.in.includes(r.id))
+    // Dropping the cutoff from the service shows up as a payload recorded
+    // minutes ago being destroyed by the age-out sweep.
+    && (where.createdAt === undefined
+      || (r.createdAt !== undefined && r.createdAt < where.createdAt.lt))
     && (where.OR === undefined
       || where.OR.some(branch => (branch.workspaceId === null
         ? r.workspaceId === null
@@ -151,6 +164,13 @@ function makeService(state: FakeState) {
       }),
     },
     telephonyWebhookEvent: {
+      // orderBy is honoured so the batch really is oldest-first: with insertion
+      // order instead, a backlog draining in age order would be untestable.
+      findMany: vi.fn(async ({ where, take, orderBy }: { where: FakeWebhookEventWhere, take: number, orderBy: { createdAt?: 'asc' | 'desc' }, select: unknown }) =>
+        matchingWebhookEvent(state.webhookEvents ?? [], where)
+          .sort((a, b) => (orderBy.createdAt === 'asc' ? a.createdAt!.getTime() - b.createdAt!.getTime() : 0))
+          .slice(0, take)
+          .map(r => ({ id: r.id, workspaceId: r.workspaceId }))),
       deleteMany: vi.fn(async ({ where }: { where: FakeWebhookEventWhere }) => {
         const rows = state.webhookEvents ?? [];
         const doomed = matchingWebhookEvent(rows, where);
@@ -446,6 +466,129 @@ describe('RetentionService', () => {
 
       expect(result).toEqual({ deleted: 0, remaining: 0 });
       expect(state.calls.map(c => c.id)).toEqual(['call-unstamped']);
+    });
+  });
+
+  /**
+   * The gap the call-keyed delete above cannot close. Five of the six writers in
+   * `TelephonyService.recordWebhookEvent` pass no call id -- only the LiveKit
+   * handler resolves one -- so `call_id IS NULL` rows were never matched by any
+   * predicate the sweep binds, and their `raw_payload_json` (the provider's own
+   * body, caller number included) stayed in the database forever regardless of the
+   * workspace's retention period.
+   */
+  describe('sweepStaleTelephonyWebhookEvents', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = new Date('2026-06-01T00:00:00.000Z');
+    const daysAgo = (days: number): Date => new Date(now.getTime() - days * DAY);
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    /** Every row here has a NULL call id: this is exactly what nothing purged. */
+    function callLessEvents(): FakeWebhookEvent[] {
+      return [
+        { id: 'w-null-ws', callId: null, workspaceId: null, createdAt: daysAgo(31), rawPayloadJson: { From: '+14155550111' } },
+        { id: 'w-a-ancient', callId: null, workspaceId: 'ws-a', createdAt: daysAgo(400), rawPayloadJson: { From: '+14155550222' } },
+        { id: 'w-b-old', callId: null, workspaceId: 'ws-b', createdAt: daysAgo(40), rawPayloadJson: { From: '+14155550333' } },
+        { id: 'w-a-fresh', callId: null, workspaceId: 'ws-a', createdAt: daysAgo(29), rawPayloadJson: { From: '+14155550444' } },
+        { id: 'w-null-ws-fresh', callId: null, workspaceId: null, createdAt: daysAgo(1), rawPayloadJson: { From: '+14155550555' } },
+      ];
+    }
+
+    it('purges an aged payload whose call id is null, whatever its workspace column holds', async () => {
+      const state: FakeState = { calls: [], webhookEvents: callLessEvents() };
+
+      const deleted = await makeService(state).sweepStaleTelephonyWebhookEvents();
+
+      expect(deleted).toBe(3);
+      // A NULL workspace has no tenant to ask, so the ceiling is the only thing
+      // that can ever remove it: it must be gone.
+      expect(state.webhookEvents!.map(r => r.id)).toEqual(['w-a-fresh', 'w-null-ws-fresh']);
+    });
+
+    it('leaves a payload inside the ceiling alone and writes nothing when there is nothing to purge', async () => {
+      const state: FakeState = {
+        calls: [],
+        webhookEvents: callLessEvents().filter(r => r.createdAt!.getTime() > daysAgo(30).getTime()),
+      };
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: { telephonyWebhookEvent: { deleteMany: ReturnType<typeof vi.fn> } };
+      }).prisma;
+
+      const deleted = await service.sweepStaleTelephonyWebhookEvents();
+
+      expect(deleted).toBe(0);
+      expect(state.webhookEvents!.map(r => r.id)).toEqual(['w-a-fresh', 'w-null-ws-fresh']);
+      // No DELETE issued at all, and no audit row claiming one.
+      expect(prisma.telephonyWebhookEvent.deleteMany).not.toHaveBeenCalled();
+      expect(state.audits).toBeUndefined();
+    });
+
+    /**
+     * The ceiling is what stops this becoming an unbounded DELETE on the widest
+     * table in the schema, and oldest-first is what makes a backlog drain in age
+     * order instead of stranding the longest-overdue payloads.
+     */
+    it('bounds one run to a single oldest-first batch', async () => {
+      const state: FakeState = { calls: [], webhookEvents: callLessEvents() };
+      const service = makeService(state);
+      const prisma = (service as unknown as {
+        prisma: { telephonyWebhookEvent: { findMany: ReturnType<typeof vi.fn> } };
+      }).prisma;
+
+      await service.sweepStaleTelephonyWebhookEvents();
+
+      expect(prisma.telephonyWebhookEvent.findMany.mock.calls[0]![0]).toMatchObject({
+        take: 5000,
+        orderBy: { createdAt: 'asc' },
+      });
+    });
+
+    it('audits the platform-wide purge by count and cutoff, never by id', async () => {
+      const state: FakeState = { calls: [], webhookEvents: callLessEvents() };
+
+      await makeService(state).sweepStaleTelephonyWebhookEvents();
+
+      expect(state.audits).toHaveLength(1);
+      const { payload } = state.audits![0]!;
+      expect(payload.workspaceId).toBeNull();
+      expect(payload.action).toBe('retention.sweep_telephony_webhook_events');
+      expect(payload.metadata).toEqual({
+        scope: 'all-workspaces',
+        // 30 days, the floor updateWorkspaceRetention clamps to, so the ceiling
+        // cannot outlive any workspace's own advertised window.
+        cutoff: daysAgo(30).toISOString(),
+        maxAgeDays: 30,
+        deleted: 3,
+      });
+      // The ids point at nothing once the rows are gone; listing them would only
+      // preserve a pointer to the payloads just destroyed.
+      expect(JSON.stringify(payload.metadata)).not.toContain('w-a-ancient');
+    });
+
+    /**
+     * The age-out must not ride along on a scoped tenant sweep: a workspace
+     * purging its own expired calls has no business deleting another tenant's
+     * webhook payloads, aged or not.
+     */
+    it('never lets a scoped call sweep reach another tenant aged payloads', async () => {
+      const state: FakeState = {
+        calls: [
+          { id: 'call-a1', workspaceId: 'ws-a', createdAt: daysAgo(400), expiresAt: daysAgo(1) },
+        ],
+        webhookEvents: [
+          { id: 'w-b-old', callId: null, workspaceId: 'ws-b', createdAt: daysAgo(400), rawPayloadJson: { From: '+14155550333' } },
+        ],
+      };
+
+      await makeService(state).sweepExpiredCalls({ workspaceId: 'ws-a' });
+
+      expect(state.webhookEvents!.map(r => r.id)).toEqual(['w-b-old']);
     });
   });
 

@@ -75,7 +75,7 @@ describe('OrganizationGuard', () => {
     });
   });
 
-  // This is the defect the guard exists to close: /v1/orgs/:orgId/audit-logs
+  // This is the defect the guard exists to close: /orgs/:orgId/audit-logs
   // had no guard, so orgId was attacker-chosen and flowed into
   // where.organizationId.
   it('refuses a caller who belongs to neither a workspace in the org nor owns it', async () => {

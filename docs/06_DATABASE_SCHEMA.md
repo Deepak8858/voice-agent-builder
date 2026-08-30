@@ -45,12 +45,64 @@ calls(id, workspace_id, agent_id, agent_version_id, contact_id, provider, provid
 call_events(id, call_id, workspace_id, event_type, event_time, payload)
 ```
 
-## Billing and White Label
+## Billing Tables
+There is no `billing_accounts` and no `billing_usage`. Subscription state, the credit
+ledger and the metered usage rows are separate tables, and the ledger is the money.
+
 ```sql
-billing_accounts(id, organization_id, stripe_customer_id, stripe_subscription_id, plan, status, created_at, updated_at)
-billing_usage(id, organization_id, workspace_id, call_id, usage_type, quantity, unit, cost_cents, recorded_at)
+subscriptions(id, organization_id UNIQUE, stripe_subscription_id UNIQUE, stripe_customer_id, stripe_product_id, stripe_price_id, plan, catalog_version, status, concurrent_call_limit_override, current_period_start, current_period_end, cancel_at_period_end, trial_end, stripe_metadata, webhook_updated_at, created_at, updated_at)
+billing_credit_buckets(id, organization_id, source_type, source_id, original_seconds, remaining_seconds, valid_from, expires_at, priority, status, stripe_payment_intent_id, created_at, updated_at)
+billing_ledger_entries(id, organization_id, bucket_id, workspace_id, call_id, entry_type, seconds, balance_after_seconds, actor_type, actor_id, reason_code, idempotency_key, metadata, created_at)
+organization_credit_balances(id, organization_id UNIQUE, available_seconds, reserved_seconds, status, review_reason, version, created_at, updated_at)
+call_usages(id, organization_id, workspace_id, call_id UNIQUE NULL, provider, provider_call_id, direction, dispatched_at, connected_at, ended_at, raw_connected_seconds, billable_seconds, reserved_seconds, debited_seconds, disposition, finalization_state, finalization_idempotency_key UNIQUE, created_at, updated_at)
+runtime_usage_events(id, organization_id, call_id NULL, event_id, event_type, occurred_at, validated_payload, decision, claimed_at, attempt_count, processed_at, created_at)
+usage_records(id, organization_id, workspace_id, billable_metric, quantity, period_start, period_end, recorded_at)
+stripe_events(id, stripe_event_id UNIQUE, type, api_version, created, data, livemode, pending_webhooks, request_context, processing_started_at, attempt_count, processed_at, error_message, created_at)
+```
+
+Credit is held in **seconds**, never minutes. A bucket is granted credit with a
+lifetime; the balance row is the fast-read total; every change to either is one
+ledger entry.
+
+`priority` orders spend: `10` = the plan's included allowance (`source_type`
+`included`), `20` = a purchased minute pack (`source_type` `purchased`). Included
+credit is always spent first and is forfeited, not rolled over, at period end.
+
+### What makes a grant idempotent
+Four constraints, and every one of them is load-bearing:
+
+- `billing_ledger_entries UNIQUE (organization_id, idempotency_key)` is the gate.
+  Keys are **derived, never random**: `stripe:invoice:<invoiceId>:included` for a
+  subscription grant, `stripe:checkout:<sessionId>:topup` for a pack,
+  `free_grant_<orgId>_<monthKey>` for the recurring Free allowance. A redelivered
+  webhook recomputes the same key.
+- `billing_credit_buckets UNIQUE (organization_id, source_type, source_id)` — the
+  same invoice or session can only ever own one bucket.
+- `billing_credit_buckets.stripe_payment_intent_id UNIQUE` — a replayed Checkout that
+  slips past `stripe_events` collides on this index instead of minting a second
+  paid-for bucket, and a refund or dispute can be mapped back to its grant by payment
+  intent alone.
+- `call_usages.finalization_idempotency_key UNIQUE` and
+  `runtime_usage_events UNIQUE (organization_id, event_id)` do the same for debits, so
+  replay protection does not depend on the call row still existing.
+
+On a key hit the grant is not silently accepted: the existing entry must match the
+stored bucket's terms, compared against that bucket's own `original_seconds` rather
+than today's catalog — otherwise repricing a pack would turn every historical
+purchase into an idempotency conflict. `organization_credit_balances` is row-locked
+(`SELECT ... FOR UPDATE`) for the whole grant and carries a monotonic `version`, so
+concurrent grants for one organization serialize.
+
+`call_usages.call_id` and `runtime_usage_events.call_id` are nullable and
+`ON DELETE SET NULL` on purpose: the retention sweep deletes calls, and cascading
+would destroy the evidence that a customer was charged.
+`billing_ledger_entries.organization_id` is `ON DELETE RESTRICT` — the ledger blocks
+its own deletion.
+
+## White Label and Audit
+```sql
 white_label_settings(id, workspace_id, brand_name, logo_url, primary_color, custom_domain, support_email, hide_platform_branding, settings, created_at, updated_at)
-audit_logs(id, workspace_id, actor_user_id, action, resource_type, resource_id, metadata, ip_address, user_agent, created_at)
+audit_logs(id, workspace_id, organization_id, actor_user_id, action, resource_type, resource_id, metadata, ip_address, user_agent, created_at)
 ```
 
 ## Tenant Rule
