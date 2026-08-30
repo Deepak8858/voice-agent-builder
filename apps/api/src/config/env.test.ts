@@ -708,17 +708,26 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
     throw new Error(`could not locate repo root from ${process.cwd()}`);
   })();
 
-  /** The names in the workflow's `required=( ... )` array — authoritative. */
-  const gateRequired = ((): string[] => {
-    // Normalized: this file is CRLF on Windows checkouts and LF in CI.
-    const src = readFileSync(
-      path.join(root, '.github/workflows/deploy-aws-ec2.yml'),
-      'utf8',
-    ).replace(/\r\n/g, '\n');
-    const block = /^\s*required=\(\n([\s\S]*?)^\s*\)$/m.exec(src);
-    if (!block) throw new Error('could not locate the required=( ... ) list in the deploy workflow');
+  // Normalized: this file is CRLF on Windows checkouts and LF in CI.
+  const workflowSrc = readFileSync(
+    path.join(root, '.github/workflows/deploy-aws-ec2.yml'),
+    'utf8',
+  ).replace(/\r\n/g, '\n');
+
+  const parseArray = (name: string): string[] => {
+    const block = new RegExp(`^\\s*${name}=\\(\\n([\\s\\S]*?)^\\s*\\)$`, 'm').exec(workflowSrc);
+    if (!block) throw new Error(`could not locate the ${name}=( ... ) list in the deploy workflow`);
     return (block[1] as string).split(/\s+/).filter(Boolean);
-  })();
+  };
+
+  /** The workflow's `required=( ... )` array — always enforced. */
+  const gateRequired = parseArray('required');
+  /**
+   * The workflow's `stripe_required=( ... )` array — enforced unless the host
+   * sets BILLING_DISABLED=true, in which case the same names must be EMPTY.
+   * Either way every name is checked, so coverage is the union of both lists.
+   */
+  const gateStripeRequired = parseArray('stripe_required');
 
   afterEach(() => {
     restoreEnv();
@@ -726,7 +735,8 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
   });
 
   it('is a non-trivial list, so an empty parse cannot pass vacuously', () => {
-    expect(gateRequired.length).toBeGreaterThan(20);
+    expect(gateRequired.length).toBeGreaterThan(15);
+    expect(gateStripeRequired.length).toBeGreaterThan(4);
   });
 
   it('requires every variable the API requires for Checkout', async () => {
@@ -740,7 +750,16 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
 
     const { STRIPE_CHECKOUT_REQUIRED_ENV } = await import('./env');
     for (const name of STRIPE_CHECKOUT_REQUIRED_ENV) {
-      expect(gateRequired).toContain(name);
+      expect(gateStripeRequired).toContain(name);
     }
+  });
+
+  // The billing-disabled state is only sound if it is all-or-nothing: the gate
+  // must force every Stripe variable EMPTY when BILLING_DISABLED=true, because
+  // a leftover test-mode key boots the API into granting real credits for test
+  // cards. Pin the branch so it cannot be deleted silently.
+  it('forces every Stripe variable empty when billing is disabled', () => {
+    expect(workflowSrc).toMatch(/BILLING_DISABLED.*=.*true/);
+    expect(workflowSrc).toContain('must be empty when BILLING_DISABLED=true');
   });
 });
