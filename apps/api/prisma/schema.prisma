@@ -1156,6 +1156,11 @@ model CrmRoutingRule {
 // CRM Fan-out Audit Log
 model CrmFanoutLog {
   id            String   @id @default(uuid()) @db.Uuid
+  // Own tenant column: callId/agentId are both SetNull, so a deleted call or
+  // agent would otherwise erase the only link this row has to a workspace.
+  // Nullable because legacy rows that already lost both FKs can never be
+  // backfilled - the writer always sets it.
+  workspaceId   String?  @map("workspace_id") @db.Uuid
   callId        String?  @map("call_id") @db.Uuid
   agentId       String?  @map("agent_id") @db.Uuid
   contactData   Json     @map("contact_data")
@@ -1166,6 +1171,7 @@ model CrmFanoutLog {
   agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
 
   @@index([callId])
+  @@index([workspaceId])
   @@map("crm_fanout_log")
 }
 

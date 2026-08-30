@@ -73,6 +73,7 @@ export class CrmFanOutService {
 
     await this.prisma.crmFanoutLog.create({
       data: {
+        workspaceId,
         callId,
         agentId,
         contactData: contactData as object,

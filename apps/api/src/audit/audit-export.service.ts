@@ -3,15 +3,40 @@ import { createHmac, randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { ValidationError } from '../common/errors';
 import { env } from '../config/env';
 
 interface ExportOptions {
-  orgId?: string;
+  /**
+   * Required: an export with no organization reads every tenant's audit log.
+   * `admin/audit/export` used to take `org_id` as an optional query param, so
+   * omitting it produced `where: {}` — a 10k-row cross-tenant dump.
+   */
+  orgId: string;
   from?: Date;
   to?: Date;
   action?: string;
   format: 'csv' | 'json';
 }
+
+/**
+ * Exactly the columns the CSV header below declares. The rows also carry
+ * `metadata` (free-form JSON written by every call site), `ipAddress` and
+ * `userAgent`; the JSON branch returned whole rows, so it disclosed strictly
+ * more than the documented CSV contract. Projecting both branches through this
+ * list keeps them identical — widening the export means adding a CSV column in
+ * the same edit.
+ */
+const EXPORT_FIELDS = {
+  id: true,
+  workspaceId: true,
+  organizationId: true,
+  actorUserId: true,
+  action: true,
+  resourceType: true,
+  resourceId: true,
+  createdAt: true,
+} as const;
 
 interface SignedReport {
   url: string;
@@ -44,8 +69,15 @@ export class AuditExportService {
   ) {}
 
   async getAuditLogs(options: ExportOptions) {
-    const where: Prisma.AuditLogWhereInput = {};
-    if (options.orgId) where.organizationId = options.orgId;
+    // Both export routes funnel through here, so this is where the all-tenant
+    // read is made unreachable rather than merely guarded at each caller. The
+    // type already forbids omitting it; this catches an untyped caller and the
+    // `?org_id=` blank that would otherwise scope on the empty string.
+    if (!options.orgId?.trim()) {
+      throw new ValidationError('An audit export must name an organization.');
+    }
+
+    const where: Prisma.AuditLogWhereInput = { organizationId: options.orgId };
     if (options.action) where.action = options.action;
     if (options.from || options.to) {
       where.createdAt = {};
@@ -55,6 +87,7 @@ export class AuditExportService {
 
     const logs = await this.prisma.auditLog.findMany({
       where,
+      select: EXPORT_FIELDS,
       orderBy: { createdAt: 'desc' },
       take: 10000,
     });

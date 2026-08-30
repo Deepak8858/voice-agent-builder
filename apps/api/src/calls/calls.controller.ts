@@ -24,7 +24,7 @@ import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { UuidParamPipe } from '../common/uuid-param.pipe';
 import { AgentNotFoundError, CallNotFoundError } from '../common/errors';
 import { CacheService } from '../cache/cache.service';
-import { CallsService } from './calls.service';
+import { CallsService, liveCallChannel } from './calls.service';
 
 const callIdPipe = new UuidParamPipe((id) => new CallNotFoundError(id));
 const agentIdPipe = new UuidParamPipe((id) => new AgentNotFoundError(id));
@@ -105,33 +105,45 @@ export class CallsController {
     @Param('callId', callIdPipe) callId: string,
     @Res() res: Response,
   ) {
+    // Ownership first, and before any header is flushed: `getLiveEvents` throws
+    // for a call this workspace does not own, and the exception filter can only
+    // turn that into a 404 while the response status is still writable. A
+    // foreign call id therefore never reaches the subscription below.
+    const backfill = await this.calls.getLiveEvents(callId, workspaceId);
+
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
-    // Send backfill of existing events
-    const backfill = await this.calls.getLiveEvents(callId, workspaceId);
     for (const event of backfill) {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     }
 
-    // Keep connection open and stream live events
-    let closed = false;
-    res.on('close', () => { closed = true; });
-
-    const stream = this.cache.subscribe(`call:${callId}`);
+    const stream = this.cache.subscribe(liveCallChannel(workspaceId, callId));
     const reader = stream.getReader();
 
+    // Cancelling the reader is what releases the duplicated Redis connection
+    // `subscribe()` opened. A flag would not: `read()` stays pending until the
+    // next message, so on a quiet call the flag is never observed and the
+    // connection leaks for the life of the process.
+    res.on('close', () => { void reader.cancel(); });
+
+    // The client can disconnect during the awaited backfill above, before that
+    // listener exists, and Node does not replay an already-emitted 'close'. The
+    // read below would then stay pending forever on a call that has ended,
+    // leaking the connection subscribe() duplicated.
+    if (res.closed) void reader.cancel();
+
     try {
-      while (!closed) {
+      for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         res.write(`data: ${value}\n\n`);
       }
     } finally {
-      reader.cancel();
+      void reader.cancel();
     }
 
     res.end();

@@ -23,9 +23,14 @@ import * as ts from 'typescript';
  *
  * This analyzer reports every route whose effective path contains a recognised
  * tenant param but whose guards cannot check that param. `WorkspaceGuard`
- * counts only for `:workspaceId`, `OrganizationGuard` only for `:orgId`, and
- * `InternalAuthGuard` counts for either because it restricts the route to the
- * platform operator rather than a tenant user.
+ * counts only for `:workspaceId` and `OrganizationGuard` only for `:orgId`.
+ *
+ * `@InternalOnly()` covers either param, because it restricts the route to the
+ * platform operator rather than a tenant user. Listing `InternalAuthGuard` in
+ * `@UseGuards` does not: it is the global auth guard, so every authenticated
+ * user already passes it and the decoration restricts nothing. Since e7b718a
+ * the decorator is the thing that refuses user-carrying requests, so it is the
+ * thing that counts here.
  */
 
 export type GuardCoverage = Record<string, readonly string[]>;
@@ -34,9 +39,6 @@ export type GuardCoverage = Record<string, readonly string[]>;
 export const GUARD_COVERAGE: GuardCoverage = {
   WorkspaceGuard: ['workspaceId'],
   OrganizationGuard: ['orgId'],
-  // Restricts the route to the internal admin key, so no tenant param is
-  // reachable by a tenant user.
-  InternalAuthGuard: ['workspaceId', 'orgId'],
 };
 
 export interface AnalyzerOptions {
@@ -47,6 +49,13 @@ export interface AnalyzerOptions {
    * would otherwise look identical to a clean tree.
    */
   guardCoverage?: GuardCoverage;
+  /**
+   * Which decorator name restricts a route to the platform operator, and so
+   * covers any tenant param in its path. The accompanying test overrides it
+   * with a name no route carries, so the operator-only routes must reappear —
+   * otherwise `guardCoverage: {}` would no longer prove anything about them.
+   */
+  internalOnlyDecorator?: string;
 }
 
 export interface RoleAnalyzerOptions {
@@ -218,9 +227,13 @@ export function findUnguardedRoutes(
   options: AnalyzerOptions = {},
 ): UnguardedRoute[] {
   const coverage = options.guardCoverage ?? GUARD_COVERAGE;
+  const internalOnly = options.internalOnlyDecorator ?? 'InternalOnly';
   const findings: UnguardedRoute[] = [];
 
-  for (const { classDecorators: _c, memberDecorators: _m, ...r } of collectRoutes(srcDir)) {
+  for (const { classDecorators, memberDecorators, ...r } of collectRoutes(srcDir)) {
+    if (hasDecorator(memberDecorators, internalOnly) || hasDecorator(classDecorators, internalOnly)) {
+      continue;
+    }
     const tenantParam = uncoveredTenantParam(r.route, r.guards, coverage);
     if (tenantParam) findings.push({ ...r, tenantParam });
   }
