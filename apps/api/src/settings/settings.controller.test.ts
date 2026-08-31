@@ -41,7 +41,7 @@ const CALLER: SessionUser = {
 };
 
 function makeController() {
-  const retention = { updateWorkspaceRetention: vi.fn(async () => undefined) };
+  const retention = { updateWorkspaceRetention: vi.fn(async () => 2) };
   return { retention, controller: new SettingsController(retention as never) };
 }
 
@@ -126,7 +126,7 @@ describe('SettingsController.updateRetention', () => {
     const result = await controller.updateRetention(CALLER, parseBody({ retentionDays: 90 }));
 
     expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 90, CALLER.id);
-    expect(result).toEqual({ success: true, retentionDays: 90 });
+    expect(result).toEqual({ success: true, retentionDays: 90, restampedCalls: 2 });
   });
 
   it('applies the 365-day default when the field is omitted', async () => {
@@ -135,7 +135,7 @@ describe('SettingsController.updateRetention', () => {
     const result = await controller.updateRetention(CALLER, parseBody({}));
 
     expect(retention.updateWorkspaceRetention).toHaveBeenCalledWith(WORKSPACE_ID, 365, CALLER.id);
-    expect(result).toEqual({ success: true, retentionDays: 365 });
+    expect(result).toEqual({ success: true, retentionDays: 365, restampedCalls: 2 });
   });
 
   it('refuses an unauthenticated caller', async () => {

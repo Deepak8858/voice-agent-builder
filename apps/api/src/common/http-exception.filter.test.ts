@@ -1,6 +1,8 @@
 import type { ArgumentsHost } from '@nestjs/common';
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   InternalServerErrorException,
   NotFoundException,
   UnauthorizedException,
@@ -37,11 +39,13 @@ interface HostResult {
   host: ArgumentsHost;
   status: () => number | undefined;
   body: () => unknown;
+  headers: Record<string, string>;
 }
 
 function makeHost(options: { route?: string } = {}): HostResult {
   let sentStatus: number | undefined;
   let sentBody: unknown;
+  const headers: Record<string, string> = {};
 
   const req = {
     method: 'POST',
@@ -59,6 +63,10 @@ function makeHost(options: { route?: string } = {}): HostResult {
       sentBody = body;
       return res;
     },
+    setHeader(name: string, value: string) {
+      headers[name] = value;
+      return res;
+    },
   };
 
   const host = {
@@ -68,7 +76,7 @@ function makeHost(options: { route?: string } = {}): HostResult {
     }),
   } as unknown as ArgumentsHost;
 
-  return { host, status: () => sentStatus, body: () => sentBody };
+  return { host, status: () => sentStatus, body: () => sentBody, headers };
 }
 
 /**
@@ -263,6 +271,80 @@ describe('HttpExceptionFilter error details', () => {
     filter.catch(err, makeHost().host);
 
     expect(posthog.exceptions[0]!.error).toBe(err);
+  });
+});
+
+/**
+ * `Retry-After` is the standard channel for a 429 wait time — proxies and SDK
+ * backoff read the header, not `error.details`. Both rate-limit guards throw
+ * the same `{ code: 'RATE_LIMITED', details: { retryAfterSeconds } }` shape, so
+ * the filter is the single place the header is set.
+ */
+function rateLimited(details?: Record<string, unknown>): HttpException {
+  return new HttpException(
+    { code: 'RATE_LIMITED', message: 'Too many requests.', details },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
+}
+
+describe('HttpExceptionFilter Retry-After header', () => {
+  it('sets Retry-After from details.retryAfterSeconds', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, status, headers } = makeHost();
+
+    filter.catch(rateLimited({ retryAfterSeconds: 300 }), host);
+
+    expect(status()).toBe(429);
+    expect(headers['Retry-After']).toBe('300');
+  });
+
+  it('rounds a fractional wait up, never down', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, headers } = makeHost();
+
+    filter.catch(rateLimited({ retryAfterSeconds: 1.2 }), host);
+
+    expect(headers['Retry-After']).toBe('2');
+  });
+
+  it('emits no header when retryAfterSeconds is missing or not a positive number', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+
+    for (const details of [
+      undefined,
+      { retryAfterSeconds: 0 },
+      { retryAfterSeconds: -5 },
+      { retryAfterSeconds: Number.NaN },
+      { retryAfterSeconds: '60' },
+    ]) {
+      const { host, headers } = makeHost();
+      filter.catch(rateLimited(details), host);
+      expect(headers).not.toHaveProperty('Retry-After');
+    }
+  });
+
+  it('emits no header for a non-rate-limit error', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, headers } = makeHost();
+
+    filter.catch(new BadRequestException('invalid payload'), host);
+
+    expect(headers).not.toHaveProperty('Retry-After');
+  });
+
+  it('still sets Retry-After in production', async () => {
+    const HttpExceptionFilter = await loadFilter(false);
+    vi.stubEnv('NODE_ENV', 'production');
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, headers } = makeHost();
+
+    filter.catch(rateLimited({ retryAfterSeconds: 60 }), host);
+
+    expect(headers['Retry-After']).toBe('60');
   });
 });
 

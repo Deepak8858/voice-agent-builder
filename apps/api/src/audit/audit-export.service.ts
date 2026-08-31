@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHash, createHmac, randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -39,7 +39,7 @@ const EXPORT_FIELDS = {
 } as const;
 
 interface SignedReport {
-  url: string;
+  reportId: string;
   expiresAt: Date;
   hash: string;
 }
@@ -59,12 +59,13 @@ function escapeCsvField(val: string | null | undefined): string {
 
 @Injectable()
 export class AuditExportService {
-  private readonly logger = new Logger(AuditExportService.name);
   private static readonly REPORT_EXPIRY_MS = 72 * 60 * 60 * 1000;
   private readonly HMAC_SECRET = env.ENCRYPTION_KEY ?? 'dev-secret-key';
 
   constructor(
     private readonly prisma: PrismaService,
+    // Unused until the audit report download route exists; the auditor
+    // notification is sent from generateSignedReport again at that point.
     private readonly email: EmailService,
   ) {}
 
@@ -112,53 +113,46 @@ export class AuditExportService {
     return logs;
   }
 
+  /**
+   * Attestation record for an operator-requested compliance report. Reads
+   * through `getAuditLogs`, so the report cannot disclose more than the
+   * documented export does: one projection (EXPORT_FIELDS — it used to read
+   * whole rows and JSON.stringify free-form `metadata`, `ipAddress` and
+   * `userAgent` into a document meant for an external auditor), one 10k cap,
+   * one organization check.
+   */
   async generateSignedReport(orgId: string, from: Date, to: Date, auditorEmail: string): Promise<SignedReport> {
-    const logs = await this.prisma.auditLog.findMany({
-      where: { organizationId: orgId, createdAt: { gte: from, lte: to } },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const content = JSON.stringify(logs);
+    // Hashed over exactly the bytes stored. `content` was truncated to 10k
+    // chars while `contentHash` covered the untruncated JSON, so every report
+    // past that size carried an attestation that could never be re-verified
+    // against the row holding it. Eight narrow fields capped at 10k rows are
+    // small enough to keep whole, which is the half of that trade that keeps
+    // the signature meaningful.
+    const content = JSON.stringify(await this.getAuditLogs({ orgId, from, to, format: 'json' }));
     const hash = createHmac('sha256', this.HMAC_SECRET).update(content).digest('hex');
-    const token = randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + AuditExportService.REPORT_EXPIRY_MS);
 
-    // The token in the emailed URL is a bearer credential for a 72h window of
-    // one organization's audit log, so only its digest is stored: a read of
-    // `audit_reports` cannot reconstruct a working download link. Whatever
-    // eventually serves `/api/audit/report/:token` (nothing does today) must
-    // look the row up by sha256 of the token it was given.
-    await this.prisma.auditReport.create({
+    // No download link is issued. `/api/audit/report/:token` has never been
+    // served, so the auditor email promised an outside party a guaranteed 404,
+    // and serving it would mean a new unauthenticated endpoint. The row keeps
+    // the digest-shaped `token` an authenticated download route will need —
+    // look the row up by sha256 of the token presented, never store the token
+    // itself — so that route, and the auditor email carrying its URL, land
+    // without a migration. Until then the raw token is discarded: the report
+    // content lives in the row for the operator who requested it.
+    const report = await this.prisma.auditReport.create({
       data: {
-        token: createHash('sha256').update(token).digest('hex'),
+        token: createHash('sha256').update(randomBytes(32)).digest('hex'),
         organizationId: orgId,
         fromDate: from,
         toDate: to,
         auditorEmail,
         contentHash: hash,
-        content: content.slice(0, 10000),
+        content,
         expiresAt,
       },
     });
 
-    const url = `${env.WEB_BASE_URL}/api/audit/report/${token}`;
-    const expiryHours = String(AuditExportService.REPORT_EXPIRY_MS / (60 * 60 * 1000));
-
-    try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== 'https:') throw new Error('Must be https');
-    } catch {
-      this.logger.error('Invalid WEB_BASE_URL, cannot send audit report email');
-      return { url, expiresAt, hash };
-    }
-
-    await this.email.send({
-      to: auditorEmail,
-      subject: 'Your compliance audit report is ready',
-      html: `<p>Your audit report is ready. Download at: <a href="${url}">${url}</a></p><p>Expires in ${expiryHours} hours.</p>`,
-      text: `Download at: ${url}. Expires in ${expiryHours} hours.`,
-    }).catch(err => this.logger.error('Failed to send audit report email', err));
-
-    return { url, expiresAt, hash };
+    return { reportId: report.id, expiresAt, hash };
   }
 }
