@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BadRequestException } from '@nestjs/common';
+import { APIError } from 'dodopayments';
 import { BILLING_CATALOG_VERSION } from '@voiceforge/shared';
 import { BillingService, BillingUnavailableError, ForbiddenPlanError } from './billing.service';
 import { CreditLedgerService } from './credit-ledger.service';
@@ -377,6 +378,57 @@ describe('BillingService', () => {
         }, ACTOR)).resolves.toEqual({ url: CHECKOUT_URL });
       },
     );
+
+    /**
+     * Observed live at cutover: `checkoutSessions.create` answered
+     * `403 {"code":"MERCHANT_NOT_LIVE"}` and the customer got an unhandled 500. A
+     * Dodo 4xx is a statement about the merchant account or the catalog, not a
+     * crash here, so it is the same 503 an unconfigured deployment returns — with
+     * the provider's code named so support can act on it.
+     */
+    it('maps a Dodo 4xx to billing-unavailable rather than a 500', async () => {
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      mockDodo.checkoutSessions.create.mockRejectedValue(
+        new APIError(403, { code: 'MERCHANT_NOT_LIVE' }, 'Merchant is not live', undefined),
+      );
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
+
+      const rejection = await svc
+        .createCheckoutSession('org-1', {
+          plan: 'starter',
+          idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+          successPath: '/dashboard/billing',
+          cancelPath: '/dashboard/billing',
+        }, ACTOR)
+        .catch((err: unknown) => err);
+
+      expect(rejection).toBeInstanceOf(BillingUnavailableError);
+      expect((rejection as BillingUnavailableError).getStatus()).toBe(503);
+      expect((rejection as Error).message).toContain('MERCHANT_NOT_LIVE');
+      // Nothing was started at Dodo, so nothing may be audited as started.
+      expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The other arm: a 5xx is transient, the SDK has already retried it, and
+     * telling the customer "temporarily unavailable" would hide a real outage
+     * behind a soft error.
+     */
+    it('leaves a Dodo 5xx as a server error', async () => {
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
+      const svc = makeService(prisma);
+      const upstream = new APIError(503, { code: 'UPSTREAM' }, 'Dodo is down', undefined);
+      mockDodo.checkoutSessions.create.mockRejectedValue(upstream);
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
+
+      await expect(svc.createCheckoutSession('org-1', {
+        plan: 'starter',
+        idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
+        successPath: '/dashboard/billing',
+        cancelPath: '/dashboard/billing',
+      }, ACTOR)).rejects.toBe(upstream);
+    });
   });
 
   describe('createTopUpCheckoutSession', () => {
@@ -795,14 +847,11 @@ describe('BillingService', () => {
       const prisma = makePrisma({ subscription: sub });
       const svc = makeService(prisma);
       const result = await svc.getSubscription('org-1');
-      // The DTO field is still named `stripeCustomerId` in @voiceforge/shared and
-      // now carries the Dodo customer id; renaming it is a coordinated wire
-      // change, not part of this swap.
       expect(result).toMatchObject({
         id: 'sub-1',
         plan: 'starter',
         status: 'active',
-        stripeCustomerId: 'cus_123',
+        dodoCustomerId: 'cus_123',
       });
     });
 
@@ -827,7 +876,7 @@ describe('BillingService', () => {
           currentPeriodEnd: '2026-01-31T00:00:00.000Z',
           cancelAtPeriodEnd: false,
           trialEnd: null,
-          stripeCustomerId: 'cus_123',
+          dodoCustomerId: 'cus_123',
         }),
         set: vi.fn(async () => undefined),
       };

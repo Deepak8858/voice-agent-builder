@@ -128,7 +128,7 @@ function makeAgentsServiceWith(opts: {
       currentPeriodEnd: null,
       cancelAtPeriodEnd: false,
       trialEnd: null,
-      stripeCustomerId: null,
+      dodoCustomerId: null,
     })),
   };
   const service = new AgentsService(

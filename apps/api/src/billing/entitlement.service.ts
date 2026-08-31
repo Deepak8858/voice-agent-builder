@@ -28,7 +28,7 @@ import { PrismaService } from '../prisma/prisma.service';
  * stop new paid work, because the organization has no confirmed revenue behind
  * it.
  */
-const PAID_ACCESS_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
+export const PAID_ACCESS_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']);
 
 /**
  * How far past its stored `currentPeriodEnd` a subscription may still read as
