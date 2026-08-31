@@ -35,7 +35,7 @@ export const BILLING_COPY_CATALOG_VERSION = BILLING_CATALOG_VERSION;
 export const MINUTE_PACK_LABEL = `Buy ${MINUTE_PACK.minutes} minutes — $${MINUTE_PACK.priceUsd}`;
 
 /**
- * Shown when Stripe is not configured or the API reports billing as
+ * Shown when Dodo Payments is not configured or the API reports billing as
  * unavailable. It never implies that recurring free minutes are granted.
  */
 export const CHECKOUT_UNAVAILABLE_TITLE = 'Checkout is temporarily unavailable';
@@ -171,11 +171,11 @@ export const PRICING_FAQ: readonly PricingFaqEntry[] = [
   },
   {
     q: 'Can I change plans later?',
-    a: 'Yes. Upgrade or downgrade at any time. Upgrades take effect once Stripe confirms the payment; downgrades apply at the next billing cycle.',
+    a: 'Yes. Upgrade or downgrade at any time. Upgrades take effect once Dodo Payments confirms the payment; downgrades apply at the next billing cycle.',
   },
   {
     q: 'How long does a purchase take to appear?',
-    a: 'Checkout returns immediately, but plan and balance changes are applied only after Stripe confirms the payment through a verified webhook. The return page keeps polling until the confirmed state arrives.',
+    a: 'Checkout returns immediately, but plan and balance changes are applied only after Dodo Payments confirms the payment through a verified webhook. The return page keeps polling until the confirmed state arrives.',
   },
   {
     q: 'What about compliance?',

@@ -25,7 +25,9 @@ describe('checkout availability', () => {
 
   it('recognises its own payload and rejects checkout URLs', () => {
     expect(isCheckoutUnavailable(buildCheckoutUnavailable())).toBe(true);
-    expect(isCheckoutUnavailable({ url: 'https://checkout.stripe.com/session' })).toBe(false);
+    expect(isCheckoutUnavailable({ url: 'https://checkout.dodopayments.com/buy/pdt_123' })).toBe(
+      false,
+    );
     expect(isCheckoutUnavailable(null)).toBe(false);
     expect(isCheckoutUnavailable({ checkoutAvailable: false })).toBe(false);
   });

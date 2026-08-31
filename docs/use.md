@@ -38,7 +38,7 @@ PostgreSQL (Supabase) + Redis (BullMQ)
 | 6 | Compliance (DNC, Consent, Opt-out) | ✅ Complete |
 | 7 | Analytics, Improvement Suggestions | ✅ Complete |
 | 8 | White Label, Client Workspaces | ✅ Complete |
-| 9 | Stripe Billing, Usage Metering | ✅ Complete |
+| 9 | Dodo Payments Billing, Usage Metering | ✅ Complete |
 | 10 | Production Hardening | ⚠️ Partial |
 
 ---
@@ -274,8 +274,8 @@ JWT. There are four entry modes in total (see
   only on `@InternalOnly()` routes, which our own runtime calls; refused on any
   other route and refused if user-context headers are present.
 - **`@Public()` routes** — health and metrics, no credentials.
-- **Webhooks** — `@Public()` plus provider signature verification (Stripe,
-  Twilio, voice).
+- **Webhooks** — `@Public()` plus provider signature verification (Dodo
+  Payments, Twilio, voice).
 
 ### Workspace Guard
 
@@ -313,7 +313,7 @@ Standard pagination with `skip`/`take` query params.
 | `INTERNAL_API_KEY` | Shared secret the web app sends as `x-internal-key` | Yes |
 | `SUPABASE_JWT_SECRET` | Verifies session JWTs locally | One of this or `SUPABASE_SERVICE_ROLE_KEY` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role ops; also the remote token-verification fallback | One of this or `SUPABASE_JWT_SECRET` |
-| `STRIPE_SECRET_KEY` | Stripe billing | No |
+| `DODO_PAYMENTS_API_KEY` | Dodo Payments billing | No |
 | `OPENAI_API_KEY` | OpenAI Realtime runtime (all growth/enterprise calls and the Realtime half of starter) | No |
 | `VOICE_STANDARD_PIPELINE_ENABLED` | Enables the in-house Azure pipeline used by every free-plan call and roughly half of starter-plan calls | No |
 | `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_KEY` / `AZURE_VOICE_LLM_DEPLOYMENT` | Voice brain for the in-house pipeline | If the pipeline is enabled |
@@ -355,6 +355,6 @@ Standard pagination with `skip`/`take` query params.
 - **AnalyticsEvent** — Event tracking
 - **WhiteLabelSettings** — Branding config
 - **ClientInvite** — Client workspace invites
-- **Subscription** — Stripe subscription
+- **Subscription** — Dodo Payments subscription
 - **UsageRecord** — Billable usage tracking
 - **GoogleCalendarConfig** — OAuth tokens for calendar

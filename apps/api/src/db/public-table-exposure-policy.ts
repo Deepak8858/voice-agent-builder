@@ -106,7 +106,7 @@ export const SERVICE_ROLE_ONLY_TABLES = [
   'agent_gen_sessions',
   'subscriptions',
   'usage_records',
-  'stripe_events',
+  'dodo_webhook_events',
   'webhook_events',
   'google_calendar_configs',
   // Unified Google Workspace OAuth connection. Stores encrypted access and

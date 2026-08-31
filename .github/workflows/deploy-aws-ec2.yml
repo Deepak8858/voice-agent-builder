@@ -431,10 +431,13 @@ jobs:
             WORKERS_ENABLED TRUST_PROXY_HOPS WEB_BASE_URL
             LLM_PROVIDER LLM_API_KEY
           )
-          stripe_required=(
-            STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET STRIPE_STARTER_PRICE_ID
-            STRIPE_GROWTH_PRICE_ID STRIPE_MINUTE_PACK_PRICE_ID
-            STRIPE_ENTERPRISE_PRICE_ID
+          # DODO_PAYMENTS_ENVIRONMENT is deliberately absent: it has a schema
+          # default (test_mode), so an empty value is valid. Its production value
+          # is checked separately below.
+          dodo_required=(
+            DODO_PAYMENTS_API_KEY DODO_WEBHOOK_SECRET DODO_STARTER_PRODUCT_ID
+            DODO_GROWTH_PRODUCT_ID DODO_MINUTE_PACK_PRODUCT_ID
+            DODO_ENTERPRISE_PRODUCT_ID
           )
           missing=()
           invalid=()
@@ -442,21 +445,21 @@ jobs:
             if [ -z "$(env_value "$name")" ]; then missing+=("$name"); fi
           done
           # Billing has exactly two sanctioned production states, chosen on the
-          # host: fully live, or explicitly OFF while the Stripe account is not
-          # yet activated. BILLING_DISABLED=true demands every Stripe variable
+          # host: fully live, or explicitly OFF while the Dodo Payments account is
+          # not yet activated. BILLING_DISABLED=true demands every Dodo variable
           # be EMPTY — a leftover test-mode key would boot the API into selling
-          # real credits for test cards, which is the exact state the live-key
+          # real credits for test cards, which is the exact state the live-mode
           # check below exists to prevent. The API is built for the empty state:
-          # every Stripe client is constructed only when the key is present, and
-          # each billing entry point reports itself unavailable.
+          # the Dodo client is constructed only when the key is present, and each
+          # billing entry point reports itself unavailable.
           if [ "$(env_value BILLING_DISABLED)" = true ]; then
-            for name in "${stripe_required[@]}"; do
+            for name in "${dodo_required[@]}"; do
               if [ -n "$(env_value "$name")" ]; then
                 invalid+=("$name (must be empty when BILLING_DISABLED=true)")
               fi
             done
           else
-            for name in "${stripe_required[@]}"; do
+            for name in "${dodo_required[@]}"; do
               if [ -z "$(env_value "$name")" ]; then missing+=("$name"); fi
             done
           fi
@@ -468,15 +471,19 @@ jobs:
           # BILLING_MODE used to be required here and validated `= live`. It is not
           # checked any more because nothing reads it: it is absent from the API's
           # config schema, `apps/web/lib/billing-mode.ts` was deleted, and billing
-          # is live whenever the STRIPE_* variables above are complete. Setting it
+          # is live whenever the DODO_* variables above are complete. Setting it
           # on the host is harmless; requiring it only implied a control that does
           # not exist. Its NEXT_PUBLIC_ twin was a required web build arg for the
           # same non-existent control and has now been dropped everywhere too.
-          # The API also refuses to boot on a test-mode key, but that failure would
-          # land after the old container is already stopped. Catch it pre-flight.
-          case "$(env_value STRIPE_SECRET_KEY)" in
-            sk_test_*|rk_test_*) invalid+=(STRIPE_SECRET_KEY) ;;
-          esac
+          # The API also refuses to boot on test-mode billing, but that failure
+          # would land after the old container is already stopped. Catch it
+          # pre-flight. A Dodo key carries no mode prefix the way sk_test_ did, so
+          # the mode is read from DODO_PAYMENTS_ENVIRONMENT — and only while
+          # billing is on, since the disabled state leaves every Dodo value empty.
+          if [ "$(env_value BILLING_DISABLED)" != true ] \
+            && [ "$(env_value DODO_PAYMENTS_ENVIRONMENT)" != live_mode ]; then
+            invalid+=(DODO_PAYMENTS_ENVIRONMENT)
+          fi
           printf '%s' "$(env_value WEB_BASE_URL)" | grep -Eq '^https://' || invalid+=(WEB_BASE_URL)
           case "$(env_value WEB_BASE_URL)" in
             *localhost*|*127.0.0.1*) invalid+=(WEB_BASE_URL) ;;

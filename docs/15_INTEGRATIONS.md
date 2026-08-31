@@ -1,7 +1,7 @@
 # 15 — Integrations
 
 ## MVP Integrations
-Google Calendar, Google Sheets, Webhooks, Zapier/Make/n8n through webhook, Stripe, OpenAI Realtime, Azure AI (Speech + Azure OpenAI), LiveKit.
+Google Calendar, Google Sheets, Webhooks, Zapier/Make/n8n through webhook, Dodo Payments, OpenAI Realtime, Azure AI (Speech + Azure OpenAI), LiveKit.
 
 ## Tool Registry
 Every integration action becomes a controlled tool.

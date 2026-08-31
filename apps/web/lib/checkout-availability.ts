@@ -3,7 +3,7 @@ import { CHECKOUT_UNAVAILABLE_MESSAGE, CHECKOUT_UNAVAILABLE_TITLE } from '@/lib/
 /**
  * Replaces the previous "demo billing" fallback.
  *
- * A missing or misconfigured Stripe integration is an outage of the purchase
+ * A missing or misconfigured Dodo Payments integration is an outage of the purchase
  * path, not a product tier: it must never imply that recurring free minutes,
  * a trial, or demo entitlements have been activated. Callers surface this
  * payload as a temporary-unavailable state with a sales escape hatch.

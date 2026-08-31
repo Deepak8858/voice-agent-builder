@@ -459,21 +459,22 @@ describe('env validation', () => {
   );
 
   /**
-   * WEB_BASE_URL defaults to localhost and is what Stripe redirects customers
-   * back to after checkout. A deployment with working Stripe credentials that
-   * forgets to set it takes real payments and then sends the customer to a dead
-   * address — a failure no boot or health check would surface.
+   * WEB_BASE_URL defaults to localhost and is what Dodo redirects customers back
+   * to after checkout. A deployment with working Dodo credentials that forgets to
+   * set it takes real payments and then sends the customer to a dead address — a
+   * failure no boot or health check would surface.
    */
-  describe('configured Stripe Checkout requires a reachable public URL', () => {
+  describe('configured Dodo Checkout requires a reachable public URL', () => {
     const configuredBase = {
       NODE_ENV: 'development',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'development-jwt-secret-with-32-chars',
-      STRIPE_SECRET_KEY: 'configured-test-value',
-      STRIPE_WEBHOOK_SECRET: 'whsec_configured',
-      STRIPE_STARTER_PRICE_ID: 'price_starter',
-      STRIPE_GROWTH_PRICE_ID: 'price_growth',
-      STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+      DODO_PAYMENTS_API_KEY: 'configured-test-value',
+      DODO_WEBHOOK_SECRET: 'whsec_configured',
+      DODO_STARTER_PRODUCT_ID: 'pdt_starter',
+      DODO_GROWTH_PRODUCT_ID: 'pdt_growth',
+      DODO_ENTERPRISE_PRODUCT_ID: 'pdt_enterprise',
+      DODO_MINUTE_PACK_PRODUCT_ID: 'pdt_minute_pack',
     };
 
     it.each([
@@ -482,7 +483,7 @@ describe('env validation', () => {
       ['a loopback IP', 'https://127.0.0.1:3000'],
       ['plain HTTP on a real domain', 'http://app.voiceforge.example'],
       ['a non-absolute value', 'app.voiceforge.example'],
-    ])('rejects %s when Stripe Checkout is configured', async (_label, webBaseUrl) => {
+    ])('rejects %s when Dodo Checkout is configured', async (_label, webBaseUrl) => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, configuredBase);
@@ -491,7 +492,7 @@ describe('env validation', () => {
       await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
     });
 
-    it('accepts an absolute HTTPS URL when Stripe Checkout is configured', async () => {
+    it('accepts an absolute HTTPS URL when Dodo Checkout is configured', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, configuredBase, { WEB_BASE_URL: 'https://incfrog.ai' });
@@ -502,14 +503,14 @@ describe('env validation', () => {
 
     /**
      * A deployment that can still charge somebody must be guarded, even when the
-     * rest of the Stripe configuration is incomplete: with both plan prices set
-     * and no minute-pack price, subscription Checkout takes real payments and
-     * would redirect the customer to localhost.
+     * rest of the Dodo configuration is incomplete: with every subscription
+     * product set and no minute-pack product, subscription Checkout takes real
+     * payments and would redirect the customer to localhost.
      */
-    it('rejects the localhost default when only the minute-pack price is missing', async () => {
+    it('rejects the localhost default when only the minute-pack product is missing', async () => {
       vi.resetModules();
       restoreEnv();
-      const { STRIPE_MINUTE_PACK_PRICE_ID: _omitted, ...partial } = configuredBase;
+      const { DODO_MINUTE_PACK_PRODUCT_ID: _omitted, ...partial } = configuredBase;
       Object.assign(process.env, partial);
 
       await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
@@ -517,16 +518,16 @@ describe('env validation', () => {
 
     /**
      * A half-configured deployment that cannot charge anyone at all must not
-     * block boot for the rest of the product: no complete price set means no
+     * block boot for the rest of the product: no complete product set means no
      * Checkout session, so a localhost redirect is unreachable. This is the
      * ordinary local-development configuration.
      */
-    it('leaves the localhost default alone when no entry point is fully priced', async () => {
+    it('leaves the localhost default alone when no entry point is fully configured', async () => {
       vi.resetModules();
       restoreEnv();
       const {
-        STRIPE_MINUTE_PACK_PRICE_ID: _pack,
-        STRIPE_GROWTH_PRICE_ID: _growth,
+        DODO_MINUTE_PACK_PRODUCT_ID: _pack,
+        DODO_GROWTH_PRODUCT_ID: _growth,
         ...partial
       } = configuredBase;
       Object.assign(process.env, partial);
@@ -539,12 +540,13 @@ describe('env validation', () => {
      * Selling only packs is a legitimate half-configured state and still takes
      * money, so it is guarded too.
      */
-    it('rejects the localhost default when only the minute pack is priced', async () => {
+    it('rejects the localhost default when only the minute pack is configured', async () => {
       vi.resetModules();
       restoreEnv();
       const {
-        STRIPE_STARTER_PRICE_ID: _starter,
-        STRIPE_GROWTH_PRICE_ID: _growth,
+        DODO_STARTER_PRODUCT_ID: _starter,
+        DODO_GROWTH_PRODUCT_ID: _growth,
+        DODO_ENTERPRISE_PRODUCT_ID: _enterprise,
         ...partial
       } = configuredBase;
       Object.assign(process.env, partial);
@@ -552,7 +554,12 @@ describe('env validation', () => {
       await expect(import('./env')).rejects.toThrow(/WEB_BASE_URL/);
     });
 
-    it('defaults Stripe Tax off so launch never collects tax by accident', async () => {
+    /**
+     * Dodo is the Merchant of Record, so there is no tax switch to get wrong —
+     * what still has to be right is that an unconfigured deployment keeps its
+     * harmless localhost default and does not fail boot.
+     */
+    it('leaves the localhost default alone with no billing configuration at all', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, {
@@ -562,7 +569,7 @@ describe('env validation', () => {
       });
 
       const mod = await import('./env');
-      expect(mod.env.STRIPE_TAX_ENABLED).toBe(false);
+      expect(mod.env.DODO_PAYMENTS_ENVIRONMENT).toBe('test_mode');
       expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
     });
   });
@@ -658,12 +665,14 @@ describe('env validation', () => {
   });
 
   /**
-   * A test-mode Stripe key in production is a silent revenue outage: Checkout
-   * opens, the customer completes it, nothing settles, and live-mode webhook
-   * signatures never verify against a test secret. Boot succeeded and /health
-   * stayed green, so the only symptom was that no money arrived.
+   * Test-mode billing in production is a silent revenue outage: Checkout opens,
+   * the customer completes it, nothing settles, and live-mode webhook signatures
+   * never verify against a test secret. Boot succeeded and /health stayed green,
+   * so the only symptom was that no money arrived. A Dodo key carries no mode
+   * prefix, so DODO_PAYMENTS_ENVIRONMENT — which defaults to test_mode — is the
+   * only place the mode exists to be checked.
    */
-  describe('Stripe configuration in production', () => {
+  describe('Dodo Payments configuration in production', () => {
     const productionBase = {
       NODE_ENV: 'production',
       REDIS_URL: 'redis://localhost:6379',
@@ -676,50 +685,72 @@ describe('env validation', () => {
     };
 
     it.each([
-      ['a test secret key', 'sk_test_51abcdefghijklmnop'],
-      ['a test restricted key', 'rk_test_51abcdefghijklmnop'],
-    ])('refuses to boot on %s', async (_label, key) => {
+      ['the test_mode default, left unset', undefined],
+      ['an explicit test_mode', 'test_mode'],
+    ])('refuses to boot with a key and %s', async (_label, mode) => {
       vi.resetModules();
       restoreEnv();
-      Object.assign(process.env, productionBase, { STRIPE_SECRET_KEY: key });
+      Object.assign(process.env, productionBase, { DODO_PAYMENTS_API_KEY: 'dodo-live-key' });
+      if (mode === undefined) delete process.env.DODO_PAYMENTS_ENVIRONMENT;
+      else process.env.DODO_PAYMENTS_ENVIRONMENT = mode;
 
-      await expect(import('./env')).rejects.toThrow(/STRIPE_SECRET_KEY/);
+      await expect(import('./env')).rejects.toThrow(/DODO_PAYMENTS_ENVIRONMENT/);
     });
 
-    it('accepts a live key', async () => {
+    it('accepts live_mode', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, productionBase, {
-        STRIPE_SECRET_KEY: 'sk_live_51abcdefghijklmnop',
+        DODO_PAYMENTS_API_KEY: 'dodo-live-key',
+        DODO_PAYMENTS_ENVIRONMENT: 'live_mode',
       });
 
       const mod = await import('./env');
-      expect(mod.env.STRIPE_SECRET_KEY).toBe('sk_live_51abcdefghijklmnop');
+      expect(mod.env.DODO_PAYMENTS_ENVIRONMENT).toBe('live_mode');
     });
 
-    it('leaves a test key alone outside production', async () => {
+    /**
+     * The refusal is keyed on the key being present. BILLING_DISABLED=true leaves
+     * every Dodo variable empty, and that state must still boot in production —
+     * it is the live configuration today.
+     */
+    it('accepts test_mode in production while no key is configured', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, productionBase);
+      delete process.env.DODO_PAYMENTS_API_KEY;
+      delete process.env.DODO_PAYMENTS_ENVIRONMENT;
+
+      const mod = await import('./env');
+      expect(mod.env.DODO_PAYMENTS_ENVIRONMENT).toBe('test_mode');
+      expect(mod.env.DODO_PAYMENTS_API_KEY).toBeUndefined();
+    });
+
+    it('leaves test_mode alone outside production', async () => {
       vi.resetModules();
       restoreEnv();
       Object.assign(process.env, {
         NODE_ENV: 'development',
         REDIS_URL: 'redis://localhost:6379',
         JWT_SECRET: 'development-jwt-secret-with-32-chars',
-        STRIPE_SECRET_KEY: 'sk_test_51abcdefghijklmnop',
+        DODO_PAYMENTS_API_KEY: 'dodo-test-key',
+        DODO_PAYMENTS_ENVIRONMENT: 'test_mode',
       });
 
       const mod = await import('./env');
-      expect(mod.env.STRIPE_SECRET_KEY).toBe('sk_test_51abcdefghijklmnop');
+      expect(mod.env.DODO_PAYMENTS_ENVIRONMENT).toBe('test_mode');
     });
 
     /**
-     * Every STRIPE_* field is optional, so an incomplete configuration boots
-     * clean and /health (db/redis/llm) stays green while a paying customer gets
-     * a 503 on their upgrade click. Boot has to say which actions are dead.
+     * Every DODO_* field is optional, so an incomplete configuration boots clean
+     * and /health (db/redis/llm) stays green while a paying customer gets a 503 on
+     * their upgrade click. Boot has to say which actions are dead.
      */
     describe('reports which billing actions are disabled', () => {
-      const liveStripe = {
-        STRIPE_SECRET_KEY: 'sk_live_51abcdefghijklmnop',
-        STRIPE_WEBHOOK_SECRET: 'whsec_live',
+      const liveDodo = {
+        DODO_PAYMENTS_API_KEY: 'dodo-live-key',
+        DODO_PAYMENTS_ENVIRONMENT: 'live_mode',
+        DODO_WEBHOOK_SECRET: 'whsec_live',
         WEB_BASE_URL: 'https://incfrog.ai',
       };
 
@@ -738,33 +769,35 @@ describe('env validation', () => {
 
       it('names the missing variable and the actions it disables', async () => {
         const messages = await warningsFrom({
-          ...liveStripe,
-          STRIPE_STARTER_PRICE_ID: 'price_starter',
-          STRIPE_GROWTH_PRICE_ID: 'price_growth',
+          ...liveDodo,
+          DODO_STARTER_PRODUCT_ID: 'pdt_starter',
+          DODO_GROWTH_PRODUCT_ID: 'pdt_growth',
+          DODO_ENTERPRISE_PRODUCT_ID: 'pdt_enterprise',
         });
 
-        const stripeWarning = messages.find((message) => message.includes('return 503'));
-        expect(stripeWarning).toBeDefined();
-        expect(stripeWarning).toContain('minute-pack top-up');
-        expect(stripeWarning).toContain('STRIPE_MINUTE_PACK_PRICE_ID');
+        const dodoWarning = messages.find((message) => message.includes('return 503'));
+        expect(dodoWarning).toBeDefined();
+        expect(dodoWarning).toContain('minute-pack top-up');
+        expect(dodoWarning).toContain('DODO_MINUTE_PACK_PRODUCT_ID');
         // Subscription checkout and the portal are configured; naming them here
         // would make the warning noise an operator learns to ignore.
-        expect(stripeWarning).not.toContain('subscription checkout');
-        expect(stripeWarning).not.toContain('customer portal');
+        expect(dodoWarning).not.toContain('subscription checkout');
+        expect(dodoWarning).not.toContain('customer portal');
       });
 
       it('stays quiet once every entry point is configured', async () => {
         const messages = await warningsFrom({
-          ...liveStripe,
-          STRIPE_STARTER_PRICE_ID: 'price_starter',
-          STRIPE_GROWTH_PRICE_ID: 'price_growth',
-          STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
+          ...liveDodo,
+          DODO_STARTER_PRODUCT_ID: 'pdt_starter',
+          DODO_GROWTH_PRODUCT_ID: 'pdt_growth',
+          DODO_ENTERPRISE_PRODUCT_ID: 'pdt_enterprise',
+          DODO_MINUTE_PACK_PRODUCT_ID: 'pdt_minute_pack',
         });
 
         expect(messages.filter((message) => message.includes('return 503'))).toEqual([]);
       });
 
-      it('stays quiet outside production, where no Stripe configuration is expected', async () => {
+      it('stays quiet outside production, where no Dodo configuration is expected', async () => {
         vi.resetModules();
         restoreEnv();
         Object.assign(process.env, {
@@ -791,14 +824,15 @@ describe('env validation', () => {
  *
  * The deploy workflow validates the host's hand-maintained /opt/voiceforge/.env
  * against its own hardcoded list; it does not write that file. That list and the
- * code's notion of "Stripe is configured" had drifted into mirror images — the
+ * code's notion of "billing is configured" had drifted into mirror images — the
  * workflow required STRIPE_ENTERPRISE_PRICE_ID and omitted
  * STRIPE_MINUTE_PACK_PRICE_ID, while the code required the minute pack and never
  * read enterprise. A deploy therefore passed every gate, went green on
  * /api/v1/health (db/redis/llm only), and returned 503 from subscription
- * checkout, top-up and the customer portal alike.
+ * checkout, top-up and the customer portal alike. The provider is Dodo Payments
+ * now; the contract is unchanged and binds `dodo_required=( ... )`.
  */
-describe('deploy gate covers every variable Stripe Checkout requires', () => {
+describe('deploy gate covers every variable Dodo Checkout requires', () => {
   const root = ((): string => {
     let dir = process.cwd();
     for (let i = 0; i < 5; i += 1) {
@@ -823,11 +857,11 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
   /** The workflow's `required=( ... )` array — always enforced. */
   const gateRequired = parseArray('required');
   /**
-   * The workflow's `stripe_required=( ... )` array — enforced unless the host
-   * sets BILLING_DISABLED=true, in which case the same names must be EMPTY.
-   * Either way every name is checked, so coverage is the union of both lists.
+   * The workflow's `dodo_required=( ... )` array — enforced unless the host sets
+   * BILLING_DISABLED=true, in which case the same names must be EMPTY. Either way
+   * every name is checked, so coverage is the union of both lists.
    */
-  const gateStripeRequired = parseArray('stripe_required');
+  const gateDodoRequired = parseArray('dodo_required');
 
   afterEach(() => {
     restoreEnv();
@@ -836,7 +870,7 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
 
   it('is a non-trivial list, so an empty parse cannot pass vacuously', () => {
     expect(gateRequired.length).toBeGreaterThan(15);
-    expect(gateStripeRequired.length).toBeGreaterThan(4);
+    expect(gateDodoRequired.length).toBeGreaterThan(5);
   });
 
   it('requires every variable the API requires for Checkout', async () => {
@@ -848,17 +882,17 @@ describe('deploy gate covers every variable Stripe Checkout requires', () => {
       JWT_SECRET: 'development-jwt-secret-with-32-chars',
     });
 
-    const { STRIPE_CHECKOUT_REQUIRED_ENV } = await import('./env');
-    for (const name of STRIPE_CHECKOUT_REQUIRED_ENV) {
-      expect(gateStripeRequired).toContain(name);
+    const { DODO_CHECKOUT_REQUIRED_ENV } = await import('./env');
+    for (const name of DODO_CHECKOUT_REQUIRED_ENV) {
+      expect(gateDodoRequired).toContain(name);
     }
   });
 
   // The billing-disabled state is only sound if it is all-or-nothing: the gate
-  // must force every Stripe variable EMPTY when BILLING_DISABLED=true, because
-  // a leftover test-mode key boots the API into granting real credits for test
+  // must force every Dodo variable EMPTY when BILLING_DISABLED=true, because a
+  // leftover test-mode key boots the API into granting real credits for test
   // cards. Pin the branch so it cannot be deleted silently.
-  it('forces every Stripe variable empty when billing is disabled', () => {
+  it('forces every Dodo variable empty when billing is disabled', () => {
     expect(workflowSrc).toMatch(/BILLING_DISABLED.*=.*true/);
     expect(workflowSrc).toContain('must be empty when BILLING_DISABLED=true');
   });

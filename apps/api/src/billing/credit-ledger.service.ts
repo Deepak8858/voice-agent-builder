@@ -46,41 +46,44 @@ const IdentifierSchema = z.string().trim().min(1);
 const IdempotencyKeySchema = z.string().trim().min(1).max(255);
 
 /**
- * The Stripe event whose processing this grant *is*.
+ * The webhook delivery whose processing this grant *is*, identified by Standard
+ * Webhooks' `webhook-id` header.
  *
  * A webhook handler used to grant credit in one transaction and mark its event
  * processed in another, so a crash between the two commits left a granted event
  * looking unprocessed and re-dispatched the whole handler on redelivery.
- * Passing the event id here moves the "processed" write inside the grant's own
+ * Passing the delivery id here moves the "processed" write inside the grant's own
  * transaction, which makes grant and acknowledgement commit or roll back
  * together. Optional because non-webhook callers (the free-credit worker,
- * backfills) have no Stripe event to acknowledge.
+ * backfills) have no delivery to acknowledge.
  */
-const StripeEventIdSchema = IdentifierSchema.optional();
+const WebhookIdSchema = IdentifierSchema.optional();
 
 const SubscriptionGrantInputSchema = z
   .object({
     organizationId: IdentifierSchema,
-    invoiceId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     includedMinutes: z.number().int().nonnegative(),
     periodEnd: z.date(),
     actorId: IdentifierSchema.optional(),
-    stripeEventId: StripeEventIdSchema,
+    webhookId: WebhookIdSchema,
   })
   .strict();
 
 const PurchasedGrantInputSchema = z
   .object({
     organizationId: IdentifierSchema,
-    checkoutSessionId: IdentifierSchema,
+    /**
+     * The Dodo payment that funded the pack. It is both the bucket's `sourceId`
+     * and its `dodoPaymentId`, which is uniquely indexed, so a second bucket can
+     * never be minted for one payment. Stripe needed two ids here — a Checkout
+     * session and a PaymentIntent, which could diverge for one payment; Dodo has
+     * one, so there is one field.
+     */
+    paymentId: IdentifierSchema,
     purchasedAt: z.date(),
     actorId: IdentifierSchema.optional(),
-    /**
-     * The PaymentIntent that funded the pack. Persisted on the bucket under a
-     * unique index, so a second bucket can never be minted for one payment.
-     */
-    paymentIntentId: IdentifierSchema.optional(),
-    stripeEventId: StripeEventIdSchema,
+    webhookId: WebhookIdSchema,
   })
   .strict();
 
@@ -126,11 +129,10 @@ const CreditReversalInputSchema = z
   .object({
     organizationId: IdentifierSchema,
     /**
-     * The bucket's `sourceId`: a Checkout session for a pack, a Stripe invoice
-     * for a subscription period. The field keeps its original name because it is
-     * the pack case that every persisted reversal to date recorded under it.
+     * The bucket's `sourceId`: the Dodo payment for a pack, the billing cycle's
+     * grant key for a subscription period.
      */
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     refundId: IdentifierSchema,
     /**
      * Which credit a refund takes back. Defaults to `purchased` so the pack
@@ -206,7 +208,7 @@ const SubscriptionGrantOperationSchema = z
   .object({
     kind: z.literal('subscription_grant'),
     organizationId: IdentifierSchema,
-    invoiceId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     bucketId: IdentifierSchema,
     sourceType: z.literal('included'),
     sourceId: IdentifierSchema,
@@ -220,7 +222,7 @@ const SubscriptionGrantOperationSchema = z
 const SubscriptionGrantReplayMetadataSchema = z
   .object({
     operation: SubscriptionGrantOperationSchema,
-    invoiceId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     includedMinutes: z.number().int().nonnegative(),
     periodEnd: z.string().datetime(),
     priority: z.literal(10),
@@ -258,7 +260,7 @@ const PurchasedGrantOperationSchema = z
   .object({
     kind: z.literal('purchased_grant'),
     organizationId: IdentifierSchema,
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     bucketId: IdentifierSchema,
     sourceType: z.literal('purchased'),
     sourceId: IdentifierSchema,
@@ -273,7 +275,7 @@ const PurchasedGrantOperationSchema = z
 const PurchasedGrantReplayMetadataSchema = z
   .object({
     operation: PurchasedGrantOperationSchema,
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     purchasedAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
     priority: z.literal(20),
@@ -301,7 +303,7 @@ const PurchasedReversalOperationSchema = z
   .object({
     kind: z.literal('purchased_credit_reversal'),
     organizationId: IdentifierSchema,
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     refundId: IdentifierSchema,
     bucketId: IdentifierSchema,
     // Widened from a `purchased` literal when subscription reversals were added.
@@ -316,7 +318,7 @@ const PurchasedReversalOperationSchema = z
 const AutomaticPurchasedReversalReplayMetadataSchema = z
   .object({
     operation: PurchasedReversalOperationSchema,
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     refundId: IdentifierSchema,
     originalSeconds: z.number().int().positive(),
     unusedSecondsRemoved: z.number().int().positive(),
@@ -328,7 +330,7 @@ const AutomaticPurchasedReversalReplayMetadataSchema = z
 const ManualReviewPurchasedReversalReplayMetadataSchema = z
   .object({
     operation: PurchasedReversalOperationSchema,
-    checkoutSessionId: IdentifierSchema,
+    paymentId: IdentifierSchema,
     refundId: IdentifierSchema,
     originalSeconds: z.number().int().positive(),
     unusedSecondsPreserved: z.number().int().nonnegative(),
@@ -429,7 +431,7 @@ export class CreditLedgerService {
   async grantSubscriptionCredits(rawInput: SubscriptionGrantInput): Promise<CreditBalance> {
     const input = SubscriptionGrantInputSchema.parse(rawInput);
     const seconds = input.includedMinutes * CREDIT_SECONDS_PER_MINUTE;
-    const idempotencyKey = `stripe:invoice:${input.invoiceId}:included`;
+    const idempotencyKey = `dodo:payment:${input.paymentId}:included`;
 
     return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
       const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
@@ -438,7 +440,7 @@ export class CreditLedgerService {
           tx,
           input.organizationId,
           'included',
-          input.invoiceId,
+          input.paymentId,
         );
         this.assertLedgerReplayIdentity(existing, {
           entryTypes: ['subscription_grant'],
@@ -450,49 +452,49 @@ export class CreditLedgerService {
           reasonCode: 'subscription_included',
           metadataSchema: SubscriptionGrantReplayMetadataSchema,
           operationMatches: (metadata) =>
-            metadata.invoiceId === input.invoiceId &&
+            metadata.paymentId === input.paymentId &&
             metadata.includedMinutes === input.includedMinutes &&
             metadata.periodEnd === input.periodEnd.toISOString() &&
             metadata.priority === 10 &&
             metadata.operation.kind === 'subscription_grant' &&
             metadata.operation.organizationId === input.organizationId &&
-            metadata.operation.invoiceId === input.invoiceId &&
+            metadata.operation.paymentId === input.paymentId &&
             metadata.operation.bucketId === bucket.id &&
             metadata.operation.sourceType === 'included' &&
-            metadata.operation.sourceId === input.invoiceId &&
+            metadata.operation.sourceId === input.paymentId &&
             metadata.operation.seconds === seconds &&
             metadata.operation.periodEnd === input.periodEnd.toISOString() &&
             metadata.operation.priority === 10 &&
             metadata.operation.status === 'active' &&
             bucket.organizationId === input.organizationId &&
             bucket.sourceType === 'included' &&
-            bucket.sourceId === input.invoiceId &&
+            bucket.sourceId === input.paymentId &&
             bucket.originalSeconds === seconds &&
             bucket.expiresAt.getTime() === input.periodEnd.getTime() &&
-            // Deliberately no live `bucket.status` term. A mid-cycle invoice runs
-            // `supersedeIncludedBuckets`, which expires this invoice's bucket — so
-            // when Stripe redelivers *this* invoice's event for days afterwards, a
+            // Deliberately no live `bucket.status` term. A mid-cycle plan change
+            // runs `supersedeIncludedBuckets`, which expires this cycle's bucket —
+            // so when Dodo redelivers *this* cycle's event for days afterwards, a
             // superseded bucket is a legitimate replay target, not a conflict.
             // Asserting it threw `idempotency_conflict`, and that rolled the
-            // transaction back including `markStripeEventProcessed`, so the event
+            // transaction back including `markWebhookEventProcessed`, so the event
             // never cleared and the retries never stopped. The recorded
             // `metadata.operation.status` above is the immutable identity check;
             // the live row is allowed to move on.
             bucket.priority === 10,
         });
-        await this.markStripeEventProcessed(tx, input.stripeEventId);
+        await this.markWebhookEventProcessed(tx, input.webhookId);
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
       // Forfeit the outgoing allowance BEFORE the new one exists, so the query
       // cannot pick up the bucket it is about to create.
-      await this.supersedeIncludedBuckets(tx, input.organizationId, lockedBalance, input.invoiceId);
+      await this.supersedeIncludedBuckets(tx, input.organizationId, lockedBalance, input.paymentId);
       const grantedAt = new Date();
       const bucket = await tx.billingCreditBucket.create({
         data: {
           organizationId: input.organizationId,
           sourceType: 'included',
-          sourceId: input.invoiceId,
+          sourceId: input.paymentId,
           originalSeconds: seconds,
           remainingSeconds: seconds,
           validFrom: grantedAt,
@@ -517,24 +519,24 @@ export class CreditLedgerService {
           entryType: 'subscription_grant',
           seconds,
           balanceAfterSeconds: this.totalOwned(updatedBalance),
-          actorType: 'stripe',
-          actorId: input.actorId ?? input.invoiceId,
+          actorType: 'dodo',
+          actorId: input.actorId ?? input.paymentId,
           reasonCode: 'subscription_included',
           idempotencyKey,
           metadata: this.jsonMetadata({
             operation: {
               kind: 'subscription_grant',
               organizationId: input.organizationId,
-              invoiceId: input.invoiceId,
+              paymentId: input.paymentId,
               bucketId: bucket.id,
               sourceType: 'included',
-              sourceId: input.invoiceId,
+              sourceId: input.paymentId,
               seconds,
               periodEnd: input.periodEnd.toISOString(),
               priority: 10,
               status: 'active',
             },
-            invoiceId: input.invoiceId,
+            paymentId: input.paymentId,
             includedMinutes: input.includedMinutes,
             periodEnd: input.periodEnd.toISOString(),
             priority: 10,
@@ -547,17 +549,17 @@ export class CreditLedgerService {
         resourceType: 'billing_credit_bucket',
         resourceId: bucket.id,
         metadata: {
-          initiator: input.actorId ?? 'stripe_webhook',
+          initiator: input.actorId ?? 'dodo_webhook',
           source: 'subscription_invoice',
-          invoiceId: input.invoiceId,
-          stripeEventId: input.stripeEventId ?? null,
+          paymentId: input.paymentId,
+          webhookId: input.webhookId ?? null,
           includedMinutes: input.includedMinutes,
           seconds,
           periodEnd: input.periodEnd.toISOString(),
           balanceAfterSeconds: this.totalOwned(updatedBalance),
         },
       });
-      await this.markStripeEventProcessed(tx, input.stripeEventId);
+      await this.markWebhookEventProcessed(tx, input.webhookId);
 
       return this.buildCreditBalance(tx, updatedBalance);
     });
@@ -567,9 +569,9 @@ export class CreditLedgerService {
    * Forfeits every still-active `included` bucket before a new period's
    * allowance lands.
    *
-   * A mid-cycle plan change makes Stripe issue a second invoice inside one
-   * billing period. The grant is keyed by invoice, so it correctly refused to
-   * double-grant *the same* invoice — but the outgoing period's bucket was left
+   * A mid-cycle plan change makes the provider charge a second time inside one
+   * billing period. The grant is keyed by payment, so it correctly refused to
+   * double-grant *the same* payment — but the outgoing period's bucket was left
    * `active` with its unused balance intact and expiring at the old period end,
    * so the customer held two full allowances at once and the cheapest moment to
    * upgrade was the day before renewal.
@@ -587,7 +589,7 @@ export class CreditLedgerService {
     tx: TransactionClient,
     organizationId: string,
     lockedBalance: OrganizationCreditBalance,
-    invoiceId: string,
+    paymentId: string,
   ): Promise<void> {
     const outgoing = await tx.billingCreditBucket.findMany({
       where: { organizationId, sourceType: 'included', status: 'active' },
@@ -627,17 +629,17 @@ export class CreditLedgerService {
         entryType: 'included_grant_superseded',
         seconds: -forfeitedSeconds,
         balanceAfterSeconds: this.totalOwned(updatedBalance),
-        actorType: 'stripe',
-        actorId: invoiceId,
+        actorType: 'dodo',
+        actorId: paymentId,
         reasonCode: 'included_period_superseded',
-        idempotencyKey: `stripe:invoice:${invoiceId}:supersede`,
+        idempotencyKey: `dodo:payment:${paymentId}:supersede`,
         metadata: this.jsonMetadata({
           operation: {
             kind: 'included_grant_superseded',
             organizationId,
-            invoiceId,
+            paymentId,
           },
-          invoiceId,
+          paymentId,
           forfeitedSeconds,
           supersededBuckets: outgoing.map((bucket) => ({
             bucketId: bucket.id,
@@ -655,9 +657,9 @@ export class CreditLedgerService {
       resourceType: 'organization_credit_balance',
       resourceId: organizationId,
       metadata: {
-        initiator: 'stripe_webhook',
+        initiator: 'dodo_webhook',
         source: 'subscription_invoice',
-        invoiceId,
+        paymentId,
         forfeitedSeconds,
         supersededBucketIds: outgoing.map((bucket) => bucket.id),
         balanceAfterSeconds: this.totalOwned(updatedBalance),
@@ -666,20 +668,20 @@ export class CreditLedgerService {
   }
 
   /**
-   * Marks the Stripe event that drove this grant processed, inside the grant's
-   * own transaction.
+   * Marks the webhook delivery that drove this grant processed, inside the
+   * grant's own transaction.
    *
    * `updateMany` with a `processedAt: null` guard rather than `update`: the row
    * is owned by the webhook service, so this must neither invent one nor
    * overwrite an acknowledgement another delivery already recorded.
    */
-  private async markStripeEventProcessed(
+  private async markWebhookEventProcessed(
     tx: TransactionClient,
-    stripeEventId: string | undefined,
+    webhookId: string | undefined,
   ): Promise<void> {
-    if (!stripeEventId) return;
-    await tx.stripeEvent.updateMany({
-      where: { stripeEventId, processedAt: null },
+    if (!webhookId) return;
+    await tx.dodoWebhookEvent.updateMany({
+      where: { webhookId, processedAt: null },
       data: { processedAt: new Date(), processingStartedAt: null, errorMessage: null },
     });
   }
@@ -863,7 +865,7 @@ export class CreditLedgerService {
 
   async grantPurchasedCredits(rawInput: PurchasedGrantInput): Promise<CreditBalance> {
     const input = PurchasedGrantInputSchema.parse(rawInput);
-    const idempotencyKey = `stripe:checkout:${input.checkoutSessionId}:topup`;
+    const idempotencyKey = `dodo:payment:${input.paymentId}:topup`;
 
     return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
       const existing = await this.findIdempotentEntry(tx, input.organizationId, idempotencyKey);
@@ -872,12 +874,12 @@ export class CreditLedgerService {
           tx,
           input.organizationId,
           'purchased',
-          input.checkoutSessionId,
+          input.paymentId,
         );
         // A replay is checked against the terms this purchase was actually
         // sold under, held on the bucket, rather than against the current
         // catalog. Otherwise repricing the pack would make every historical
-        // Stripe retry look like an idempotency conflict.
+        // redelivery look like an idempotency conflict.
         const soldSeconds = bucket.originalSeconds;
         const soldExpiresAt = bucket.expiresAt;
         this.assertLedgerReplayIdentity(existing, {
@@ -890,16 +892,16 @@ export class CreditLedgerService {
           reasonCode: 'purchased_topup',
           metadataSchema: PurchasedGrantReplayMetadataSchema,
           operationMatches: (metadata) =>
-            metadata.checkoutSessionId === input.checkoutSessionId &&
+            metadata.paymentId === input.paymentId &&
             metadata.purchasedAt === input.purchasedAt.toISOString() &&
             metadata.expiresAt === soldExpiresAt.toISOString() &&
             metadata.priority === 20 &&
             metadata.operation.kind === 'purchased_grant' &&
             metadata.operation.organizationId === input.organizationId &&
-            metadata.operation.checkoutSessionId === input.checkoutSessionId &&
+            metadata.operation.paymentId === input.paymentId &&
             metadata.operation.bucketId === bucket.id &&
             metadata.operation.sourceType === 'purchased' &&
-            metadata.operation.sourceId === input.checkoutSessionId &&
+            metadata.operation.sourceId === input.paymentId &&
             metadata.operation.seconds === soldSeconds &&
             metadata.operation.purchasedAt === input.purchasedAt.toISOString() &&
             metadata.operation.expiresAt === soldExpiresAt.toISOString() &&
@@ -907,49 +909,46 @@ export class CreditLedgerService {
             metadata.operation.status === 'active' &&
             bucket.organizationId === input.organizationId &&
             bucket.sourceType === 'purchased' &&
-            bucket.sourceId === input.checkoutSessionId &&
+            bucket.sourceId === input.paymentId &&
             bucket.validFrom.getTime() === input.purchasedAt.getTime() &&
             bucket.priority === 20 &&
             // No live `bucket.status` term either, for the same reason as the
             // subscription grant: `reversePurchasedCredits` marks this bucket
             // `refunded` and reconciliation expires it at term, both of which a
-            // redelivery of the original Checkout can legitimately arrive after.
+            // redelivery of the original payment can legitimately arrive after.
             //
-            // A bucket predating the payment-intent column carries null, and a
-            // replay of its Checkout must still be recognised as the same
+            // A bucket granted before this column existed carries null, and a
+            // replay of its purchase must still be recognised as the same
             // purchase rather than reported as a conflict. A bucket that *does*
-            // name a payment intent must name this one.
-            (bucket.stripePaymentIntentId === null ||
-              bucket.stripePaymentIntentId === (input.paymentIntentId ?? null)),
+            // name a payment must name this one.
+            (bucket.dodoPaymentId === null || bucket.dodoPaymentId === input.paymentId),
         });
-        await this.markStripeEventProcessed(tx, input.stripeEventId);
+        await this.markWebhookEventProcessed(tx, input.webhookId);
         return this.buildCreditBalance(tx, lockedBalance);
       }
 
-      // The idempotency key above is the Checkout session, but Stripe can deliver
-      // the same payment under a second session id. That replay misses the key and
-      // used to collide with `credit_bucket_payment_intent_uidx` — which rolled the
-      // whole transaction back, acknowledgement included, so Stripe retried the
-      // event until it gave up. Recognising the already-funded pack keeps the money
-      // decision identical and lets the event settle.
+      // Recognises a pack this organization has already been granted for this
+      // payment under some *other* ledger key — a bucket carried over from the
+      // Stripe era, or one granted before the key scheme changed. Without it the
+      // create below collides with `credit_bucket_dodo_payment_id_uidx`, which
+      // rolls the whole transaction back, acknowledgement included, so the
+      // provider retries the delivery until it gives up.
       //
-      // Scoped to the organization, so a payment intent belonging to another tenant
-      // is never acknowledged here — it falls through to the create and the unique
-      // index rejects it. The index stays as the backstop for anything this lookup
-      // cannot see, and the `FOR UPDATE` in `withLockedBalance` serialises same-org
-      // deliveries, so the lookup cannot race one.
-      if (input.paymentIntentId) {
-        const funded = await tx.billingCreditBucket.findFirst({
-          where: {
-            organizationId: input.organizationId,
-            stripePaymentIntentId: input.paymentIntentId,
-          },
-          select: { id: true },
-        });
-        if (funded) {
-          await this.markStripeEventProcessed(tx, input.stripeEventId);
-          return this.buildCreditBalance(tx, lockedBalance);
-        }
+      // Scoped to the organization, so a payment belonging to another tenant is
+      // never acknowledged here — it falls through to the create and the unique
+      // index rejects it. The index stays as the backstop for anything this
+      // lookup cannot see, and the `FOR UPDATE` in `withLockedBalance` serialises
+      // same-org deliveries, so the lookup cannot race one.
+      const funded = await tx.billingCreditBucket.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          dodoPaymentId: input.paymentId,
+        },
+        select: { id: true },
+      });
+      if (funded) {
+        await this.markWebhookEventProcessed(tx, input.webhookId);
+        return this.buildCreditBalance(tx, lockedBalance);
       }
 
       const expiresAt = new Date(input.purchasedAt.getTime() + PURCHASED_PACK_LIFETIME_MS);
@@ -957,17 +956,16 @@ export class CreditLedgerService {
         data: {
           organizationId: input.organizationId,
           sourceType: 'purchased',
-          sourceId: input.checkoutSessionId,
+          sourceId: input.paymentId,
           originalSeconds: PURCHASED_PACK_SECONDS,
           remainingSeconds: PURCHASED_PACK_SECONDS,
           validFrom: input.purchasedAt,
           expiresAt,
           priority: 20,
           status: 'active',
-          // Unique. Two different Checkout sessions reporting the same payment —
-          // the shape a replay takes once the session id is no longer stable —
-          // abort here instead of granting a second paid-for pack.
-          stripePaymentIntentId: input.paymentIntentId ?? null,
+          // Unique. A second delivery of the same payment that slipped past both
+          // checks above aborts here instead of granting a second paid-for pack.
+          dodoPaymentId: input.paymentId,
         },
       });
       const updatedBalance = await tx.organizationCreditBalance.update({
@@ -986,25 +984,25 @@ export class CreditLedgerService {
           entryType: 'purchase_grant',
           seconds: PURCHASED_PACK_SECONDS,
           balanceAfterSeconds: this.totalOwned(updatedBalance),
-          actorType: 'stripe',
-          actorId: input.actorId ?? input.checkoutSessionId,
+          actorType: 'dodo',
+          actorId: input.actorId ?? input.paymentId,
           reasonCode: 'purchased_topup',
           idempotencyKey,
           metadata: this.jsonMetadata({
             operation: {
               kind: 'purchased_grant',
               organizationId: input.organizationId,
-              checkoutSessionId: input.checkoutSessionId,
+              paymentId: input.paymentId,
               bucketId: bucket.id,
               sourceType: 'purchased',
-              sourceId: input.checkoutSessionId,
+              sourceId: input.paymentId,
               seconds: PURCHASED_PACK_SECONDS,
               purchasedAt: input.purchasedAt.toISOString(),
               expiresAt: expiresAt.toISOString(),
               priority: 20,
               status: 'active',
             },
-            checkoutSessionId: input.checkoutSessionId,
+            paymentId: input.paymentId,
             purchasedAt: input.purchasedAt.toISOString(),
             expiresAt: expiresAt.toISOString(),
             priority: 20,
@@ -1017,18 +1015,17 @@ export class CreditLedgerService {
         resourceType: 'billing_credit_bucket',
         resourceId: bucket.id,
         metadata: {
-          initiator: input.actorId ?? 'stripe_webhook',
-          source: 'stripe_checkout',
-          checkoutSessionId: input.checkoutSessionId,
-          paymentIntentId: input.paymentIntentId ?? null,
-          stripeEventId: input.stripeEventId ?? null,
+          initiator: input.actorId ?? 'dodo_webhook',
+          source: 'dodo_payment',
+          paymentId: input.paymentId,
+          webhookId: input.webhookId ?? null,
           seconds: PURCHASED_PACK_SECONDS,
           purchasedAt: input.purchasedAt.toISOString(),
           expiresAt: expiresAt.toISOString(),
           balanceAfterSeconds: this.totalOwned(updatedBalance),
         },
       });
-      await this.markStripeEventProcessed(tx, input.stripeEventId);
+      await this.markWebhookEventProcessed(tx, input.webhookId);
 
       return this.buildCreditBalance(tx, updatedBalance);
     });
@@ -1419,16 +1416,16 @@ export class CreditLedgerService {
    *
    * Reverses either source: a pack (`purchased`) or a refunded subscription
    * period (`included`, which used to be retained as usable service no matter
-   * how much of the invoice was refunded). The two share every rule that matters
-   * — one reversal per Stripe reversal id, no reversal of already-spent credit
+   * how much of the cycle was refunded). The two share every rule that matters
+   * — one reversal per provider reversal id, no reversal of already-spent credit
    * without a human — so they share the implementation rather than a copy of it.
    */
   async reversePurchasedCredits(rawInput: CreditReversalInput): Promise<CreditBalance> {
     const input = CreditReversalInputSchema.parse(rawInput);
     const idempotencyKey =
       input.sourceType === 'included'
-        ? `stripe:refund:${input.refundId}:included_reversal`
-        : `stripe:refund:${input.refundId}:topup_reversal`;
+        ? `dodo:refund:${input.refundId}:included_reversal`
+        : `dodo:refund:${input.refundId}:topup_reversal`;
 
     return this.withLockedBalance(input.organizationId, async (tx, lockedBalance) => {
       const bucket = await tx.billingCreditBucket.findUnique({
@@ -1436,13 +1433,13 @@ export class CreditLedgerService {
           organizationId_sourceType_sourceId: {
             organizationId: input.organizationId,
             sourceType: input.sourceType,
-            sourceId: input.checkoutSessionId,
+            sourceId: input.paymentId,
           },
         },
       });
       if (!bucket) {
         throw new CreditLedgerInvariantError(
-          `${input.sourceType} credit bucket ${input.checkoutSessionId} was not found for organization ${input.organizationId}`,
+          `${input.sourceType} credit bucket ${input.paymentId} was not found for organization ${input.organizationId}`,
         );
       }
       this.assertPurchasedBucketIdentity(bucket, input);
@@ -1453,7 +1450,7 @@ export class CreditLedgerService {
       }
       if (bucket.status === 'refunded') {
         throw new CreditLedgerInvariantError(
-          `Purchased credit bucket ${input.checkoutSessionId} was already refunded by another operation`,
+          `Purchased credit bucket ${input.paymentId} was already refunded by another operation`,
           'refund_already_processed',
         );
       }
@@ -1462,7 +1459,7 @@ export class CreditLedgerService {
       const consumedOrReservedSeconds = bucket.originalSeconds - bucket.remainingSeconds;
       const reviewReason =
         consumedOrReservedSeconds > 0
-          ? this.purchasedRefundReviewReason(input.checkoutSessionId, consumedOrReservedSeconds)
+          ? this.purchasedRefundReviewReason(input.paymentId, consumedOrReservedSeconds)
           : null;
 
       if (reviewReason) {
@@ -1483,13 +1480,13 @@ export class CreditLedgerService {
             entryType: 'purchase_reversal_review',
             seconds: 0,
             balanceAfterSeconds: this.totalOwned(blockedBalance),
-            actorType: 'stripe',
+            actorType: 'dodo',
             actorId: input.refundId,
             reasonCode: 'refund_manual_review',
             idempotencyKey,
             metadata: this.jsonMetadata({
               operation: this.purchasedReversalOperation(input, bucket),
-              checkoutSessionId: input.checkoutSessionId,
+              paymentId: input.paymentId,
               refundId: input.refundId,
               originalSeconds: bucket.originalSeconds,
               unusedSecondsPreserved: unusedSeconds,
@@ -1506,9 +1503,9 @@ export class CreditLedgerService {
           resourceType: 'organization_credit_balance',
           resourceId: input.organizationId,
           metadata: {
-            initiator: 'stripe_webhook',
+            initiator: 'dodo_webhook',
             sourceType: input.sourceType,
-            sourceId: input.checkoutSessionId,
+            sourceId: input.paymentId,
             refundId: input.refundId,
             bucketId: bucket.id,
             originalSeconds: bucket.originalSeconds,
@@ -1547,13 +1544,13 @@ export class CreditLedgerService {
           entryType: 'purchase_reversal',
           seconds: -unusedSeconds,
           balanceAfterSeconds: this.totalOwned(updatedBalance),
-          actorType: 'stripe',
+          actorType: 'dodo',
           actorId: input.refundId,
           reasonCode: 'refund_unused_credit',
           idempotencyKey,
           metadata: this.jsonMetadata({
             operation: this.purchasedReversalOperation(input, bucket),
-            checkoutSessionId: input.checkoutSessionId,
+            paymentId: input.paymentId,
             refundId: input.refundId,
             originalSeconds: bucket.originalSeconds,
             unusedSecondsRemoved: unusedSeconds,
@@ -1568,9 +1565,9 @@ export class CreditLedgerService {
         resourceType: 'billing_credit_bucket',
         resourceId: bucket.id,
         metadata: {
-          initiator: 'stripe_webhook',
+          initiator: 'dodo_webhook',
           sourceType: input.sourceType,
-          sourceId: input.checkoutSessionId,
+          sourceId: input.paymentId,
           refundId: input.refundId,
           originalSeconds: bucket.originalSeconds,
           secondsRemoved: unusedSeconds,
@@ -2298,7 +2295,7 @@ export class CreditLedgerService {
     if (
       bucket.organizationId !== input.organizationId ||
       bucket.sourceType !== input.sourceType ||
-      bucket.sourceId !== input.checkoutSessionId ||
+      bucket.sourceId !== input.paymentId ||
       !Number.isInteger(bucket.originalSeconds) ||
       bucket.originalSeconds <= 0
     ) {
@@ -2326,7 +2323,7 @@ export class CreditLedgerService {
         metadataSchema: AutomaticPurchasedReversalReplayMetadataSchema,
         operationMatches: (metadata) =>
           this.purchasedReversalIdentityMatches(metadata.operation, input, bucket) &&
-          metadata.checkoutSessionId === input.checkoutSessionId &&
+          metadata.paymentId === input.paymentId &&
           metadata.refundId === input.refundId &&
           metadata.originalSeconds === bucket.originalSeconds &&
           metadata.unusedSecondsRemoved === bucket.originalSeconds &&
@@ -2348,14 +2345,14 @@ export class CreditLedgerService {
         metadataSchema: ManualReviewPurchasedReversalReplayMetadataSchema,
         operationMatches: (metadata) =>
           this.purchasedReversalIdentityMatches(metadata.operation, input, bucket) &&
-          metadata.checkoutSessionId === input.checkoutSessionId &&
+          metadata.paymentId === input.paymentId &&
           metadata.refundId === input.refundId &&
           metadata.originalSeconds === bucket.originalSeconds &&
           metadata.unusedSecondsPreserved + metadata.consumedOrReservedSeconds ===
             metadata.originalSeconds &&
           metadata.reviewReason ===
             this.purchasedRefundReviewReason(
-              input.checkoutSessionId,
+              input.paymentId,
               metadata.consumedOrReservedSeconds,
             ),
       });
@@ -2375,20 +2372,20 @@ export class CreditLedgerService {
   ): boolean {
     return (
       operation.organizationId === input.organizationId &&
-      operation.checkoutSessionId === input.checkoutSessionId &&
+      operation.paymentId === input.paymentId &&
       operation.refundId === input.refundId &&
       operation.bucketId === bucket.id &&
       operation.sourceType === input.sourceType &&
-      operation.sourceId === input.checkoutSessionId &&
+      operation.sourceId === input.paymentId &&
       operation.originalSeconds === bucket.originalSeconds
     );
   }
 
   private purchasedRefundReviewReason(
-    checkoutSessionId: string,
+    paymentId: string,
     consumedOrReservedSeconds: number,
   ): string {
-    return `Purchased credit refund for checkout ${checkoutSessionId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`;
+    return `Purchased credit refund for checkout ${paymentId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`;
   }
 
   private purchasedReversalOperation(
@@ -2398,11 +2395,11 @@ export class CreditLedgerService {
     return {
       kind: 'purchased_credit_reversal',
       organizationId: input.organizationId,
-      checkoutSessionId: input.checkoutSessionId,
+      paymentId: input.paymentId,
       refundId: input.refundId,
       bucketId: bucket.id,
       sourceType: input.sourceType,
-      sourceId: input.checkoutSessionId,
+      sourceId: input.paymentId,
       originalSeconds: bucket.originalSeconds,
     };
   }
@@ -2498,14 +2495,14 @@ export class CreditLedgerService {
    * and the money commit together or neither does (precedent:
    * retention.service.ts).
    *
-   * `actorUserId` is always null: every path into this ledger is a Stripe
+   * `actorUserId` is always null: every path into this ledger is a Dodo
    * webhook or the free-credit worker, and `audit_logs.actor_user_id` has an FK
-   * to `users`, so a Stripe or system identifier cannot be stored there. The
+   * to `users`, so a provider or system identifier cannot be stored there. The
    * initiator is named in `metadata.initiator` instead (precedent:
    * scripts/flag-farmed-organizations.ts).
    *
    * Only called on paths that actually moved money. An idempotent replay returns
-   * before reaching one of these, on purpose: a row per Stripe redelivery buries
+   * before reaching one of these, on purpose: a row per redelivery buries
    * the single row that records the grant.
    */
   private async auditMoneyMove(

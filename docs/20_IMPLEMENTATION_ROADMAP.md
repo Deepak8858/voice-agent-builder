@@ -28,7 +28,7 @@ Event ingestion, dashboard metrics, agent metrics, improvement suggestions.
 Client workspaces, branding, client dashboard, agency dashboard.
 
 ## Phase 9 — Billing
-Stripe checkout, subscription webhooks, usage metering.
+Dodo Payments checkout, subscription webhooks, usage metering.
 
 ## Phase 10 — Production Hardening
 Security review, rate limits, observability, backups, load testing.

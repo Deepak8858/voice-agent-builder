@@ -53,8 +53,8 @@ export default function PrivacyPolicyPage() {
           <li>Contact records that customers import for outbound campaigns</li>
         </ul>
         <p className="mt-4">
-          We do not process payment card numbers. Card details are entered directly into Stripe and
-          never reach our servers. We do not intentionally collect health records or other special
+          We do not process payment card numbers. Card details are entered directly into Dodo
+          Payments, our merchant of record, and never reach our servers. We do not intentionally collect health records or other special
           category data, and the platform is not intended for that use.
         </p>
       </Section>
@@ -115,8 +115,8 @@ export default function PrivacyPolicyPage() {
             authentication
           </li>
           <li>
-            <strong className="text-foreground">Stripe</strong> — payment processing and subscription
-            billing
+            <strong className="text-foreground">Dodo Payments</strong> — merchant of record for
+            subscription payments: payment processing, billing, and sales tax or VAT
           </li>
           <li>
             <strong className="text-foreground">Resend</strong> — transactional email

@@ -19,7 +19,7 @@ NestJS API
   ↓
 PostgreSQL + Redis + S3/R2 + ClickHouse + Vector DB
   ↓
-External Providers: OpenAI/Azure AI (Speech + Azure OpenAI)/LiveKit/Twilio/Telnyx/Stripe/Google/HubSpot/Webhooks
+External Providers: OpenAI/Azure AI (Speech + Azure OpenAI)/LiveKit/Twilio/Telnyx/Dodo Payments/Google/HubSpot/Webhooks
 ```
 
 ## Core Design Decision

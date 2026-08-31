@@ -1,7 +1,10 @@
 # 16 — Billing and Usage
 
 ## Provider
-Use Stripe Billing with hosted Checkout and hosted Customer Portal. Checkout uses Stripe Tax.
+Use Dodo Payments (Merchant of Record) with hosted checkout and hosted customer
+portal. As Merchant of Record, Dodo is the seller of record on the customer's
+statement and calculates, collects and remits sales tax / VAT itself, so there is
+no tax integration to configure or switch on here.
 
 ## Plans
 `packages/shared/src/billing/catalog.ts` is the only source of these numbers
@@ -24,9 +27,12 @@ Minute pack: $39 for 100 extra minutes, expires 365 days after purchase.
   only, and Free is standard only. A plan with a 0% share of a pipeline is never
   routed there, not merely unlikely to be.
 - Enterprise's price is a floor ("from $999") and it is sales-assisted: only
-  Starter and Growth are self-service (`CheckoutPlanSchema`), there is no
-  checkout path to Enterprise, and no code reads `STRIPE_ENTERPRISE_PRICE_ID`.
-  Its 25 concurrent calls can be raised per contract to at most 50 through
+  Starter and Growth are self-service (`CheckoutPlanSchema`) and there is no
+  checkout path to Enterprise. `DODO_ENTERPRISE_PRODUCT_ID` is still read — the
+  webhook plan-inferrer recognises a sales-assisted enterprise subscription by its
+  product id alone, and without the variable such a subscription resolves to the
+  wrong plan's limits — so it is required for subscription checkout, not merely
+  demanded by the deploy gate. Its 25 concurrent calls can be raised per contract to at most 50 through
   `subscriptions.concurrent_call_limit_override`.
 - Phone-number caps equal the concurrent-call limit on every *paid* plan: a
   number is an inbound lane, so holding more than the plan can answer buys
@@ -64,34 +70,43 @@ Minutes are recorded in seconds, in three tables, not one (see
 (`calls | minutes | tools | agents`) over a `period_start`/`period_end`; it holds
 no per-call row and no cost.
 
-## Stripe Webhooks
-checkout.session.completed, customer.subscription.created, customer.subscription.updated, customer.subscription.deleted, invoice.paid, invoice.payment_failed, charge.refunded, charge.dispute.closed.
+## Dodo Webhooks
+payment.succeeded, payment.failed, refund.succeeded, dispute.won, dispute.lost, subscription.active, subscription.renewed, subscription.plan_changed, subscription.on_hold, subscription.cancelled, subscription.expired, subscription.failed.
 
-Subscribe to exactly that set, no more and no less. See
+Subscribe to exactly that set, no more and no less. Dodo has no invoice object and
+no checkout-session object, so a one-time pack is granted from
+`payment.succeeded` and recurring credit from `subscription.renewed`. See
 [`operations/billing-runbook.md` §1.3](operations/billing-runbook.md) for why
-`charge.dispute.created` is not on it.
+`dispute.opened` and `payment.processing` are not on it.
 
 ## Checkout API
 All three write routes live under `POST /workspaces/:workspaceId/billing/`:
 
 - `checkout` — `{ "plan": "starter" | "growth", "idempotencyKey": "<uuid>", "successPath"?: "/checkout/success", "cancelPath"?: "/checkout/cancel" }`. `"enterprise"` is rejected by the DTO.
-- `topup-checkout` — the minute pack: `{ "idempotencyKey": "<uuid>", "successPath"?, "cancelPath"? }`. One-time `payment` mode, card only, and only for an organization with paid access. Card-only is deliberate: a delayed-notification method completes Checkout `unpaid` and settles on `checkout.session.async_payment_succeeded`, which is not on the subscribed set above, so the pack would be paid for and never granted.
+- `topup-checkout` — the minute pack: `{ "idempotencyKey": "<uuid>", "successPath"?, "cancelPath"? }`. A one-time payment, card only, and only for an organization with paid access. Card-only is deliberate: a delayed-notification method leaves the payment in `payment.processing` for days, and only `payment.succeeded` grants credit, so the customer would leave checkout believing they hold minutes they cannot spend yet.
 - `portal` — `{ "returnPath"?: "/dashboard/billing" }`.
 
 Reads on the same prefix: `GET subscription`, `status`, `summary`, `usage`, `invoices`.
 
-The server maps plans to `STRIPE_STARTER_PRICE_ID` and `STRIPE_GROWTH_PRICE_ID`, and
-the pack to `STRIPE_MINUTE_PACK_PRICE_ID`; clients must never send a Stripe price ID
-or an amount. All redirect paths must be relative paths under `WEB_BASE_URL`.
+The server maps plans to `DODO_STARTER_PRODUCT_ID` and `DODO_GROWTH_PRODUCT_ID`, and
+the pack to `DODO_MINUTE_PACK_PRODUCT_ID`; clients must never send a Dodo product ID
+or an amount. Dodo has no separate price object — the product carries its own price.
+All redirect paths must be relative paths under `WEB_BASE_URL`.
 
-## Stripe Configuration
-Every `STRIPE_*` variable is optional at boot — nothing fails to start on a missing
-price. The three entry points fail independently, each on its own list in
-`apps/api/src/config/env.ts`, because one unset price ID used to 503 all three:
+## Dodo Payments Configuration
+Every `DODO_*` variable is optional at boot — nothing fails to start on a missing
+product. The three entry points fail independently, each on its own list in
+`apps/api/src/config/env.ts`, because one unset product ID used to 503 all three:
 
-- portal: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`
-- subscription checkout: those two plus `STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`
-- minute-pack top-up: those two plus `STRIPE_MINUTE_PACK_PRICE_ID`
+- portal: `DODO_PAYMENTS_API_KEY`, `DODO_WEBHOOK_SECRET`
+- subscription checkout: those two plus `DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`, `DODO_ENTERPRISE_PRODUCT_ID`
+- minute-pack top-up: those two plus `DODO_MINUTE_PACK_PRODUCT_ID`
+
+`DODO_PAYMENTS_ENVIRONMENT` (`test_mode` | `live_mode`) is on none of those lists
+because it has a schema default of `test_mode`. It is checked separately: with a
+Dodo key set, production boot fails unless it is `live_mode`. A Dodo key carries no
+mode prefix the way `sk_test_` did, so this variable is the only place the mode
+exists.
 
 A missing variable disables only the entry point that needs it, which returns 503
 `BILLING_UNAVAILABLE` and never invents a free allowance. `GET .../billing/status`
@@ -104,18 +119,18 @@ only by the deploy gate in `.github/workflows/deploy-aws-ec2.yml`; it is absent
 from the API's config schema, so Zod strips it and no application code branches on
 it. The gate admits exactly two production states:
 
-- `BILLING_DISABLED=true` — every Stripe variable must be **empty**. A leftover
+- `BILLING_DISABLED=true` — every Dodo variable must be **empty**. A leftover
   test-mode key would boot the API selling real credit for test cards.
-- otherwise — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`,
-  `STRIPE_MINUTE_PACK_PRICE_ID` and `STRIPE_ENTERPRISE_PRICE_ID` must all be set,
-  and the secret key must be live-mode. The gate still demands the enterprise
-  price that no code reads; setting it is the cost of passing the gate.
+- otherwise — `DODO_PAYMENTS_API_KEY`, `DODO_WEBHOOK_SECRET`,
+  `DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`,
+  `DODO_MINUTE_PACK_PRODUCT_ID` and `DODO_ENTERPRISE_PRODUCT_ID` must all be set,
+  and `DODO_PAYMENTS_ENVIRONMENT` must be `live_mode`. Every one of those six is
+  read by code, enterprise included.
 
-With billing off the API boots normally, no Stripe client is constructed, and
+With billing off the API boots normally, no Dodo client is constructed, and
 checkout, top-up and the portal all report themselves unavailable. Metering never
-touches Stripe, so call admission, credit reservation, usage debits and the
+touches Dodo, so call admission, credit reservation, usage debits and the
 recurring Free grant keep working.
 
 ## Billing Safety
-Use `stripe_events.stripe_event_id` as the webhook idempotency key, do not double bill calls, reconcile provider duration, record provider cost and customer price separately, allow admin adjustments later.
+Use `dodo_webhook_events.webhook_id` — the Standard Webhooks `webhook-id` header — as the webhook idempotency key, do not double bill calls, reconcile provider duration, record provider cost and customer price separately, allow admin adjustments later.

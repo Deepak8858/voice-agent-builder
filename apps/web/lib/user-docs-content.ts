@@ -401,16 +401,16 @@ export const dashboardDocumentation: DashboardDocGroup[] = [
       {
         title: 'Billing',
         href: '/dashboard/billing',
-        purpose: 'Review subscription status, plan limits, usage meters, invoices, and Stripe actions.',
+        purpose: 'Review subscription status, plan limits, usage meters, invoices, and billing provider actions.',
         primaryActions: [
           'Inspect the current plan and subscription status.',
           'Review usage for calls, minutes, tools, and agents.',
-          'Upgrade through Stripe checkout when live billing is enabled.',
+          'Upgrade through Dodo Payments checkout when live billing is enabled.',
           'Open the customer portal for paid plans.',
         ],
         notes: [
           'Demo billing mode disables live checkout and portal actions while retaining trial limits.',
-          'Checkout success and cancel banners appear after returning from Stripe.',
+          'Checkout success and cancel banners appear after returning from Dodo Payments.',
           'Invoices show when live billing data is available.',
         ],
       },
@@ -583,7 +583,7 @@ export const userDocsTroubleshooting: TroubleshootingItem[] = [
   },
   {
     problem: 'Billing actions are disabled.',
-    fix: 'The workspace may be in demo billing mode. Usage limits still apply, but live Stripe checkout and portal actions require live billing configuration.',
+    fix: 'The workspace may be in demo billing mode. Usage limits still apply, but live Dodo Payments checkout and portal actions require live billing configuration.',
   },
   {
     problem: 'A client cannot see expected agents or calls.',

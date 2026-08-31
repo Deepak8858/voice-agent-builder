@@ -69,20 +69,24 @@ const REVIEWED_BASELINE: readonly string[] = [
   'calls/calls.service.ts:call.update',
   'calls/calls.service.ts:callEvent.findMany',
   'calls/calls.service.ts:callEvent.findUnique',
-  // Stripe webhooks are keyed on Stripe's customer/subscription ids, which are
-  // the tenant identifier in that direction.
-  // A refund or dispute arrives naming only a Stripe invoice or PaymentIntent
-  // and (for disputes) no customer at all. These two look the credit bucket up
-  // by exactly that identifier to *discover* the owning tenant before reversing
-  // anything; scoping them to an organization would require the answer they
-  // exist to produce. `stripePaymentIntentId` is uniquely indexed, so the
-  // payment-intent lookup cannot return another tenant's bucket by accident.
-  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findFirst',
-  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findUnique',
-  'webhooks/stripe-webhook.service.ts:auditLog.findMany',
-  'webhooks/stripe-webhook.service.ts:subscription.findFirst',
-  'webhooks/stripe-webhook.service.ts:subscription.findMany',
-  'webhooks/stripe-webhook.service.ts:subscription.updateMany',
+  // Dodo webhooks are keyed on Dodo's customer/subscription ids, which are the
+  // tenant identifier in that direction.
+  // A refund or dispute arrives naming only a payment, and (for disputes) no
+  // customer at all. The bucket lookup uses exactly that identifier to *discover*
+  // the owning tenant before reversing anything; scoping it to an organization
+  // would require the answer it exists to produce. `dodo_payment_id` is uniquely
+  // indexed, so it cannot return another tenant's bucket by accident.
+  //
+  // Two entries the Stripe service needed are gone rather than renamed: a
+  // Checkout session id and a PaymentIntent id could name the same money, so a
+  // reversal needed an invoice -> included-bucket lookup and an audit-log scan as
+  // fallbacks. Dodo has one payment id, which is both the bucket's `sourceId` and
+  // its `dodoPaymentId`, so the unique lookup below is the only one those
+  // fallbacks could reach.
+  'webhooks/dodo-webhook.service.ts:billingCreditBucket.findUnique',
+  'webhooks/dodo-webhook.service.ts:subscription.findFirst',
+  'webhooks/dodo-webhook.service.ts:subscription.findMany',
+  'webhooks/dodo-webhook.service.ts:subscription.updateMany',
 
   // -- Cross-tenant by design: scheduled sweeps and platform metrics -------
   // These run on a timer with no caller and must observe every tenant.
@@ -251,12 +255,12 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   // 4 sites, all cross-tenant by design and reachable only from the scheduled
   // billing-reconciliation worker, never from a tenant-facing route:
   // publishMarginMetrics() counts subscriptions per plan across every tenant,
-  // and the three added by the Stripe drift comparison must each observe every
-  // tenant to do their job — organizationsByStripeCustomer() and the
-  // stripeSubscriptionId lookup resolve which organization owns a Stripe object
-  // (an organizationId predicate would be circular, exactly like the Stripe
-  // webhook lookups above), and the locally-live sweep enumerates every
-  // organization claiming a live subscription so Stripe can be asked whether it
+  // and the three added by the provider drift comparison must each observe
+  // every tenant to do their job — the customer-ownership map and the
+  // dodoSubscriptionId lookup resolve which organization owns a Dodo object
+  // (an organizationId predicate would be circular, exactly like the webhook
+  // lookups above), and the locally-funding sweep enumerates every
+  // organization claiming a live subscription so Dodo can be asked whether it
   // still is. The comparison is strictly read-only: it writes nothing.
   'billing/reconciliation.service.ts:subscription.findMany': 4,
   'calls/calls.service.ts:agentVersion.findFirst': 1,
@@ -311,14 +315,16 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.findUnique': 1,
   'voice/adapters/openai-realtime.adapter.ts:agentVersion.update': 1,
   'voice/livekit-knowledge.controller.ts:call.findUnique': 1,
-  // Both new: the invoice → included-bucket lookup and the PaymentIntent →
-  // bucket lookup that resolve a reversal's owner (see REVIEWED_BASELINE).
-  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findFirst': 1,
-  'webhooks/stripe-webhook.service.ts:billingCreditBucket.findUnique': 1,
-  'webhooks/stripe-webhook.service.ts:auditLog.findMany': 1,
-  'webhooks/stripe-webhook.service.ts:subscription.findFirst': 4,
-  'webhooks/stripe-webhook.service.ts:subscription.findMany': 1,
-  'webhooks/stripe-webhook.service.ts:subscription.updateMany': 1,
+  // The payment → bucket lookup that resolves a reversal's owner (see
+  // REVIEWED_BASELINE).
+  'webhooks/dodo-webhook.service.ts:billingCreditBucket.findUnique': 1,
+  // 3, down from 4 under Stripe: the cancellation lookup plus the two audit
+  // helpers that resolve an organization from a customer or a subscription id.
+  // The fourth site was a dead `invalidateSubscriptionCacheForCustomer` that no
+  // handler called; it was deleted rather than ported.
+  'webhooks/dodo-webhook.service.ts:subscription.findFirst': 3,
+  'webhooks/dodo-webhook.service.ts:subscription.findMany': 1,
+  'webhooks/dodo-webhook.service.ts:subscription.updateMany': 1,
   'white-label/white-label.service.ts:whiteLabelSettings.findUnique': 1,
   'white-label/white-label.service.ts:workspace.findMany': 1,
   'white-label/white-label.service.ts:workspace.findUnique': 1,

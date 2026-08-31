@@ -9,9 +9,9 @@ import { CheckoutPlanSchema } from '@voiceforge/shared';
 
 /**
  * Small client-side bouncer used immediately after sign-up (or anywhere we
- * want to deep-link into Stripe Checkout for a specific plan). It posts to
- * the server-side checkout route, validates the returned URL, and redirects
- * the browser to Stripe. Errors are rendered with a Retry button so the
+ * want to deep-link into Dodo Payments Checkout for a specific plan). It posts
+ * to the server-side checkout route, validates the returned URL, and redirects
+ * the browser to Dodo Payments. Errors are rendered with a Retry button so the
  * user is never left on an ambiguous "Loading…" screen.
  */
 function trustedCheckoutUrl(url: string): boolean {
@@ -19,7 +19,7 @@ function trustedCheckoutUrl(url: string): boolean {
     const u = new URL(url);
     return (
       u.protocol === 'https:' &&
-      (u.hostname === 'checkout.stripe.com' || u.hostname.endsWith('.stripe.com'))
+      (u.hostname === 'checkout.dodopayments.com' || u.hostname.endsWith('.dodopayments.com'))
     );
   } catch {
     return false;
@@ -71,7 +71,7 @@ function CheckoutStartInner() {
           return;
         }
         if (!trustedCheckoutUrl(data.url)) {
-          setError('Untrusted Stripe URL returned from server.');
+          setError('Untrusted checkout URL returned from server.');
           setPending(false);
           return;
         }
@@ -94,7 +94,7 @@ function CheckoutStartInner() {
       </h1>
       {pending && !error ? (
         <p className="mt-3 text-sm text-muted-foreground">
-          Redirecting you to Stripe to complete your purchase…
+          Redirecting you to Dodo Payments to complete your purchase…
         </p>
       ) : null}
       {unavailable ? (

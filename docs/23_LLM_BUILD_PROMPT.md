@@ -20,7 +20,7 @@ Frontend: Next.js + TypeScript + Tailwind + shadcn/ui + React Flow
 Backend: NestJS + TypeScript + PostgreSQL + Prisma/Drizzle + Redis
 Validation: Zod
 Voice: Mock provider first, then adapter pattern for the real runtimes (OpenAI Realtime and the in-house Azure pipeline)
-Billing: Stripe abstraction
+Billing: Dodo Payments abstraction
 ```
 
 First implementation target:

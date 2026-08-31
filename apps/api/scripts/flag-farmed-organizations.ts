@@ -189,7 +189,7 @@ async function main() {
       status: true,
       createdAt: true,
       ownerUserId: true,
-      subscriptions: { select: { stripeSubscriptionId: true }, take: 1 },
+      subscriptions: { select: { dodoSubscriptionId: true }, take: 1 },
       billingCreditBuckets: {
         where: { sourceType: 'purchased' },
         select: { id: true },
@@ -223,7 +223,7 @@ async function main() {
     status: row.status,
     createdAt: row.createdAt,
     hasStripeSubscription: row.subscriptions.some(
-      (subscription) => subscription.stripeSubscriptionId !== null,
+      (subscription) => subscription.dodoSubscriptionId !== null,
     ),
     hasPurchasedCredits: row.billingCreditBuckets.length > 0,
     hasOtherMembers: [...(membersByOrg.get(row.id) ?? [])].some(

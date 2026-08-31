@@ -30,7 +30,7 @@ A SaaS platform where users describe a business need and the system generates a 
 12. Call logs, transcripts, recordings
 13. Analytics dashboard
 14. White-label agency dashboard
-15. Stripe billing and usage tracking
+15. Dodo Payments billing and usage tracking
 
 ## Non-Goals for MVP
 - Full custom SIP runtime

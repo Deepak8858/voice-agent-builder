@@ -23,7 +23,7 @@ import { AppError } from '../common/errors';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
- * Stripe states that fund paid usage. Every other state — including `past_due`,
+ * Dodo states that fund paid usage. Every other state — including `past_due`,
  * `unpaid`, `incomplete`, `incomplete_expired`, `paused`, and `canceled` — must
  * stop new paid work, because the organization has no confirmed revenue behind
  * it.
@@ -34,7 +34,7 @@ const PAID_ACCESS_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing']
  * How far past its stored `currentPeriodEnd` a subscription may still read as
  * funded.
  *
- * Stripe advances the period as soon as it generates the renewal invoice, so a
+ * Dodo advances the period as soon as it charges the renewal, so a
  * healthy row is only momentarily behind — for as long as
  * `customer.subscription.updated`/`invoice.paid` is in flight. A row still
  * behind a day later is one whose renewal we cannot prove happened (a missed or
@@ -46,7 +46,7 @@ const PERIOD_END_GRACE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Derived from the shared contract rather than restated here, so a new plan or
- * Stripe status cannot be added to the schema without this service accepting
+ * Dodo status cannot be added to the schema without this service accepting
  * it.
  */
 const PLAN_TYPES: ReadonlySet<string> = new Set<string>(PlanTypeSchema.options);
@@ -398,7 +398,7 @@ export class EntitlementService {
 
   /**
    * A `null` period is not an expiry: the checkout upsert creates the row before
-   * Stripe reports a period, and a subscription event that omits it persists
+   * Dodo reports a period, and a subscription event that omits it persists
    * null on purpose. Only a period that is genuinely in the past, by more than
    * {@link PERIOD_END_GRACE_MS}, revokes funding.
    */

@@ -46,7 +46,7 @@ export class BillingController {
    * A white-label client workspace is created with its parent agency's
    * `organizationId` (`white-label.service.ts:179`) and its creator's chosen
    * user as `owner`. Without this predicate that client owner reached the
-   * AGENCY's subscription, invoices, checkout and Stripe portal — and the
+   * AGENCY's subscription, invoices, checkout and billing portal — and the
    * portal alone lets them change or cancel the agency's plan for every other
    * client on it. Only a billing root may speak for the organization: no
    * parent, and not marked as someone else's client.
@@ -159,6 +159,8 @@ export class BillingController {
   ): Promise<{ items: unknown[] }> {
     const orgId = await this.getOrgId(workspaceId);
     const sub = await this.billing.getSubscription(orgId);
+    // `stripeCustomerId` is the (unchanged) DTO field name; it holds the Dodo
+    // customer id. See the note in BillingService.getSubscription.
     if (!sub?.stripeCustomerId) return { items: [] };
     return this.billing.getInvoices(sub.stripeCustomerId);
   }

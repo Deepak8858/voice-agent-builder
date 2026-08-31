@@ -122,12 +122,13 @@ verifying schema equivalence hides real drift.
 
 **2. Populate `/opt/voiceforge/.env`.** The workflow reads it on the host and
 fails before touching the running stack if a required variable is missing or
-invalid. It enforces `NODE_ENV=production`, a live-mode `STRIPE_SECRET_KEY`
-(`sk_test_`/`rk_test_` is rejected — the API also refuses to boot on one, but
-that failure would land after the old container is already stopped), all six
-Stripe variables — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-`STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`,
-`STRIPE_MINUTE_PACK_PRICE_ID` and `STRIPE_ENTERPRISE_PRICE_ID` — an `https://`
+invalid. It enforces `NODE_ENV=production`, `DODO_PAYMENTS_ENVIRONMENT=live_mode`
+whenever billing is on (a Dodo key carries no `sk_test_`-style mode prefix, so the
+mode is read from this variable — the API also refuses to boot on test-mode
+billing, but that failure would land after the old container is already stopped),
+all six Dodo variables — `DODO_PAYMENTS_API_KEY`, `DODO_WEBHOOK_SECRET`,
+`DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`,
+`DODO_MINUTE_PACK_PRODUCT_ID` and `DODO_ENTERPRISE_PRODUCT_ID` — an `https://`
 non-localhost `WEB_BASE_URL`, a numeric `TRUST_PROXY_HOPS`, and — when
 `KNOWLEDGE_STORAGE_PROVIDER=s3` — a non-empty `S3_KNOWLEDGE_BUCKET` with
 `AWS_REGION=us-east-1`. LiveKit must be configured with all three of

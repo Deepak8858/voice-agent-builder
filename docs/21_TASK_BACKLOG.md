@@ -34,4 +34,4 @@ TASK-045 Event ingestion; TASK-046 Overview dashboard; TASK-047 Agent analytics.
 TASK-048 White-label settings; TASK-049 Client workspaces; TASK-050 Agency dashboard.
 
 ## Epic 12 — Billing/Security
-TASK-051 Stripe checkout; TASK-052 Usage metering; TASK-053 Audit logs; TASK-054 Rate limits; TASK-055 Tests.
+TASK-051 Dodo Payments checkout; TASK-052 Usage metering; TASK-053 Audit logs; TASK-054 Rate limits; TASK-055 Tests.

@@ -37,7 +37,13 @@ function makePrisma(overrides?: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     organization: {
-      findUniqueOrThrow: vi.fn(async () => ({ id: state.workspace.organizationId, name: 'Test Org' })),
+      findUniqueOrThrow: vi.fn(async () => ({
+        id: state.workspace.organizationId,
+        name: 'Test Org',
+        // Dodo requires an email to create a customer; the organization owner is
+        // the only billing contact this product stores.
+        owner: { email: 'owner@voiceforge.test' },
+      })),
     },
     workspace: {
       findUniqueOrThrow: vi.fn(async () => state.workspace),
@@ -78,32 +84,40 @@ function makeService(prisma: ReturnType<typeof makePrisma>, cache?: unknown) {
   );
 }
 
+const CHECKOUT_URL = 'https://checkout.dodopayments.com/session';
+const PORTAL_URL = 'https://test.dodopayments.com/portal/session';
+
 describe('BillingService', () => {
-  let mockStripe: {
-    customers: { create: ReturnType<typeof vi.fn> };
-    checkout: { sessions: { create: ReturnType<typeof vi.fn> } };
-    billingPortal: { sessions: { create: ReturnType<typeof vi.fn> } };
+  let mockDodo: {
+    customers: {
+      create: ReturnType<typeof vi.fn>;
+      customerPortal: { create: ReturnType<typeof vi.fn> };
+    };
+    checkoutSessions: { create: ReturnType<typeof vi.fn> };
+    payments: { list: ReturnType<typeof vi.fn> };
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     Object.assign(env, {
-      STRIPE_SECRET_KEY: 'rk_test_123',
-      STRIPE_WEBHOOK_SECRET: 'whsec_test_123',
-      STRIPE_STARTER_PRICE_ID: 'price_starter',
-      STRIPE_GROWTH_PRICE_ID: 'price_growth',
-      STRIPE_ENTERPRISE_PRICE_ID: 'price_enterprise',
-      STRIPE_MINUTE_PACK_PRICE_ID: 'price_minute_pack',
-      // Reset explicitly: `env` is the real singleton, so a test that sets this
-      // would otherwise leak it into every later portal assertion.
-      STRIPE_PORTAL_CONFIGURATION_ID: undefined,
-      STRIPE_TAX_ENABLED: false,
+      DODO_PAYMENTS_API_KEY: 'dodo_test_123',
+      DODO_WEBHOOK_SECRET: 'whsec_test_123',
+      DODO_PAYMENTS_ENVIRONMENT: 'test_mode',
+      DODO_STARTER_PRODUCT_ID: 'prod_starter',
+      DODO_GROWTH_PRODUCT_ID: 'prod_growth',
+      DODO_ENTERPRISE_PRODUCT_ID: 'prod_enterprise',
+      DODO_MINUTE_PACK_PRODUCT_ID: 'prod_minute_pack',
       WEB_BASE_URL: 'https://app.voiceforge.test',
     });
-    mockStripe = {
-      customers: { create: vi.fn(async () => ({ id: 'cus_new' })) },
-      checkout: { sessions: { create: vi.fn(async () => ({ url: 'https://checkout.stripe.com/c/session' })) } },
-      billingPortal: { sessions: { create: vi.fn(async () => ({ url: 'https://billing.stripe.com/session' })) } },
+    mockDodo = {
+      customers: {
+        create: vi.fn(async () => ({ customer_id: 'cus_new' })),
+        customerPortal: { create: vi.fn(async () => ({ link: PORTAL_URL })) },
+      },
+      checkoutSessions: {
+        create: vi.fn(async () => ({ session_id: 'cks_1', checkout_url: CHECKOUT_URL })),
+      },
+      payments: { list: vi.fn(async () => ({ items: [] })) },
     };
   });
 
@@ -111,34 +125,34 @@ describe('BillingService', () => {
     it('reports checkout configured when every server-owned identifier is present', () => {
       const prisma = makePrisma();
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       expect(svc.getBillingStatus()).toEqual({
         liveCheckoutEnabled: true,
         topUpEnabled: true,
         portalEnabled: true,
-        message: 'Live Stripe checkout and customer portal actions are enabled.',
+        message: 'Live checkout and customer portal actions are enabled.',
       });
     });
 
     /**
-     * The pack price disables packs and nothing else. Subscription checkout and
+     * The pack product disables packs and nothing else. Subscription checkout and
      * the portal are configured independently, and reporting them as unavailable
      * turned one unset variable into a total revenue outage: the client disabled
      * every billing button on this one flag.
      */
-    it('reports only top-up unavailable when the minute-pack price is missing', () => {
-      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
+    it('reports only top-up unavailable when the minute-pack product is missing', () => {
+      Object.assign(env, { DODO_MINUTE_PACK_PRODUCT_ID: undefined });
       const prisma = makePrisma();
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       expect(svc.getBillingStatus()).toEqual({
         liveCheckoutEnabled: true,
         topUpEnabled: false,
         portalEnabled: true,
         message:
-          'Stripe checkout is temporarily unavailable. No plan change was made and no free allowance was granted.',
+          'Checkout is temporarily unavailable. No plan change was made and no free allowance was granted.',
       });
     });
 
@@ -148,10 +162,10 @@ describe('BillingService', () => {
      * reaches us, so the customer is charged and nothing changes on our side.
      */
     it('reports every entry point unavailable when the webhook secret is missing', () => {
-      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
+      Object.assign(env, { DODO_WEBHOOK_SECRET: undefined });
       const prisma = makePrisma();
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       expect(svc.getBillingStatus()).toMatchObject({
         liveCheckoutEnabled: false,
@@ -162,13 +176,13 @@ describe('BillingService', () => {
 
     /**
      * Packs are sold from a paid plan, so a deployment that can sell packs but
-     * has no plan prices is misconfigured in the direction that matters most.
+     * has no plan products is misconfigured in the direction that matters most.
      */
-    it('reports subscription checkout unavailable when a plan price is missing', () => {
-      Object.assign(env, { STRIPE_GROWTH_PRICE_ID: undefined });
+    it('reports subscription checkout unavailable when a plan product is missing', () => {
+      Object.assign(env, { DODO_GROWTH_PRODUCT_ID: undefined });
       const prisma = makePrisma();
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       expect(svc.getBillingStatus()).toMatchObject({
         liveCheckoutEnabled: false,
@@ -179,11 +193,11 @@ describe('BillingService', () => {
   });
 
   describe('createCheckoutSession', () => {
-    it('refuses checkout without calling Stripe when the webhook secret is missing', async () => {
-      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('refuses checkout without calling Dodo when the webhook secret is missing', async () => {
+      Object.assign(env, { DODO_WEBHOOK_SECRET: undefined });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'starter',
@@ -194,33 +208,33 @@ describe('BillingService', () => {
         errorCode: 'BILLING_UNAVAILABLE',
       });
 
-      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     /**
      * The split's whole point, as behaviour rather than a status flag: an unset
-     * minute-pack price must not stop anyone from upgrading. Before the entry
+     * minute-pack product must not stop anyone from upgrading. Before the entry
      * points had separate configuration lists, this call returned 503.
      */
-    it('still takes a subscription payment when the minute-pack price is missing', async () => {
-      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('still takes a subscription payment when the minute-pack product is missing', async () => {
+      Object.assign(env, { DODO_MINUTE_PACK_PRODUCT_ID: undefined });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'starter',
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
         successPath: '/dashboard/billing?checkout=success',
         cancelPath: '/dashboard/billing?checkout=cancel',
-      }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+      }, ACTOR)).resolves.toEqual({ url: CHECKOUT_URL });
     });
 
-    it('maps plan to server-owned price and enables production Checkout defaults', async () => {
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('maps plan to the server-owned product and both redirect URLs', async () => {
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await svc.createCheckoutSession('org-1', {
         plan: 'starter',
@@ -229,33 +243,21 @@ describe('BillingService', () => {
         cancelPath: '/dashboard/billing?checkout=cancel',
       }, ACTOR);
 
-      expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          customer: 'cus_123',
-          mode: 'subscription',
-          line_items: [{ price: 'price_starter', quantity: 1 }],
-          automatic_tax: { enabled: false },
-          billing_address_collection: 'required',
-          tax_id_collection: { enabled: true },
-          customer_update: { name: 'auto', address: 'auto' },
-          success_url: 'https://app.voiceforge.test/dashboard/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}',
-          cancel_url: 'https://app.voiceforge.test/dashboard/billing?checkout=cancel',
-          metadata: expect.objectContaining({
-            organizationId: 'org-1',
-            plan: 'starter',
-            catalogVersion: BILLING_CATALOG_VERSION,
-          }),
-          subscription_data: {
-            metadata: {
-              organizationId: 'org-1',
-              plan: 'starter',
-              catalogVersion: BILLING_CATALOG_VERSION,
-            },
-          },
+      expect(mockDodo.checkoutSessions.create).toHaveBeenCalledWith({
+        product_cart: [{ product_id: 'prod_starter', quantity: 1 }],
+        customer: { customer_id: 'cus_123' },
+        return_url: 'https://app.voiceforge.test/dashboard/billing?checkout=success',
+        cancel_url: 'https://app.voiceforge.test/dashboard/billing?checkout=cancel',
+        metadata: expect.objectContaining({
+          organizationId: 'org-1',
+          plan: 'starter',
+          catalogVersion: BILLING_CATALOG_VERSION,
         }),
-        { idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d' },
-      );
-      expect(mockStripe.checkout.sessions.create.mock.calls[0][0]).not.toHaveProperty('payment_method_types');
+      });
+      // As a Merchant of Record Dodo owns tax, so there is no tax switch to leave
+      // off, and a subscription session must not be pinned to a payment method.
+      const session = mockDodo.checkoutSessions.create.mock.calls[0][0] as Record<string, unknown>;
+      expect(session).not.toHaveProperty('allowed_payment_method_types');
       expect(prisma.auditLog.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -270,13 +272,13 @@ describe('BillingService', () => {
     });
 
     /**
-     * The identifier correlates one attempt between our audit log and Stripe's
+     * The identifier correlates one attempt between our audit log and the Dodo
      * dashboard, so it must be unique per request rather than per deployment.
      */
     it('stamps a distinct integration identifier on every Checkout attempt', async () => {
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
       const dto = {
         plan: 'starter' as const,
         idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
@@ -287,7 +289,7 @@ describe('BillingService', () => {
       await svc.createCheckoutSession('org-1', dto, ACTOR);
       await svc.createCheckoutSession('org-1', dto, ACTOR);
 
-      const [first, second] = mockStripe.checkout.sessions.create.mock.calls.map(
+      const [first, second] = mockDodo.checkoutSessions.create.mock.calls.map(
         (call) => (call[0] as { metadata: Record<string, string> }).metadata.integration_identifier,
       );
       expect(first).toMatch(/^vf_[0-9a-f]{24}$/);
@@ -295,10 +297,10 @@ describe('BillingService', () => {
       expect(first).not.toBe(second);
     });
 
-    it('rejects unsafe checkout paths before calling Stripe', async () => {
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('rejects unsafe checkout paths before calling Dodo', async () => {
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'starter',
@@ -306,17 +308,17 @@ describe('BillingService', () => {
         successPath: 'https://evil.example/success',
         cancelPath: '/dashboard/billing',
       }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
-      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
     });
 
     /**
-     * Enterprise is sales-assisted and has no self-service Price. A forged plan
-     * value must be refused before Stripe is contacted.
+     * Enterprise is sales-assisted and has no self-service product. A forged plan
+     * value must be refused before Dodo is contacted.
      */
     it('rejects a plan outside the self-service checkout catalog', async () => {
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createCheckoutSession('org-1', {
         plan: 'enterprise' as never,
@@ -324,24 +326,24 @@ describe('BillingService', () => {
         successPath: '/dashboard/billing',
         cancelPath: '/dashboard/billing',
       }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
-      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
     });
 
     /**
-     * Stripe will happily create a second subscription for the same customer.
-     * The customer is then billed twice, and `checkout.session.completed` can
-     * only record one subscription id — the other keeps billing with nothing
-     * here able to resolve, refund, or cancel it. Plan changes belong in the
-     * Customer Portal, which mutates the subscription in place.
+     * Dodo will happily create a second subscription for the same customer. The
+     * customer is then billed twice, and the Subscription row can hold only one
+     * subscription id — the other keeps billing with nothing here able to
+     * resolve, refund, or cancel it. Plan changes belong in the customer portal,
+     * which mutates the subscription in place.
      */
     it.each(['active', 'trialing', 'past_due', 'unpaid', 'paused'])(
       'refuses a second subscription checkout while one is %s',
       async (status) => {
         const prisma = makePrisma({
-          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_live', status },
+          subscription: { dodoCustomerId: 'cus_123', dodoSubscriptionId: 'sub_live', status },
         });
         const svc = makeService(prisma);
-        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+        Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
         await expect(svc.createCheckoutSession('org-1', {
           plan: 'growth',
@@ -349,7 +351,7 @@ describe('BillingService', () => {
           successPath: '/dashboard/billing',
           cancelPath: '/dashboard/billing',
         }, ACTOR)).rejects.toBeInstanceOf(BadRequestException);
-        expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+        expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
       },
     );
 
@@ -362,17 +364,17 @@ describe('BillingService', () => {
       'still allows checkout when the recorded subscription is %s',
       async (status) => {
         const prisma = makePrisma({
-          subscription: { stripeCustomerId: 'cus_123', stripeSubscriptionId: 'sub_dead', status },
+          subscription: { dodoCustomerId: 'cus_123', dodoSubscriptionId: 'sub_dead', status },
         });
         const svc = makeService(prisma);
-        Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+        Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
         await expect(svc.createCheckoutSession('org-1', {
           plan: 'growth',
           idempotencyKey: '1f3b51d8-8fcb-4bc8-b795-45fb53be8e8d',
           successPath: '/dashboard/billing',
           cancelPath: '/dashboard/billing',
-        }, ACTOR)).resolves.toEqual({ url: 'https://checkout.stripe.com/c/session' });
+        }, ACTOR)).resolves.toEqual({ url: CHECKOUT_URL });
       },
     );
   });
@@ -384,10 +386,10 @@ describe('BillingService', () => {
       cancelPath: '/dashboard/billing?topup=cancel',
     };
 
-    it('starts a one-time Checkout against the server-owned minute-pack price', async () => {
+    it('starts a one-time Checkout against the server-owned minute-pack product', async () => {
       const prisma = makePrisma({
         subscription: {
-          stripeCustomerId: 'cus_123',
+          dodoCustomerId: 'cus_123',
           plan: 'growth',
           status: 'active',
           trialEnd: null,
@@ -395,28 +397,25 @@ describe('BillingService', () => {
         },
       });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR);
 
-      expect(mockStripe.checkout.sessions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          customer: 'cus_123',
-          mode: 'payment',
-          // Card only: a delayed-notification method completes Checkout with
-          // `payment_status: 'unpaid'` and settles days later on an event we do
-          // not subscribe to, so the pack would be paid for and never granted.
-          payment_method_types: ['card'],
-          line_items: [{ price: 'price_minute_pack', quantity: 1 }],
-          customer_update: { name: 'auto', address: 'auto' },
-          metadata: expect.objectContaining({
-            organizationId: 'org-1',
-            purchaseType: 'minute_pack',
-            catalogVersion: BILLING_CATALOG_VERSION,
-          }),
+      expect(mockDodo.checkoutSessions.create).toHaveBeenCalledWith({
+        product_cart: [{ product_id: 'prod_minute_pack', quantity: 1 }],
+        customer: { customer_id: 'cus_123' },
+        // Cards only: the pack is granted from `payment.succeeded` and nothing
+        // grants it later, so a method that settles days after checkout would be
+        // paid for and never credited.
+        allowed_payment_method_types: ['credit', 'debit'],
+        return_url: 'https://app.voiceforge.test/dashboard/billing?topup=success',
+        cancel_url: 'https://app.voiceforge.test/dashboard/billing?topup=cancel',
+        metadata: expect.objectContaining({
+          organizationId: 'org-1',
+          purchaseType: 'minute_pack',
+          catalogVersion: BILLING_CATALOG_VERSION,
         }),
-        { idempotencyKey: topUpDto.idempotencyKey },
-      );
+      });
       expect(prisma.auditLog.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({ action: 'billing.topup_checkout_started' }),
@@ -425,15 +424,15 @@ describe('BillingService', () => {
     });
 
     /**
-     * A deployment missing the server-owned pack Price cannot grant what a
-     * customer would pay for, so it must refuse before Stripe is contacted
-     * rather than take the payment and fail afterwards.
+     * A deployment missing the server-owned pack product cannot grant what a
+     * customer would pay for, so it must refuse before Dodo is contacted rather
+     * than take the payment and fail afterwards.
      */
-    it('refuses a pack when the minute-pack price is not configured', async () => {
-      Object.assign(env, { STRIPE_MINUTE_PACK_PRICE_ID: undefined });
+    it('refuses a pack when the minute-pack product is not configured', async () => {
+      Object.assign(env, { DODO_MINUTE_PACK_PRODUCT_ID: undefined });
       const prisma = makePrisma({
         subscription: {
-          stripeCustomerId: 'cus_123',
+          dodoCustomerId: 'cus_123',
           plan: 'growth',
           status: 'active',
           trialEnd: null,
@@ -441,12 +440,12 @@ describe('BillingService', () => {
         },
       });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         BillingUnavailableError,
       );
-      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
@@ -457,7 +456,7 @@ describe('BillingService', () => {
     it('refuses a pack for an organization without paid access', async () => {
       const prisma = makePrisma({
         subscription: {
-          stripeCustomerId: 'cus_123',
+          dodoCustomerId: 'cus_123',
           plan: 'growth',
           status: 'past_due',
           trialEnd: null,
@@ -465,12 +464,12 @@ describe('BillingService', () => {
         },
       });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(svc.createTopUpCheckoutSession('org-1', topUpDto, ACTOR)).rejects.toBeInstanceOf(
         ForbiddenPlanError,
       );
-      expect(mockStripe.checkout.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.checkoutSessions.create).not.toHaveBeenCalled();
     });
   });
 
@@ -488,7 +487,7 @@ describe('BillingService', () => {
       cancelAtPeriodEnd: false,
       trialEnd: null,
       concurrentCallLimitOverride: null,
-      stripeCustomerId: 'cus_123',
+      dodoCustomerId: 'cus_123',
     };
 
     function makeSummaryPrisma() {
@@ -603,11 +602,11 @@ describe('BillingService', () => {
   });
 
   describe('createPortalSession', () => {
-    it('refuses the customer portal without calling Stripe when checkout is unconfigured', async () => {
-      Object.assign(env, { STRIPE_WEBHOOK_SECRET: undefined });
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('refuses the customer portal without calling Dodo when checkout is unconfigured', async () => {
+      Object.assign(env, { DODO_WEBHOOK_SECRET: undefined });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(
         svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
@@ -615,40 +614,43 @@ describe('BillingService', () => {
         errorCode: 'BILLING_UNAVAILABLE',
       });
 
-      expect(mockStripe.billingPortal.sessions.create).not.toHaveBeenCalled();
+      expect(mockDodo.customers.customerPortal.create).not.toHaveBeenCalled();
       expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     /**
-     * The portal sells nothing, so it needs no Price. Blocking it on the price
-     * IDs meant an existing subscriber could not update a failing card or
+     * The portal sells nothing, so it needs no product. Blocking it on the
+     * product IDs meant an existing subscriber could not update a failing card or
      * download an invoice — which converts a checkout misconfiguration into
      * involuntary churn.
      */
-    it('opens the portal with no price IDs configured at all', async () => {
+    it('opens the portal with no product IDs configured at all', async () => {
       Object.assign(env, {
-        STRIPE_STARTER_PRICE_ID: undefined,
-        STRIPE_GROWTH_PRICE_ID: undefined,
-        STRIPE_MINUTE_PACK_PRICE_ID: undefined,
+        DODO_STARTER_PRODUCT_ID: undefined,
+        DODO_GROWTH_PRODUCT_ID: undefined,
+        DODO_MINUTE_PACK_PRODUCT_ID: undefined,
       });
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await expect(
         svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
-      ).resolves.toEqual({ url: 'https://billing.stripe.com/session' });
+      ).resolves.toEqual({ url: PORTAL_URL });
     });
 
-    it('builds the Customer Portal return URL from WEB_BASE_URL', async () => {
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('builds the customer portal return URL from WEB_BASE_URL', async () => {
+      const prisma = makePrisma({ subscription: { dodoCustomerId: 'cus_123' } });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
       await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
 
-      expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith({
-        customer: 'cus_123',
+      // The customer id is a path parameter on Dodo's portal endpoint, not a body
+      // field, and there is no configuration object to pass: the portal's feature
+      // set belongs to the Dodo merchant account, so STRIPE_PORTAL_CONFIGURATION_ID
+      // has no successor.
+      expect(mockDodo.customers.customerPortal.create).toHaveBeenCalledWith('cus_123', {
         return_url: 'https://app.voiceforge.test/dashboard/billing',
       });
       expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -662,21 +664,112 @@ describe('BillingService', () => {
     });
 
     /**
-     * With no configuration the portal renders Stripe's account default feature
-     * set — whatever was last saved in the dashboard — so what a customer can
-     * cancel or switch to is not under this product's control.
+     * The portal needs a customer that exists at Dodo. An organization that has
+     * never checked out has none, so one is created and stored — otherwise the
+     * portal 404s for exactly the customers most likely to need it.
      */
-    it('opens the portal against the configured feature set when one is set', async () => {
-      Object.assign(env, { STRIPE_PORTAL_CONFIGURATION_ID: 'bpc_123' });
-      const prisma = makePrisma({ subscription: { stripeCustomerId: 'cus_123' } });
+    it('creates and stores a Dodo customer for an organization that has none', async () => {
+      const prisma = makePrisma({ subscription: null });
       const svc = makeService(prisma);
-      Object.assign(svc as unknown as { stripe: typeof mockStripe }, { stripe: mockStripe });
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
 
-      await svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR);
+      await expect(
+        svc.createPortalSession('org-1', { returnPath: '/dashboard/billing' }, ACTOR),
+      ).resolves.toEqual({ url: PORTAL_URL });
 
-      expect(mockStripe.billingPortal.sessions.create).toHaveBeenCalledWith(
-        expect.objectContaining({ configuration: 'bpc_123' }),
+      expect(mockDodo.customers.create).toHaveBeenCalledWith({
+        email: 'owner@voiceforge.test',
+        name: 'Test Org',
+        metadata: { organizationId: 'org-1' },
+      });
+      expect(prisma.subscription.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { organizationId: 'org-1' },
+          update: { dodoCustomerId: 'cus_new' },
+        }),
       );
+      expect(mockDodo.customers.customerPortal.create).toHaveBeenCalledWith(
+        'cus_new',
+        expect.anything(),
+      );
+    });
+  });
+
+  /**
+   * Dodo has no listable invoice object, so history is built from payments. The
+   * DTO the dashboard reads is unchanged.
+   */
+  describe('getInvoices', () => {
+    it('maps Dodo payments onto the invoice DTO', async () => {
+      // Derived, not hardcoded: an epoch literal here would only assert that two
+      // constants match each other.
+      const first = Date.parse('2027-01-15T00:00:00.000Z') / 1000;
+      const second = Date.parse('2027-01-16T00:00:00.000Z') / 1000;
+      const svc = makeService(makePrisma());
+      Object.assign(svc as unknown as { dodo: typeof mockDodo }, { dodo: mockDodo });
+      mockDodo.payments.list = vi.fn(async () => ({
+        items: [
+          {
+            payment_id: 'pay_1',
+            invoice_id: 'inv_1',
+            invoice_url: 'https://test.dodopayments.com/invoices/inv_1.pdf',
+            status: 'succeeded',
+            total_amount: 4900,
+            currency: 'USD',
+            created_at: '2027-01-15T00:00:00.000Z',
+          },
+          // Not collected, so nothing may be reported as paid.
+          {
+            payment_id: 'pay_2',
+            status: 'failed',
+            total_amount: 4900,
+            currency: 'USD',
+            created_at: '2027-01-16T00:00:00.000Z',
+          },
+        ],
+      }));
+
+      await expect(svc.getInvoices('cus_123')).resolves.toEqual({
+        items: [
+          {
+            id: 'pay_1',
+            number: 'inv_1',
+            status: 'succeeded',
+            amountDue: 4900,
+            amountPaid: 4900,
+            currency: 'USD',
+            created: first,
+            periodStart: first,
+            periodEnd: first,
+            invoicePdf: 'https://test.dodopayments.com/invoices/inv_1.pdf',
+            hostedInvoiceUrl: 'https://test.dodopayments.com/invoices/inv_1.pdf',
+          },
+          {
+            id: 'pay_2',
+            number: null,
+            status: 'failed',
+            amountDue: 4900,
+            amountPaid: 0,
+            currency: 'USD',
+            created: second,
+            periodStart: second,
+            periodEnd: second,
+            invoicePdf: null,
+            hostedInvoiceUrl: null,
+          },
+        ],
+      });
+      expect(mockDodo.payments.list).toHaveBeenCalledWith({
+        customer_id: 'cus_123',
+        page_size: 12,
+      });
+    });
+
+    it('returns an empty list when Dodo is not configured', async () => {
+      const svc = makeService(makePrisma());
+      Object.assign(svc as unknown as { dodo: unknown }, { dodo: null });
+
+      await expect(svc.getInvoices('cus_123')).resolves.toEqual({ items: [] });
     });
   });
 
@@ -697,11 +790,14 @@ describe('BillingService', () => {
         currentPeriodEnd: new Date('2026-01-31'),
         cancelAtPeriodEnd: false,
         trialEnd: null,
-        stripeCustomerId: 'cus_123',
+        dodoCustomerId: 'cus_123',
       };
       const prisma = makePrisma({ subscription: sub });
       const svc = makeService(prisma);
       const result = await svc.getSubscription('org-1');
+      // The DTO field is still named `stripeCustomerId` in @voiceforge/shared and
+      // now carries the Dodo customer id; renaming it is a coordinated wire
+      // change, not part of this swap.
       expect(result).toMatchObject({
         id: 'sub-1',
         plan: 'starter',
@@ -719,7 +815,7 @@ describe('BillingService', () => {
         currentPeriodEnd: new Date('2026-01-31'),
         cancelAtPeriodEnd: false,
         trialEnd: null,
-        stripeCustomerId: 'cus_123',
+        dodoCustomerId: 'cus_123',
       };
       const prisma = makePrisma({ subscription: sub });
       const cache = {

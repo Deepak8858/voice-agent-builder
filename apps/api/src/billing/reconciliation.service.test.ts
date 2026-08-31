@@ -4,6 +4,13 @@ import { emptyReconciliationReport, ReconciliationService } from './reconciliati
 const ORG = 'org-1';
 const CUSTOMER = 'cus_1';
 
+/** The SDK hands list endpoints back as auto-paginating async iterables. */
+function page<T>(items: T[]): AsyncIterable<T> {
+  return (async function* () {
+    yield* items;
+  })();
+}
+
 interface BalanceRow {
   organizationId: string;
   availableSeconds: number;
@@ -41,7 +48,7 @@ interface LeaseRow {
   expiresAt: Date;
 }
 
-/** A `billing_credit_buckets` row as the Stripe drift comparison reads it. */
+/** A `billing_credit_buckets` row as the Dodo drift comparison reads it. */
 interface GrantRow {
   organizationId: string;
   sourceType: 'included' | 'purchased';
@@ -50,9 +57,9 @@ interface GrantRow {
 
 interface SubscriptionRow {
   organizationId: string;
-  stripeSubscriptionId: string | null;
+  dodoSubscriptionId: string | null;
   status: string;
-  stripePriceId: string | null;
+  dodoProductId: string | null;
 }
 
 function makeService(
@@ -69,42 +76,37 @@ function makeService(
       matureReservedSeconds: number;
       freshReservationCount: number;
     };
-    // Stripe drift comparison fixtures.
-    stripeInvoices?: Array<{
-      id: string;
-      customer: unknown;
-      parent: { type: string; subscription_details?: { subscription?: unknown } | null } | null;
-      amount_paid: number;
+    // Dodo drift comparison fixtures. One payment list covers what used to take
+    // a paid-invoice sweep and a Checkout-session sweep: `subscription_id`
+    // decides which of the two buckets a payment should have produced.
+    dodoPayments?: Array<{
+      payment_id: string;
+      customer: { customer_id: string };
+      subscription_id: string | null;
+      total_amount: number;
     }>;
-    stripeSessions?: Array<{
-      id: string;
-      customer: unknown;
-      payment_status: string | null;
-      metadata: Record<string, string> | null;
-    }>;
-    stripeSubscriptions?: Array<{
-      id: string;
+    dodoSubscriptions?: Array<{
+      subscription_id: string;
       status: string;
-      items?: { data?: Array<{ price?: { id?: string | null } | null }> };
+      product_id: string;
     }>;
-    stripeSubscriptionsHasMore?: boolean;
-    /** Buckets the bulk pre-filter finds for the listed Stripe objects. */
+    /** Buckets the bulk pre-filter finds for the listed Dodo payments. */
     grantedBuckets?: GrantRow[];
     /** Buckets the locked re-check finds; defaults to `grantedBuckets`. */
     confirmedBuckets?: GrantRow[];
-    /** Which organization owns each Stripe customer. */
-    subscriptionOwners?: Array<{ organizationId: string; stripeCustomerId: string | null }>;
-    /** Our rows for the subscriptions Stripe listed. */
+    /** Which organization owns each Dodo customer. */
+    subscriptionOwners?: Array<{ organizationId: string; dodoCustomerId: string | null }>;
+    /** Our rows for the subscriptions Dodo listed as active. */
     linkedSubscriptions?: SubscriptionRow[];
-    /** Our rows that claim a live subscription, for the reverse check. */
-    locallyLiveSubscriptions?: SubscriptionRow[];
+    /** Our rows that fund paid usage, for the reverse check. */
+    locallyFundedSubscriptions?: SubscriptionRow[];
   } = {},
 ) {
   const balances = opts.balances ?? [];
   const confirmedBuckets = opts.confirmedBuckets ?? opts.grantedBuckets ?? [];
   const subscriptionRows = [
     ...(opts.linkedSubscriptions ?? []),
-    ...(opts.locallyLiveSubscriptions ?? []),
+    ...(opts.locallyFundedSubscriptions ?? []),
   ];
 
   const balanceUpdate = vi.fn(async (_args: unknown) => ({}));
@@ -116,7 +118,7 @@ function makeService(
   const tx = {
     billingCreditBucket: {
       findMany: vi.fn(async () => opts.activeBuckets ?? []),
-      // The locked re-check of one Stripe object against one bucket.
+      // The locked re-check of one Dodo payment against one bucket.
       findUnique: vi.fn(
         async ({
           where,
@@ -182,8 +184,8 @@ function makeService(
       })),
     },
     billingCreditBucket: {
-      // Two callers: bucket expiry (by status) and the Stripe drift bulk
-      // pre-filter (by the Stripe IDs it just listed).
+      // Two callers: bucket expiry (by status) and the Dodo drift bulk
+      // pre-filter (by the payment IDs it just listed).
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
         args?.where && 'sourceId' in args.where
           ? (opts.grantedBuckets ?? [])
@@ -201,15 +203,17 @@ function makeService(
       count: vi.fn(async () => 3),
     },
     subscription: {
-      // One table, four callers: margin metrics (by plan), Stripe customer
-      // ownership, our rows for the subscriptions Stripe listed, and our rows
-      // that claim to be live. Dispatched on the filter each one uses.
+      // One table, four callers: margin metrics (by plan), Dodo customer
+      // ownership, our rows for the subscriptions Dodo listed as active, and our
+      // rows that fund paid usage. Dispatched on the filter each one uses; the
+      // reverse check names both `status` and `dodoSubscriptionId`, so `status`
+      // has to be tested first.
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) => {
         const where = args?.where ?? {};
         if ('plan' in where) return opts.subscriptions ?? [];
-        if ('stripeCustomerId' in where) return opts.subscriptionOwners ?? [];
-        if ('status' in where) return opts.locallyLiveSubscriptions ?? [];
-        if ('stripeSubscriptionId' in where) return opts.linkedSubscriptions ?? [];
+        if ('dodoCustomerId' in where) return opts.subscriptionOwners ?? [];
+        if ('status' in where) return opts.locallyFundedSubscriptions ?? [];
+        if ('dodoSubscriptionId' in where) return opts.linkedSubscriptions ?? [];
         return opts.subscriptions ?? [];
       }),
     },
@@ -240,23 +244,11 @@ function makeService(
     releaseReservation: vi.fn(async () => undefined),
   };
 
-  // Only the list endpoints exist: any attempt to mutate Stripe from
+  // Only the list endpoints exist: any attempt to mutate Dodo from
   // reconciliation is a TypeError rather than a silent success.
-  const stripe = {
-    invoices: {
-      list: vi.fn(async () => ({ data: opts.stripeInvoices ?? [], has_more: false })),
-    },
-    checkout: {
-      sessions: {
-        list: vi.fn(async () => ({ data: opts.stripeSessions ?? [], has_more: false })),
-      },
-    },
-    subscriptions: {
-      list: vi.fn(async () => ({
-        data: opts.stripeSubscriptions ?? [],
-        has_more: opts.stripeSubscriptionsHasMore ?? false,
-      })),
-    },
+  const dodo = {
+    payments: { list: vi.fn(() => page(opts.dodoPayments ?? [])) },
+    subscriptions: { list: vi.fn(() => page(opts.dodoSubscriptions ?? [])) },
   };
 
   const service = new ReconciliationService(
@@ -267,8 +259,8 @@ function makeService(
     creditLedger as never,
   );
   // Same seam the rest of the billing tests use: the real client is built from
-  // STRIPE_SECRET_KEY in the constructor and replaced here.
-  Object.assign(service as unknown as { stripe: unknown }, { stripe });
+  // DODO_PAYMENTS_API_KEY in the constructor and replaced here.
+  Object.assign(service as unknown as { dodo: unknown }, { dodo });
 
   return {
     prisma,
@@ -277,7 +269,7 @@ function makeService(
     metrics,
     providerCosts,
     creditLedger,
-    stripe,
+    dodo,
     balanceUpdate,
     balanceUpdateMany,
     bucketUpdateMany,
@@ -907,66 +899,165 @@ describe('ReconciliationService.reconcileProviderCosts', () => {
   });
 });
 
-describe('ReconciliationService.reportStripeDrift', () => {
+describe('ReconciliationService.reportDodoDrift', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  /** A paid invoice, a paid minute pack and a subscription, all for one org. */
+  /**
+   * One subscription-cycle payment, one minute-pack payment and one active
+   * subscription, all for one org.
+   *
+   * The two payments come out of a single `payments.list` call: the one with a
+   * `subscription_id` is what used to be a paid invoice (`included` credit), the
+   * one without is what used to be a paid Checkout session (`purchased` credit).
+   * The subscription is active at Dodo while our row says `canceled`, which is
+   * the drift the comparison exists to catch — we have stopped funding a
+   * customer Dodo is still billing.
+   */
   function driftFixture() {
     return {
-      // Basil moved the subscription off the top level of the Invoice object; this
-      // is the shape the pinned API version actually returns.
-      stripeInvoices: [
+      dodoPayments: [
         {
-          id: 'in_1',
-          customer: CUSTOMER,
-          parent: { type: 'subscription_details', subscription_details: { subscription: 'sub_1' } },
-          amount_paid: 9_900,
+          payment_id: 'pay_sub_1',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: 'sub_1',
+          total_amount: 9_900,
+        },
+        {
+          payment_id: 'pay_pack_1',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: null,
+          total_amount: 2_900,
         },
       ],
-      stripeSessions: [
-        {
-          id: 'cs_1',
-          customer: CUSTOMER,
-          payment_status: 'paid',
-          metadata: { purchaseType: 'minute_pack' },
-        },
+      dodoSubscriptions: [
+        { subscription_id: 'sub_1', status: 'active', product_id: 'prod_growth' },
       ],
-      stripeSubscriptions: [
-        { id: 'sub_1', status: 'past_due', items: { data: [{ price: { id: 'price_growth' } }] } },
-      ],
-      subscriptionOwners: [{ organizationId: ORG, stripeCustomerId: CUSTOMER }],
+      subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
       linkedSubscriptions: [
         {
           organizationId: ORG,
-          stripeSubscriptionId: 'sub_1',
-          // Stripe says past_due; we are still serving them as active.
-          status: 'active',
-          stripePriceId: 'price_growth',
+          dodoSubscriptionId: 'sub_1',
+          status: 'canceled',
+          dodoProductId: 'prod_growth',
         },
       ],
-      locallyLiveSubscriptions: [
-        {
-          organizationId: ORG,
-          stripeSubscriptionId: 'sub_1',
-          status: 'active',
-          stripePriceId: 'price_growth',
-        },
-      ],
+      locallyFundedSubscriptions: [],
     };
   }
 
-  it('counts money Stripe collected that bought no credit, and subscription state drift', async () => {
+  it('counts money Dodo collected that bought no credit, and subscription state drift', async () => {
     const { service } = makeService({ ...driftFixture(), grantedBuckets: [] });
 
-    const report = await service.reportStripeDrift();
+    const report = await service.reportDodoDrift();
 
-    expect(report.stripeObjectsCompared).toBe(3);
-    expect(report.stripePaidInvoicesWithoutCredit).toBe(1);
-    expect(report.stripePaidPacksWithoutCredit).toBe(1);
-    expect(report.stripeSubscriptionDrift).toBe(1);
+    expect(report.dodoObjectsCompared).toBe(3);
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(1);
+    expect(report.dodoPackPaymentsWithoutCredit).toBe(1);
+    expect(report.dodoSubscriptionDrift).toBe(1);
   });
 
-  it('never writes to our database or mutates Stripe when it finds drift', async () => {
+  /**
+   * One `payments.list` now covers both money sweeps, so `subscription_id` is
+   * the only thing deciding which bucket a payment should have produced. Getting
+   * it backwards would count every subscription cycle as an ungranted minute
+   * pack and vice versa, and both counters would still look plausible.
+   */
+  it('splits included from purchased credit on subscription_id alone', async () => {
+    const { service, dodo } = makeService({
+      dodoPayments: [
+        {
+          payment_id: 'pay_sub_1',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: 'sub_1',
+          total_amount: 9_900,
+        },
+      ],
+      subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
+      grantedBuckets: [],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    // Only succeeded payments are listed at all: a failed charge grants nothing,
+    // so it must never reach the comparison as drift.
+    expect(dodo.payments.list).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'succeeded' }),
+    );
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(1);
+    expect(report.dodoPackPaymentsWithoutCredit).toBe(0);
+  });
+
+  /**
+   * A zero-amount cycle (full discount, adjustment) grants no credit, so its
+   * missing bucket is not drift.
+   */
+  it('ignores a payment that collected no money', async () => {
+    const { service } = makeService({
+      dodoPayments: [
+        {
+          payment_id: 'pay_zero',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: 'sub_1',
+          total_amount: 0,
+        },
+      ],
+      subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
+      grantedBuckets: [],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    expect(report.dodoObjectsCompared).toBe(0);
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(0);
+  });
+
+  /**
+   * The mirror of the fixture: Dodo has stopped billing and we are still serving
+   * the customer. Exact status equality died in the swap (the two vocabularies
+   * do not overlap), so this is what the subscription comparison now asserts.
+   */
+  it('counts a subscription we fund that Dodo does not list as active', async () => {
+    const { service } = makeService({
+      dodoSubscriptions: [],
+      locallyFundedSubscriptions: [
+        {
+          organizationId: ORG,
+          dodoSubscriptionId: 'sub_1',
+          status: 'trialing',
+          dodoProductId: 'prod_growth',
+        },
+      ],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    expect(report.dodoSubscriptionDrift).toBe(1);
+  });
+
+  /** Dodo has no price object, so the product is what can disagree. */
+  it('counts a product mismatch on a subscription both sides call active', async () => {
+    const { service } = makeService({
+      dodoSubscriptions: [
+        { subscription_id: 'sub_1', status: 'active', product_id: 'prod_growth' },
+      ],
+      linkedSubscriptions: [
+        {
+          organizationId: ORG,
+          dodoSubscriptionId: 'sub_1',
+          status: 'active',
+          // We are entitling them on Starter while Dodo bills them for Growth.
+          dodoProductId: 'prod_starter',
+        },
+      ],
+      locallyFundedSubscriptions: [],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    expect(report.dodoSubscriptionDrift).toBe(1);
+  });
+
+  it('never writes to our database or mutates Dodo when it finds drift', async () => {
     const {
       service,
       audit,
@@ -977,12 +1068,12 @@ describe('ReconciliationService.reportStripeDrift', () => {
       leaseUpdateMany,
     } = makeService({ ...driftFixture(), grantedBuckets: [] });
 
-    const report = await service.reportStripeDrift();
+    const report = await service.reportDodoDrift();
 
     // Guard: without confirmed drift the assertions below would pass trivially.
-    expect(report.stripePaidInvoicesWithoutCredit + report.stripeSubscriptionDrift).toBeGreaterThan(
-      0,
-    );
+    expect(
+      report.dodoSubscriptionPaymentsWithoutCredit + report.dodoSubscriptionDrift,
+    ).toBeGreaterThan(0);
     // Report-only. Healing from a comparison this young would double-grant
     // credit or claw back credit the customer owns, so not one write is made —
     // not even an audit row, which records corrections that actually happened.
@@ -997,69 +1088,82 @@ describe('ReconciliationService.reportStripeDrift', () => {
   it('reports nothing, and locks nothing, when the credit was granted', async () => {
     const { service, prisma, tx } = makeService({
       ...driftFixture(),
-      // Both payments produced their bucket, and Stripe agrees with our row.
+      // Both payments produced their bucket, and Dodo agrees with our row.
       grantedBuckets: [
-        { organizationId: ORG, sourceType: 'included', sourceId: 'in_1' },
-        { organizationId: ORG, sourceType: 'purchased', sourceId: 'cs_1' },
+        { organizationId: ORG, sourceType: 'included', sourceId: 'pay_sub_1' },
+        { organizationId: ORG, sourceType: 'purchased', sourceId: 'pay_pack_1' },
       ],
-      stripeSubscriptions: [
-        { id: 'sub_1', status: 'active', items: { data: [{ price: { id: 'price_growth' } }] } },
+      linkedSubscriptions: [
+        {
+          organizationId: ORG,
+          dodoSubscriptionId: 'sub_1',
+          status: 'active',
+          dodoProductId: 'prod_growth',
+        },
       ],
     });
 
-    const report = await service.reportStripeDrift();
+    const report = await service.reportDodoDrift();
 
-    expect(report.stripePaidInvoicesWithoutCredit).toBe(0);
-    expect(report.stripePaidPacksWithoutCredit).toBe(0);
-    expect(report.stripeSubscriptionDrift).toBe(0);
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(0);
+    expect(report.dodoPackPaymentsWithoutCredit).toBe(0);
+    expect(report.dodoSubscriptionDrift).toBe(0);
     // An organization with nothing suspicious is never locked, so this pass
     // cannot make the real repairs skip it.
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(tx.billingCreditBucket.findUnique).not.toHaveBeenCalled();
   });
 
-  it('skips the cancellation check when the Stripe subscription list is incomplete', async () => {
+  it('skips the reverse check when the active-subscription list is incomplete', async () => {
     const { service, prisma } = makeService({
-      stripeSubscriptionsHasMore: true,
-      stripeSubscriptions: [
-        { id: 'sub_1', status: 'active', items: { data: [{ price: { id: 'price_growth' } }] } },
+      // Three subscriptions against a two-object cap, so the listing truncates.
+      dodoSubscriptions: [
+        { subscription_id: 'sub_1', status: 'active', product_id: 'prod_growth' },
+        { subscription_id: 'sub_2', status: 'active', product_id: 'prod_growth' },
+        { subscription_id: 'sub_3', status: 'active', product_id: 'prod_growth' },
       ],
       linkedSubscriptions: [
         {
           organizationId: ORG,
-          stripeSubscriptionId: 'sub_1',
+          dodoSubscriptionId: 'sub_1',
           status: 'active',
-          stripePriceId: 'price_growth',
+          dodoProductId: 'prod_growth',
+        },
+        {
+          organizationId: 'org-3',
+          dodoSubscriptionId: 'sub_2',
+          status: 'active',
+          dodoProductId: 'prod_growth',
         },
       ],
-      // Absent from the (truncated) Stripe listing. A partial list is not
-      // evidence of cancellation, so this must not be reported as drift.
-      locallyLiveSubscriptions: [
+      // Absent from the (truncated) Dodo listing. A partial list is not evidence
+      // that Dodo stopped billing, so this must not be reported as drift.
+      locallyFundedSubscriptions: [
         {
           organizationId: 'org-2',
-          stripeSubscriptionId: 'sub_missing',
+          dodoSubscriptionId: 'sub_missing',
           status: 'active',
-          stripePriceId: 'price_growth',
+          dodoProductId: 'prod_growth',
         },
       ],
     });
 
-    const report = await service.reportStripeDrift(2);
+    const report = await service.reportDodoDrift(2);
 
-    expect(report.stripeSubscriptionDrift).toBe(0);
+    expect(report.dodoSubscriptionDrift).toBe(0);
     expect(prisma.subscription.findMany).not.toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ status: expect.anything() }) }),
     );
   });
 
-  it('no-ops cleanly when Stripe is not configured', async () => {
-    const { service, prisma, stripe } = makeService({ ...driftFixture(), grantedBuckets: [] });
-    Object.assign(service as unknown as { stripe: unknown }, { stripe: null });
+  it('no-ops cleanly when Dodo is not configured', async () => {
+    const { service, prisma, dodo } = makeService({ ...driftFixture(), grantedBuckets: [] });
+    Object.assign(service as unknown as { dodo: unknown }, { dodo: null });
 
-    const report = await service.reportStripeDrift();
+    const report = await service.reportDodoDrift();
 
     expect(report).toEqual(emptyReconciliationReport());
-    expect(stripe.invoices.list).not.toHaveBeenCalled();
+    expect(dodo.payments.list).not.toHaveBeenCalled();
     expect(prisma.billingCreditBucket.findMany).not.toHaveBeenCalled();
   });
 });
@@ -1067,25 +1171,25 @@ describe('ReconciliationService.reportStripeDrift', () => {
 describe('ReconciliationService.runAll', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('carries the Stripe drift counters through the merge', async () => {
+  it('carries the Dodo drift counters through the merge', async () => {
     const { service } = makeService();
     // The merge is a hand-written reducer: a counter the report type gained but
     // the reducer did not is silently dropped, and the drift would never
     // surface from a full pass.
-    vi.spyOn(service, 'reportStripeDrift').mockResolvedValue({
+    vi.spyOn(service, 'reportDodoDrift').mockResolvedValue({
       ...emptyReconciliationReport(),
-      stripeObjectsCompared: 42,
-      stripePaidInvoicesWithoutCredit: 3,
-      stripePaidPacksWithoutCredit: 2,
-      stripeSubscriptionDrift: 1,
+      dodoObjectsCompared: 42,
+      dodoSubscriptionPaymentsWithoutCredit: 3,
+      dodoPackPaymentsWithoutCredit: 2,
+      dodoSubscriptionDrift: 1,
     });
 
     const report = await service.runAll();
 
-    expect(report.stripeObjectsCompared).toBe(42);
-    expect(report.stripePaidInvoicesWithoutCredit).toBe(3);
-    expect(report.stripePaidPacksWithoutCredit).toBe(2);
-    expect(report.stripeSubscriptionDrift).toBe(1);
+    expect(report.dodoObjectsCompared).toBe(42);
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(3);
+    expect(report.dodoPackPaymentsWithoutCredit).toBe(2);
+    expect(report.dodoSubscriptionDrift).toBe(1);
   });
 
   it('carries the number-rental counter through the merge', async () => {
@@ -1173,7 +1277,7 @@ describe('ReconciliationService.clearBalanceReview', () => {
   // non-`active` status, so either one is a total calling outage.
   it.each([
     ['review', 'stale_call_with_debits'],
-    ['blocked', 'refund_manual_review:cs_123:120s'],
+    ['blocked', 'refund_manual_review:pay_123:120s'],
   ])('clears a %s balance and resets reviewReason', async (status, reason) => {
     const { service, prisma, balanceUpdateMany, audit } = makeService({
       balances: stuck(status, reason),

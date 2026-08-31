@@ -52,7 +52,7 @@ ARG NEXT_PUBLIC_APP_VERSION
 # bundle and never consulted. Requiring it only implied a control that does not
 # exist, and the same reasoning already retired the host-side BILLING_MODE check
 # in .github/workflows/deploy-aws-ec2.yml. Checkout availability comes from the
-# STRIPE_* configuration the API reads at runtime.
+# DODO_* configuration the API reads at runtime.
 RUN require_arg() { eval "value=\${$1}"; test -n "$value" || { echo "Required build argument $1 is missing" >&2; exit 1; }; }; \
     require_arg NEXT_PUBLIC_API_URL; \
     require_arg NEXT_PUBLIC_APP_URL; \

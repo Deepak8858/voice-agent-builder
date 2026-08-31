@@ -50,14 +50,14 @@ There is no `billing_accounts` and no `billing_usage`. Subscription state, the c
 ledger and the metered usage rows are separate tables, and the ledger is the money.
 
 ```sql
-subscriptions(id, organization_id UNIQUE, stripe_subscription_id UNIQUE, stripe_customer_id, stripe_product_id, stripe_price_id, plan, catalog_version, status, concurrent_call_limit_override, current_period_start, current_period_end, cancel_at_period_end, trial_end, stripe_metadata, webhook_updated_at, created_at, updated_at)
-billing_credit_buckets(id, organization_id, source_type, source_id, original_seconds, remaining_seconds, valid_from, expires_at, priority, status, stripe_payment_intent_id, created_at, updated_at)
+subscriptions(id, organization_id UNIQUE, dodo_subscription_id UNIQUE, dodo_customer_id, dodo_product_id, plan, catalog_version, status, concurrent_call_limit_override, current_period_start, current_period_end, cancel_at_period_end, trial_end, dodo_metadata, webhook_updated_at, created_at, updated_at)
+billing_credit_buckets(id, organization_id, source_type, source_id, original_seconds, remaining_seconds, valid_from, expires_at, priority, status, dodo_payment_id, created_at, updated_at)
 billing_ledger_entries(id, organization_id, bucket_id, workspace_id, call_id, entry_type, seconds, balance_after_seconds, actor_type, actor_id, reason_code, idempotency_key, metadata, created_at)
 organization_credit_balances(id, organization_id UNIQUE, available_seconds, reserved_seconds, status, review_reason, version, created_at, updated_at)
 call_usages(id, organization_id, workspace_id, call_id UNIQUE NULL, provider, provider_call_id, direction, dispatched_at, connected_at, ended_at, raw_connected_seconds, billable_seconds, reserved_seconds, debited_seconds, disposition, finalization_state, finalization_idempotency_key UNIQUE, created_at, updated_at)
 runtime_usage_events(id, organization_id, call_id NULL, event_id, event_type, occurred_at, validated_payload, decision, claimed_at, attempt_count, processed_at, created_at)
 usage_records(id, organization_id, workspace_id, billable_metric, quantity, period_start, period_end, recorded_at)
-stripe_events(id, stripe_event_id UNIQUE, type, api_version, created, data, livemode, pending_webhooks, request_context, processing_started_at, attempt_count, processed_at, error_message, created_at)
+dodo_webhook_events(id, webhook_id UNIQUE, type, api_version, created, data, livemode, pending_webhooks, request_context, processing_started_at, attempt_count, processed_at, error_message, created_at)
 ```
 
 Credit is held in **seconds**, never minutes. A bucket is granted credit with a
@@ -78,10 +78,10 @@ Four constraints, and every one of them is load-bearing:
   webhook recomputes the same key.
 - `billing_credit_buckets UNIQUE (organization_id, source_type, source_id)` — the
   same invoice or session can only ever own one bucket.
-- `billing_credit_buckets.stripe_payment_intent_id UNIQUE` — a replayed Checkout that
-  slips past `stripe_events` collides on this index instead of minting a second
+- `billing_credit_buckets.dodo_payment_id UNIQUE` — a replayed checkout that
+  slips past `dodo_webhook_events` collides on this index instead of minting a second
   paid-for bucket, and a refund or dispute can be mapped back to its grant by payment
-  intent alone.
+  id alone.
 - `call_usages.finalization_idempotency_key UNIQUE` and
   `runtime_usage_events UNIQUE (organization_id, event_id)` do the same for debits, so
   replay protection does not depend on the call row still existing.

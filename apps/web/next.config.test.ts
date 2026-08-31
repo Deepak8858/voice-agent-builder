@@ -70,22 +70,23 @@ describe('next.config security headers', () => {
 
     expect(directives.get('frame-src')).toEqual([
       "'self'",
-      'https://checkout.stripe.com',
+      'https://checkout.dodopayments.com',
       'https://*.supabase.co',
       'https://*.supabase.com',
     ]);
   });
 
-  it('connects only to self, the configured API, Supabase, and Stripe', () => {
+  it('connects only to self, the configured API, and Supabase', () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.voiceforge.example';
     const directives = cspDirectives();
 
+    // No payment-provider origin: hosted Checkout and the customer portal are
+    // top-level redirects, so the browser never calls Dodo Payments directly.
     expect(directives.get('connect-src')).toEqual([
       "'self'",
       'https://api.voiceforge.example',
       'https://*.supabase.co',
       'https://*.supabase.com',
-      'https://api.stripe.com',
     ]);
   });
 

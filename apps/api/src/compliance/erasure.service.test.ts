@@ -89,8 +89,8 @@ describe('ErasureService', () => {
     user?: { id: string; email: string; authUserId: string | null } | null;
     memberships?: Array<{ workspaceId: string; userId: string }>;
     subscription?: {
-      stripeCustomerId: string | null;
-      stripeSubscriptionId: string | null;
+      dodoCustomerId: string | null;
+      dodoSubscriptionId: string | null;
       status: string;
     } | null;
     phoneNumbers?: PhoneNumberRow[];
@@ -538,17 +538,17 @@ describe('ErasureService', () => {
 
     /**
      * F-029. `subscriptions.organization_id` is ON DELETE CASCADE and that row
-     * holds the only copy of the Stripe ids, so deleting the organization while
-     * the subscription is live leaves Stripe charging the card with nothing here
+     * holds the only copy of the Dodo ids, so deleting the organization while
+     * the subscription is live leaves Dodo charging the card with nothing here
      * able to identify, let alone cancel, it.
      */
-    it('refuses to delete an organization with a live Stripe subscription', async () => {
+    it('refuses to delete an organization with a live Dodo subscription', async () => {
       const { service, prisma, deletedOrganizations, audit, auditLogs } = makeService({
         organization: { id: 'org-1', name: 'Acme' },
         workspaces: [{ id: 'ws-1' }],
         subscription: {
-          stripeCustomerId: 'cus_live',
-          stripeSubscriptionId: 'sub_live',
+          dodoCustomerId: 'cus_live',
+          dodoSubscriptionId: 'sub_live',
           status: 'active',
         },
       });
@@ -557,7 +557,7 @@ describe('ErasureService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('sub_live');
-      // Nothing may be destroyed: the Stripe id must stay resolvable.
+      // Nothing may be destroyed: the Dodo id must stay resolvable.
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(deletedOrganizations).toEqual([]);
       // F-33. A refusal is a data-subject-request outcome and has to leave a
@@ -570,9 +570,9 @@ describe('ErasureService', () => {
         resourceType: 'organization',
         resourceId: 'org-1',
         metadata: expect.objectContaining({
-          reason: 'live_stripe_subscription',
-          stripeSubscriptionId: 'sub_live',
-          stripeSubscriptionStatus: 'active',
+          reason: 'live_dodo_subscription',
+          dodoSubscriptionId: 'sub_live',
+          dodoSubscriptionStatus: 'active',
         }),
       });
       expect(auditLogs.map((row) => row.action)).not.toContain('gdpr.organization_deleted');
@@ -585,8 +585,8 @@ describe('ErasureService', () => {
         organization: { id: 'org-1', name: 'Acme' },
         workspaces: [{ id: 'ws-1' }],
         subscription: {
-          stripeCustomerId: 'cus_live',
-          stripeSubscriptionId: 'sub_live',
+          dodoCustomerId: 'cus_live',
+          dodoSubscriptionId: 'sub_live',
           status: 'past_due',
         },
       });
@@ -599,14 +599,14 @@ describe('ErasureService', () => {
 
     it('proceeds for a customer row that has no subscription attached', async () => {
       // A free org that merely opened the billing portal has a subscription row
-      // with the default status 'active' and no stripeSubscriptionId. Refusing
+      // with the default status 'active' and no dodoSubscriptionId. Refusing
       // on status alone would make every free org un-erasable.
       const { service, deletedOrganizations } = makeService({
         organization: { id: 'org-1', name: 'Acme' },
         workspaces: [{ id: 'ws-1' }],
         subscription: {
-          stripeCustomerId: 'cus_free',
-          stripeSubscriptionId: null,
+          dodoCustomerId: 'cus_free',
+          dodoSubscriptionId: null,
           status: 'active',
         },
       });
@@ -617,13 +617,13 @@ describe('ErasureService', () => {
       expect(deletedOrganizations).toEqual(['org-1']);
     });
 
-    it('records the Stripe handles in the audit row before the cascade drops them', async () => {
+    it('records the Dodo handles in the audit row before the cascade drops them', async () => {
       const { service, auditLogs, deletedOrganizations } = makeService({
         organization: { id: 'org-1', name: 'Acme' },
         workspaces: [{ id: 'ws-1' }],
         subscription: {
-          stripeCustomerId: 'cus_gone',
-          stripeSubscriptionId: 'sub_gone',
+          dodoCustomerId: 'cus_gone',
+          dodoSubscriptionId: 'sub_gone',
           status: 'canceled',
         },
       });
@@ -633,14 +633,14 @@ describe('ErasureService', () => {
       expect(result.success).toBe(true);
       expect(deletedOrganizations).toEqual(['org-1']);
       // audit_logs.organization_id has no foreign key, so this row survives the
-      // organization and is the only remaining way back to the Stripe customer.
+      // organization and is the only remaining way back to the Dodo customer.
       expect(auditLogs[0]).toMatchObject({
         organizationId: 'org-1',
         action: 'gdpr.organization_deleted',
         metadata: expect.objectContaining({
-          stripeCustomerId: 'cus_gone',
-          stripeSubscriptionId: 'sub_gone',
-          stripeSubscriptionStatus: 'canceled',
+          dodoCustomerId: 'cus_gone',
+          dodoSubscriptionId: 'sub_gone',
+          dodoSubscriptionStatus: 'canceled',
         }),
       });
     });
@@ -683,7 +683,7 @@ describe('ErasureService', () => {
       const auditAt = auditLogCreate.mock.invocationCallOrder[0];
       expect(tx.mock.invocationCallOrder[0]).toBeLessThan(auditAt);
       expect(auditAt).toBeLessThan(orgDelete.mock.invocationCallOrder[0]);
-      // The Stripe read has to stay ahead of it: the subscription row is the only
+      // The Dodo read has to stay ahead of it: the subscription row is the only
       // copy of the handles the row records, and it is ON DELETE CASCADE.
       const subRead = (prisma.subscription as { findUnique: ReturnType<typeof vi.fn> }).findUnique;
       expect(subRead.mock.invocationCallOrder[0]).toBeLessThan(auditAt);
@@ -914,7 +914,7 @@ describe('ErasureService', () => {
         expect(deletedWorkspaces).toEqual([]);
         expect(deletedOrganizations).toEqual([]);
         // F-33. The refusal is recorded with its own action and a reason that
-        // distinguishes it from the Stripe refusal, but never the success action.
+        // distinguishes it from the Dodo refusal, but never the success action.
         expect(auditLogs).toHaveLength(1);
         expect(auditLogs[0]).toMatchObject({
           organizationId: 'org-1',
