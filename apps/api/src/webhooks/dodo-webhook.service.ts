@@ -550,6 +550,11 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
       paymentId,
       dodoCustomerId: customerId,
       catalogVersion: BILLING_CATALOG_VERSION,
+      // What the buyer actually settled, in their localized currency — the pack
+      // grant no longer requires USD (MoR localization), so this is the record
+      // an operator reads when reconciling a grant against a payout.
+      collectedAmount: event.data['total_amount'] ?? null,
+      collectedCurrency: event.data['currency'] ?? null,
     });
   }
 
@@ -571,19 +576,36 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     const amount = typeof money.amount === 'number' ? money.amount : null;
     const currency = typeof money.currency === 'string' ? money.currency.toLowerCase() : null;
-    if (amount !== null && amount > 0 && currency === EXPECTED_CURRENCY) return true;
+    // The two kinds read DIFFERENT resources and their currencies mean different
+    // things. A subscription cycle reads the subscription object, whose
+    // `recurring_pre_tax_amount`/`currency` are the PRODUCT's own — always the
+    // catalog's USD unless a product was misconfigured, which is exactly what the
+    // equality catches. A pack payment reads the payment object, whose
+    // `total_amount`/`currency` are what the BUYER settled in: Dodo is a Merchant
+    // of Record and localizes at checkout, so a $39 pack legitimately arrives as
+    // e.g. `1155716 INR` (observed live in the 2026-08-31 test-mode E2E — a $99
+    // subscription's payment settled as INR with GST folded in). Requiring USD
+    // here made every non-USD buyer pay for a pack and never receive it. The
+    // price itself is not assertable from the payment (converted, tax-inclusive);
+    // it is protected upstream by the server-owned product in the cart. So the
+    // pack check is: positive money, any currency, with the observed currency
+    // kept in the audit trail below.
+    const currencyOk =
+      kind === 'subscription_cycle' ? currency === EXPECTED_CURRENCY : currency !== null;
+    if (amount !== null && amount > 0 && currencyOk) return true;
 
+    const expected =
+      kind === 'subscription_cycle' ? `positive ${EXPECTED_CURRENCY}` : 'positive';
     this.logger.error(
       `Refusing to grant credit for ${kind} ${sourceId} (org ${orgId}): collected ` +
-        `${String(money.amount)} ${String(money.currency)}, expected a positive ` +
-        `${EXPECTED_CURRENCY} amount`,
+        `${String(money.amount)} ${String(money.currency)}, expected a ${expected} amount`,
     );
     await this.logBillingAudit(orgId, 'billing.grant_amount_review', {
       kind,
       sourceId,
       amount: amount ?? null,
       currency: money.currency ?? null,
-      expectedCurrency: EXPECTED_CURRENCY,
+      expectedCurrency: kind === 'subscription_cycle' ? EXPECTED_CURRENCY : 'any',
       paymentId: money.paymentId ?? null,
     });
     return false;
