@@ -234,7 +234,8 @@ export class TelephonyService {
       // Matched by E.164 against the provider's own inventory. Checked before the
       // duplicate lookup below so a caller importing a number it does not own
       // learns nothing about which numbers other workspaces hold.
-      const owned = inventory.some((item) => item.phoneNumberE164 === number.phone_number);
+      const ownedRecord = inventory.find((item) => item.phoneNumberE164 === number.phone_number);
+      const owned = ownedRecord !== undefined;
       // Vobiz falls back to listing trunks when the account exposes no DIDs, and
       // a trunk carries no E.164 to match on, so the number entered against one
       // is unverifiable here by construction. That branch keeps its previous
@@ -268,7 +269,13 @@ export class TelephonyService {
 
       const data = {
         providerConnectionId: connection.id,
-        providerNumberId: number.provider_number_id,
+        // The provider id comes from the inventory record the E.164 matched, not
+        // from the request: routing configures the provider resource this id
+        // names, so a caller-supplied id could bind a verified number to a
+        // DIFFERENT resource in the account. Only the null-E.164 trunk branch —
+        // where there is no matched record — keeps the caller's value, and that
+        // value was itself just checked against the inventory above.
+        providerNumberId: ownedRecord?.providerNumberId ?? number.provider_number_id,
         friendlyName: number.friendly_name ?? null,
         capabilities: (number.capabilities as Prisma.InputJsonValue | undefined) ?? Prisma.JsonNull,
         providerMetadata: {

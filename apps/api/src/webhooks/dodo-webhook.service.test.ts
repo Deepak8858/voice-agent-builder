@@ -1495,7 +1495,7 @@ describe('DodoWebhookService production webhook handling', () => {
             sourceId: { startsWith: 'sub:sub_123:' },
             expiresAt: { gt: new Date(EVENT_AT) },
           },
-          take: 2,
+          take: 10,
         }),
       );
       // The bucket's `sourceId`, not the payment id: that is what the ledger's
@@ -1508,13 +1508,50 @@ describe('DodoWebhookService production webhook handling', () => {
       });
     });
 
-    /** Two cycles covering one payment is ambiguity, and ambiguity is never guessed. */
-    it('records a cycle refund matching two buckets for review instead of guessing', async () => {
+    /**
+     * The regression the review asked for: after a renewal, the LATER cycle's
+     * bucket shares the prefix and outlives the refunded payment, but its cycle
+     * started after the payment — the lower bound must exclude it so an earlier
+     * cycle's refund still resolves to exactly its own bucket instead of reading
+     * as ambiguous forever (which would acknowledge the refund and leave the
+     * refunded credit active).
+     */
+    it('still resolves an earlier cycle refund when a later renewal bucket exists', async () => {
       const prisma = makePrisma({
         fundedBucket: null,
         cycleBuckets: [
           { sourceId: CYCLE_SOURCE_ID },
+          // A month after paidAt (EVENT_AT): unexpired, same prefix, later cycle.
           { sourceId: 'sub:sub_123:2027-02-15T00:00:00.000Z' },
+        ],
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, cycleRefund(), {
+        creditLedger,
+        retrievePayment: retrievesCycle(),
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: CYCLE_SOURCE_ID, sourceType: 'included' }),
+      );
+    });
+
+    /**
+     * Genuine ambiguity is never guessed: a bucket whose cycle starts within the
+     * grace window of the payment (the seconds-skew protection) and the payment's
+     * own bucket both qualify, and that sliver goes to a human. An `activation`
+     * key qualifies by construction and creates the same ambiguity.
+     */
+    it('records a cycle refund matching two qualifying buckets for review instead of guessing', async () => {
+      const fiveMinAfterPaidAt = '2027-01-15T00:05:00.000Z';
+      const prisma = makePrisma({
+        fundedBucket: null,
+        cycleBuckets: [
+          { sourceId: CYCLE_SOURCE_ID },
+          { sourceId: `sub:sub_123:${fiveMinAfterPaidAt}` },
         ],
       });
       const creditLedger = makeCreditLedger();

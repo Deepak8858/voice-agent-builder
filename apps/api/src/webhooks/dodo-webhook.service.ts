@@ -1208,7 +1208,16 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const covering = await this.prisma.billingCreditBucket.findMany({
+    // `expiresAt > paidAt` alone is not enough: after renewals, every LATER
+    // cycle's bucket shares the prefix and also outlives the refunded payment,
+    // so an old cycle's refund would always read as ambiguous. The lower bound —
+    // cycle start on or before the payment — lives in the sourceId itself
+    // (`sub:<id>:<previousBillingDate>`), which SQL cannot parse, so the query
+    // over-fetches a few rows and the date filter runs here. `:activation` keys
+    // carry no date and pass the lower bound by construction: an activation
+    // bucket's cycle started when the subscription did, before any payment that
+    // refunds against it.
+    const candidates = await this.prisma.billingCreditBucket.findMany({
       where: {
         organizationId,
         sourceType: 'included',
@@ -1216,7 +1225,23 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
         expiresAt: { gt: paidAt },
       },
       select: { sourceId: true },
-      take: 2,
+      take: 10,
+    });
+    // The grace widens the lower bound rather than narrowing it: if a renewal's
+    // payment timestamp lands seconds BEFORE the cycle start Dodo stamps on the
+    // subscription, a strict bound would exclude the right bucket and leave
+    // exactly one WRONG (previous-cycle) match — an auto-reversal of money the
+    // customer legitimately consumed. Inside the grace both cycles match, which
+    // is ambiguous, which is a human. Fail closed, never fail wrong.
+    const CYCLE_START_GRACE_MS = 15 * 60 * 1000;
+    const covering = candidates.filter((row) => {
+      const suffix = row.sourceId.slice(`sub:${subscriptionId}:`.length);
+      if (suffix === 'activation') return true;
+      const cycleStart = new Date(suffix);
+      return (
+        !Number.isNaN(cycleStart.getTime()) &&
+        cycleStart.getTime() <= paidAt.getTime() + CYCLE_START_GRACE_MS
+      );
     });
     const bucket = covering.length === 1 ? covering[0] : undefined;
     if (!bucket) {

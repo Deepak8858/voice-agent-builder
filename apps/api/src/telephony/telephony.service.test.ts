@@ -1568,6 +1568,50 @@ describe('TelephonyService', () => {
   });
 
   /**
+   * The provider id is server-derived from the inventory record the E.164
+   * matched, never the caller's claim: routing configures the provider resource
+   * that id names, so a caller-supplied id could bind a verified number to a
+   * DIFFERENT resource in the account.
+   */
+  it("persists the inventory record's provider id, not the caller's", async () => {
+    const prisma = makeImportPrisma('twilio');
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      registryWithInventory([
+        { providerNumberId: 'PN_REAL', phoneNumberE164: '+14155551234' },
+        { providerNumberId: 'PN_OTHER', phoneNumberE164: '+14155559999' },
+      ]) as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.importNumbers('workspace-1', 'user-1', {
+      connection_id: 'connection-1',
+      numbers: [
+        {
+          // The caller claims a different resource in the same account.
+          provider_number_id: 'PN_OTHER',
+          phone_number: '+14155551234',
+        },
+      ],
+    });
+
+    expect(prisma.telephonyPhoneNumber.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          phoneNumberE164: '+14155551234',
+          providerNumberId: 'PN_REAL',
+        }),
+      }),
+    );
+  });
+
+  /**
    * `pending_verification` was written by `createManualNumber` and read by
    * nothing: assign → configure-livekit walked an unproven claim straight to
    * `livekit_configured`. Inbound stays open on purpose — a carrier only delivers
