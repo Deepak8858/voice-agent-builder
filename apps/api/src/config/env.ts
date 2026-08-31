@@ -227,23 +227,24 @@ const EnvSchema = z
     // authorized redirect URI on the OAuth client in Google Cloud Console.
     GOOGLE_OAUTH_REDIRECT_URI: OptionalUrlEnvSchema,
 
-    // Stripe is either fully configured with server-owned prices or Checkout is
-    // temporarily unavailable. There is no "demo" billing mode: partial
-    // configuration must never hand out a recurring free allowance.
-    STRIPE_SECRET_KEY: z.string().optional(),
-    STRIPE_WEBHOOK_SECRET: z.string().optional(),
-    STRIPE_STARTER_PRICE_ID: z.string().optional(),
-    STRIPE_GROWTH_PRICE_ID: z.string().optional(),
-    STRIPE_ENTERPRISE_PRICE_ID: z.string().optional(),
-    STRIPE_MINUTE_PACK_PRICE_ID: z.string().optional(),
-    // Which Customer Portal feature set to open. Deliberately *not* in
-    // STRIPE_PORTAL_REQUIRED_ENV: unset means Stripe's account default, which
-    // still lets a customer fix a failing card. Requiring it would 503 the
-    // portal — and, because that list is spread into the subscription and
-    // top-up lists, would 503 both Checkout entry points too.
-    STRIPE_PORTAL_CONFIGURATION_ID: z.string().optional(),
-    // Tax collection stays off until the tax registrations are confirmed.
-    STRIPE_TAX_ENABLED: BooleanEnvSchema.default(false),
+    // Dodo Payments is either fully configured with server-owned products or
+    // Checkout is temporarily unavailable. There is no "demo" billing mode:
+    // partial configuration must never hand out a recurring free allowance.
+    //
+    // There is no STRIPE_PORTAL_CONFIGURATION_ID twin: Dodo's customer portal has
+    // no configuration object to select.
+    // There is no STRIPE_TAX_ENABLED twin either: Dodo is the Merchant of Record,
+    // so tax is calculated, collected and remitted by them by construction.
+    DODO_PAYMENTS_API_KEY: z.string().optional(),
+    DODO_WEBHOOK_SECRET: z.string().optional(),
+    DODO_PAYMENTS_ENVIRONMENT: z.enum(['test_mode', 'live_mode']).default('test_mode'),
+    DODO_STARTER_PRODUCT_ID: z.string().optional(),
+    DODO_GROWTH_PRODUCT_ID: z.string().optional(),
+    // A sales-assisted enterprise subscription is recognised by its product id
+    // alone, so the webhook plan-inferrer needs this even though no self-serve
+    // Checkout link uses it.
+    DODO_ENTERPRISE_PRODUCT_ID: z.string().optional(),
+    DODO_MINUTE_PACK_PRODUCT_ID: z.string().optional(),
     BILLING_GLOBAL_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(100),
     BILLING_LEASE_TTL_SECONDS: z.coerce.number().int().min(30).max(300).default(90),
 
@@ -411,17 +412,43 @@ const EnvSchema = z
         message: 'VOICE_PROVIDER=mock is not allowed in production',
       });
     }
-    // A test-mode key in production is a silent revenue outage, not an error:
+    // Test-mode billing in production is a silent revenue outage, not an error:
     // Checkout sessions open and never settle, and live-mode webhook signatures
     // will not verify against a test secret. Nothing else here or in the deploy
-    // gate inspects the key's mode and /health cannot see it, so refuse at boot
-    // the way VOICE_PROVIDER=mock does above. Restricted keys carry the same
-    // mode segment, hence the (sk|rk) alternation.
-    if (value.NODE_ENV === 'production' && /^(sk|rk)_test_/.test(value.STRIPE_SECRET_KEY ?? '')) {
+    // gate inspects the mode and /health cannot see it, so refuse at boot the way
+    // VOICE_PROVIDER=mock does above. Unlike a Stripe key, a Dodo key carries no
+    // mode prefix to inspect — the mode is only ever DODO_PAYMENTS_ENVIRONMENT,
+    // which defaults to test_mode, so an operator who sets a live key and forgets
+    // this variable lands in exactly the outage described above.
+    if (
+      value.NODE_ENV === 'production' &&
+      value.DODO_PAYMENTS_API_KEY &&
+      value.DODO_PAYMENTS_ENVIRONMENT !== 'live_mode'
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['STRIPE_SECRET_KEY'],
-        message: 'STRIPE_SECRET_KEY must be a live-mode key in production, not a test-mode key',
+        path: ['DODO_PAYMENTS_ENVIRONMENT'],
+        message:
+          'DODO_PAYMENTS_ENVIRONMENT must be live_mode in production when ' +
+          'DODO_PAYMENTS_API_KEY is set; test-mode billing in production is a silent ' +
+          'revenue outage',
+      });
+    }
+    // The symmetric refusal, which the Stripe prefix check never gave us either
+    // but the mode variable makes free: live_mode outside production means a
+    // staging or dev deployment that inherited a production env file charges
+    // real cards and creates real customers in the live Dodo account.
+    if (
+      value.NODE_ENV !== 'production' &&
+      value.DODO_PAYMENTS_API_KEY &&
+      value.DODO_PAYMENTS_ENVIRONMENT === 'live_mode'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DODO_PAYMENTS_ENVIRONMENT'],
+        message:
+          'DODO_PAYMENTS_ENVIRONMENT must not be live_mode outside production; a dev or ' +
+          'staging deployment holding a live key would charge real cards',
       });
     }
     // A deployment that enables the in-house pipeline without complete Azure
@@ -493,21 +520,21 @@ const EnvSchema = z
         }
       }
     }
-    // WEB_BASE_URL is the origin Stripe redirects customers back to after
-    // checkout and from the billing portal. It defaults to localhost, so a
-    // deployment with working Stripe credentials that omits it takes payments and
-    // then bounces the customer to a dead address. That failure is invisible to a
-    // boot check, hence this guard.
+    // WEB_BASE_URL is the origin Dodo redirects customers back to after checkout
+    // and from the customer portal. It defaults to localhost, so a deployment with
+    // working Dodo credentials that omits it takes payments and then bounces the
+    // customer to a dead address. That failure is invisible to a boot check, hence
+    // this guard.
     //
     // Fires as soon as *either* paying entry point is usable, not only when every
     // variable is set: since these lists were split, a deployment with the
-    // subscription prices but no minute-pack price takes real payments, and this
-    // guard has to cover it. A deployment with no prices at all cannot charge
-    // anyone, so its localhost default stays harmless and boot stays quiet — that
-    // is the ordinary local-development configuration.
+    // subscription products but no minute-pack product takes real payments, and
+    // this guard has to cover it. A deployment with no products at all cannot
+    // charge anyone, so its localhost default stays harmless and boot stays quiet —
+    // that is the ordinary local-development configuration.
     if (
-      missingStripeEnv(STRIPE_SUBSCRIPTION_REQUIRED_ENV, value).length === 0 ||
-      missingStripeEnv(STRIPE_TOPUP_REQUIRED_ENV, value).length === 0
+      missingDodoEnv(DODO_SUBSCRIPTION_REQUIRED_ENV, value).length === 0 ||
+      missingDodoEnv(DODO_TOPUP_REQUIRED_ENV, value).length === 0
     ) {
       let parsed: URL | null = null;
       try {
@@ -515,63 +542,90 @@ const EnvSchema = z
       } catch {
         parsed = null;
       }
-      if (!parsed || parsed.protocol !== 'https:' || isLocalHostname(parsed.hostname)) {
+      // Same production/development split as the GOOGLE_OAUTH_REDIRECT_URI guard
+      // above: production demands a non-local HTTPS origin, while a developer
+      // exercising test-mode checkout locally may keep the localhost default —
+      // Dodo will happily redirect a test session back to it.
+      const valid =
+        value.NODE_ENV === 'production'
+          ? parsed !== null && parsed.protocol === 'https:' && !isLocalHostname(parsed.hostname)
+          : parsed !== null &&
+            (parsed.protocol === 'https:' || isLocalHostname(parsed.hostname));
+      if (!valid) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['WEB_BASE_URL'],
           message:
-            'WEB_BASE_URL must be an absolute non-local HTTPS URL when Stripe Checkout is ' +
-            'configured, because Stripe redirects customers back to it',
+            'WEB_BASE_URL must be an absolute non-local HTTPS URL when Dodo Checkout is ' +
+            'configured in production, because Dodo redirects customers back to it',
         });
       }
     }
   });
 
 /**
- * What each Stripe entry point needs, in one place. These lists are the single
- * source of truth: the refinement above, BillingService's runtime gates, the
- * boot warning below and the deploy workflow's `required[]` list all derive from
- * them, because three hand-maintained copies had already drifted into mirror
- * images of each other — the deploy gate required STRIPE_ENTERPRISE_PRICE_ID and
- * omitted STRIPE_MINUTE_PACK_PRICE_ID while the code required the minute pack
+ * What each Dodo Payments entry point needs, in one place. These lists are the
+ * single source of truth: the refinement above, BillingService's runtime gates,
+ * the boot warning below and the deploy workflow's `dodo_required[]` list all
+ * derive from them, because three hand-maintained copies had already drifted into
+ * mirror images of each other — the deploy gate required STRIPE_ENTERPRISE_PRICE_ID
+ * and omitted STRIPE_MINUTE_PACK_PRICE_ID while the code required the minute pack
  * and never read enterprise. A deployment could therefore pass every gate and
  * still return 503 from subscription checkout, top-up and the customer portal,
  * with no health check that would notice.
  *
+ * The provider changed; the contract did not. It now binds the workflow's
+ * `dodo_required=( ... )` array, and `env.test.ts` still parses that array out of
+ * the workflow and asserts it covers DODO_CHECKOUT_REQUIRED_ENV name for name.
+ *
  * They are separate lists because missing configuration must disable only the
- * entry point it actually affects. One unset price ID used to take down all
+ * entry point it actually affects. One unset product ID used to take down all
  * three at once; that is a total revenue outage on a single typo.
  *
- * The portal needs no price, but it does need the webhook secret: a plan change
+ * The portal needs no product, but it does need the webhook secret: a plan change
  * or cancellation a customer makes there reaches us only as a webhook, so an
  * unverifiable webhook feed means those changes silently never apply.
  */
-export const STRIPE_PORTAL_REQUIRED_ENV = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'] as const;
+export const DODO_PORTAL_REQUIRED_ENV = ['DODO_PAYMENTS_API_KEY', 'DODO_WEBHOOK_SECRET'] as const;
 
-export const STRIPE_SUBSCRIPTION_REQUIRED_ENV = [
-  ...STRIPE_PORTAL_REQUIRED_ENV,
-  'STRIPE_STARTER_PRICE_ID',
-  'STRIPE_GROWTH_PRICE_ID',
+export const DODO_SUBSCRIPTION_REQUIRED_ENV = [
+  ...DODO_PORTAL_REQUIRED_ENV,
+  'DODO_STARTER_PRODUCT_ID',
+  'DODO_GROWTH_PRODUCT_ID',
+  // DODO_ENTERPRISE_PRODUCT_ID is deliberately NOT here, exactly as its Stripe
+  // twin never was: self-serve checkout maps only starter and growth, so gating
+  // those flows on an enterprise product would 503 every paid upgrade for a
+  // deployment that simply has no sales-assisted product yet. The variable is
+  // still read (the webhook plan-inferrer maps a sales-assisted subscription by
+  // product id) and the deploy gate's dodo_required[] still demands it on a
+  // fully live host; when it is unset, an enterprise subscription arrives as an
+  // unrecognized product and is audited as
+  // billing.subscription_product_unrecognized rather than misfiled.
 ] as const;
 
-export const STRIPE_TOPUP_REQUIRED_ENV = [
-  ...STRIPE_PORTAL_REQUIRED_ENV,
-  'STRIPE_MINUTE_PACK_PRICE_ID',
+export const DODO_TOPUP_REQUIRED_ENV = [
+  ...DODO_PORTAL_REQUIRED_ENV,
+  'DODO_MINUTE_PACK_PRODUCT_ID',
 ] as const;
 
-/** The union: what a fully live deployment sets, and what the deploy gate checks. */
-export const STRIPE_CHECKOUT_REQUIRED_ENV = [
-  ...STRIPE_SUBSCRIPTION_REQUIRED_ENV,
-  'STRIPE_MINUTE_PACK_PRICE_ID',
+/**
+ * The union: what a fully live deployment sets. The deploy gate's list is this
+ * plus DODO_ENTERPRISE_PRODUCT_ID — the gate checks host completeness for live
+ * billing, while these lists gate only the entry points that read each name, so
+ * the gate is a superset and env.test.ts asserts exactly that direction.
+ */
+export const DODO_CHECKOUT_REQUIRED_ENV = [
+  ...DODO_SUBSCRIPTION_REQUIRED_ENV,
+  'DODO_MINUTE_PACK_PRODUCT_ID',
 ] as const;
 
-export type StripeEnvName = (typeof STRIPE_CHECKOUT_REQUIRED_ENV)[number];
+export type DodoEnvName = (typeof DODO_CHECKOUT_REQUIRED_ENV)[number];
 
 /** The names in `required` that `source` does not set, in list order. */
-export function missingStripeEnv(
-  required: readonly StripeEnvName[],
-  source: Partial<Record<StripeEnvName, string | undefined>>,
-): StripeEnvName[] {
+export function missingDodoEnv(
+  required: readonly DodoEnvName[],
+  source: Partial<Record<DodoEnvName, string | undefined>>,
+): DodoEnvName[] {
   return required.filter((name) => !source[name]);
 }
 
@@ -642,24 +696,24 @@ if (removedVoiceEnvVars.length > 0) {
 }
 
 /**
- * Nothing else in production reports an incomplete Stripe configuration. Every
- * STRIPE_* field here is optional, /health checks db/redis/llm only, and the
- * first symptom of a missing price ID is a 503 on a paying customer's upgrade
- * click. Name the disabled entry points and the exact variables at boot instead.
+ * Nothing else in production reports an incomplete Dodo configuration. Every
+ * DODO_* field here is optional, /health checks db/redis/llm only, and the first
+ * symptom of a missing product ID is a 503 on a paying customer's upgrade click.
+ * Name the disabled entry points and the exact variables at boot instead.
  */
 if (env.NODE_ENV === 'production') {
   const disabled = (
     [
-      ['subscription checkout', STRIPE_SUBSCRIPTION_REQUIRED_ENV],
-      ['minute-pack top-up', STRIPE_TOPUP_REQUIRED_ENV],
-      ['customer portal', STRIPE_PORTAL_REQUIRED_ENV],
+      ['subscription checkout', DODO_SUBSCRIPTION_REQUIRED_ENV],
+      ['minute-pack top-up', DODO_TOPUP_REQUIRED_ENV],
+      ['customer portal', DODO_PORTAL_REQUIRED_ENV],
     ] as const
   )
-    .map(([label, required]) => [label, missingStripeEnv(required, env)] as const)
+    .map(([label, required]) => [label, missingDodoEnv(required, env)] as const)
     .filter(([, missing]) => missing.length > 0);
   if (disabled.length > 0) {
     console.warn(
-      '[env] Stripe is incompletely configured; these actions will return 503: ' +
+      '[env] Dodo Payments is incompletely configured; these actions will return 503: ' +
         `${disabled
           .map(([label, missing]) => `${label} (missing ${missing.join(', ')})`)
           .join('; ')}.`,

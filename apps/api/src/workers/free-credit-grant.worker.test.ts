@@ -376,7 +376,7 @@ describe('selectFarmedOrganizations', () => {
       name: 'Acme',
       status: 'active',
       createdAt: new Date(2026, 0, clock),
-      hasStripeSubscription: false,
+      hasDodoSubscription: false,
       hasPurchasedCredits: false,
       hasOtherMembers: false,
       activityScore: 0,
@@ -465,7 +465,7 @@ describe('selectFarmedOrganizations', () => {
   });
 
   it.each([
-    ['has a Stripe subscription', { hasStripeSubscription: true }],
+    ['has a Dodo subscription', { hasDodoSubscription: true }],
     ['purchased minutes', { hasPurchasedCredits: true }],
     ['has members besides the owner', { hasOtherMembers: true }],
     ["status is already 'credit_hold'", { status: FREE_CREDIT_HOLD_STATUS }],

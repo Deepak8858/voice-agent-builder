@@ -12,7 +12,7 @@ Redis: containerized Redis in the EC2 Compose stack
 Knowledge storage: private, versioned Amazon S3
 Images: Depot builds → immutable SHA-tagged Amazon ECR repositories
 Voice: OpenAI Realtime + in-house Azure pipeline (LiveKit transport)
-Billing: Stripe
+Billing: Dodo Payments (Merchant of Record)
 ```
 
 `infra/docker/docker-compose.aws.yml` is the production stack. Provisioning assets
@@ -33,7 +33,7 @@ release, and automatically restores the previous release bundle on failure. See
 `docs/RUNBOOK.md` for the operational procedure.
 
 ## Production Launch Checklist
-Auth configured, Stripe configured, voice provider keys set, webhook signatures enabled, backups enabled, error monitoring enabled, rate limits enabled, compliance gate enabled, outbound restricted by default.
+Auth configured, Dodo Payments configured, voice provider keys set, webhook signatures enabled, backups enabled, error monitoring enabled, rate limits enabled, compliance gate enabled, outbound restricted by default.
 
 ## Backup Strategy
 

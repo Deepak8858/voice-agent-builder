@@ -99,7 +99,9 @@ describe('billing copy', () => {
   });
 
   it('says checkout return waits for webhook-confirmed state', () => {
-    expect(allCopy()).toMatch(/only after Stripe confirms the payment through a verified webhook/i);
+    expect(allCopy()).toMatch(
+      /only after Dodo Payments confirms the payment through a verified webhook/i,
+    );
   });
 
   it('renders comparison values straight from plan entitlements', () => {

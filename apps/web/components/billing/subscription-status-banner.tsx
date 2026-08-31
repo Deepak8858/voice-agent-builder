@@ -30,13 +30,13 @@ const COPY_BY_STATUS: Record<ProblemStatus, StatusCopy> = {
   unpaid: {
     title: 'Subscription unpaid',
     description:
-      'Stripe could not collect payment after multiple retries. Update billing to restore access.',
+      'Dodo Payments could not collect payment after multiple retries. Update billing to restore access.',
     cta: 'Update billing',
   },
   incomplete: {
     title: 'Finish setting up your subscription',
     description:
-      'Stripe is still waiting to confirm the first payment. Open the customer portal to finish checkout.',
+      'Dodo Payments is still waiting to confirm the first payment. Open the customer portal to finish checkout.',
     cta: 'Open billing portal',
   },
   incomplete_expired: {
@@ -53,7 +53,7 @@ function isProblemStatus(status: SubscriptionStatus): status is ProblemStatus {
 
 /**
  * Renders a dismissible-looking dashboard-wide banner when the active
- * workspace's Stripe subscription is in a state that needs the customer's
+ * workspace's Dodo Payments subscription is in a state that needs the customer's
  * attention. The banner is server-rendered so it stays correct even before
  * client-side React Query hydrates the billing panel.
  */

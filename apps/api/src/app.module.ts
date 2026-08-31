@@ -29,7 +29,7 @@ import { ToolsModule } from './tools/tools.module';
 import { VoiceModule } from './voice/voice.module';
 import { WhiteLabelModule } from './white-label/white-label.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
-import { StripeWebhookModule } from './webhooks/stripe-webhook.module';
+import { DodoWebhookModule } from './webhooks/dodo-webhook.module';
 import { EmailModule } from './email/email.module';
 import { AgentOrchestratorModule } from './orchestrator/orchestrator.module';
 import { OutboundCampaignModule } from './outbound-campaign/outbound-campaign.module';
@@ -78,7 +78,7 @@ import { env } from './config/env';
     AnalyticsModule,
     ...(env.WORKERS_ENABLED ? [WorkersModule] : []),
     WhiteLabelModule,
-    StripeWebhookModule,
+    DodoWebhookModule,
     BillingModule,
     EmailModule,
     TwilioModule,

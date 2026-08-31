@@ -16,9 +16,10 @@ export default function RefundPolicyPage() {
       lastUpdated="August 19, 2026"
       intro={
         <>
-          VoiceForge AI is a subscription service billed in US dollars through Stripe. This page
-          explains exactly when you are entitled to a refund, how to cancel, and which charges are
-          non-refundable. Nothing here limits rights you may have under the consumer law that applies
+          VoiceForge AI is a subscription service billed in US dollars through Dodo Payments, our
+          merchant of record: Dodo Payments is the seller of record on your statement and handles any
+          applicable sales tax or VAT. This page explains exactly when you are entitled to a refund,
+          how to cancel, and which charges are non-refundable. Nothing here limits rights you may have under the consumer law that applies
           to you.
         </>
       }
@@ -41,8 +42,8 @@ export default function RefundPolicyPage() {
 
       <Section title="Cancelling your subscription">
         <p>
-          You can cancel at any time from the billing section of your dashboard, which opens the
-          Stripe customer portal. Cancellation takes effect at the end of the period you have already
+          You can cancel at any time from the billing section of your dashboard, which opens the Dodo
+          Payments customer portal. Cancellation takes effect at the end of the period you have already
           paid for: you keep full access until then, and you are not charged again.
         </p>
         <p className="mt-3">
@@ -110,7 +111,7 @@ export default function RefundPolicyPage() {
         <p>Email us with:</p>
         <ul className="mt-3 list-disc space-y-1 pl-5">
           <li>The email address on your VoiceForge account</li>
-          <li>The date and amount of the charge, or the Stripe receipt</li>
+          <li>The date and amount of the charge, or the Dodo Payments receipt</li>
           <li>A short description of the problem, if there is one</li>
         </ul>
         <p className="mt-4">
@@ -122,7 +123,8 @@ export default function RefundPolicyPage() {
           business days.
         </p>
         <p className="mt-3">
-          Approved refunds are returned to the original payment method through Stripe. Once we submit
+          Approved refunds are issued through Dodo Payments, back to the original payment method. Once
+          we submit
           the refund, your bank or card issuer typically takes 5–10 business days to post it. We
           cannot refund to a different card or account.
         </p>

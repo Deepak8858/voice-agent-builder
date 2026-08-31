@@ -68,7 +68,7 @@ async function bootstrap() {
   // tracing.ts is imported as a side effect in app.module.ts — NodeSDK.start() runs during module init
   // OTel auto-instruments HTTP, Express, and Prisma; configure OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector
   // Widen the JSON parser to webhook media types. `rawBody: true` above makes Nest
-  // attach the untouched request buffer as `req.rawBody` (needed for Stripe/Twilio
+  // attach the untouched request buffer as `req.rawBody` (needed for Dodo/Twilio
   // signature verification).
   app.useBodyParser('json', {
     type: ['application/json', 'application/*+json', 'application/webhook+json'],

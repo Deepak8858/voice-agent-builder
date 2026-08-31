@@ -24,7 +24,7 @@
 | Workflows | Temporal later | Durable workflows/campaigns |
 | Analytics | ClickHouse later | High-volume call events |
 | Files | S3/R2 | Recordings, uploads, exports |
-| Billing | Stripe | Subscription + usage |
+| Billing | Dodo Payments (Merchant of Record) | Subscription + usage |
 | Auth | Supabase Auth | Hosted sign-in; the API verifies the Supabase JWT. Orgs/workspaces/roles are our own tables |
 
 ## Voice Runtime

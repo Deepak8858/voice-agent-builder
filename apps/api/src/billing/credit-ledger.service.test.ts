@@ -30,12 +30,12 @@ type BucketRecord = {
   expiresAt: Date;
   priority: number;
   status: string;
-  stripePaymentIntentId: string | null;
+  dodoPaymentId: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
 
-type StripeEventRecord = { stripeEventId: string; processedAt: Date | null };
+type WebhookEventRecord = { webhookId: string; processedAt: Date | null };
 
 type LedgerRecord = {
   id: string;
@@ -88,12 +88,12 @@ type TransactionContext = {
     auditLogs: AuditRecord[];
   } | null;
   /**
-   * Stripe event rows this transaction's client changed, and what they were
+   * Webhook event rows this transaction's client changed, and what they were
    * before. Only these revert on rollback — a write issued through the root
    * client is its own transaction in Postgres and would survive, so undoing
    * every event row here would hide exactly the bug this models.
    */
-  stripeEventUndo: Array<[string, StripeEventRecord]>;
+  webhookEventUndo: Array<[string, WebhookEventRecord]>;
 };
 
 function mutateNumber(current: number, mutation: NumberMutation | undefined): number {
@@ -109,7 +109,7 @@ class MemoryPrisma {
   readonly auditLogs: AuditRecord[] = [];
   readonly workspaces = new Map<string, { id: string; organizationId: string }>();
   readonly calls = new Map<string, { id: string; organizationId: string; workspaceId: string }>();
-  readonly stripeEvents = new Map<string, StripeEventRecord>();
+  readonly dodoWebhookEvents = new Map<string, WebhookEventRecord>();
   readonly transactionEvents: TransactionEvent[] = [];
 
   private sequence = 0;
@@ -188,13 +188,13 @@ class MemoryPrisma {
           bucket.sourceId === input.data.sourceId,
       );
       if (duplicate) throw new Error('duplicate bucket');
-      // Mirrors credit_bucket_payment_intent_uidx: one bucket per real payment,
+      // Mirrors credit_bucket_dodo_payment_id_uidx: one bucket per real payment,
       // NULLs unconstrained. Without this the double would happily mint a second
-      // paid-for pack from a replayed Checkout that the database would reject.
-      const paymentIntentId = input.data.stripePaymentIntentId ?? null;
+      // paid-for pack from a replayed delivery that the database would reject.
+      const dodoPaymentId = input.data.dodoPaymentId ?? null;
       if (
-        paymentIntentId !== null &&
-        this.buckets.some((bucket) => bucket.stripePaymentIntentId === paymentIntentId)
+        dodoPaymentId !== null &&
+        this.buckets.some((bucket) => bucket.dodoPaymentId === dodoPaymentId)
       ) {
         throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
       }
@@ -258,13 +258,13 @@ class MemoryPrisma {
       return structuredClone(filtered);
     },
     findFirst: async (input: {
-      where: { organizationId: string; stripePaymentIntentId?: string | null };
+      where: { organizationId: string; dodoPaymentId?: string | null };
       select?: { id: true };
     }): Promise<BucketRecord | null> => {
       const bucket = this.buckets.find(
         (candidate) =>
           candidate.organizationId === input.where.organizationId &&
-          candidate.stripePaymentIntentId === (input.where.stripePaymentIntentId ?? null),
+          candidate.dodoPaymentId === (input.where.dodoPaymentId ?? null),
       );
       return bucket ? structuredClone(bucket) : null;
     },
@@ -391,14 +391,14 @@ class MemoryPrisma {
     },
   };
 
-  readonly stripeEvent = {
+  readonly dodoWebhookEvent = {
     updateMany: async (input: {
-      where: { stripeEventId: string; processedAt: null };
+      where: { webhookId: string; processedAt: null };
       data: { processedAt: Date };
     }): Promise<{ count: number }> => {
-      const record = this.stripeEvents.get(input.where.stripeEventId);
+      const record = this.dodoWebhookEvents.get(input.where.webhookId);
       if (!record || record.processedAt !== null) return { count: 0 };
-      this.stripeEvents.set(input.where.stripeEventId, {
+      this.dodoWebhookEvents.set(input.where.webhookId, {
         ...record,
         processedAt: input.data.processedAt,
       });
@@ -447,7 +447,7 @@ class MemoryPrisma {
       lockedOrganizationId: null,
       releaseLock: null,
       snapshot: null,
-      stripeEventUndo: [],
+      webhookEventUndo: [],
     };
     try {
       return await operation(this.createTransactionClient(context));
@@ -559,19 +559,19 @@ class MemoryPrisma {
       },
     };
 
-    const stripeEvent: MemoryPrisma['stripeEvent'] = {
+    const dodoWebhookEvent: MemoryPrisma['dodoWebhookEvent'] = {
       updateMany: async (input) => {
-        // No organization on a Stripe event row, so it cannot assert a lock the
+        // No organization on a webhook event row, so it cannot assert a lock the
         // way the others do; the recorded event still proves it ran inside the
         // grant's transaction rather than after it.
         this.recordTransactionEvent(
           context,
-          'stripe_event.mark_processed',
+          'dodo_webhook_event.mark_processed',
           context.lockedOrganizationId ?? 'unlocked',
         );
-        const before = this.stripeEvents.get(input.where.stripeEventId);
-        if (before) context.stripeEventUndo.push([before.stripeEventId, structuredClone(before)]);
-        return this.stripeEvent.updateMany(input);
+        const before = this.dodoWebhookEvents.get(input.where.webhookId);
+        if (before) context.webhookEventUndo.push([before.webhookId, structuredClone(before)]);
+        return this.dodoWebhookEvent.updateMany(input);
       },
     };
 
@@ -594,7 +594,7 @@ class MemoryPrisma {
       billingCreditBucket,
       billingLedgerEntry,
       auditLog,
-      stripeEvent,
+      dodoWebhookEvent,
       workspace,
       call,
       $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) =>
@@ -731,10 +731,10 @@ class MemoryPrisma {
   }
 
   private restoreTransactionSnapshot(context: TransactionContext): void {
-    for (const [id, record] of context.stripeEventUndo.reverse()) {
-      this.stripeEvents.set(id, record);
+    for (const [id, record] of context.webhookEventUndo.reverse()) {
+      this.dodoWebhookEvents.set(id, record);
     }
-    context.stripeEventUndo.length = 0;
+    context.webhookEventUndo.length = 0;
     if (!context.snapshot || !context.lockedOrganizationId) return;
     const organizationId = context.lockedOrganizationId;
     if (context.snapshot.balance) {
@@ -795,7 +795,7 @@ class MemoryPrisma {
       expiresAt: new Date('2027-07-01T00:00:00.000Z'),
       priority: input.priority,
       status: 'active',
-      stripePaymentIntentId: null,
+      dodoPaymentId: null,
       createdAt: now,
       updatedAt: now,
     });
@@ -805,15 +805,15 @@ class MemoryPrisma {
    * Arms a one-shot failure on the next bucket read. `grantPurchasedCredits`
    * reads buckets only in the balance projection it builds last, which is the
    * one point where a transaction can still roll back *after* it has
-   * acknowledged its Stripe event.
+   * acknowledged its webhook event.
    */
   failNextBucketRead(message: string): void {
     this.pendingBucketReadFault = message;
   }
 
   /** An unprocessed webhook row, so a grant has something to acknowledge. */
-  seedStripeEvent(stripeEventId: string): void {
-    this.stripeEvents.set(stripeEventId, { stripeEventId, processedAt: null });
+  seedWebhookEvent(webhookId: string): void {
+    this.dodoWebhookEvents.set(webhookId, { webhookId, processedAt: null });
   }
 
   seedRuntimeScope(input: { organizationId: string; workspaceId: string; callId: string }): void {
@@ -900,7 +900,7 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     const input = {
       organizationId: 'org-one',
-      invoiceId: 'in_123',
+      paymentId: 'in_123',
       includedMinutes: 10,
       periodEnd: PERIOD_END,
     };
@@ -932,81 +932,84 @@ describe('CreditLedgerService', () => {
         entryType: 'subscription_grant',
         seconds: 600,
         balanceAfterSeconds: 600,
-        idempotencyKey: 'stripe:invoice:in_123:included',
+        idempotencyKey: 'dodo:payment:in_123:included',
       },
     ]);
     expect(snapshotCreditState(prisma)).toEqual(stateAfterFirst);
   });
 
-  it('records the payment intent that funded a purchased bucket', async () => {
+  it('records the payment that funded a purchased bucket', async () => {
     const { prisma, service } = makeService();
 
     await service.grantPurchasedCredits({
       organizationId: 'org-pi',
-      checkoutSessionId: 'cs_pi',
+      paymentId: 'pay_funded',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_funded',
     });
 
-    expect(prisma.buckets).toMatchObject([{ stripePaymentIntentId: 'pi_funded' }]);
+    expect(prisma.buckets).toMatchObject([
+      { sourceId: 'pay_funded', dodoPaymentId: 'pay_funded' },
+    ]);
   });
 
   /**
-   * The Checkout session id is the only thing keying this grant, and Stripe can
-   * deliver the same payment under a second session id (a recovered session, a
-   * replay after a session was recreated). The idempotency key does not catch
-   * that. Granting once is the money property and it held before, by way of the
-   * unique index — but the rejection rolled the transaction back including the
-   * acknowledgement, so Stripe redelivered the same event until it gave up. The
-   * second delivery must settle instead: no second pack, and the event marked
-   * processed.
+   * The org-scoped `dodoPaymentId` lookup, which sits between the ledger-key
+   * replay check and the create. It exists for a bucket this organization already
+   * holds for this payment under some *other* ledger key — the shape a grant
+   * carried over from the Stripe era takes, where the bucket's `sourceId` was a
+   * Checkout session and its key named that session. Without it the create
+   * collides with `credit_bucket_dodo_payment_id_uidx`, which rolls the whole
+   * transaction back including the acknowledgement, so the provider redelivers
+   * the event until it gives up. The delivery must settle instead: no second
+   * pack, and the event marked processed.
    */
-  it('acknowledges a second pack funded by a payment intent that already bought one', async () => {
+  it('acknowledges a payment whose pack this organization already holds', async () => {
     const { prisma, service } = makeService();
     await service.grantPurchasedCredits({
       organizationId: 'org-pi-replay',
-      checkoutSessionId: 'cs_pi_first',
+      paymentId: 'pay_once',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_once',
     });
-    prisma.seedStripeEvent('evt_pi_replay');
+    // Rewrite the grant into its pre-swap shape: the bucket still names the
+    // payment, but neither the bucket's `sourceId` nor the ledger key does.
+    prisma.buckets[0]!.sourceId = 'cs_legacy_session';
+    const legacy = prisma.ledger.find((entry) => entry.entryType === 'purchase_grant')!;
+    legacy.idempotencyKey = 'stripe:checkout:cs_legacy_session:topup';
+    prisma.seedWebhookEvent('wh_pay_replay');
 
     await service.grantPurchasedCredits({
       organizationId: 'org-pi-replay',
-      checkoutSessionId: 'cs_pi_second',
+      paymentId: 'pay_once',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_once',
-      stripeEventId: 'evt_pi_replay',
+      webhookId: 'wh_pay_replay',
     });
 
     expect(prisma.buckets).toHaveLength(1);
     expect(prisma.ledger.filter((entry) => entry.entryType === 'purchase_grant')).toHaveLength(1);
-    expect(prisma.stripeEvents.get('evt_pi_replay')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.dodoWebhookEvents.get('wh_pay_replay')?.processedAt).toBeInstanceOf(Date);
     const balance = await service.getBalance('org-pi-replay');
     expectExactSeconds(balance, { available: 6_000, reserved: 0, totalOwned: 6_000 });
   });
 
   /**
-   * The acknowledgement above is scoped to the organization, so it can never
-   * hand another tenant's purchase to this one. A payment intent that funded a
-   * different organization's pack has to fall through to the create and be
-   * rejected by the index — one payment, one pack, whoever asks.
+   * The acknowledgement above is scoped to the organization, so it can never hand
+   * another tenant's purchase to this one. A payment that funded a different
+   * organization's pack has to fall through to the create and be rejected by the
+   * index — one payment, one pack, whoever asks.
    */
-  it('refuses a pack funded by another organization payment intent', async () => {
+  it('refuses a pack funded by another organization payment', async () => {
     const { prisma, service } = makeService();
     await service.grantPurchasedCredits({
       organizationId: 'org-pi-owner',
-      checkoutSessionId: 'cs_pi_owner',
+      paymentId: 'pay_owned',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_owned',
     });
 
     await expect(
       service.grantPurchasedCredits({
         organizationId: 'org-pi-thief',
-        checkoutSessionId: 'cs_pi_thief',
+        paymentId: 'pay_owned',
         purchasedAt: NOW,
-        paymentIntentId: 'pi_owned',
       }),
     ).rejects.toMatchObject({ code: 'P2002' });
     expect(prisma.buckets).toHaveLength(1);
@@ -1014,42 +1017,18 @@ describe('CreditLedgerService', () => {
     expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
   });
 
-  it('replays a checkout naming the same payment intent without granting twice', async () => {
+  it('replays a delivery naming the same payment without granting twice', async () => {
     const { prisma, service } = makeService();
     const input = {
       organizationId: 'org-pi-idem',
-      checkoutSessionId: 'cs_pi_idem',
+      paymentId: 'pay_idem',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_idem',
     };
 
     const first = await service.grantPurchasedCredits(input);
     const replay = await service.grantPurchasedCredits(input);
 
     expect(replay).toEqual(first);
-    expect(prisma.buckets).toHaveLength(1);
-  });
-
-  it('rejects a replay that claims a different payment intent for the same checkout', async () => {
-    const { prisma, service } = makeService();
-    await service.grantPurchasedCredits({
-      organizationId: 'org-pi-conflict',
-      checkoutSessionId: 'cs_pi_conflict',
-      purchasedAt: NOW,
-      paymentIntentId: 'pi_original',
-    });
-
-    await expect(
-      service.grantPurchasedCredits({
-        organizationId: 'org-pi-conflict',
-        checkoutSessionId: 'cs_pi_conflict',
-        purchasedAt: NOW,
-        paymentIntentId: 'pi_substituted',
-      }),
-    ).rejects.toMatchObject({
-      code: 'credit_ledger_invariant',
-      reasonCode: 'idempotency_conflict',
-    });
     expect(prisma.buckets).toHaveLength(1);
   });
 
@@ -1061,24 +1040,24 @@ describe('CreditLedgerService', () => {
    * effect of that handler ran twice. Acknowledging inside the grant makes the
    * two commit together.
    */
-  it('acknowledges the Stripe event inside the grant transaction', async () => {
+  it('acknowledges the webhook event inside the grant transaction', async () => {
     const { prisma, service } = makeService();
-    prisma.seedStripeEvent('evt_grant');
+    prisma.seedWebhookEvent('evt_grant');
 
     await service.grantSubscriptionCredits({
       organizationId: 'org-ack',
-      invoiceId: 'in_ack',
+      paymentId: 'in_ack',
       includedMinutes: 10,
       periodEnd: PERIOD_END,
-      stripeEventId: 'evt_grant',
+      webhookId: 'evt_grant',
     });
 
-    expect(prisma.stripeEvents.get('evt_grant')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.dodoWebhookEvents.get('evt_grant')?.processedAt).toBeInstanceOf(Date);
     const actions = prisma.transactionEvents.map((event) => event.action);
-    expect(actions).toContain('stripe_event.mark_processed');
+    expect(actions).toContain('dodo_webhook_event.mark_processed');
     // Same transaction as the ledger write, and after it.
     const marked = prisma.transactionEvents.findIndex(
-      (event) => event.action === 'stripe_event.mark_processed',
+      (event) => event.action === 'dodo_webhook_event.mark_processed',
     );
     const ledgerWrite = prisma.transactionEvents.findIndex(
       (event) => event.action === 'ledger.create',
@@ -1090,9 +1069,9 @@ describe('CreditLedgerService', () => {
     );
   });
 
-  it('leaves the Stripe event unacknowledged when the grant rolls back', async () => {
+  it('leaves the webhook event unacknowledged when the grant rolls back', async () => {
     const { prisma, service } = makeService();
-    prisma.seedStripeEvent('evt_rollback');
+    prisma.seedWebhookEvent('evt_rollback');
     // Fails after the grant has acknowledged the event but before the
     // transaction commits, which is the only shape in which the two can
     // disagree. Written through the root client instead of `tx`, the
@@ -1102,13 +1081,12 @@ describe('CreditLedgerService', () => {
     await expect(
       service.grantPurchasedCredits({
         organizationId: 'org-rollback',
-        checkoutSessionId: 'cs_rollback',
+        paymentId: 'pay_rollback',
         purchasedAt: NOW,
-        paymentIntentId: 'pi_rollback',
-        stripeEventId: 'evt_rollback',
+        webhookId: 'evt_rollback',
       }),
     ).rejects.toThrow('connection reset while projecting balance');
-    expect(prisma.stripeEvents.get('evt_rollback')?.processedAt).toBeNull();
+    expect(prisma.dodoWebhookEvents.get('evt_rollback')?.processedAt).toBeNull();
     expect(prisma.buckets).toHaveLength(0);
     // No credit was granted, so no row may claim it was. That the row is a
     // statement of *this* transaction is pinned by the ordering assertion in
@@ -1126,13 +1104,13 @@ describe('CreditLedgerService', () => {
    */
   it('audits a subscription grant inside the grant transaction', async () => {
     const { prisma, service } = makeService();
-    prisma.seedStripeEvent('evt_audited');
+    prisma.seedWebhookEvent('evt_audited');
     const input = {
       organizationId: 'org-audit',
-      invoiceId: 'in_audited',
+      paymentId: 'in_audited',
       includedMinutes: 10,
       periodEnd: PERIOD_END,
-      stripeEventId: 'evt_audited',
+      webhookId: 'evt_audited',
     };
 
     await service.grantSubscriptionCredits(input);
@@ -1141,17 +1119,17 @@ describe('CreditLedgerService', () => {
       {
         organizationId: 'org-audit',
         workspaceId: null,
-        // FK to users: a Stripe identifier cannot be stored here, so the
+        // FK to users: a provider identifier cannot be stored here, so the
         // initiator is named in the metadata instead.
         actorUserId: null,
         action: 'billing.credit_granted',
         resourceType: 'billing_credit_bucket',
         resourceId: prisma.buckets[0]!.id,
         metadata: {
-          initiator: 'stripe_webhook',
+          initiator: 'dodo_webhook',
           source: 'subscription_invoice',
-          invoiceId: 'in_audited',
-          stripeEventId: 'evt_audited',
+          paymentId: 'in_audited',
+          webhookId: 'evt_audited',
           includedMinutes: 10,
           seconds: 600,
           balanceAfterSeconds: 600,
@@ -1170,46 +1148,33 @@ describe('CreditLedgerService', () => {
   });
 
   /**
-   * An audit row per Stripe redelivery buries the one row that records the grant,
-   * so the idempotent paths that return without granting must write none: the
-   * ledger-key replay, and the pack whose payment intent already bought one.
+   * An audit row per redelivery buries the one row that records the grant, so the
+   * idempotent paths that return without granting must write none.
    */
   it('writes no audit row for a replayed grant', async () => {
     const { prisma, service } = makeService();
-    await service.grantPurchasedCredits({
+    const input = {
       organizationId: 'org-audit-replay',
-      checkoutSessionId: 'cs_audit_first',
+      paymentId: 'pay_audit_once',
       purchasedAt: NOW,
-      paymentIntentId: 'pi_audit_once',
-    });
+    };
+    await service.grantPurchasedCredits(input);
     expect(prisma.auditLogs).toHaveLength(1);
 
-    await service.grantPurchasedCredits({
-      organizationId: 'org-audit-replay',
-      checkoutSessionId: 'cs_audit_first',
-      purchasedAt: NOW,
-      paymentIntentId: 'pi_audit_once',
-    });
-    await service.grantPurchasedCredits({
-      organizationId: 'org-audit-replay',
-      checkoutSessionId: 'cs_audit_second',
-      purchasedAt: NOW,
-      paymentIntentId: 'pi_audit_once',
-    });
+    await service.grantPurchasedCredits(input);
 
     expect(prisma.auditLogs).toHaveLength(1);
     expect(prisma.auditLogs[0]).toMatchObject({
       action: 'billing.credit_granted',
       metadata: {
-        source: 'stripe_checkout',
-        checkoutSessionId: 'cs_audit_first',
-        paymentIntentId: 'pi_audit_once',
+        source: 'dodo_payment',
+        paymentId: 'pay_audit_once',
         seconds: 6_000,
       },
     });
   });
 
-  /** The system-initiated grant: no Stripe event, no user, worker in metadata. */
+  /** The system-initiated grant: no webhook event, no user, worker in metadata. */
   it('audits the free monthly grant as a system initiator', async () => {
     const { prisma, service } = makeService();
 
@@ -1235,7 +1200,7 @@ describe('CreditLedgerService', () => {
   });
 
   /**
-   * A mid-cycle upgrade makes Stripe issue a second invoice inside one billing
+   * A mid-cycle upgrade makes the provider charge a second time inside one billing
    * period. Keying the grant by invoice stops the *same* invoice granting twice
    * but not two invoices stacking, so an upgrade used to hand out a second full
    * allowance — cheapest immediately before period end.
@@ -1244,14 +1209,14 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantSubscriptionCredits({
       organizationId: 'org-upgrade',
-      invoiceId: 'in_starter',
+      paymentId: 'in_starter',
       includedMinutes: 200,
       periodEnd: PERIOD_END,
     });
 
     const upgraded = await service.grantSubscriptionCredits({
       organizationId: 'org-upgrade',
-      invoiceId: 'in_growth',
+      paymentId: 'in_growth',
       includedMinutes: 1_000,
       periodEnd: PERIOD_END,
     });
@@ -1266,13 +1231,13 @@ describe('CreditLedgerService', () => {
       { sourceId: 'in_growth', remainingSeconds: 60_000, status: 'active' },
     ]);
     expect(prisma.ledger).toMatchObject([
-      { idempotencyKey: 'stripe:invoice:in_starter:included', seconds: 12_000 },
+      { idempotencyKey: 'dodo:payment:in_starter:included', seconds: 12_000 },
       {
-        idempotencyKey: 'stripe:invoice:in_growth:supersede',
+        idempotencyKey: 'dodo:payment:in_growth:supersede',
         entryType: 'included_grant_superseded',
         seconds: -12_000,
       },
-      { idempotencyKey: 'stripe:invoice:in_growth:included', seconds: 60_000 },
+      { idempotencyKey: 'dodo:payment:in_growth:included', seconds: 60_000 },
     ]);
     // The forfeiture is a money move of its own, so it carries its own row.
     expect(prisma.auditLogs.map((row) => row.action)).toEqual([
@@ -1284,7 +1249,7 @@ describe('CreditLedgerService', () => {
       resourceType: 'organization_credit_balance',
       resourceId: 'org-upgrade',
       metadata: {
-        invoiceId: 'in_growth',
+        paymentId: 'in_growth',
         forfeitedSeconds: 12_000,
         supersededBucketIds: [prisma.buckets[0]!.id],
       },
@@ -1296,7 +1261,7 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantSubscriptionCredits({
       organizationId: 'org-upgrade-partial',
-      invoiceId: 'in_partial_a',
+      paymentId: 'in_partial_a',
       includedMinutes: 10,
       periodEnd: PERIOD_END,
     });
@@ -1305,82 +1270,82 @@ describe('CreditLedgerService', () => {
 
     const upgraded = await service.grantSubscriptionCredits({
       organizationId: 'org-upgrade-partial',
-      invoiceId: 'in_partial_b',
+      paymentId: 'in_partial_b',
       includedMinutes: 10,
       periodEnd: PERIOD_END,
     });
 
     expectExactSeconds(upgraded, { available: 600, reserved: 0, totalOwned: 600 });
     expect(prisma.ledger).toMatchObject([
-      { idempotencyKey: 'stripe:invoice:in_partial_a:included' },
-      { idempotencyKey: 'stripe:invoice:in_partial_b:supersede', seconds: -100 },
-      { idempotencyKey: 'stripe:invoice:in_partial_b:included' },
+      { idempotencyKey: 'dodo:payment:in_partial_a:included' },
+      { idempotencyKey: 'dodo:payment:in_partial_b:supersede', seconds: -100 },
+      { idempotencyKey: 'dodo:payment:in_partial_b:included' },
     ]);
   });
 
   /**
-   * The redelivery the supersede sweep used to trap. Invoice A grants, invoice B
-   * expires A's bucket, and Stripe then redelivers A's event — as it does, for
-   * days. Asserting the *live* bucket status on replay made that an
+   * The redelivery the supersede sweep used to trap. Cycle A grants, cycle B
+   * expires A's bucket, and the provider then redelivers A's event — as it does,
+   * for days. Asserting the *live* bucket status on replay made that an
    * `idempotency_conflict`, which rolled back the acknowledgement with it, so the
-   * event never cleared and Stripe retried forever. It must settle instead: no
+   * event never cleared and the retries never stopped. It must settle instead: no
    * second grant, and the event marked processed.
    */
-  it('settles a redelivered invoice whose bucket a later invoice superseded', async () => {
+  it('settles a redelivered cycle whose bucket a later cycle superseded', async () => {
     const { prisma, service } = makeService();
     const invoiceA = {
       organizationId: 'org-redelivery',
-      invoiceId: 'in_redelivered',
+      paymentId: 'in_redelivered',
       includedMinutes: 200,
       periodEnd: PERIOD_END,
     };
     await service.grantSubscriptionCredits(invoiceA);
     await service.grantSubscriptionCredits({
       organizationId: 'org-redelivery',
-      invoiceId: 'in_supersedes',
+      paymentId: 'in_supersedes',
       includedMinutes: 1_000,
       periodEnd: PERIOD_END,
     });
     expect(prisma.buckets[0]).toMatchObject({ sourceId: 'in_redelivered', status: 'expired' });
-    prisma.seedStripeEvent('evt_redelivered');
+    prisma.seedWebhookEvent('evt_redelivered');
     const stateBeforeReplay = snapshotCreditState(prisma);
 
     const replay = await service.grantSubscriptionCredits({
       ...invoiceA,
-      stripeEventId: 'evt_redelivered',
+      webhookId: 'evt_redelivered',
     });
 
     expectExactSeconds(replay, { available: 60_000, reserved: 0, totalOwned: 60_000 });
-    expect(prisma.stripeEvents.get('evt_redelivered')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.dodoWebhookEvents.get('evt_redelivered')?.processedAt).toBeInstanceOf(Date);
     expect(snapshotCreditState(prisma)).toEqual(stateBeforeReplay);
   });
 
   /**
    * The same shape on a pack: a refund marks the bucket `refunded` well inside
-   * the window in which Stripe is still redelivering the Checkout event.
+   * the window in which the provider is still redelivering the payment event.
    */
-  it('settles a redelivered checkout whose pack was refunded', async () => {
+  it('settles a redelivered payment whose pack was refunded', async () => {
     const { prisma, service } = makeService();
     const purchase = {
       organizationId: 'org-refund-redelivery',
-      checkoutSessionId: 'cs_refund_redelivery',
+      paymentId: 'cs_refund_redelivery',
       purchasedAt: NOW,
     };
     await service.grantPurchasedCredits(purchase);
     await service.reversePurchasedCredits({
       organizationId: 'org-refund-redelivery',
-      checkoutSessionId: 'cs_refund_redelivery',
+      paymentId: 'cs_refund_redelivery',
       refundId: 're_redelivery',
     });
     expect(prisma.buckets[0]).toMatchObject({ status: 'refunded' });
-    prisma.seedStripeEvent('evt_refunded_checkout');
+    prisma.seedWebhookEvent('evt_refunded_checkout');
 
     await service.grantPurchasedCredits({
       ...purchase,
-      stripeEventId: 'evt_refunded_checkout',
+      webhookId: 'evt_refunded_checkout',
     });
 
-    expect(prisma.stripeEvents.get('evt_refunded_checkout')?.processedAt).toBeInstanceOf(Date);
+    expect(prisma.dodoWebhookEvents.get('evt_refunded_checkout')?.processedAt).toBeInstanceOf(Date);
     expect(prisma.buckets).toHaveLength(1);
     const balance = await service.getBalance('org-refund-redelivery');
     expectExactSeconds(balance, { available: 0, reserved: 0, totalOwned: 0 });
@@ -1466,7 +1431,7 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantSubscriptionCredits({
       organizationId: 'org-lapsed',
-      invoiceId: 'in_lapsed',
+      paymentId: 'in_lapsed',
       includedMinutes: 20,
       periodEnd: new Date('2026-07-28T00:00:00.000Z'),
     });
@@ -1497,7 +1462,7 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantSubscriptionCredits({
       organizationId: 'org-lapsed-later',
-      invoiceId: 'in_lapsed_later',
+      paymentId: 'in_lapsed_later',
       includedMinutes: 20,
       periodEnd: MONTH_START,
     });
@@ -1553,7 +1518,7 @@ describe('CreditLedgerService', () => {
     });
     await service.grantPurchasedCredits({
       organizationId: 'org-free-priority',
-      checkoutSessionId: 'cs_free_priority',
+      paymentId: 'cs_free_priority',
       purchasedAt: NOW,
     });
     await service.grantFreeMonthlyCredits({
@@ -1587,12 +1552,12 @@ describe('CreditLedgerService', () => {
     });
     await service.grantPurchasedCredits({
       organizationId: 'org-priority',
-      checkoutSessionId: 'cs_pack',
+      paymentId: 'cs_pack',
       purchasedAt: NOW,
     });
     await service.grantSubscriptionCredits({
       organizationId: 'org-priority',
-      invoiceId: 'in_included',
+      paymentId: 'in_included',
       includedMinutes: 1,
       periodEnd: PERIOD_END,
     });
@@ -1625,7 +1590,7 @@ describe('CreditLedgerService', () => {
     });
     await service.grantSubscriptionCredits({
       organizationId: 'org-reserve',
-      invoiceId: 'in_reserve',
+      paymentId: 'in_reserve',
       includedMinutes: 1,
       periodEnd: PERIOD_END,
     });
@@ -1955,12 +1920,12 @@ describe('CreditLedgerService', () => {
     // coexist with an identical priority and expiry for the ID to break.
     await service.grantPurchasedCredits({
       organizationId,
-      checkoutSessionId: 'cs-stable-b',
+      paymentId: 'cs-stable-b',
       purchasedAt: NOW,
     });
     await service.grantPurchasedCredits({
       organizationId,
-      checkoutSessionId: 'cs-stable-a',
+      paymentId: 'cs-stable-a',
       purchasedAt: NOW,
     });
     prisma.seedRuntimeScope({
@@ -1987,13 +1952,13 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantPurchasedCredits({
       organizationId: 'org-refund',
-      checkoutSessionId: 'cs_refund',
+      paymentId: 'cs_refund',
       purchasedAt: NOW,
     });
 
     const reversed = await service.reversePurchasedCredits({
       organizationId: 'org-refund',
-      checkoutSessionId: 'cs_refund',
+      paymentId: 'cs_refund',
       refundId: 're_unused',
     });
 
@@ -2011,7 +1976,7 @@ describe('CreditLedgerService', () => {
       entryType: 'purchase_reversal',
       seconds: -6_000,
       balanceAfterSeconds: 0,
-      idempotencyKey: 'stripe:refund:re_unused:topup_reversal',
+      idempotencyKey: 'dodo:refund:re_unused:topup_reversal',
     });
     expect(prisma.auditLogs.at(-1)).toMatchObject({
       actorUserId: null,
@@ -2019,7 +1984,7 @@ describe('CreditLedgerService', () => {
       resourceType: 'billing_credit_bucket',
       resourceId: prisma.buckets[0]!.id,
       metadata: {
-        initiator: 'stripe_webhook',
+        initiator: 'dodo_webhook',
         sourceType: 'purchased',
         sourceId: 'cs_refund',
         refundId: 're_unused',
@@ -2039,7 +2004,7 @@ describe('CreditLedgerService', () => {
     });
     await service.grantPurchasedCredits({
       organizationId: 'org-review',
-      checkoutSessionId: 'cs_review',
+      paymentId: 'cs_review',
       purchasedAt: NOW,
     });
     await service.reserveAndDebitNextMinute({
@@ -2052,7 +2017,7 @@ describe('CreditLedgerService', () => {
 
     const reversed = await service.reversePurchasedCredits({
       organizationId: 'org-review',
-      checkoutSessionId: 'cs_review',
+      paymentId: 'cs_review',
       refundId: 're_consumed',
     });
 
@@ -2202,7 +2167,7 @@ describe('CreditLedgerService', () => {
 
     await service.grantSubscriptionCredits({
       organizationId: input.organizationId,
-      invoiceId: 'in_denied_reservation_retry_credit',
+      paymentId: 'in_denied_reservation_retry_credit',
       includedMinutes: 1,
       periodEnd: PERIOD_END,
     });
@@ -2319,7 +2284,7 @@ describe('CreditLedgerService', () => {
     });
     await service.grantPurchasedCredits({
       organizationId: 'org-reserved-refund',
-      checkoutSessionId: 'cs_reserved_refund',
+      paymentId: 'cs_reserved_refund',
       purchasedAt: NOW,
     });
     await service.reserveInitialMinute({
@@ -2331,7 +2296,7 @@ describe('CreditLedgerService', () => {
 
     const reviewBalance = await service.reversePurchasedCredits({
       organizationId: 'org-reserved-refund',
-      checkoutSessionId: 'cs_reserved_refund',
+      paymentId: 'cs_reserved_refund',
       refundId: 're_reserved_refund',
     });
 
@@ -2555,7 +2520,7 @@ describe('CreditLedgerService', () => {
         actorType: 'system',
         actorId: null,
         reasonCode: 'minute_boundary',
-        idempotencyKey: 'stripe:invoice:in_collision:included',
+        idempotencyKey: 'dodo:payment:in_collision:included',
         metadata: {
           operation: {
             kind: 'next_minute_debit',
@@ -2570,7 +2535,7 @@ describe('CreditLedgerService', () => {
     await expect(
       service.grantSubscriptionCredits({
         organizationId: 'org-subscription-collision',
-        invoiceId: 'in_collision',
+        paymentId: 'in_collision',
         includedMinutes: 10,
         periodEnd: PERIOD_END,
       }),
@@ -2599,12 +2564,12 @@ describe('CreditLedgerService', () => {
         entryType: 'purchase_grant',
         seconds: 6_000,
         balanceAfterSeconds: 6_000,
-        actorType: 'stripe',
+        actorType: 'dodo',
         actorId: 'cs_other',
         reasonCode: 'purchased_topup',
-        idempotencyKey: 'stripe:checkout:cs_collision:topup',
+        idempotencyKey: 'dodo:payment:cs_collision:topup',
         metadata: {
-          checkoutSessionId: 'cs_other',
+          paymentId: 'cs_other',
           purchasedAt: NOW.toISOString(),
         },
       },
@@ -2613,7 +2578,7 @@ describe('CreditLedgerService', () => {
     await expect(
       service.grantPurchasedCredits({
         organizationId: 'org-purchase-collision',
-        checkoutSessionId: 'cs_collision',
+        paymentId: 'cs_collision',
         purchasedAt: NOW,
       }),
     ).rejects.toMatchObject({
@@ -2634,24 +2599,24 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     await service.grantPurchasedCredits({
       organizationId: 'org-refund-collision',
-      checkoutSessionId: 'cs_refund_a',
+      paymentId: 'cs_refund_a',
       purchasedAt: NOW,
     });
     await service.grantPurchasedCredits({
       organizationId: 'org-refund-collision',
-      checkoutSessionId: 'cs_refund_b',
+      paymentId: 'cs_refund_b',
       purchasedAt: NOW,
     });
     await service.reversePurchasedCredits({
       organizationId: 'org-refund-collision',
-      checkoutSessionId: 'cs_refund_a',
+      paymentId: 'cs_refund_a',
       refundId: 're_shared',
     });
 
     await expect(
       service.reversePurchasedCredits({
         organizationId: 'org-refund-collision',
-        checkoutSessionId: 'cs_refund_b',
+        paymentId: 'cs_refund_b',
         refundId: 're_shared',
       }),
     ).rejects.toMatchObject({
@@ -2796,7 +2761,7 @@ describe('CreditLedgerService', () => {
     const { prisma, service } = makeService();
     const grantInput = {
       organizationId: 'org-exact-durable-replay',
-      checkoutSessionId: 'cs_exact_durable_replay',
+      paymentId: 'cs_exact_durable_replay',
       purchasedAt: NOW,
     };
     const firstGrant = await service.grantPurchasedCredits(grantInput);
@@ -2809,7 +2774,7 @@ describe('CreditLedgerService', () => {
 
     const refundInput = {
       organizationId: 'org-exact-durable-replay',
-      checkoutSessionId: 'cs_exact_durable_replay',
+      paymentId: 'cs_exact_durable_replay',
       refundId: 're_exact_durable_replay',
     };
     const firstRefund = await service.reversePurchasedCredits(refundInput);
@@ -2830,12 +2795,12 @@ describe('CreditLedgerService', () => {
   async function makeReversalReplayFixture(branch: 'automatic' | 'manual_review') {
     const { prisma, service } = makeService();
     const organizationId = `org-reversal-${branch}`;
-    const checkoutSessionId = `cs-reversal-${branch}`;
+    const paymentId = `cs-reversal-${branch}`;
     const refundId = `re-reversal-${branch}`;
-    const refundInput = { organizationId, checkoutSessionId, refundId };
+    const refundInput = { organizationId, paymentId, refundId };
     await service.grantPurchasedCredits({
       organizationId,
-      checkoutSessionId,
+      paymentId,
       purchasedAt: NOW,
     });
 
@@ -2878,11 +2843,11 @@ describe('CreditLedgerService', () => {
       expect(metadataRecord(fixture.entry).operation).toEqual({
         kind: 'purchased_credit_reversal',
         organizationId: fixture.refundInput.organizationId,
-        checkoutSessionId: fixture.refundInput.checkoutSessionId,
+        paymentId: fixture.refundInput.paymentId,
         refundId: fixture.refundInput.refundId,
         bucketId: fixture.bucket.id,
         sourceType: 'purchased',
-        sourceId: fixture.refundInput.checkoutSessionId,
+        sourceId: fixture.refundInput.paymentId,
         originalSeconds: 6_000,
       });
       const stateBeforeRetry = snapshotCreditState(fixture.prisma);
@@ -2924,7 +2889,7 @@ describe('CreditLedgerService', () => {
     ],
     [
       'the checkout metadata is missing',
-      ({ entry }) => delete metadataRecord(entry).checkoutSessionId,
+      ({ entry }) => delete metadataRecord(entry).paymentId,
     ],
     ['the refund metadata is missing', ({ entry }) => delete metadataRecord(entry).refundId],
     [
@@ -3187,7 +3152,7 @@ describe('CreditLedgerService', () => {
     if (kind === 'subscription') {
       const input = {
         organizationId: 'org-subscription-exact-replay',
-        invoiceId: 'in_subscription_exact_replay',
+        paymentId: 'in_subscription_exact_replay',
         includedMinutes: 10,
         periodEnd: PERIOD_END,
       };
@@ -3216,7 +3181,7 @@ describe('CreditLedgerService', () => {
 
     const input = {
       organizationId: 'org-purchased-exact-replay',
-      checkoutSessionId: 'cs_purchased_exact_replay',
+      paymentId: 'cs_purchased_exact_replay',
       purchasedAt: NOW,
     };
     await service.grantPurchasedCredits(input);
@@ -3404,7 +3369,7 @@ describe('CreditLedgerService', () => {
     subscription: {
       kind: 'subscription_grant',
       organizationId: 'org-subscription-exact-replay',
-      invoiceId: 'in_subscription_exact_replay',
+      paymentId: 'in_subscription_exact_replay',
       sourceType: 'included',
       sourceId: 'in_subscription_exact_replay',
       seconds: 600,
@@ -3415,7 +3380,7 @@ describe('CreditLedgerService', () => {
     purchased: {
       kind: 'purchased_grant',
       organizationId: 'org-purchased-exact-replay',
-      checkoutSessionId: 'cs_purchased_exact_replay',
+      paymentId: 'cs_purchased_exact_replay',
       sourceType: 'purchased',
       sourceId: 'cs_purchased_exact_replay',
       seconds: 6_000,

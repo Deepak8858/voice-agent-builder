@@ -779,10 +779,11 @@ model Referral {
 model Subscription {
   id                          String    @id @default(uuid()) @db.Uuid
   organizationId              String    @unique @map("organization_id") @db.Uuid
-  stripeSubscriptionId        String?   @unique @map("stripe_subscription_id")
-  stripeCustomerId            String?   @map("stripe_customer_id")
-  stripeProductId             String?   @map("stripe_product_id")
-  stripePriceId               String?   @map("stripe_price_id")
+  dodoSubscriptionId          String?   @unique @map("dodo_subscription_id")
+  dodoCustomerId              String?   @map("dodo_customer_id")
+  /// Dodo has no separate price object: the product carries the price, so there
+  /// is no `dodoPriceId` twin to the Stripe-era `stripe_price_id`.
+  dodoProductId               String?   @map("dodo_product_id")
   plan                        String    @default("free") // free | starter | growth | enterprise
   catalogVersion              String    @default("legacy") @map("catalog_version")
   status                      String    @default("active") // active | trialing | past_due | canceled
@@ -791,7 +792,7 @@ model Subscription {
   currentPeriodEnd            DateTime? @map("current_period_end")
   cancelAtPeriodEnd           Boolean   @default(false) @map("cancel_at_period_end")
   trialEnd                    DateTime? @map("trial_end")
-  stripeMetadata              Json?     @map("stripe_metadata")
+  dodoMetadata                Json?     @map("dodo_metadata")
   webhookUpdatedAt            DateTime? @map("webhook_updated_at")
   createdAt                   DateTime  @default(now()) @map("created_at")
   updatedAt                   DateTime  @updatedAt @map("updated_at")
@@ -799,8 +800,7 @@ model Subscription {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
-  @@index([stripeCustomerId])
-  @@index([stripePriceId])
+  @@index([dodoCustomerId])
   @@map("subscriptions")
 }
 
@@ -818,13 +818,13 @@ model BillingCreditBucket {
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
-  /// The Stripe PaymentIntent that funded this bucket, for one-time purchases.
+  /// The Dodo payment that funded this bucket, for one-time purchases.
   /// Unique, so a replayed Checkout that slips past the processed-event table
   /// collides on the index instead of minting a second paid-for bucket, and so a
-  /// refund or dispute can be mapped back to its grant by payment intent alone.
+  /// refund or dispute can be mapped back to its grant by payment id alone.
   /// Null on subscription and free-allowance buckets, and on packs granted
   /// before this column existed.
-  stripePaymentIntentId String? @unique(map: "credit_bucket_payment_intent_uidx") @map("stripe_payment_intent_id")
+  dodoPaymentId String? @unique(map: "credit_bucket_dodo_payment_id_uidx") @map("dodo_payment_id")
 
   organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   ledgerEntries BillingLedgerEntry[]
@@ -1062,9 +1062,11 @@ model UsageRecord {
   @@map("usage_records")
 }
 
-model StripeEvent {
+model DodoWebhookEvent {
   id                  String    @id @default(uuid()) @db.Uuid
-  stripeEventId       String    @unique @map("stripe_event_id")
+  /// Dodo signs with Standard Webhooks, whose `webhook-id` header is the event's
+  /// only stable identifier — there is no id inside the payload.
+  webhookId           String    @unique @map("webhook_id")
   type                String
   apiVersion          String?   @map("api_version")
   created             DateTime
@@ -1078,10 +1080,10 @@ model StripeEvent {
   errorMessage        String?   @map("error_message")
   createdAt           DateTime  @default(now()) @map("created_at")
 
-  @@index([stripeEventId])
+  @@index([webhookId])
   @@index([type, created])
   @@index([processedAt, processingStartedAt])
-  @@map("stripe_events")
+  @@map("dodo_webhook_events")
 }
 
 model WebhookEvent {

@@ -61,7 +61,7 @@ export class RateLimitGuard implements CanActivate {
     // Both exemptions must read the controller class as well as the handler:
     // every provider-webhook and liveness controller declares @Public() at
     // CLASS level, so the old handler-only Reflect.getMetadata() read never
-    // saw it. Reading only the handler here would rate-limit Stripe, Twilio
+    // saw it. Reading only the handler here would rate-limit Dodo, Twilio
     // and Vobiz callbacks — which all arrive from a handful of provider IPs —
     // plus the deploy health probe.
     if (this.metadata(SKIP_RATE_LIMIT_KEY, ctx)) return true;

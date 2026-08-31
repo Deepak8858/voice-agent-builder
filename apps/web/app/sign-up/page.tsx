@@ -32,7 +32,7 @@ function SignUpInner() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-  // Both `plan` (deep-link into Stripe Checkout) and `next` (free-form
+  // Both `plan` (deep-link into Dodo Payments Checkout) and `next` (free-form
   // redirect target) are honored after sign-up / OAuth. Plan wins because we
   // want the user to land on a paid product as quickly as possible.
   const requestedPlan = useMemo(() => {

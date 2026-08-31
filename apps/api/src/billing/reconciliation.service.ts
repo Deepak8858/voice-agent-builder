@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import Stripe from 'stripe';
+import DodoPayments from 'dodopayments';
 import type { Prisma } from '@prisma/client';
 import type { PlanType } from '@voiceforge/shared';
 import { getPlanById } from '@voiceforge/shared';
@@ -24,7 +24,7 @@ import { ProviderCostService } from './provider-cost.service';
  * - ambiguous state is flagged for review, never guessed at;
  * - provider costs are never mixed into the customer ledger.
  *
- * The Stripe comparison (`reportStripeDrift`) is the one exception to "repair":
+ * The Dodo comparison (`reportDodoDrift`) is the one exception to "repair":
  * it only counts and logs, because a heal driven by a comparison this young
  * would either double-grant credit or claw back credit a customer owns.
  */
@@ -39,14 +39,14 @@ export interface BillingReconciliationReport {
   /** Phone numbers whose monthly carrier rental was booked this pass. */
   numberRentalsRecorded: number;
   manualReviewsCreated: number;
-  /** Stripe objects examined by the drift comparison (the drift denominator). */
-  stripeObjectsCompared: number;
-  /** Paid Stripe invoices with no matching `included` credit bucket. */
-  stripePaidInvoicesWithoutCredit: number;
-  /** Paid minute-pack Checkout sessions with no matching `purchased` bucket. */
-  stripePaidPacksWithoutCredit: number;
-  /** Subscriptions whose Stripe state disagrees with our row. */
-  stripeSubscriptionDrift: number;
+  /** Dodo objects examined by the drift comparison (the drift denominator). */
+  dodoObjectsCompared: number;
+  /** Succeeded subscription payments with no matching `included` credit bucket. */
+  dodoSubscriptionPaymentsWithoutCredit: number;
+  /** Succeeded one-off (minute pack) payments with no matching `purchased` bucket. */
+  dodoPackPaymentsWithoutCredit: number;
+  /** Subscriptions whose Dodo state disagrees with our row. */
+  dodoSubscriptionDrift: number;
 }
 
 export function emptyReconciliationReport(): BillingReconciliationReport {
@@ -59,10 +59,10 @@ export function emptyReconciliationReport(): BillingReconciliationReport {
     costEventsEstimated: 0,
     numberRentalsRecorded: 0,
     manualReviewsCreated: 0,
-    stripeObjectsCompared: 0,
-    stripePaidInvoicesWithoutCredit: 0,
-    stripePaidPacksWithoutCredit: 0,
-    stripeSubscriptionDrift: 0,
+    dodoObjectsCompared: 0,
+    dodoSubscriptionPaymentsWithoutCredit: 0,
+    dodoPackPaymentsWithoutCredit: 0,
+    dodoSubscriptionDrift: 0,
   };
 }
 
@@ -90,80 +90,74 @@ const MINUTE_MS = 60_000;
  */
 const MARGIN_AGGREGATE_CHUNK_SIZE = 500;
 
-/** Stripe's maximum page size, so a run makes as few API calls as possible. */
-const STRIPE_PAGE_SIZE = 100;
-
 /**
- * Grace period before a Stripe object's missing counterpart counts as drift. A
+ * Grace period before a Dodo object's missing counterpart counts as drift. A
  * webhook still in flight, or being retried, is not drift; counting it would
  * bury the real cases under noise on every pass.
  */
-const STRIPE_SETTLE_MS = 15 * MINUTE_MS;
+const DODO_SETTLE_MS = 15 * MINUTE_MS;
 
 /** Lookback for the comparison: one monthly cycle plus slack for retries. */
-const STRIPE_LOOKBACK_MS = 35 * 24 * 60 * MINUTE_MS;
+const DODO_LOOKBACK_MS = 35 * 24 * 60 * MINUTE_MS;
 
 /**
- * Our statuses that assert a live Stripe subscription. `incomplete` is excluded
- * on purpose: Stripe drops those from the default listing once they expire, so
- * their absence is not evidence of drift.
+ * Our statuses that fund paid usage, and the whole of what the subscription
+ * comparison asks of a status.
+ *
+ * DIED IN THE SWAP: exact status equality (`ours.status !== stripe.status`).
+ * Our column keeps the Stripe-shaped vocabulary
+ * (`active|trialing|past_due|canceled|...`, see `SubscriptionStatusSchema`)
+ * while Dodo's is `pending|active|on_hold|paused|cancelled|failed|expired`, so
+ * string equality would report every trialing and past-due row as permanent
+ * drift. Faking a status map instead would invent equivalences Dodo does not
+ * define. What both vocabularies *do* agree on is whether the subscription is
+ * currently funding usage — Dodo's single paying status is `active` (a trial is
+ * `active` with `trial_period_days`), ours is this set — and that is the fact
+ * the drift metric exists to protect: a mismatch means either we are serving a
+ * customer Dodo is not billing, or refusing one Dodo is.
+ *
+ * Mirrors `PAID_ACCESS_STATUSES` in `entitlement.service.ts`, which is what
+ * actually admits or refuses the call; it is private there, so this is a
+ * deliberate two-string copy rather than a new shared export.
  */
-const LIVE_SUBSCRIPTION_STATUSES = new Set(['active', 'trialing', 'past_due']);
-
-interface StripeListPage<T> {
-  data: T[];
-  has_more: boolean;
-}
+const PAID_ACCESS_STATUSES = new Set(['active', 'trialing']);
 
 /**
- * The paging arguments {@link ReconciliationService.listStripe} adds to whatever
- * filter its caller supplies. Narrow on purpose: it has to be assignable to every
- * Stripe list-params type, and a `Record<string, unknown>` would not be.
+ * The only SDK surface the drift comparison calls, derived from `DodoPayments`
+ * rather than hand-rolled: the objects it reads (a payment's
+ * `subscription_id`/`total_amount`, a subscription's `product_id`) are then the
+ * installed SDK's own types, so a field that moves or disappears on a Dodo major
+ * is a compile error here rather than a drift counter silently reading zero.
  */
-interface StripePageParams {
-  limit: number;
-  starting_after?: string;
-}
+type DodoDriftClient = Pick<DodoPayments, 'payments' | 'subscriptions'>;
 
 /**
- * The only SDK surface the drift comparison calls, derived from `Stripe` rather
- * than hand-rolled: the objects it reads (a paid invoice's `parent`, a
- * subscription's items, a session's `payment_status`) are then the installed
- * SDK's own types, so a field that moves or disappears on a Stripe major is a
- * compile error here rather than a drift counter silently reading zero. The
- * subscription behind an invoice is read from `parent.subscription_details`
- * because the top-level `subscription` field was removed from Invoice in the
- * Basil API version, which the pinned SDK is well past.
- */
-type StripeDriftClient = Pick<Stripe, 'invoices' | 'subscriptions' | 'checkout'>;
-
-/**
- * One suspected disagreement between Stripe and us, re-checked against the
+ * One suspected disagreement between Dodo and us, re-checked against the
  * database before it is counted so a repair that landed in the meantime is not
  * reported as drift.
  */
-type StripeDriftCandidate =
+type DodoDriftCandidate =
   | {
       kind: 'bucket';
       sourceType: 'included' | 'purchased';
-      /** Stripe invoice ID or Checkout session ID; also the bucket's `sourceId`. */
+      /** The Dodo payment ID, which is also the bucket's `sourceId`. */
       sourceId: string;
     }
   | {
       kind: 'subscription';
-      stripeSubscriptionId: string;
-      reason: 'status_mismatch' | 'price_mismatch' | 'absent_from_stripe';
-      /** Null when Stripe no longer lists the subscription at all. */
-      stripeStatus: string | null;
-      stripePriceId: string | null;
+      dodoSubscriptionId: string;
+      reason: 'inactive_at_dodo' | 'unfunded_locally' | 'product_mismatch';
+      /** Null when Dodo does not list the subscription as active at all. */
+      dodoStatus: string | null;
+      dodoProductId: string | null;
       ourStatus: string;
-      ourPriceId: string | null;
+      ourProductId: string | null;
     };
 
 @Injectable()
 export class ReconciliationService {
   private readonly logger = new Logger(ReconciliationService.name);
-  private readonly stripe: StripeDriftClient | null;
+  private readonly dodo: DodoDriftClient | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -172,13 +166,14 @@ export class ReconciliationService {
     private readonly providerCosts: ProviderCostService,
     private readonly creditLedger: CreditLedgerService,
   ) {
-    // Constructed exactly as `BillingService` and `StripeWebhookService` do it:
-    // pinned to the installed SDK's API version, and null when there is no
-    // secret key so the comparison no-ops in environments without Stripe.
-    this.stripe = env.STRIPE_SECRET_KEY
-      ? new Stripe(env.STRIPE_SECRET_KEY, {
-          apiVersion: Stripe.API_VERSION,
-          maxNetworkRetries: 2,
+    // Null when there is no API key, so the comparison no-ops in environments
+    // without Dodo. `environment` picks the base URL (test vs live), so a
+    // test-mode key can never be pointed at live data by accident.
+    this.dodo = env.DODO_PAYMENTS_API_KEY
+      ? new DodoPayments({
+          bearerToken: env.DODO_PAYMENTS_API_KEY,
+          environment: env.DODO_PAYMENTS_ENVIRONMENT,
+          maxRetries: 2,
         })
       : null;
   }
@@ -663,7 +658,7 @@ export class ReconciliationService {
       // analyzer substitutes file-wide identifier initializers into a `where`
       // clause, so a local called `subscriptions` holding a `select:
       // { organizationId }` makes every later query that mentions
-      // `stripe.subscriptions` look tenant-scoped and drop out of the ratchet.
+      // `dodo.subscriptions` look tenant-scoped and drop out of the ratchet.
       const planSubscriptions = await this.prisma.subscription.findMany({
         where: { plan, status: { in: ['active', 'trialing'] } },
         select: { organizationId: true, status: true },
@@ -698,10 +693,10 @@ export class ReconciliationService {
   }
 
   /**
-   * Compare Stripe's record of what was paid and subscribed against our credit
+   * Compare Dodo's record of what was paid and subscribed against our credit
    * buckets and subscription rows, and REPORT what disagrees.
    *
-   * Strictly read-only on both sides: no Stripe call mutates anything, and no
+   * Strictly read-only on both sides: no Dodo call mutates anything, and no
    * row is written — not even an audit record, which is reserved here for
    * corrections that actually happened. Drift is counted so a full billing cycle
    * of it exists before anyone decides how to heal it; healing from a comparison
@@ -710,82 +705,79 @@ export class ReconciliationService {
    *
    * ponytail: report-only for one billing cycle; auto-heal once drift data is in.
    */
-  async reportStripeDrift(limit = this.batchSize): Promise<BillingReconciliationReport> {
+  async reportDodoDrift(limit = this.batchSize): Promise<BillingReconciliationReport> {
     const report = emptyReconciliationReport();
-    const stripe = this.stripe;
-    if (!stripe) {
-      this.logger.debug('Stripe is not configured; skipping the Stripe drift comparison.');
+    const dodo = this.dodo;
+    if (!dodo) {
+      this.logger.debug('Dodo is not configured; skipping the Dodo drift comparison.');
       return report;
     }
 
     const now = Date.now();
-    const created = {
-      gte: Math.floor((now - STRIPE_LOOKBACK_MS) / 1000),
-      lte: Math.floor((now - STRIPE_SETTLE_MS) / 1000),
+    const createdWindow = {
+      created_at_gte: new Date(now - DODO_LOOKBACK_MS).toISOString(),
+      created_at_lte: new Date(now - DODO_SETTLE_MS).toISOString(),
     };
 
-    // A paid invoice carrying money with a subscription behind it is exactly
-    // what `invoice.paid` grants included minutes for. Anything else — a zero
-    // amount adjustment, a one-off invoice — never produces a bucket, so
-    // including it would report drift that does not exist.
-    const invoices = await this.listStripe('paid invoices', limit, (params) =>
-      stripe.invoices.list({ status: 'paid', created, ...params }),
+    // ONE list replaces the Stripe era's two money sweeps (paid invoices and
+    // paid Checkout sessions). Dodo has no invoice or session object worth
+    // listing — a payment is the unit that both grants credit and carries the
+    // idempotency key the webhook writes (`dodo:payment:<id>:included|topup`) —
+    // and `subscription_id` is what separates the two flavours: set means a
+    // recurring charge (the `included` bucket), null means the one-off minute
+    // pack (the `purchased` bucket).
+    //
+    // DIED IN THE SWAP: the `metadata.purchaseType === 'minute_pack'` filter the
+    // session sweep needed. `PaymentListResponse` carries no cart or product, so
+    // there is nothing to filter on — and nothing to filter, because the minute
+    // pack is the only one-off product in the catalog, so every succeeded
+    // non-subscription payment must have bought a `purchased` bucket. That also
+    // retires the "the cap can be spent before the pack sessions are reached"
+    // caveat: there is no second, unfilterable listing to crowd out.
+    const payments = await this.listDodo('succeeded payments', limit, () =>
+      dodo.payments.list({ status: 'succeeded', ...createdWindow }),
     );
-    const paidInvoices = invoices.items.filter(
-      (invoice) =>
-        invoice.amount_paid > 0 &&
-        invoice.parent?.type === 'subscription_details' &&
-        Boolean(invoice.parent.subscription_details?.subscription),
+    const paid = payments.items.flatMap((payment) =>
+      // A zero-amount payment (a full-discount cycle, an adjustment) never
+      // produces a bucket, so counting it would report drift that does not exist.
+      payment.total_amount > 0
+        ? [
+            {
+              sourceType: (payment.subscription_id ? 'included' : 'purchased') as
+                | 'included'
+                | 'purchased',
+              sourceId: payment.payment_id,
+              customerId: payment.customer.customer_id,
+            },
+          ]
+        : [],
     );
 
-    // Checkout sessions cannot be filtered by metadata server-side, so pack
-    // purchases are picked out of the pages after the fact.
-    // ponytail: on an account with many subscription checkouts the cap can be
-    // spent before the older pack sessions are reached. The truncation is logged
-    // rather than hidden; there is no Stripe-side filter that would avoid it.
-    const sessions = await this.listStripe('checkout sessions', limit, (params) =>
-      stripe.checkout.sessions.list({ created, ...params }),
-    );
-    const paidPacks = sessions.items.filter(
-      (session) =>
-        session.payment_status === 'paid' && session.metadata?.['purchaseType'] === 'minute_pack',
+    // Filtered to `active` rather than listed wholesale: Dodo's unfiltered
+    // listing includes cancelled and expired subscriptions, which on any
+    // established account would spend the object cap on dead rows and leave the
+    // comparison permanently truncated. `active` is also exactly the population
+    // the comparison is about — Dodo's only paying status, trials included.
+    const active = await this.listDodo('active subscriptions', limit, () =>
+      dodo.subscriptions.list({ status: 'active' }),
     );
 
-    // The default listing is every subscription Stripe has not canceled, with no
-    // date filter: a subscription that started years ago is still live revenue.
-    const live = await this.listStripe('subscriptions', limit, (params) =>
-      stripe.subscriptions.list(params),
-    );
+    report.dodoObjectsCompared = paid.length + active.items.length;
 
-    report.stripeObjectsCompared = paidInvoices.length + paidPacks.length + live.items.length;
-
-    const suspects = new Map<string, StripeDriftCandidate[]>();
-    const suspect = (organizationId: string, candidate: StripeDriftCandidate): void => {
+    const suspects = new Map<string, DodoDriftCandidate[]>();
+    const suspect = (organizationId: string, candidate: DodoDriftCandidate): void => {
       const queued = suspects.get(organizationId);
       if (queued) queued.push(candidate);
       else suspects.set(organizationId, [candidate]);
     };
 
-    // --- money collected by Stripe against the credit it should have bought ---
-    const paid: Array<{ sourceType: 'included' | 'purchased'; sourceId: string; customer: unknown }> =
-      [
-        ...paidInvoices.map((invoice) => ({
-          sourceType: 'included' as const,
-          sourceId: invoice.id,
-          customer: invoice.customer,
-        })),
-        ...paidPacks.map((session) => ({
-          sourceType: 'purchased' as const,
-          sourceId: session.id,
-          customer: session.customer,
-        })),
-      ];
-    const organizationByCustomer = await this.organizationsByStripeCustomer(
-      paid.map((entry) => entry.customer).filter((id): id is string => typeof id === 'string'),
+    // --- money collected by Dodo against the credit it should have bought ----
+    const organizationByCustomer = await this.organizationsByDodoCustomer(
+      paid.map((entry) => entry.customerId),
     );
     // One query for the whole batch, so only the genuinely missing ones are
     // re-checked under a lock and an organization with no suspicion is never
-    // locked at all. Scoped to the organizations that own the Stripe customers
+    // locked at all. Scoped to the organizations that own the Dodo customers
     // above: a bucket belonging to anyone else can never satisfy one of these
     // payments, so reading wider would be both slower and untenanted.
     const grants = await this.prisma.billingCreditBucket.findMany({
@@ -801,17 +793,14 @@ export class ReconciliationService {
     );
 
     for (const entry of paid) {
-      const organizationId =
-        typeof entry.customer === 'string'
-          ? organizationByCustomer.get(entry.customer)
-          : undefined;
+      const organizationId = organizationByCustomer.get(entry.customerId);
       if (!organizationId) {
-        // Money collected against a Stripe customer no organization claims: no
+        // Money collected against a Dodo customer no organization claims: no
         // credit can have been granted for it anywhere.
-        this.countStripeDrift(report, entry.sourceType);
+        this.countDodoDrift(report, entry.sourceType);
         this.logger.warn(
-          `Stripe drift: paid ${entry.sourceType === 'included' ? 'invoice' : 'minute pack'} ` +
-            `${entry.sourceId} belongs to Stripe customer ${String(entry.customer)}, which no ` +
+          `Dodo drift: succeeded ${entry.sourceType === 'included' ? 'subscription' : 'minute pack'} ` +
+            `payment ${entry.sourceId} belongs to Dodo customer ${entry.customerId}, which no ` +
             `organization owns — no credit was granted for it. Reported only.`,
         );
         continue;
@@ -824,80 +813,92 @@ export class ReconciliationService {
       });
     }
 
-    // --- Stripe's subscription state against ours ---------------------------
+    // --- Dodo's subscription state against ours -----------------------------
+    const activeAtDodo = new Map(
+      active.items.map((subscription) => [subscription.subscription_id, subscription]),
+    );
     const ourSubscriptions = await this.prisma.subscription.findMany({
-      where: { stripeSubscriptionId: { in: live.items.map((subscription) => subscription.id) } },
-      select: { organizationId: true, stripeSubscriptionId: true, status: true, stripePriceId: true },
+      where: { dodoSubscriptionId: { in: [...activeAtDodo.keys()] } },
+      select: {
+        organizationId: true,
+        dodoSubscriptionId: true,
+        status: true,
+        dodoProductId: true,
+      },
     });
-    const ourByStripeId = new Map(
-      ourSubscriptions.map((subscription) => [subscription.stripeSubscriptionId, subscription]),
+    const ourByDodoId = new Map(
+      ourSubscriptions.map((subscription) => [subscription.dodoSubscriptionId, subscription]),
     );
 
-    for (const subscription of live.items) {
-      const ours = ourByStripeId.get(subscription.id);
-      const stripePriceId = subscription.items?.data?.[0]?.price?.id ?? null;
+    for (const subscription of activeAtDodo.values()) {
+      const ours = ourByDodoId.get(subscription.subscription_id);
       if (!ours) {
-        report.stripeSubscriptionDrift += 1;
+        report.dodoSubscriptionDrift += 1;
         this.logger.warn(
-          `Stripe drift: subscription ${subscription.id} is ${subscription.status} in Stripe ` +
-            `(price ${String(stripePriceId)}) but no organization has it on record. Reported only.`,
+          `Dodo drift: subscription ${subscription.subscription_id} is active in Dodo ` +
+            `(product ${subscription.product_id}) but no organization has it on record. Reported only.`,
         );
         continue;
       }
-      const reason =
-        ours.status !== subscription.status
-          ? 'status_mismatch'
-          : ours.stripePriceId !== stripePriceId
-            ? 'price_mismatch'
-            : null;
+      // DIED IN THE SWAP: `price_mismatch` — Dodo has no price object, the
+      // product carries the price, so this is the product that survived it.
+      const reason = !PAID_ACCESS_STATUSES.has(ours.status)
+        ? 'unfunded_locally'
+        : ours.dodoProductId !== subscription.product_id
+          ? 'product_mismatch'
+          : null;
       if (!reason) continue;
       suspect(ours.organizationId, {
         kind: 'subscription',
-        stripeSubscriptionId: subscription.id,
+        dodoSubscriptionId: subscription.subscription_id,
         reason,
-        stripeStatus: subscription.status,
-        stripePriceId,
+        dodoStatus: subscription.status,
+        dodoProductId: subscription.product_id,
         ourStatus: ours.status,
-        ourPriceId: ours.stripePriceId,
+        ourProductId: ours.dodoProductId,
       });
     }
 
-    // The reverse direction — we believe a subscription is live and Stripe does
-    // not list it — is only sound when the listing above was complete. A
-    // truncated list would make every unseen subscription look canceled, so the
+    // The reverse direction — we are funding usage on a subscription Dodo does
+    // not list as active — is only sound when the listing above was complete. A
+    // truncated list would make every unseen subscription look unpaid, so the
     // check is skipped rather than guessed at.
-    if (live.truncated) {
+    if (active.truncated) {
       this.logger.warn(
-        'Stripe drift: the subscription listing was incomplete, so subscriptions we believe are ' +
-          'live were NOT checked for cancellation in Stripe this pass.',
+        'Dodo drift: the active-subscription listing was incomplete, so subscriptions we are ' +
+          'funding usage on were NOT checked against Dodo this pass.',
       );
     } else {
-      const liveIds = new Set(live.items.map((subscription) => subscription.id));
-      const claimedLive = await this.prisma.subscription.findMany({
+      const funded = await this.prisma.subscription.findMany({
         where: {
-          status: { in: [...LIVE_SUBSCRIPTION_STATUSES] },
-          stripeSubscriptionId: { not: null },
+          status: { in: [...PAID_ACCESS_STATUSES] },
+          dodoSubscriptionId: { not: null },
         },
         orderBy: { updatedAt: 'asc' },
         take: limit,
-        select: { organizationId: true, stripeSubscriptionId: true, status: true, stripePriceId: true },
+        select: {
+          organizationId: true,
+          dodoSubscriptionId: true,
+          status: true,
+          dodoProductId: true,
+        },
       });
-      if (claimedLive.length === limit) {
+      if (funded.length === limit) {
         this.logger.warn(
-          `Stripe drift: stopped at ${limit} locally-live subscription(s); the remainder was ` +
-            'NOT checked for cancellation in Stripe this pass.',
+          `Dodo drift: stopped at ${limit} locally-funded subscription(s); the remainder was ` +
+            'NOT checked against Dodo this pass.',
         );
       }
-      for (const ours of claimedLive) {
-        if (!ours.stripeSubscriptionId || liveIds.has(ours.stripeSubscriptionId)) continue;
+      for (const ours of funded) {
+        if (!ours.dodoSubscriptionId || activeAtDodo.has(ours.dodoSubscriptionId)) continue;
         suspect(ours.organizationId, {
           kind: 'subscription',
-          stripeSubscriptionId: ours.stripeSubscriptionId,
-          reason: 'absent_from_stripe',
-          stripeStatus: null,
-          stripePriceId: null,
+          dodoSubscriptionId: ours.dodoSubscriptionId,
+          reason: 'inactive_at_dodo',
+          dodoStatus: null,
+          dodoProductId: null,
           ourStatus: ours.status,
-          ourPriceId: ours.stripePriceId,
+          ourProductId: ours.dodoProductId,
         });
       }
     }
@@ -905,18 +906,18 @@ export class ReconciliationService {
     // --- confirm each suspicion against the database, then count it ---------
     for (const [organizationId, candidates] of suspects) {
       try {
-        await this.confirmStripeDrift(organizationId, candidates, report);
+        await this.confirmDodoDrift(organizationId, candidates, report);
       } catch (err) {
         // Contention means a repair is working on this organization right now;
         // its state is about to change, so there is nothing to report yet.
         if (err instanceof OrganizationLockUnavailableError) {
           this.logger.debug(
-            `Skipped Stripe drift check for organization ${organizationId}: another replica holds the reconciliation lock.`,
+            `Skipped Dodo drift check for organization ${organizationId}: another replica holds the reconciliation lock.`,
           );
           continue;
         }
         this.logger.error(
-          `Stripe drift check failed for organization ${organizationId}: ${(err as Error).message}`,
+          `Dodo drift check failed for organization ${organizationId}: ${(err as Error).message}`,
         );
       }
     }
@@ -933,9 +934,9 @@ export class ReconciliationService {
    * figure with work that already completed. Read-only: the transaction exists
    * for the lock and a consistent snapshot, and writes nothing.
    */
-  private async confirmStripeDrift(
+  private async confirmDodoDrift(
     organizationId: string,
-    candidates: StripeDriftCandidate[],
+    candidates: DodoDriftCandidate[],
     report: BillingReconciliationReport,
   ): Promise<void> {
     await this.withOrganizationLock(organizationId, async (tx) => {
@@ -952,104 +953,109 @@ export class ReconciliationService {
             select: { id: true },
           });
           if (bucket) continue;
-          this.countStripeDrift(report, candidate.sourceType);
+          this.countDodoDrift(report, candidate.sourceType);
           this.logger.warn(
-            `Stripe drift: organization ${organizationId} paid Stripe ` +
-              `${candidate.sourceType === 'included' ? 'invoice' : 'minute pack'} ` +
-              `${candidate.sourceId} but holds no ${candidate.sourceType} credit bucket for it. ` +
-              'Reported only; no credit was granted.',
+            `Dodo drift: organization ${organizationId} paid Dodo for a ` +
+              `${candidate.sourceType === 'included' ? 'subscription cycle' : 'minute pack'} ` +
+              `(payment ${candidate.sourceId}) but holds no ${candidate.sourceType} credit bucket ` +
+              'for it. Reported only; no credit was granted.',
           );
           continue;
         }
 
         const ours = await tx.subscription.findUnique({
           where: { organizationId },
-          select: { status: true, stripePriceId: true, stripeSubscriptionId: true },
+          select: { status: true, dodoProductId: true, dodoSubscriptionId: true },
         });
         // A different subscription now means the row moved on; whatever was
         // observed no longer describes this organization.
-        if (!ours || ours.stripeSubscriptionId !== candidate.stripeSubscriptionId) continue;
+        if (!ours || ours.dodoSubscriptionId !== candidate.dodoSubscriptionId) continue;
+        // The other two reasons are the same disagreement read from opposite
+        // sides, so each re-check is just "is our side still saying what it said".
+        const weFundUsage = PAID_ACCESS_STATUSES.has(ours.status);
         const stillDrifted =
-          candidate.reason === 'status_mismatch'
-            ? ours.status !== candidate.stripeStatus
-            : candidate.reason === 'price_mismatch'
-              ? ours.stripePriceId !== candidate.stripePriceId
-              : LIVE_SUBSCRIPTION_STATUSES.has(ours.status);
+          candidate.reason === 'product_mismatch'
+            ? ours.dodoProductId !== candidate.dodoProductId
+            : candidate.reason === 'inactive_at_dodo'
+              ? weFundUsage
+              : !weFundUsage;
         if (!stillDrifted) continue;
 
-        report.stripeSubscriptionDrift += 1;
+        report.dodoSubscriptionDrift += 1;
         this.logger.warn(
-          `Stripe drift (${candidate.reason}): organization ${organizationId} subscription ` +
-            `${candidate.stripeSubscriptionId} — Stripe says status=${String(candidate.stripeStatus)} ` +
-            `price=${String(candidate.stripePriceId)}, we say status=${ours.status} ` +
-            `price=${String(ours.stripePriceId)}. Reported only.`,
+          `Dodo drift (${candidate.reason}): organization ${organizationId} subscription ` +
+            `${candidate.dodoSubscriptionId} — Dodo says ` +
+            `${candidate.dodoStatus ?? 'it is not active (cancelled, on_hold, paused, expired, failed, pending or unknown)'} ` +
+            `product=${String(candidate.dodoProductId)}, we say status=${ours.status} ` +
+            `product=${String(ours.dodoProductId)}. Reported only.`,
         );
       }
     });
   }
 
-  private countStripeDrift(
+  private countDodoDrift(
     report: BillingReconciliationReport,
     sourceType: 'included' | 'purchased',
   ): void {
-    if (sourceType === 'included') report.stripePaidInvoicesWithoutCredit += 1;
-    else report.stripePaidPacksWithoutCredit += 1;
+    if (sourceType === 'included') report.dodoSubscriptionPaymentsWithoutCredit += 1;
+    else report.dodoPackPaymentsWithoutCredit += 1;
   }
 
-  /** Map Stripe customer IDs to the organizations that own them. */
-  private async organizationsByStripeCustomer(
-    stripeCustomerIds: string[],
+  /** Map Dodo customer IDs to the organizations that own them. */
+  private async organizationsByDodoCustomer(
+    dodoCustomerIds: string[],
   ): Promise<Map<string, string>> {
-    if (stripeCustomerIds.length === 0) return new Map();
+    if (dodoCustomerIds.length === 0) return new Map();
     const owners = await this.prisma.subscription.findMany({
-      where: { stripeCustomerId: { in: [...new Set(stripeCustomerIds)] } },
-      select: { organizationId: true, stripeCustomerId: true },
+      where: { dodoCustomerId: { in: [...new Set(dodoCustomerIds)] } },
+      select: { organizationId: true, dodoCustomerId: true },
     });
     return new Map(
       owners.flatMap((owner) =>
-        owner.stripeCustomerId ? [[owner.stripeCustomerId, owner.organizationId] as const] : [],
+        owner.dodoCustomerId ? [[owner.dodoCustomerId, owner.organizationId] as const] : [],
       ),
     );
   }
 
   /**
-   * Page through a Stripe list endpoint up to a hard object cap.
+   * Drain a Dodo list endpoint up to a hard object cap.
+   *
+   * The SDK's `PagePromise` is an `AsyncIterable` that walks `page_number` for
+   * us, so this is the whole paging wrapper now: the hand-rolled
+   * `starting_after` cursor loop the Stripe client needed is gone, and with it
+   * the "an empty page ends the walk" guard against a misbehaving `has_more`,
+   * which the SDK's paginator owns instead.
    *
    * The cap is what keeps a run bounded on a large account; hitting it is
    * logged, never silently truncated, and reported back so callers can decide
    * whether a comparison that needs a complete list is still sound. A failed
-   * Stripe call is logged loudly and yields no items, so one broken endpoint
+   * Dodo call is logged loudly and yields no items, so one broken endpoint
    * cannot take the other comparisons down with it.
+   *
+   * ponytail: no `page_size`, so the API default decides how many round trips a
+   * pass costs. Set one if the call volume on a cron tick ever matters.
    */
-  private async listStripe<T extends { id: string }>(
+  private async listDodo<T>(
     label: string,
     limit: number,
-    list: (params: StripePageParams) => Promise<StripeListPage<T>>,
+    list: () => AsyncIterable<T>,
   ): Promise<{ items: T[]; truncated: boolean }> {
     const items: T[] = [];
     try {
-      for (;;) {
-        const remaining = limit - items.length;
-        if (remaining <= 0) {
+      for await (const item of list()) {
+        if (items.length >= limit) {
           this.logger.warn(
-            `Stripe drift: stopped at the ${limit}-object cap for ${label}; the remainder was ` +
+            `Dodo drift: stopped at the ${limit}-object cap for ${label}; the remainder was ` +
               'NOT compared this pass.',
           );
           return { items, truncated: true };
         }
-        const startingAfter = items.at(-1)?.id;
-        const page = await list({
-          limit: Math.min(STRIPE_PAGE_SIZE, remaining),
-          ...(startingAfter ? { starting_after: startingAfter } : {}),
-        });
-        items.push(...page.data);
-        // An empty page ends the walk even if Stripe claims more, so a
-        // misbehaving response cannot spin this loop forever.
-        if (!page.has_more || page.data.length === 0) return { items, truncated: false };
+        items.push(item);
       }
+      return { items, truncated: false };
     } catch (err) {
       this.logger.error(
-        `Stripe drift: listing ${label} failed, so nothing was compared for it: ${(err as Error).message}`,
+        `Dodo drift: listing ${label} failed, so nothing was compared for it: ${(err as Error).message}`,
       );
       return { items: [], truncated: true };
     }
@@ -1063,7 +1069,7 @@ export class ReconciliationService {
       await this.finalizeStaleCalls(),
       await this.recoverLeases(),
       await this.reconcileProviderCosts(),
-      await this.reportStripeDrift(),
+      await this.reportDodoDrift(),
     ];
     await this.publishMarginMetrics();
     return reports.reduce<BillingReconciliationReport>((merged, report) => {
@@ -1075,10 +1081,10 @@ export class ReconciliationService {
       merged.costEventsEstimated += report.costEventsEstimated;
       merged.numberRentalsRecorded += report.numberRentalsRecorded;
       merged.manualReviewsCreated += report.manualReviewsCreated;
-      merged.stripeObjectsCompared += report.stripeObjectsCompared;
-      merged.stripePaidInvoicesWithoutCredit += report.stripePaidInvoicesWithoutCredit;
-      merged.stripePaidPacksWithoutCredit += report.stripePaidPacksWithoutCredit;
-      merged.stripeSubscriptionDrift += report.stripeSubscriptionDrift;
+      merged.dodoObjectsCompared += report.dodoObjectsCompared;
+      merged.dodoSubscriptionPaymentsWithoutCredit += report.dodoSubscriptionPaymentsWithoutCredit;
+      merged.dodoPackPaymentsWithoutCredit += report.dodoPackPaymentsWithoutCredit;
+      merged.dodoSubscriptionDrift += report.dodoSubscriptionDrift;
       return merged;
     }, emptyReconciliationReport());
   }

@@ -1,7 +1,7 @@
 # VoiceForge AI — Billing Operations Runbook
 
 **Catalog version:** `2026-07-24` (`BILLING_CATALOG_VERSION` in `packages/shared/src/billing/catalog.ts`)
-**Applies to:** the production billing implementation (credit ledger, entitlements, reconciliation, Stripe integration)
+**Applies to:** the production billing implementation (credit ledger, entitlements, reconciliation, Dodo Payments integration)
 **Companion document:** `docs/RUNBOOK.md` for host, container, and deploy procedures
 
 The commercial contract lives in one place: `packages/shared/src/billing/catalog.ts`.
@@ -12,94 +12,119 @@ commercial terms change.
 
 ---
 
-## 1. Stripe Configuration
+## 1. Dodo Payments Configuration
+
+Everything below is configured in the Dodo Payments dashboard at
+<https://app.dodopayments.com>, in the same mode (`test_mode` / `live_mode`) as the
+deployment's `DODO_PAYMENTS_ENVIRONMENT`. Product ids are not portable between the
+two modes.
 
 ### 1.1 Products and recurring prices
 
-Create one Product per paid plan, each with a single monthly recurring Price in USD.
+Create one Product per paid plan, each priced monthly recurring in USD. Dodo has no
+separate price object — the product carries its own price, so there is one id per
+plan, not two.
 
-- **Starter** — `$99` / month recurring. Price id goes in `STRIPE_STARTER_PRICE_ID`.
-- **Growth** — `$299` / month recurring. Price id goes in `STRIPE_GROWTH_PRICE_ID`.
-- **Enterprise** — sales-assisted, from `$999` / month. Price id goes in
-  `STRIPE_ENTERPRISE_PRICE_ID`. Enterprise is deliberately excluded from
+- **Starter** — `$99` / month recurring. Product id goes in `DODO_STARTER_PRODUCT_ID`.
+- **Growth** — `$299` / month recurring. Product id goes in `DODO_GROWTH_PRODUCT_ID`.
+- **Enterprise** — sales-assisted, from `$999` / month. Product id goes in
+  `DODO_ENTERPRISE_PRODUCT_ID`. Enterprise is deliberately excluded from
   self-serve checkout (`isCheckoutPlan` in the catalog returns false for it), so
-  this price is only used for contracts created by sales.
+  this product is only used for contracts created by sales. Its id gates no
+  checkout flow (starter/growth checkout works without it), but the webhook
+  plan-inferrer recognises a sales-assisted subscription by product id alone and
+  the deploy gate requires it on a fully live host — without it such a
+  subscription is audited as `billing.subscription_product_unrecognized` and
+  stays on its previous plan.
 
-Free has no Stripe Price. Free grants one lifetime browser test of 180 seconds and
-no PSTN access; it is not a recurring entitlement and must never be provisioned by
-a Stripe object.
+Free has no Dodo product. Free's 10 included minutes are a *recurring monthly*
+grant on the in-house standard pipeline only (no PSTN access), provisioned by the
+free-credit worker on its schedule — never by a Dodo object.
 
-### 1.2 One-time price for the prepaid minute pack
+### 1.2 One-time product for the prepaid minute pack
 
-Create a **one-time** (not recurring) Price on its own Product:
+Create a **one-time** (not recurring) product:
 
 - 100 minutes for `$39`, expiring 365 days after purchase.
 
-The pack terms come from `MINUTE_PACK` in the catalog. The price id is resolved
-server-side during top-up checkout. Never accept a price id from a client: a
-client-supplied price lets a caller buy minutes at a price of their choosing.
+The pack terms come from `MINUTE_PACK` in the catalog. The product id is resolved
+server-side during top-up checkout. Never accept a product id from a client: a
+client-supplied product lets a caller buy minutes at a price of their choosing.
 
-The pack session is created with `payment_method_types: ['card']` and must stay
-that way. A delayed-notification method (ACH, SEPA debit, Bacs) completes
-Checkout with `payment_status: 'unpaid'` and settles days later on
-`checkout.session.async_payment_succeeded`, which is deliberately not in the
-subscribed set in §1.3 — so the customer would pay and never receive the
-minutes. A subscription is safe with delayed methods because its credit is
-granted from `invoice.paid`, which only fires once the money has cleared; a
-one-time pack has no equivalent later proof. Enabling extra payment methods for
-the pack in the Stripe dashboard changes nothing, because the session pins the
-list. If a pack session ever does complete unpaid, it is recorded as
+The pack checkout is pinned to card and must stay that way. A
+delayed-notification method (ACH, SEPA debit) sits in `payment.processing` for
+days before it settles, and credit is granted only on `payment.succeeded` — so the
+customer would leave checkout believing they hold minutes they cannot spend yet, and
+support would field it as a missing purchase. A subscription is safe with delayed
+methods because its credit is granted from `subscription.renewed`, which only fires
+once the money has cleared. Enabling extra payment methods on the product in the
+Dodo dashboard changes nothing, because the checkout session pins the list. If a
+pack payment is ever seen unsettled, it is recorded as
 `billing.pack_checkout_unpaid_review` (see §4.2) and must be resolved by hand.
 
 ### 1.3 Webhook endpoint
 
-Point a Stripe webhook at the API's Stripe webhook route and store the signing
-secret in `STRIPE_WEBHOOK_SECRET`. Subscribe to exactly these events — this is
-the set the dispatcher acts on, and `stripe-webhook.service.test.ts` asserts
-this list still matches the code:
+Add a webhook in the Dodo dashboard pointing at
+`https://incfrog.ai/api/v1/webhooks/dodo` and store the signing secret in
+`DODO_WEBHOOK_SECRET`. Dodo signs per the
+[Standard Webhooks](https://www.standardwebhooks.com) spec — `webhook-id`,
+`webhook-timestamp` and `webhook-signature` headers, HMAC-SHA256 — and `webhook-id`
+is the replay key stored in `dodo_webhook_events.webhook_id`. Subscribe to exactly
+these events — this is the set the dispatcher acts on, and
+`dodo-webhook.service.test.ts` asserts this list still matches the code:
 
-- `checkout.session.completed`
-- `customer.subscription.created`
-- `customer.subscription.updated`
-- `customer.subscription.deleted`
-- `invoice.paid`
-- `invoice.payment_failed`
-- `charge.refunded`
-- `charge.dispute.closed`
+- `payment.succeeded`
+- `payment.failed`
+- `refund.succeeded`
+- `dispute.won`
+- `dispute.lost`
+- `subscription.active`
+- `subscription.renewed`
+- `subscription.plan_changed`
+- `subscription.on_hold`
+- `subscription.cancelled`
+- `subscription.expired`
+- `subscription.failed`
 
-`charge.dispute.created` is deliberately **not** in that list. Credit is
-reversed only when a dispute is *lost*, and that is known at
-`charge.dispute.closed`; subscribing to `.created` in its place means the
-reversal handler never runs and disputed minute-pack credit stays on the
-account permanently. Over-subscribing is not free either: an event we do not
-handle is still recorded in `stripe_events` and marked processed, so it reads
-afterwards as though it had been acted on.
+This integration consumes no invoice or checkout-session webhooks (Dodo offers
+those APIs; the webhook flow here does not use them): a one-time pack is granted
+from `payment.succeeded`, and recurring included minutes from
+`subscription.renewed`.
 
-`checkout.session.async_payment_succeeded` is deliberately absent for the same
-reason. It is the event that would settle a delayed-notification pack payment,
-and the pack Checkout is pinned to card (§1.2) precisely so that case cannot
-arise. Subscribing to it without also writing a grant handler would record it as
-processed and grant nothing, which is worse than not receiving it.
+`dispute.opened` is deliberately **not** in that list. Credit is reversed only when
+a dispute is *lost*, and that is known at `dispute.lost`; subscribing to the opening
+event in its place means the reversal handler never runs and disputed minute-pack
+credit stays on the account permanently. Over-subscribing is not free either: an
+event we do not handle is still recorded in `dodo_webhook_events` and marked
+processed, so it reads afterwards as though it had been acted on.
 
-Entitlement changes are applied **only** from a signature-verified webhook. A
-`session_id` on a return URL is not proof of payment and must never activate a
-plan or credit a bucket. Because of this, an activation can lag the redirect by a
-few seconds: the return page refetches billing state once on load, so a customer
-who lands before the webhook is processed sees their previous plan or balance
-until they refresh. Support should treat a short lag after checkout as expected
-and confirm against `stripe_events` rather than the customer's screen.
+`payment.processing` is deliberately absent for the same reason. It is the event a
+delayed-notification pack payment would arrive on, and the pack checkout is pinned
+to card (§1.2) precisely so that case cannot arise. Subscribing to it without also
+writing a handler would record it as processed and grant nothing, which is worse
+than not receiving it.
 
-Rotating the signing secret: add the new endpoint secret in Stripe, deploy the new
-`STRIPE_WEBHOOK_SECRET`, confirm events are processing, then delete the old
+Entitlement changes are applied **only** from a signature-verified webhook. The
+`payment_id` / `subscription_id` params Dodo appends to the return URL are not proof
+of payment and must never activate a plan or credit a bucket. Because of this, an
+activation can lag the redirect by a few seconds: the return page refetches billing
+state once on load, so a customer who lands before the webhook is processed sees
+their previous plan or balance until they refresh. Support should treat a short lag
+after checkout as expected and confirm against `dodo_webhook_events` rather than the
+customer's screen.
+
+Rotating the signing secret: add the new endpoint secret in Dodo, deploy the new
+`DODO_WEBHOOK_SECRET`, confirm events are processing, then delete the old
 endpoint. Do not remove the old secret before the new one is live, or events are
 dropped in the gap and entitlements silently stop updating.
 
 ### 1.4 Tax
 
-Launch with `STRIPE_TAX_ENABLED=false`. Stripe Tax requires registered tax
-jurisdictions; enabling it before registration causes checkout sessions to fail at
-creation rather than degrade. Enable it only after tax registrations exist, and
-verify with one live checkout per registered jurisdiction.
+Nothing to configure. Dodo Payments is the Merchant of Record: it is the seller of
+record on the customer's statement and calculates, collects and remits sales tax /
+VAT itself, so there is no tax switch, no jurisdiction registration on our side, and
+no tax variable in the environment. Tax on a given order is visible on the order in
+the Dodo dashboard.
 
 ---
 
@@ -108,18 +133,21 @@ verify with one live checkout per registered jurisdiction.
 All variables below are validated at boot by `apps/api/src/config/env.ts`;
 a malformed value fails startup rather than silently defaulting.
 
-### 2.1 Stripe checkout
+### 2.1 Dodo Payments checkout
 
-- `STRIPE_SECRET_KEY` — absent means Stripe operations are unavailable and checkout
+- `DODO_PAYMENTS_API_KEY` — absent means Dodo operations are unavailable and checkout
   reports temporarily unavailable.
-- `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_STARTER_PRICE_ID`, `STRIPE_GROWTH_PRICE_ID`, `STRIPE_ENTERPRISE_PRICE_ID`
-- `STRIPE_MINUTE_PACK_PRICE_ID`
-- There is no demo billing mode. Checkout is enabled only when the secret key,
-  webhook secret, both self-service subscription prices, and the minute-pack price
+- `DODO_WEBHOOK_SECRET`
+- `DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`, `DODO_ENTERPRISE_PRODUCT_ID`
+- `DODO_MINUTE_PACK_PRODUCT_ID`
+- `DODO_PAYMENTS_ENVIRONMENT` — `test_mode` (default) or `live_mode`. Production boot
+  fails with an API key set while this is not `live_mode`; a Dodo key carries no mode
+  prefix, so this variable is the only place the mode exists.
+- There is no demo billing mode. Checkout is enabled only when the API key,
+  webhook secret, all three subscription product ids, and the minute-pack product id
   are all configured; partial configuration fails closed.
-- `WEB_BASE_URL` — when Stripe checkout is fully configured, this must be an
-  absolute non-local HTTPS URL. Boot fails otherwise. Stripe redirects paying
+- `WEB_BASE_URL` — when Dodo checkout is fully configured, this must be an
+  absolute non-local HTTPS URL. Boot fails otherwise. Dodo redirects paying
   customers back to this origin, so a default `localhost` value would take payment
   and then bounce the customer to a dead address — a failure no health check can detect.
 
@@ -241,7 +269,7 @@ Resolve by hand: establish what the call actually consumed from
 then clear `status` and `review_reason`. Never clear the flag without an
 adjustment entry — the flag is the only record that a human looked at it.
 
-The Stripe webhook flags three more conditions it refuses to guess at. None of
+The Dodo webhook flags three more conditions it refuses to guess at. None of
 them blocks calling; each one is a payer whose commercial state is wrong until
 someone acts.
 
@@ -249,30 +277,30 @@ someone acts.
 SELECT action, organization_id, metadata, created_at
 FROM audit_logs
 WHERE action IN (
-  'billing.subscription_price_unrecognized',
+  'billing.subscription_product_unrecognized',
   'billing.subscription_link_conflict',
   'billing.pack_checkout_unpaid_review'
 )
 ORDER BY created_at DESC;
 ```
 
-- `billing.subscription_price_unrecognized` — a subscription arrived on a price
-  id that is not in `STRIPE_{STARTER,GROWTH,ENTERPRISE}_PRICE_ID`. The plan and
-  price on the row were left as they were, so a paying customer keeps their
-  entitlements; a brand-new subscription stays on Free. Almost always a price
-  rotated in Stripe before the environment was redeployed. Fix the environment
-  variable, then resend the event from the Stripe dashboard. Do not edit the plan
+- `billing.subscription_product_unrecognized` — a subscription arrived on a product
+  id that is not in `DODO_{STARTER,GROWTH,ENTERPRISE}_PRODUCT_ID`. The plan and
+  product on the row were left as they were, so a paying customer keeps their
+  entitlements; a brand-new subscription stays on Free. Almost always a product
+  replaced in Dodo before the environment was redeployed. Fix the environment
+  variable, then resend the event from the Dodo dashboard. Do not edit the plan
   column by hand — the redelivered event is the audited path.
-- `billing.subscription_link_conflict` — a Checkout session tried to point an
-  organization at a different Stripe customer or subscription than the one
+- `billing.subscription_link_conflict` — a checkout tried to point an
+  organization at a different Dodo customer or subscription than the one
   already stored. The stored link was kept. Usually a customer who reached
-  Checkout twice, which means **two live Stripe subscriptions and double
-  billing**: cancel the surplus one in Stripe, refund it, and only then decide
+  checkout twice, which means **two live Dodo subscriptions and double
+  billing**: cancel the surplus one in Dodo, refund it, and only then decide
   which id belongs on the row.
-- `billing.pack_checkout_unpaid_review` — a minute-pack Checkout completed with
-  `payment_status: 'unpaid'`, so no credit was granted (see §1.2). Confirm in
-  Stripe whether the payment ever settled. If it did, grant the pack with an
-  explicit adjustment entry referencing the Checkout session id; if it did not,
+- `billing.pack_checkout_unpaid_review` — a minute-pack payment was seen without a
+  settled `payment.succeeded`, so no credit was granted (see §1.2). Confirm in
+  Dodo whether the payment ever settled. If it did, grant the pack with an
+  explicit adjustment entry referencing the Dodo payment id; if it did not,
   no action is needed beyond closing the record.
 
 ### 4.3 Running a repair out of band
@@ -358,17 +386,17 @@ customer is owed is not.
 
 - Refunding a subscription invoice does not remove included minutes already
   consumed. Decide explicitly whether to claw back a bucket, and record the
-  decision as an adjustment ledger entry with a reference to the Stripe refund.
+  decision as an adjustment ledger entry with a reference to the Dodo refund.
 - Refunding a minute pack should zero the corresponding bucket if the minutes are
   unspent. If they are partly spent, adjust to the unspent remainder rather than
   zeroing, so the customer is not charged for a refunded balance they never used.
 - A dispute *opening* runs no code here — we do not subscribe to
-  `charge.dispute.created`, so work from Stripe's own dispute alert. Review
+  `dispute.opened`, so work from Dodo's own dispute alert. Review
   before restricting service: suspending an organization mid-call is a worse
   outcome than carrying a disputed balance for a few hours.
-- A dispute *closing* as `lost` withdraws the pack credit automatically. A
-  dispute won or withdrawn changes nothing, by design.
-- Every manual adjustment must produce an audit record with the Stripe object id.
+- `dispute.lost` withdraws the pack credit automatically. `dispute.won` changes
+  nothing, by design.
+- Every manual adjustment must produce an audit record with the Dodo object id.
   A balance change without a traceable cause is indistinguishable from a bug.
 
 ---
@@ -379,8 +407,8 @@ The goal of a billing rollback is to stop *new* commitments without corrupting
 calls that are already running or balances that are already correct.
 
 **To stop new purchases:**
-Remove one required Stripe checkout configuration value (preferably the server-side
-`STRIPE_SECRET_KEY`) and redeploy. Checkout and portal actions return a
+Remove one required Dodo checkout configuration value (preferably the server-side
+`DODO_PAYMENTS_API_KEY`) and redeploy. Checkout and portal actions return a
 temporary-unavailable state because partial configuration fails closed. Existing
 subscriptions, balances, and running calls are unaffected. This does not grant free
 minutes or a trial to anyone.
@@ -468,8 +496,13 @@ Then confirm, in order:
    `[BillingReconciliation] Repairs scheduled` with the configured cron and batch
    size at startup. If registration failed after retries, the log says the repair
    will not run until the API restarts successfully; treat that as a failed release.
-4. One test checkout in Stripe test mode reaches the return page, and the plan
-   only activates after the webhook is processed.
+4. Checkout verification, split by environment because production refuses
+   `test_mode` at boot: run the full `test_mode` checkout (return page reached,
+   plan activates only after the webhook is processed) against a non-production
+   deployment *before* the release; on production itself, one **live-mode**
+   minute-pack checkout with a real card, then refund it from the Dodo dashboard
+   (the ~$1 refund fee is the cost of the smoke test) and confirm the refund
+   webhook reverses the credit.
 5. `/pricing` states the current catalog prices and included minutes, and makes no
    claim of unlimited usage, rollover, free inbound calls, a Starter free trial,
    HIPAA readiness, an SLA, or multi-region deployment. `apps/web/lib/billing-copy.test.ts`

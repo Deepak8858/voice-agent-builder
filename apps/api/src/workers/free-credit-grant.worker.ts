@@ -44,7 +44,7 @@ export interface FreeCreditGrantJob {
  * overlapping replica, or a same-day re-run cannot hand out the allowance twice.
  *
  * Only organizations without paid access are granted. Paid organizations receive
- * their included minutes from Stripe invoice events; granting them here as well
+ * their included minutes from Dodo subscription events; granting them here as well
  * would give them free minutes on top of what they bought.
  *
  * Gating: this lives in `WorkersModule`, which `app.module.ts` only imports when

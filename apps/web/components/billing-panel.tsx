@@ -57,8 +57,8 @@ function isTrustedCheckoutUrl(url: string): boolean {
   try {
     const u = new URL(url);
     return u.protocol === 'https:' && (
-      u.hostname === 'checkout.stripe.com' ||
-      u.hostname.endsWith('.stripe.com')
+      u.hostname === 'checkout.dodopayments.com' ||
+      u.hostname.endsWith('.dodopayments.com')
     );
   } catch {
     return false;
@@ -103,7 +103,7 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
     retry: false,
   });
 
-  // After Stripe redirects back to /dashboard/billing?checkout=success (or
+  // After Dodo Payments redirects back to /dashboard/billing?checkout=success (or
   // ?topup=success) the webhook may not have fired yet. Refetch so the user
   // sees the new plan and balance as soon as the webhook lands.
   useEffect(() => {
@@ -118,8 +118,8 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
 
   const plan: PlanType = (subscription.data?.plan as PlanType | undefined) ?? 'free';
   const planEntry = useMemo(() => getPlanById(plan), [plan]);
-  // A second subscription Checkout is refused by the API whenever Stripe still
-  // holds a live subscription, because it would create a second subscription and
+  // A second subscription Checkout is refused by the API whenever the provider
+  // still holds a live subscription, because it would create a second one and
   // bill twice. Rendering "Upgrade" there would hand a paying customer a button
   // that can only return 400; plan changes go through the portal instead, which
   // is the button already shown beside it.
@@ -243,10 +243,10 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
         <div className="flex items-start gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 text-sm text-emerald-900 shadow-sm dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-100">
           <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-300" />
           <div className="flex-1">
-            <p className="font-medium">Payment received by Stripe</p>
+            <p className="font-medium">Payment received by Dodo Payments</p>
             <p className="mt-0.5 text-xs text-emerald-800/90 dark:text-emerald-100/80">
-              Credits and plan changes appear after Stripe&apos;s webhook is verified. This page keeps
-              refreshing until the confirmed balance arrives.
+              Credits and plan changes appear after Dodo&apos;s webhook is verified — usually within
+              a few seconds. If the balance still looks unchanged, reload the page.
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => setDismissedBanner(true)}>

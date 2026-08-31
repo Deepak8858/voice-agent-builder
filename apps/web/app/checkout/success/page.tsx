@@ -13,16 +13,19 @@ const POLL_INTERVAL_MS = 2_000;
 const POLL_TIMEOUT_MS = 30_000;
 
 /**
- * Stripe-hosted Checkout redirects here with `?session_id=cs_test_...`.
- * We deliberately do NOT trust the session_id for activation — that work
- * happens in the StripeWebhookService. Instead, we poll the workspace
- * subscription endpoint until either the plan transitions to a paid
- * plan/active status or we time out, so the user gets a clean
- * "you're on Starter" confirmation.
+ * Dodo-hosted Checkout redirects here through its `return_url`, appending
+ * whichever params it has for the purchase — `payment_id`, sometimes
+ * `subscription_id` and `status`. Nothing on this page depends on any of them
+ * being present: they are never trusted for activation (that work happens in
+ * the webhook service) and are shown only as a support reference. Activation is
+ * proven by polling the workspace subscription endpoint until either the plan
+ * transitions to a paid plan/active status or we time out, so a redirect with
+ * no params at all still renders a correct page.
  */
 function CheckoutSuccessInner() {
   const search = useSearchParams();
-  const sessionId = search?.get('session_id') ?? null;
+  const paymentReference =
+    search?.get('payment_id') ?? search?.get('subscription_id') ?? null;
   const { call } = useApi();
 
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
@@ -82,11 +85,14 @@ function CheckoutSuccessInner() {
   }, [workspaceId, call]);
 
   const headline = useMemo(() => {
+    // Only the observed active-subscription state may claim success; a timeout
+    // proves nothing about the payment (delayed webhook, failed charge, or a
+    // subscription that never activated all land here).
     if (error) return 'Something went wrong';
     if (pending) return 'Activating your plan';
-    if (timedOut) return 'Payment received — activation in progress';
+    if (timedOut) return 'Activation still in progress';
     if (subscription && isPaidPlan(subscription.plan)) return `You're on the ${subscription.plan} plan`;
-    return 'Payment received';
+    return 'Checkout complete';
   }, [error, pending, timedOut, subscription]);
 
   return (
@@ -99,13 +105,14 @@ function CheckoutSuccessInner() {
           <h1 className="font-[family-name:var(--font-serif)] text-3xl text-foreground">{headline}</h1>
           {pending ? (
             <p className="text-sm text-muted-foreground">
-              Confirming the payment with Stripe and switching on the new plan. This usually takes a few
-              seconds.
+              Confirming the payment with Dodo Payments and switching on the new plan. This usually
+              takes a few seconds.
             </p>
           ) : timedOut ? (
             <p className="text-sm text-muted-foreground">
-              Stripe confirmed your payment but activation hasn’t finished yet. Refresh in a minute or open
-              the billing page to see the latest status.
+              Activation is taking longer than expected. The subscription wasn’t active yet when we
+              last checked — the webhook may still be on its way, or the payment may not have
+              completed. Check the billing page for the latest status.
             </p>
           ) : error ? (
             <p className="text-sm text-destructive">{error}</p>
@@ -123,9 +130,10 @@ function CheckoutSuccessInner() {
               <Link href="/dashboard/billing">Open billing</Link>
             </Button>
           </div>
-          {sessionId ? (
+          {paymentReference ? (
             <p className="mt-4 text-xs text-muted-foreground">
-              Stripe session: <code className="rounded bg-muted px-1 py-0.5">{sessionId}</code>
+              Payment reference:{' '}
+              <code className="rounded bg-muted px-1 py-0.5">{paymentReference}</code>
             </p>
           ) : null}
         </CardContent>

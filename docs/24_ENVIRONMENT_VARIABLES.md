@@ -68,9 +68,15 @@ modes, not one:
    returns before it looks at any header.
 4. **Provider webhooks** — also `@Public()`, authenticated by provider signature
    instead. Three of those signatures come from an env var
-   (`VOICE_WEBHOOK_SECRET`, `STRIPE_WEBHOOK_SECRET`, and `TWILIO_AUTH_TOKEN` for
+   (`VOICE_WEBHOOK_SECRET`, `DODO_WEBHOOK_SECRET`, and `TWILIO_AUTH_TOKEN` for
    the legacy platform-owned Twilio voice webhooks); the BYO telephony ones do
    not — see ## Voice.
+
+   Dodo Payments signs per the [Standard Webhooks](https://www.standardwebhooks.com)
+   spec: the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers, an
+   HMAC-SHA256 over `id.timestamp.body`, verified against the env-backed
+   `DODO_WEBHOOK_SECRET`. `webhook-id` is also the replay key stored in
+   `dodo_webhook_events.webhook_id`.
 
 ## LLM
 ```env
@@ -153,14 +159,22 @@ CLICKHOUSE_URL=
 CLICKHOUSE_USER=
 CLICKHOUSE_PASSWORD=
 WEB_BASE_URL=http://localhost:3000
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-STRIPE_STARTER_PRICE_ID=
-STRIPE_GROWTH_PRICE_ID=
-STRIPE_ENTERPRISE_PRICE_ID=
-STRIPE_MINUTE_PACK_PRICE_ID=
+DODO_PAYMENTS_API_KEY=
+DODO_WEBHOOK_SECRET=
+# test_mode | live_mode. Defaults to test_mode; production boot fails with a Dodo
+# key set while this is anything else, because a Dodo key carries no mode prefix
+# and test-mode billing in production is a silent revenue outage.
+DODO_PAYMENTS_ENVIRONMENT=test_mode
+# Dodo has no separate price object: the product carries its own price.
+DODO_STARTER_PRODUCT_ID=
+DODO_GROWTH_PRODUCT_ID=
+DODO_ENTERPRISE_PRODUCT_ID=
+DODO_MINUTE_PACK_PRODUCT_ID=
 FREE_CREDIT_GRANT_CRON=15 0 * * *
 ```
 
-Use server-only Stripe price IDs. Do not expose `NEXT_PUBLIC_STRIPE_*_PRICE_ID` variables.
-In production, prefer an `rk_live_...` restricted Stripe key with only Billing, Checkout, Customer, Invoice, and Subscription permissions.
+Use server-only Dodo product IDs. Do not expose `NEXT_PUBLIC_DODO_*_PRODUCT_ID` variables.
+`DODO_ENTERPRISE_PRODUCT_ID` is read even though Enterprise is not self-serve: the webhook
+plan-inferrer recognises a sales-assisted enterprise subscription by product id.
+Dodo is the Merchant of Record, so there is no tax variable — tax is calculated, collected
+and remitted by them.

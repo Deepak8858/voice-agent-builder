@@ -26,6 +26,11 @@
  * `media-src blob:` is required because the SDK attaches remote tracks through
  * blob-backed media elements.
  *
+ * Dodo Payments needs no `connect-src` entry (the Stripe-era `api.stripe.com` one
+ * is gone): hosted Checkout and the customer portal are server-minted URLs the
+ * browser only navigates to, so no script here calls the payment API. `frame-src`
+ * keeps `checkout.dodopayments.com` so an embedded checkout still renders.
+ *
  * This function only runs in middleware, so it can read the unprefixed
  * `LIVEKIT_URL` that API and worker deployments already share. That avoids
  * duplicating the value as a second build-time variable while still honouring
@@ -49,10 +54,8 @@ export function buildContentSecurityPolicy(nonce: string): string {
     `img-src 'self' data: blob: ${supabaseOrigins}`,
     `font-src 'self' data: ${monacoCdn}`,
     `media-src 'self' blob:`,
-    [`connect-src 'self'`, apiUrl, supabaseOrigins, 'https://api.stripe.com', livekitOrigins]
-      .filter(Boolean)
-      .join(' '),
-    `frame-src 'self' https://checkout.stripe.com ${supabaseOrigins}`,
+    [`connect-src 'self'`, apiUrl, supabaseOrigins, livekitOrigins].filter(Boolean).join(' '),
+    `frame-src 'self' https://checkout.dodopayments.com ${supabaseOrigins}`,
     `worker-src 'self' blob: ${monacoCdn}`,
     "object-src 'none'",
     "base-uri 'self'",

@@ -47,7 +47,7 @@ function trustedCheckoutUrl(url: string): boolean {
     const u = new URL(url);
     return (
       u.protocol === 'https:' &&
-      (u.hostname === 'checkout.stripe.com' || u.hostname.endsWith('.stripe.com'))
+      (u.hostname === 'checkout.dodopayments.com' || u.hostname.endsWith('.dodopayments.com'))
     );
   } catch {
     return false;
@@ -60,7 +60,7 @@ function CheckIcon({ value }: { value: boolean | string }) {
   return <span className="text-xs text-muted-foreground">{value}</span>;
 }
 
-async function startStripeCheckout(
+async function startCheckout(
   plan: CheckoutPlan,
   idempotencyKey: string,
 ): Promise<string | CheckoutUnavailable> {
@@ -81,7 +81,7 @@ async function startStripeCheckout(
     throw new Error(data?.error ?? `Checkout failed with status ${res.status}.`);
   }
   if (!trustedCheckoutUrl(data.url)) {
-    throw new Error('Untrusted Stripe URL returned from server.');
+    throw new Error('Untrusted checkout URL returned from server.');
   }
   return data.url;
 }
@@ -115,7 +115,7 @@ export function PricingPage({
     setError(null);
     setUnavailable(null);
     try {
-      const result = await startStripeCheckout(plan, crypto.randomUUID());
+      const result = await startCheckout(plan, crypto.randomUUID());
       if (typeof result === 'string') {
         window.location.assign(result);
         return;

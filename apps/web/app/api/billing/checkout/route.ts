@@ -13,18 +13,18 @@ import {
 
 /**
  * Server-side bridge from the marketing pricing page (and post-signup
- * bouncer) to the workspace-scoped Stripe Checkout endpoint on the NestJS
+ * bouncer) to the workspace-scoped Dodo Payments Checkout endpoint on the NestJS
  * API. We re-authenticate the Supabase session, look up the user's active
  * workspace via /auth/me, and only then ask the API to mint a Checkout URL.
  *
  * This route is intentionally tiny:
- *   - the frontend never sees the Stripe secret key
+ *   - the frontend never sees the Dodo Payments API key
  *   - the user can only checkout for a workspace they belong to (WorkspaceGuard
  *     re-checks membership server-side)
  *   - plan IDs are validated by Zod before we forward the request
  *
- * When Stripe is not configured the API answers with BILLING_UNAVAILABLE. We
- * translate that into an explicit temporary-unavailable payload; it never
+ * When Dodo Payments is not configured the API answers with BILLING_UNAVAILABLE.
+ * We translate that into an explicit temporary-unavailable payload; it never
  * grants demo or trial entitlements.
  */
 function isTrustedCheckoutUrl(url: string): boolean {
@@ -32,7 +32,7 @@ function isTrustedCheckoutUrl(url: string): boolean {
     const u = new URL(url);
     return (
       u.protocol === 'https:' &&
-      (u.hostname === 'checkout.stripe.com' || u.hostname.endsWith('.stripe.com'))
+      (u.hostname === 'checkout.dodopayments.com' || u.hostname.endsWith('.dodopayments.com'))
     );
   } catch {
     return false;
@@ -91,7 +91,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     );
     if (!session?.url || !isTrustedCheckoutUrl(session.url)) {
       return NextResponse.json(
-        { error: 'Stripe returned an unexpected checkout URL.' },
+        { error: 'Dodo Payments returned an unexpected checkout URL.' },
         { status: 502 },
       );
     }

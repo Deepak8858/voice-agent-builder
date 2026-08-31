@@ -22,7 +22,7 @@ Prompt-to-agent builder
 
 ## Best Stack
 ```txt
-Next.js + NestJS + PostgreSQL + Redis + voice runtime adapters (OpenAI Realtime + in-house Azure pipeline) + Stripe + S3/R2
+Next.js + NestJS + PostgreSQL + Redis + voice runtime adapters (OpenAI Realtime + in-house Azure pipeline) + Dodo Payments + S3/R2
 ```
 
 ## Biggest Warning

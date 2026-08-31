@@ -18,7 +18,7 @@ export const BILLING_RECONCILIATION_JOBS = {
   leases: 'billing.reconcile.leases',
   costs: 'billing.reconcile.costs',
   margins: 'billing.reconcile.margins',
-  stripeDrift: 'billing.reconcile.stripe_drift',
+  dodoDrift: 'billing.reconcile.dodo_drift',
 } as const;
 
 export type BillingReconciliationJobName =
@@ -32,8 +32,18 @@ const SCHEDULER_KEYS: Record<BillingReconciliationJobName, string> = {
   [BILLING_RECONCILIATION_JOBS.leases]: 'billing-reconcile-leases',
   [BILLING_RECONCILIATION_JOBS.costs]: 'billing-reconcile-costs',
   [BILLING_RECONCILIATION_JOBS.margins]: 'billing-reconcile-margins',
-  [BILLING_RECONCILIATION_JOBS.stripeDrift]: 'billing-reconcile-stripe-drift',
+  [BILLING_RECONCILIATION_JOBS.dodoDrift]: 'billing-reconcile-dodo-drift',
 };
+
+/**
+ * Scheduler keys this worker used to register and no longer does.
+ *
+ * A job scheduler lives in Redis until something removes it. Renaming the key
+ * without this leaves the old one enqueuing `billing.reconcile.stripe_drift`
+ * forever, and `processor` throws `Unknown billing reconciliation job` on every
+ * cron tick for a repair that has already moved.
+ */
+const RETIRED_SCHEDULER_KEYS = ['billing-reconcile-stripe-drift'];
 
 const SCHEDULER_REGISTRATION_ATTEMPTS = 5;
 const SCHEDULER_RETRY_BASE_MS = 1_000;
@@ -77,6 +87,17 @@ export class BillingReconciliationWorker
   /** Idempotent by scheduler key, so replicas converge on one schedule each. */
   async registerSchedules(): Promise<void> {
     const queue = this.queues.queue(BILLING_RECONCILIATION_QUEUE);
+
+    for (const retired of RETIRED_SCHEDULER_KEYS) {
+      // Best effort: already gone is the normal case, and a Redis failure here
+      // must not stop the live schedules below from being registered.
+      await queue.removeJobScheduler(retired).catch((err: Error) => {
+        this.logger.warn(
+          `[BillingReconciliation] Could not remove the retired ${retired} schedule: ${err.message}`,
+        );
+        return false;
+      });
+    }
 
     for (const [jobName, schedulerKey] of Object.entries(SCHEDULER_KEYS)) {
       for (let attempt = 1; attempt <= SCHEDULER_REGISTRATION_ATTEMPTS; attempt += 1) {
@@ -151,22 +172,23 @@ export class BillingReconciliationWorker
         await this.reconciliation.publishMarginMetrics();
         return;
       }
-      case BILLING_RECONCILIATION_JOBS.stripeDrift: {
-        const report = await this.reconciliation.reportStripeDrift(limit);
+      case BILLING_RECONCILIATION_JOBS.dodoDrift: {
+        const report = await this.reconciliation.reportDodoDrift(limit);
         const drift =
-          report.stripePaidInvoicesWithoutCredit +
-          report.stripePaidPacksWithoutCredit +
-          report.stripeSubscriptionDrift;
+          report.dodoSubscriptionPaymentsWithoutCredit +
+          report.dodoPackPaymentsWithoutCredit +
+          report.dodoSubscriptionDrift;
         if (drift === 0) {
-          this.log('stripe drift', 0, report.stripeObjectsCompared);
+          this.log('dodo drift', 0, report.dodoObjectsCompared);
           return;
         }
         // Warn, not log: nothing was repaired, so this needs a human to look.
         this.logger.warn(
-          `[BillingReconciliation] Stripe drift across ${report.stripeObjectsCompared} Stripe ` +
-            `object(s): ${report.stripePaidInvoicesWithoutCredit} paid invoice(s) with no credit, ` +
-            `${report.stripePaidPacksWithoutCredit} paid pack(s) with no credit, ` +
-            `${report.stripeSubscriptionDrift} subscription mismatch(es) — reported only, nothing repaired`,
+          `[BillingReconciliation] Dodo drift across ${report.dodoObjectsCompared} Dodo ` +
+            `object(s): ${report.dodoSubscriptionPaymentsWithoutCredit} subscription payment(s) ` +
+            `with no credit, ${report.dodoPackPaymentsWithoutCredit} minute pack payment(s) with ` +
+            `no credit, ${report.dodoSubscriptionDrift} subscription mismatch(es) — reported only, ` +
+            'nothing repaired',
         );
         return;
       }

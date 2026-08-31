@@ -133,8 +133,8 @@ regulator. This is why these writes bypass `AuditService`, which holds its own
 Prisma client.
 
 Organization erasure **refuses** rather than cancels when the org still has a live
-Stripe subscription, or when a phone number cannot be released: nothing here can
-cancel a Stripe subscription, and `subscriptions` / `twilio_phone_numbers` cascade on
+Dodo Payments subscription, or when a phone number cannot be released: nothing here
+can cancel a Dodo subscription, and `subscriptions` / `twilio_phone_numbers` cascade on
 delete, so deleting first would destroy the only handle that can stop the charges.
 Release-then-delete is retryable; delete-then-release is unrecoverable.
 

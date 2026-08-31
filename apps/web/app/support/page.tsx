@@ -71,7 +71,7 @@ export default function SupportPage() {
           <li>What you expected to happen, and what happened instead</li>
           <li>The exact steps that reproduce it</li>
           <li>For call problems: the call ID or the agent name, plus the approximate time</li>
-          <li>For billing problems: the date and amount of the charge, or the Stripe receipt</li>
+          <li>For billing problems: the date and amount of the charge, or the Dodo Payments receipt</li>
           <li>A screenshot of any error message</li>
         </ul>
       </Section>
@@ -82,7 +82,7 @@ export default function SupportPage() {
             <strong className="text-foreground">
               Change plan, update your card, download invoices, or cancel:
             </strong>{' '}
-            use the billing section of your dashboard, which opens the Stripe customer portal.
+            use the billing section of your dashboard, which opens the Dodo Payments customer portal.
           </li>
           <li>
             <strong className="text-foreground">Check what a call did:</strong> open the call in the

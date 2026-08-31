@@ -63,7 +63,7 @@ export class ErasureService {
       // its own `this.prisma` and takes no transaction client -- calling it from
       // in here would insert on a different connection and commit independently,
       // which is the same defect wearing a disguise. Several services already
-      // write `auditLog.create` directly (billing, entitlement, stripe-webhook).
+      // write `auditLog.create` directly (billing, entitlement, dodo-webhook).
       // `organizationId` is taken from the contact row rather than resolved from
       // the workspace, which is what AuditService.log would have done.
       //
@@ -103,39 +103,39 @@ export class ErasureService {
     if (!org) return { success: false, error: 'Organization not found' };
 
     // `subscriptions.organization_id` is ON DELETE CASCADE, and that row is the
-    // only place the Stripe customer/subscription ids are stored. Read it before
+    // only place the Dodo customer/subscription ids are stored. Read it before
     // the delete: afterwards there is nothing left to cancel the subscription by.
     const subscription = await this.prisma.subscription.findUnique({
       where: { organizationId: orgId },
-      select: { stripeCustomerId: true, stripeSubscriptionId: true, status: true },
+      select: { dodoCustomerId: true, dodoSubscriptionId: true, status: true },
     });
 
     // Ordering, deliberately: cancel-then-delete is the only recoverable order.
     // Cancel first and the delete fails -> the customer is un-billed but not yet
     // erased, and erasure can simply be retried. Delete first and the cancel
-    // fails -> Stripe keeps charging the card every month and the id needed to
+    // fails -> Dodo keeps charging the card every month and the id needed to
     // stop it went away with the cascade, which is unrecoverable through this
-    // product. Nothing in this codebase can cancel a Stripe subscription (the
-    // only Stripe writes are customers.create, checkout.sessions and
-    // billingPortal.sessions), so the cancel half has to happen outside it: this
-    // refuses instead of destroying the handle. Erasure is therefore delayed by
-    // one operator action, never blocked on a Stripe call from this process --
-    // Stripe returning 500 cannot wedge it, because it makes no Stripe call.
-    // `stripeSubscriptionId` is the discriminator, not `status` alone: a free
+    // product. Nothing in this codebase can cancel a Dodo subscription (the
+    // only Dodo writes are customers.create, checkoutSessions.create and
+    // customers.customerPortal.create), so the cancel half has to happen outside
+    // it: this refuses instead of destroying the handle. Erasure is therefore
+    // delayed by one operator action, never blocked on a Dodo call from this
+    // process -- Dodo returning 500 cannot wedge it, because it makes no Dodo
+    // call. `dodoSubscriptionId` is the discriminator, not `status` alone: a free
     // org that merely opened the billing portal has a customer row with the
     // default status 'active' and no subscription.
-    if (subscription?.stripeSubscriptionId && hasLiveSubscription(subscription.status)) {
+    if (subscription?.dodoSubscriptionId && hasLiveSubscription(subscription.status)) {
       return this.refuseOrganizationErasure(
         orgId,
-        'live_stripe_subscription',
+        'live_dodo_subscription',
         {
-          stripeCustomerId: subscription.stripeCustomerId,
-          stripeSubscriptionId: subscription.stripeSubscriptionId,
-          stripeSubscriptionStatus: subscription.status,
+          dodoCustomerId: subscription.dodoCustomerId,
+          dodoSubscriptionId: subscription.dodoSubscriptionId,
+          dodoSubscriptionStatus: subscription.status,
         },
-        `Organization ${orgId} still has a live Stripe subscription `
-        + `(${subscription.stripeSubscriptionId}, status "${subscription.status}"). Cancel it in `
-        + `Stripe first, then retry: deleting the organization removes the only record of that id.`,
+        `Organization ${orgId} still has a live Dodo subscription `
+        + `(${subscription.dodoSubscriptionId}, status "${subscription.status}"). Cancel it in `
+        + `Dodo first, then retry: deleting the organization removes the only record of that id.`,
       );
     }
 
@@ -145,7 +145,7 @@ export class ErasureService {
     });
     const workspaceIds = workspaces.map((ws) => ws.id);
 
-    // The same ordering rule as the Stripe refusal above, applied to the
+    // The same ordering rule as the Dodo refusal above, applied to the
     // carrier. `twilio_phone_numbers.workspace_id` is ON DELETE CASCADE, so the
     // workspace delete below drops every number row -- and with it `twilioSid`,
     // the only handle that can ever release the number -- while the number keeps
@@ -237,7 +237,7 @@ export class ErasureService {
       // key, so the rolled-back case is the common case -- and it used to leave a
       // committed row claiming the organization had been erased.
       //
-      // The two refusals above (live Stripe subscription, un-released number)
+      // The two refusals above (live Dodo subscription, un-released number)
       // return before reaching this transaction and record themselves with a
       // distinct action; see refuseOrganizationErasure.
       await tx.auditLog.create({
@@ -249,12 +249,12 @@ export class ErasureService {
           metadata: {
             orgName: org.name,
             erasedAt: new Date().toISOString(),
-            // Keeps the Stripe handles findable after the cascade removes the
+            // Keeps the Dodo handles findable after the cascade removes the
             // subscription row. `audit_logs.organization_id` has no foreign key,
             // so this row outlives the organization it names.
-            stripeCustomerId: subscription?.stripeCustomerId ?? null,
-            stripeSubscriptionId: subscription?.stripeSubscriptionId ?? null,
-            stripeSubscriptionStatus: subscription?.status ?? null,
+            dodoCustomerId: subscription?.dodoCustomerId ?? null,
+            dodoSubscriptionId: subscription?.dodoSubscriptionId ?? null,
+            dodoSubscriptionStatus: subscription?.status ?? null,
           },
         },
       });
