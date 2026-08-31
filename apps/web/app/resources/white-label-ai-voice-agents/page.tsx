@@ -1,5 +1,5 @@
 import { SeoPage } from '@/components/marketing/seo-page';
-import { JsonLd, breadcrumbJsonLd, pageMetadata } from '@/lib/seo';
+import { JsonLd, breadcrumbJsonLd, pageMetadata, techArticleJsonLd } from '@/lib/seo';
 
 export const metadata = pageMetadata(
   'White-Label AI Voice Agents for Agencies',
@@ -10,6 +10,16 @@ export const metadata = pageMetadata(
 export default function WhiteLabelVoiceAgentGuidePage() {
   return (
     <>
+      <JsonLd
+        data={techArticleJsonLd({
+          headline: 'White-Label AI Voice Agents for Agencies',
+          description:
+            'What agencies need to deliver white-label AI voice agents: client isolation, reviewable deployments, testing evidence, governance, and outcome visibility.',
+          path: '/resources/white-label-ai-voice-agents',
+          datePublished: '2026-08-24',
+          dateModified: '2026-08-31',
+        })}
+      />
       <JsonLd
         data={breadcrumbJsonLd([
           { name: 'Home', path: '/' },

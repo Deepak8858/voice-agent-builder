@@ -1,5 +1,5 @@
 import { SeoPage } from '@/components/marketing/seo-page';
-import { JsonLd, breadcrumbJsonLd, pageMetadata } from '@/lib/seo';
+import { JsonLd, breadcrumbJsonLd, pageMetadata, techArticleJsonLd } from '@/lib/seo';
 
 export const metadata = pageMetadata(
   'How to Test an AI Voice Agent Before Launch',
@@ -10,6 +10,16 @@ export const metadata = pageMetadata(
 export default function TestVoiceAgentGuidePage() {
   return (
     <>
+      <JsonLd
+        data={techArticleJsonLd({
+          headline: 'How to Test an AI Voice Agent Before Launch',
+          description:
+            'A QA checklist for AI voice agents: call paths, tools, transfers, fallbacks, compliance, and outcomes — tested before production telephony is attached.',
+          path: '/resources/test-ai-voice-agent',
+          datePublished: '2026-08-24',
+          dateModified: '2026-08-31',
+        })}
+      />
       <JsonLd
         data={breadcrumbJsonLd([
           { name: 'Home', path: '/' },
