@@ -72,8 +72,10 @@ credit is always spent first and is forfeited, not rolled over, at period end.
 Four constraints, and every one of them is load-bearing:
 
 - `billing_ledger_entries UNIQUE (organization_id, idempotency_key)` is the gate.
-  Keys are **derived, never random**: `stripe:invoice:<invoiceId>:included` for a
-  subscription grant, `stripe:checkout:<sessionId>:topup` for a pack,
+  Keys are **derived, never random**: `dodo:payment:<paymentId>:included` for a
+  subscription grant carrying a payment id, `sub:<subscriptionId>:<previousBillingDate>`
+  for a billing cycle (Dodo subscription payloads carry no payment id, so the cycle
+  itself is the key), `dodo:payment:<paymentId>:topup` for a pack, and
   `free_grant_<orgId>_<monthKey>` for the recurring Free allowance. A redelivered
   webhook recomputes the same key.
 - `billing_credit_buckets UNIQUE (organization_id, source_type, source_id)` — the

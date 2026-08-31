@@ -52,7 +52,14 @@ interface LeaseRow {
 interface GrantRow {
   organizationId: string;
   sourceType: 'included' | 'purchased';
+  /**
+   * A pack bucket's is the Dodo payment id; a cycle bucket's is the grant key
+   * `sub:<subscriptionId>:<previousBillingDate>` the webhook derives, because
+   * Dodo's subscription payloads carry no payment id at all.
+   */
   sourceId: string;
+  /** The end of the period the payment funded, which is how a cycle is matched. */
+  expiresAt: Date;
 }
 
 interface SubscriptionRow {
@@ -84,6 +91,8 @@ function makeService(
       customer: { customer_id: string };
       subscription_id: string | null;
       total_amount: number;
+      /** Real payloads always carry it, and it is what places the payment in a cycle. */
+      created_at: string;
     }>;
     dodoSubscriptions?: Array<{
       subscription_id: string;
@@ -117,24 +126,16 @@ function makeService(
 
   const tx = {
     billingCreditBucket: {
-      findMany: vi.fn(async () => opts.activeBuckets ?? []),
-      // The locked re-check of one Dodo payment against one bucket.
-      findUnique: vi.fn(
-        async ({
-          where,
-        }: {
-          where: { organizationId_sourceType_sourceId: GrantRow };
-        }) => {
-          const key = where.organizationId_sourceType_sourceId;
-          return (
-            confirmedBuckets.find(
+      // Two callers: the balance recompute (active buckets) and the locked
+      // re-check of one organization's buckets of one source type.
+      findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
+        args?.where && 'sourceType' in args.where
+          ? confirmedBuckets.filter(
               (bucket) =>
-                bucket.organizationId === key.organizationId &&
-                bucket.sourceType === key.sourceType &&
-                bucket.sourceId === key.sourceId,
-            ) ?? null
-          );
-        },
+                bucket.organizationId === args.where?.organizationId &&
+                bucket.sourceType === args.where?.sourceType,
+            )
+          : (opts.activeBuckets ?? []),
       ),
     },
     subscription: {
@@ -185,9 +186,9 @@ function makeService(
     },
     billingCreditBucket: {
       // Two callers: bucket expiry (by status) and the Dodo drift bulk
-      // pre-filter (by the payment IDs it just listed).
+      // pre-filter, which is the only one issuing an `OR` of per-flavour arms.
       findMany: vi.fn(async (args?: { where?: Record<string, unknown> }) =>
-        args?.where && 'sourceId' in args.where
+        args?.where && 'OR' in args.where
           ? (opts.grantedBuckets ?? [])
           : (opts.expiringBuckets ?? []),
       ),
@@ -902,6 +903,11 @@ describe('ReconciliationService.reconcileProviderCosts', () => {
 describe('ReconciliationService.reportDodoDrift', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  /** The boundary a renewal is charged at, and so the cycle's grant key. */
+  const CYCLE_START = new Date('2026-08-01T00:00:00.000Z');
+  const CYCLE_END = new Date('2026-09-01T00:00:00.000Z');
+  const CYCLE_GRANT_KEY = `sub:sub_1:${CYCLE_START.toISOString()}`;
+
   /**
    * One subscription-cycle payment, one minute-pack payment and one active
    * subscription, all for one org.
@@ -921,12 +927,14 @@ describe('ReconciliationService.reportDodoDrift', () => {
           customer: { customer_id: CUSTOMER },
           subscription_id: 'sub_1',
           total_amount: 9_900,
+          created_at: CYCLE_START.toISOString(),
         },
         {
           payment_id: 'pay_pack_1',
           customer: { customer_id: CUSTOMER },
           subscription_id: null,
           total_amount: 2_900,
+          created_at: CYCLE_START.toISOString(),
         },
       ],
       dodoSubscriptions: [
@@ -970,6 +978,7 @@ describe('ReconciliationService.reportDodoDrift', () => {
           customer: { customer_id: CUSTOMER },
           subscription_id: 'sub_1',
           total_amount: 9_900,
+          created_at: CYCLE_START.toISOString(),
         },
       ],
       subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
@@ -999,6 +1008,7 @@ describe('ReconciliationService.reportDodoDrift', () => {
           customer: { customer_id: CUSTOMER },
           subscription_id: 'sub_1',
           total_amount: 0,
+          created_at: CYCLE_START.toISOString(),
         },
       ],
       subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
@@ -1085,13 +1095,103 @@ describe('ReconciliationService.reportDodoDrift', () => {
     expect(audit.log).not.toHaveBeenCalled();
   });
 
+  /**
+   * THE FALSE ALARM THIS EXISTS TO KILL. An included bucket is keyed by the
+   * CYCLE, not by the payment: `dodo-webhook.service.ts` derives
+   * `sub:<subscriptionId>:<previousBillingDate>` because Dodo's subscription
+   * payloads carry no payment id to key it by. The comparison used to match both
+   * flavours on `sourceId === payment_id`, so a perfectly granted renewal read as
+   * "paid at Dodo but no bucket" — drift reported on every renewal, on every
+   * pass, burying the real cases. Note the bucket carries no payment id at all,
+   * exactly as the ledger writes it.
+   */
+  it('matches a granted cycle by its grant key, not by the payment id', async () => {
+    const { service, prisma } = makeService({
+      dodoPayments: [
+        {
+          payment_id: 'pay_sub_1',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: 'sub_1',
+          total_amount: 9_900,
+          created_at: CYCLE_START.toISOString(),
+        },
+      ],
+      subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
+      grantedBuckets: [
+        {
+          organizationId: ORG,
+          sourceType: 'included',
+          sourceId: CYCLE_GRANT_KEY,
+          expiresAt: CYCLE_END,
+        },
+      ],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(0);
+    // Nothing suspicious, so the organization is never locked — which is also
+    // what keeps the real repairs from being skipped on contention.
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The other side of that join: a cycle whose bucket had already expired when
+   * this payment was collected belongs to an EARLIER period, so it cannot be the
+   * grant this money bought.
+   */
+  it('still reports a missing cycle grant when only an earlier cycle has a bucket', async () => {
+    const { service } = makeService({
+      dodoPayments: [
+        {
+          payment_id: 'pay_sub_2',
+          customer: { customer_id: CUSTOMER },
+          subscription_id: 'sub_1',
+          total_amount: 9_900,
+          created_at: CYCLE_END.toISOString(),
+        },
+      ],
+      subscriptionOwners: [{ organizationId: ORG, dodoCustomerId: CUSTOMER }],
+      grantedBuckets: [
+        {
+          organizationId: ORG,
+          sourceType: 'included',
+          sourceId: CYCLE_GRANT_KEY,
+          expiresAt: CYCLE_END,
+        },
+      ],
+      confirmedBuckets: [
+        {
+          organizationId: ORG,
+          sourceType: 'included',
+          sourceId: CYCLE_GRANT_KEY,
+          expiresAt: CYCLE_END,
+        },
+      ],
+    });
+
+    const report = await service.reportDodoDrift();
+
+    expect(report.dodoSubscriptionPaymentsWithoutCredit).toBe(1);
+  });
+
   it('reports nothing, and locks nothing, when the credit was granted', async () => {
     const { service, prisma, tx } = makeService({
       ...driftFixture(),
       // Both payments produced their bucket, and Dodo agrees with our row.
       grantedBuckets: [
-        { organizationId: ORG, sourceType: 'included', sourceId: 'pay_sub_1' },
-        { organizationId: ORG, sourceType: 'purchased', sourceId: 'pay_pack_1' },
+        {
+          organizationId: ORG,
+          sourceType: 'included',
+          sourceId: CYCLE_GRANT_KEY,
+          expiresAt: CYCLE_END,
+        },
+        {
+          organizationId: ORG,
+          sourceType: 'purchased',
+          sourceId: 'pay_pack_1',
+          expiresAt: new Date('2027-08-01T00:00:00.000Z'),
+        },
       ],
       linkedSubscriptions: [
         {
@@ -1111,7 +1211,7 @@ describe('ReconciliationService.reportDodoDrift', () => {
     // An organization with nothing suspicious is never locked, so this pass
     // cannot make the real repairs skip it.
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(tx.billingCreditBucket.findUnique).not.toHaveBeenCalled();
+    expect(tx.billingCreditBucket.findMany).not.toHaveBeenCalled();
   });
 
   it('skips the reverse check when the active-subscription list is incomplete', async () => {

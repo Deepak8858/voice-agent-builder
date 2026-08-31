@@ -8,6 +8,7 @@ import { MetricsService } from '../common/metrics.service';
 import { env } from '../config/env';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreditLedgerService } from './credit-ledger.service';
+import { PAID_ACCESS_STATUSES } from './entitlement.service';
 import { ProviderCostService } from './provider-cost.service';
 
 /**
@@ -101,28 +102,6 @@ const DODO_SETTLE_MS = 15 * MINUTE_MS;
 const DODO_LOOKBACK_MS = 35 * 24 * 60 * MINUTE_MS;
 
 /**
- * Our statuses that fund paid usage, and the whole of what the subscription
- * comparison asks of a status.
- *
- * DIED IN THE SWAP: exact status equality (`ours.status !== stripe.status`).
- * Our column keeps the Stripe-shaped vocabulary
- * (`active|trialing|past_due|canceled|...`, see `SubscriptionStatusSchema`)
- * while Dodo's is `pending|active|on_hold|paused|cancelled|failed|expired`, so
- * string equality would report every trialing and past-due row as permanent
- * drift. Faking a status map instead would invent equivalences Dodo does not
- * define. What both vocabularies *do* agree on is whether the subscription is
- * currently funding usage — Dodo's single paying status is `active` (a trial is
- * `active` with `trial_period_days`), ours is this set — and that is the fact
- * the drift metric exists to protect: a mismatch means either we are serving a
- * customer Dodo is not billing, or refusing one Dodo is.
- *
- * Mirrors `PAID_ACCESS_STATUSES` in `entitlement.service.ts`, which is what
- * actually admits or refuses the call; it is private there, so this is a
- * deliberate two-string copy rather than a new shared export.
- */
-const PAID_ACCESS_STATUSES = new Set(['active', 'trialing']);
-
-/**
  * The only SDK surface the drift comparison calls, derived from `DodoPayments`
  * rather than hand-rolled: the objects it reads (a payment's
  * `subscription_id`/`total_amount`, a subscription's `product_id`) are then the
@@ -132,17 +111,29 @@ const PAID_ACCESS_STATUSES = new Set(['active', 'trialing']);
 type DodoDriftClient = Pick<DodoPayments, 'payments' | 'subscriptions'>;
 
 /**
+ * A succeeded Dodo payment, in the shape the bucket comparison needs.
+ *
+ * `subscriptionId` is what decides which flavour of bucket the payment must have
+ * produced AND how that bucket is keyed, which is why the payment id alone is
+ * not enough — see {@link ReconciliationService.bucketCoversPayment}.
+ */
+interface PaidDodoPayment {
+  sourceType: 'included' | 'purchased';
+  paymentId: string;
+  /** Set for a recurring charge, null for the one-off minute pack. */
+  subscriptionId: string | null;
+  /** The payment's own `created_at`, which places it inside a billing cycle. */
+  paidAt: Date;
+  customerId: string;
+}
+
+/**
  * One suspected disagreement between Dodo and us, re-checked against the
  * database before it is counted so a repair that landed in the meantime is not
  * reported as drift.
  */
 type DodoDriftCandidate =
-  | {
-      kind: 'bucket';
-      sourceType: 'included' | 'purchased';
-      /** The Dodo payment ID, which is also the bucket's `sourceId`. */
-      sourceId: string;
-    }
+  | ({ kind: 'bucket' } & PaidDodoPayment)
   | {
       kind: 'subscription';
       dodoSubscriptionId: string;
@@ -737,16 +728,16 @@ export class ReconciliationService {
     const payments = await this.listDodo('succeeded payments', limit, () =>
       dodo.payments.list({ status: 'succeeded', ...createdWindow }),
     );
-    const paid = payments.items.flatMap((payment) =>
+    const paid = payments.items.flatMap<PaidDodoPayment>((payment) =>
       // A zero-amount payment (a full-discount cycle, an adjustment) never
       // produces a bucket, so counting it would report drift that does not exist.
       payment.total_amount > 0
         ? [
             {
-              sourceType: (payment.subscription_id ? 'included' : 'purchased') as
-                | 'included'
-                | 'purchased',
-              sourceId: payment.payment_id,
+              sourceType: payment.subscription_id ? 'included' : 'purchased',
+              paymentId: payment.payment_id,
+              subscriptionId: payment.subscription_id ?? null,
+              paidAt: new Date(payment.created_at),
               customerId: payment.customer.customer_id,
             },
           ]
@@ -780,17 +771,31 @@ export class ReconciliationService {
     // locked at all. Scoped to the organizations that own the Dodo customers
     // above: a bucket belonging to anyone else can never satisfy one of these
     // payments, so reading wider would be both slower and untenanted.
+    //
+    // Two arms because the two flavours are keyed differently: a pack bucket can
+    // be fetched by the payment id itself, while a cycle bucket's `sourceId` is
+    // the derived grant key, so the candidates are narrowed by period instead and
+    // matched by `bucketCoversPayment` below.
+    const packPaymentIds = paid.flatMap((entry) =>
+      entry.subscriptionId ? [] : [entry.paymentId],
+    );
+    const earliestCyclePaidAt = paid.reduce<Date | null>(
+      (earliest, entry) =>
+        entry.subscriptionId && (!earliest || entry.paidAt < earliest) ? entry.paidAt : earliest,
+      null,
+    );
     const grants = await this.prisma.billingCreditBucket.findMany({
       where: {
         organizationId: { in: [...new Set(organizationByCustomer.values())] },
-        sourceType: { in: ['included', 'purchased'] },
-        sourceId: { in: paid.map((entry) => entry.sourceId) },
+        OR: [
+          { sourceType: 'purchased', sourceId: { in: packPaymentIds } },
+          ...(earliestCyclePaidAt
+            ? [{ sourceType: 'included', expiresAt: { gt: earliestCyclePaidAt } }]
+            : []),
+        ],
       },
-      select: { organizationId: true, sourceType: true, sourceId: true },
+      select: { organizationId: true, sourceType: true, sourceId: true, expiresAt: true },
     });
-    const granted = new Set(
-      grants.map((bucket) => `${bucket.organizationId}|${bucket.sourceType}|${bucket.sourceId}`),
-    );
 
     for (const entry of paid) {
       const organizationId = organizationByCustomer.get(entry.customerId);
@@ -800,17 +805,17 @@ export class ReconciliationService {
         this.countDodoDrift(report, entry.sourceType);
         this.logger.warn(
           `Dodo drift: succeeded ${entry.sourceType === 'included' ? 'subscription' : 'minute pack'} ` +
-            `payment ${entry.sourceId} belongs to Dodo customer ${entry.customerId}, which no ` +
+            `payment ${entry.paymentId} belongs to Dodo customer ${entry.customerId}, which no ` +
             `organization owns — no credit was granted for it. Reported only.`,
         );
         continue;
       }
-      if (granted.has(`${organizationId}|${entry.sourceType}|${entry.sourceId}`)) continue;
-      suspect(organizationId, {
-        kind: 'bucket',
-        sourceType: entry.sourceType,
-        sourceId: entry.sourceId,
-      });
+      const covered = grants.some(
+        (bucket) =>
+          bucket.organizationId === organizationId && this.bucketCoversPayment(entry, bucket),
+      );
+      if (covered) continue;
+      suspect(organizationId, { kind: 'bucket', ...entry });
     }
 
     // --- Dodo's subscription state against ours -----------------------------
@@ -841,7 +846,17 @@ export class ReconciliationService {
         continue;
       }
       // DIED IN THE SWAP: `price_mismatch` — Dodo has no price object, the
-      // product carries the price, so this is the product that survived it.
+      // product carries the price, so this is the product that survived it. And
+      // with it exact status equality (`ours.status !== stripe.status`): our
+      // column keeps the Stripe-shaped vocabulary while Dodo's is
+      // `pending|active|on_hold|paused|cancelled|failed|expired`, so equality
+      // would report every trialing and past-due row as permanent drift, and a
+      // hand-written status map would invent equivalences Dodo does not define.
+      // What both vocabularies agree on is whether the subscription funds usage —
+      // Dodo's single paying status is `active` (a trial is `active` with
+      // `trial_period_days`), ours is `PAID_ACCESS_STATUSES` — and that is the
+      // fact this metric protects: a mismatch means we are either serving a
+      // customer Dodo is not billing, or refusing one Dodo is.
       const reason = !PAID_ACCESS_STATUSES.has(ours.status)
         ? 'unfunded_locally'
         : ours.dodoProductId !== subscription.product_id
@@ -942,22 +957,20 @@ export class ReconciliationService {
     await this.withOrganizationLock(organizationId, async (tx) => {
       for (const candidate of candidates) {
         if (candidate.kind === 'bucket') {
-          const bucket = await tx.billingCreditBucket.findUnique({
-            where: {
-              organizationId_sourceType_sourceId: {
-                organizationId,
-                sourceType: candidate.sourceType,
-                sourceId: candidate.sourceId,
-              },
-            },
-            select: { id: true },
+          // Read back rather than fetched by key: a cycle bucket's `sourceId` is a
+          // derived grant key this payment does not carry, so the same predicate
+          // the bulk pre-filter used decides it here too. Bounded by one
+          // organization's own buckets, and only reached for a suspected miss.
+          const buckets = await tx.billingCreditBucket.findMany({
+            where: { organizationId, sourceType: candidate.sourceType },
+            select: { sourceType: true, sourceId: true, expiresAt: true },
           });
-          if (bucket) continue;
+          if (buckets.some((bucket) => this.bucketCoversPayment(candidate, bucket))) continue;
           this.countDodoDrift(report, candidate.sourceType);
           this.logger.warn(
             `Dodo drift: organization ${organizationId} paid Dodo for a ` +
               `${candidate.sourceType === 'included' ? 'subscription cycle' : 'minute pack'} ` +
-              `(payment ${candidate.sourceId}) but holds no ${candidate.sourceType} credit bucket ` +
+              `(payment ${candidate.paymentId}) but holds no ${candidate.sourceType} credit bucket ` +
               'for it. Reported only; no credit was granted.',
           );
           continue;
@@ -991,6 +1004,39 @@ export class ReconciliationService {
         );
       }
     });
+  }
+
+  /**
+   * Whether this bucket is the grant that payment bought. The only place the two
+   * flavours' keying is expressed, so the bulk pre-filter and the locked re-check
+   * cannot disagree about what "granted" means.
+   *
+   * A PACK bucket's `sourceId` is the Dodo payment id itself
+   * (`credit-ledger.service.ts`, `PurchasedGrantInputSchema`), so it matches by
+   * equality. A CYCLE bucket's is the derived grant key
+   * `sub:<subscriptionId>:<previousBillingDate>` — Dodo's subscription payloads
+   * carry no payment id, so `handleSubscriptionCycle` has nothing else to key it
+   * by — and the payment object carries no `previous_billing_date` to rebuild it
+   * from. Matching a cycle payment against `sourceId === payment_id` therefore
+   * never matched anything: every renewal read as "paid at Dodo, no bucket" and
+   * the alarm was permanently on, burying real drift. The join that does hold is
+   * the period: the bucket a payment funded expires at the END of the cycle that
+   * payment started, so it is the one still unexpired at the moment of payment.
+   *
+   * ponytail: a later cycle's bucket can mask an earlier cycle's missing grant in
+   * the last days of the lookback window. Exact per-cycle attribution needs a
+   * payment -> cycle link Dodo does not publish; revisit if a masked miss is ever
+   * observed.
+   */
+  private bucketCoversPayment(
+    payment: PaidDodoPayment,
+    bucket: { sourceType: string; sourceId: string; expiresAt: Date },
+  ): boolean {
+    if (bucket.sourceType !== payment.sourceType) return false;
+    return payment.subscriptionId === null
+      ? bucket.sourceId === payment.paymentId
+      : bucket.sourceId.startsWith(`sub:${payment.subscriptionId}:`) &&
+          bucket.expiresAt > payment.paidAt;
   }
 
   private countDodoDrift(

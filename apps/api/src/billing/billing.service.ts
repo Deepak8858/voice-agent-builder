@@ -7,7 +7,7 @@ import {
   Logger,
   Optional,
 } from '@nestjs/common';
-import DodoPayments from 'dodopayments';
+import DodoPayments, { APIError } from 'dodopayments';
 import { Prisma } from '@prisma/client';
 import type {
   CheckoutPlan,
@@ -61,6 +61,17 @@ type DodoClient = Pick<DodoPayments, 'customers' | 'checkoutSessions' | 'payment
 
 function hasControlCharacter(value: string): boolean {
   return Array.from(value).some((char) => char.charCodeAt(0) <= 31);
+}
+
+/**
+ * The `code` Dodo puts in a 4xx body (`{"code":"MERCHANT_NOT_LIVE"}`), for the
+ * log line and the 503 message. Anything else is reported as unknown rather than
+ * echoed, so an unexpected body shape cannot become the customer-facing string.
+ */
+function dodoErrorCode(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && code.length > 0 ? code : 'unknown';
 }
 
 const CHECKOUT_UNCONFIGURED_MESSAGE =
@@ -121,7 +132,8 @@ export class BillingService {
     });
     if (sub?.dodoCustomerId) return sub.dodoCustomerId;
 
-    if (!this.dodo) {
+    const dodo = this.dodo;
+    if (!dodo) {
       throw new InternalServerErrorException(
         'Dodo Payments is not configured. Set DODO_PAYMENTS_API_KEY before calling billing endpoints.',
       );
@@ -137,11 +149,13 @@ export class BillingService {
       where: { id: organizationId },
       select: { name: true, owner: { select: { email: true } } },
     });
-    const customer = await this.dodo.customers.create({
-      email: org.owner.email,
-      name: org.name,
-      metadata: { organizationId },
-    });
+    const customer = await this.callDodo('customers.create', () =>
+      dodo.customers.create({
+        email: org.owner.email,
+        name: org.name,
+        metadata: { organizationId },
+      }),
+    );
     await this.prisma.subscription.upsert({
       where: { organizationId },
       create: {
@@ -165,7 +179,8 @@ export class BillingService {
     actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertDodoConfigured(DODO_SUBSCRIPTION_REQUIRED_ENV);
-    if (!this.dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
+    const dodo = this.dodo;
+    if (!dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
     // Enterprise is sales-assisted; it has no self-service product and must never
     // be reachable from a client-supplied plan value.
     if (!isCheckoutPlan(dto.plan)) {
@@ -199,20 +214,22 @@ export class BillingService {
     // nowhere, which is worse than not sending it. Double-charging is prevented
     // instead by the live-subscription refusal above and by the webhook keying
     // every grant on the payment or cycle it belongs to.
-    const session = await this.dodo.checkoutSessions.create({
-      product_cart: [{ product_id: productId, quantity: 1 }],
-      customer: { customer_id: customerId },
-      return_url: this.buildAppUrl(dto.successPath),
-      cancel_url: this.buildAppUrl(dto.cancelPath),
-      // Read back by the webhook to resolve the paying organization, and the only
-      // record of which catalog version this price was quoted under.
-      metadata: {
-        organizationId,
-        plan: dto.plan,
-        catalogVersion: BILLING_CATALOG_VERSION,
-        integration_identifier: integrationIdentifier,
-      },
-    });
+    const session = await this.callDodo('checkoutSessions.create', () =>
+      dodo.checkoutSessions.create({
+        product_cart: [{ product_id: productId, quantity: 1 }],
+        customer: { customer_id: customerId },
+        return_url: this.buildAppUrl(dto.successPath),
+        cancel_url: this.buildAppUrl(dto.cancelPath),
+        // Read back by the webhook to resolve the paying organization, and the only
+        // record of which catalog version this price was quoted under.
+        metadata: {
+          organizationId,
+          plan: dto.plan,
+          catalogVersion: BILLING_CATALOG_VERSION,
+          integration_identifier: integrationIdentifier,
+        },
+      }),
+    );
     if (!session.checkout_url) {
       throw new InternalServerErrorException('Dodo Payments returned no checkout URL.');
     }
@@ -237,7 +254,8 @@ export class BillingService {
     actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertDodoConfigured(DODO_TOPUP_REQUIRED_ENV);
-    if (!this.dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
+    const dodo = this.dodo;
+    if (!dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
     const productId = env.DODO_MINUTE_PACK_PRODUCT_ID;
     if (!productId) {
       throw new BillingUnavailableError(CHECKOUT_UNCONFIGURED_MESSAGE);
@@ -260,25 +278,27 @@ export class BillingService {
 
     const customerId = await this.getOrCreateCustomer(organizationId);
     const integrationIdentifier = this.newIntegrationIdentifier();
-    const session = await this.dodo.checkoutSessions.create({
-      product_cart: [{ product_id: productId, quantity: 1 }],
-      customer: { customer_id: customerId },
-      // Cards only, deliberately, and for the reason the Stripe session pinned
-      // `payment_method_types: ['card']`: the pack is granted from
-      // `payment.succeeded` and nothing grants it later, so a method that settles
-      // days after checkout would be paid for and never credited. A subscription
-      // is safe without this because its credit comes from the cycle event
-      // whenever the money actually clears.
-      allowed_payment_method_types: ['credit', 'debit'],
-      return_url: this.buildAppUrl(dto.successPath),
-      cancel_url: this.buildAppUrl(dto.cancelPath),
-      metadata: {
-        organizationId,
-        purchaseType: 'minute_pack',
-        catalogVersion: BILLING_CATALOG_VERSION,
-        integration_identifier: integrationIdentifier,
-      },
-    });
+    const session = await this.callDodo('checkoutSessions.create', () =>
+      dodo.checkoutSessions.create({
+        product_cart: [{ product_id: productId, quantity: 1 }],
+        customer: { customer_id: customerId },
+        // Cards only, deliberately, and for the reason the Stripe session pinned
+        // `payment_method_types: ['card']`: the pack is granted from
+        // `payment.succeeded` and nothing grants it later, so a method that settles
+        // days after checkout would be paid for and never credited. A subscription
+        // is safe without this because its credit comes from the cycle event
+        // whenever the money actually clears.
+        allowed_payment_method_types: ['credit', 'debit'],
+        return_url: this.buildAppUrl(dto.successPath),
+        cancel_url: this.buildAppUrl(dto.cancelPath),
+        metadata: {
+          organizationId,
+          purchaseType: 'minute_pack',
+          catalogVersion: BILLING_CATALOG_VERSION,
+          integration_identifier: integrationIdentifier,
+        },
+      }),
+    );
     if (!session.checkout_url) {
       throw new InternalServerErrorException('Dodo Payments returned no checkout URL.');
     }
@@ -305,14 +325,17 @@ export class BillingService {
     actorUserId: string,
   ): Promise<{ url: string }> {
     this.assertDodoConfigured(DODO_PORTAL_REQUIRED_ENV);
-    if (!this.dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
+    const dodo = this.dodo;
+    if (!dodo) throw new InternalServerErrorException('Dodo Payments is not configured.');
     const customerId = await this.getOrCreateCustomer(organizationId);
     // No configuration object to pass: Dodo's portal has one feature set, owned
     // by the merchant account, so the Stripe-era STRIPE_PORTAL_CONFIGURATION_ID
     // has no equivalent and is gone from the environment.
-    const session = await this.dodo.customers.customerPortal.create(customerId, {
-      return_url: this.buildAppUrl(dto.returnPath),
-    });
+    const session = await this.callDodo('customers.customerPortal.create', () =>
+      dodo.customers.customerPortal.create(customerId, {
+        return_url: this.buildAppUrl(dto.returnPath),
+      }),
+    );
     if (!session.link) {
       throw new InternalServerErrorException('Dodo Payments returned no portal URL.');
     }
@@ -346,6 +369,35 @@ export class BillingService {
   private assertDodoConfigured(required: readonly DodoEnvName[]): void {
     if (!this.isDodoConfigured(required)) {
       throw new BillingUnavailableError(CHECKOUT_UNCONFIGURED_MESSAGE);
+    }
+  }
+
+  /**
+   * Runs one Dodo SDK call and turns the provider's own 4xx into this module's
+   * "billing temporarily unavailable".
+   *
+   * A Dodo 4xx is a statement about the merchant account or the catalog —
+   * `MERCHANT_NOT_LIVE` (observed during the live cutover, when it surfaced as an
+   * unhandled 500), an archived product, an invalid discount — not a fault in this
+   * process. Reported as a 500 it pages the wrong team, tells the customer
+   * nothing, and looks identical to a crash mid-payment. It is the same outcome as
+   * an unconfigured deployment, so it reuses {@link BillingUnavailableError} and
+   * the same message, with the Dodo code appended so support can act on it.
+   *
+   * 5xx and connection failures are deliberately left to propagate unchanged:
+   * those are transient, the SDK has already retried them, and a 503 would tell
+   * the customer to come back later for something that may succeed on the next
+   * click. `APIConnectionError` carries an undefined status, which this skips.
+   */
+  private async callDodo<T>(operation: string, call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      const status = err instanceof APIError ? err.status : undefined;
+      if (status === undefined || status < 400 || status >= 500) throw err;
+      const code = dodoErrorCode(err instanceof APIError ? err.error : undefined);
+      this.logger.error(`Dodo ${operation} failed: HTTP ${status} ${code}`);
+      throw new BillingUnavailableError(`${CHECKOUT_UNCONFIGURED_MESSAGE} (Dodo: ${code})`);
     }
   }
 
@@ -423,11 +475,7 @@ export class BillingService {
       currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null,
       cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
       trialEnd: sub.trialEnd?.toISOString() ?? null,
-      // `SubscriptionDtoSchema` still names this field `stripeCustomerId`; it now
-      // carries the Dodo customer id. The DTO lives in @voiceforge/shared and the
-      // web app reads it, so the wire contract is deliberately left alone by this
-      // change — renaming it is a separate, coordinated edit.
-      stripeCustomerId: sub.dodoCustomerId,
+      dodoCustomerId: sub.dodoCustomerId,
     };
     await this.cache?.set(cacheKey, dto, SUBSCRIPTION_CACHE_TTL_SECONDS);
     return dto;

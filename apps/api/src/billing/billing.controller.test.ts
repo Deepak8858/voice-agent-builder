@@ -17,7 +17,7 @@ function makeController() {
     createCheckoutSession: vi.fn(async () => ({ url: 'https://checkout.test' })),
     createTopUpCheckoutSession: vi.fn(async () => ({ url: 'https://topup.test' })),
     createPortalSession: vi.fn(async () => ({ url: 'https://portal.test' })),
-    getSubscription: vi.fn(async () => ({ stripeCustomerId: 'cus_123' })),
+    getSubscription: vi.fn(async () => ({ dodoCustomerId: 'cus_123' })),
     getInvoices: vi.fn(async () => ({ items: [] })),
     getBillingSummary: vi.fn(async () => ({ organizationId: 'org-1' })),
   };
@@ -257,7 +257,7 @@ describe('BillingController client-workspace escalation', () => {
     });
 
     await expect(controller.getSubscription('ws-agency')).resolves.toEqual({
-      stripeCustomerId: 'cus_123',
+      dodoCustomerId: 'cus_123',
     });
     expect(billing.getSubscription).toHaveBeenCalledWith('org-agency');
   });

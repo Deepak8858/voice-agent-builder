@@ -155,7 +155,7 @@ export const SubscriptionDtoSchema = z.object({
   currentPeriodEnd: z.string().datetime().nullable(),
   cancelAtPeriodEnd: z.boolean(),
   trialEnd: z.string().datetime().nullable(),
-  stripeCustomerId: z.string().nullable(),
+  dodoCustomerId: z.string().nullable(),
 });
 export type SubscriptionDto = z.infer<typeof SubscriptionDtoSchema>;
 

@@ -159,9 +159,7 @@ export class BillingController {
   ): Promise<{ items: unknown[] }> {
     const orgId = await this.getOrgId(workspaceId);
     const sub = await this.billing.getSubscription(orgId);
-    // `stripeCustomerId` is the (unchanged) DTO field name; it holds the Dodo
-    // customer id. See the note in BillingService.getSubscription.
-    if (!sub?.stripeCustomerId) return { items: [] };
-    return this.billing.getInvoices(sub.stripeCustomerId);
+    if (!sub?.dodoCustomerId) return { items: [] };
+    return this.billing.getInvoices(sub.dodoCustomerId);
   }
 }
