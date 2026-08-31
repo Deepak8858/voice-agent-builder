@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
+import Script from 'next/script';
 import { DM_Sans, DM_Serif_Display, IBM_Plex_Mono } from 'next/font/google';
 import { Toaster } from 'sonner';
 import { ClientChrome } from '@/components/layout/client-chrome';
@@ -88,6 +89,26 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <main className="flex flex-1 flex-col">{children}</main>
         </QueryProvider>
         <Toaster richColors position="top-right" />
+        {/* Google Analytics. The measurement id is public by design. Rendered
+            only in production so local and CI sessions never pollute the
+            property; next/script injects both tags after hydration, which the
+            CSP's 'strict-dynamic' trusts (its origins are also named in
+            content-security-policy.ts for CSP2 browsers). Keep it a single
+            gtag — Google warns against loading more than one per page. */}
+        {process.env.NODE_ENV === 'production' ? (
+          <>
+            <Script
+              src="https://www.googletagmanager.com/gtag/js?id=G-XPNTRFSGLV"
+              strategy="afterInteractive"
+            />
+            <Script id="google-analytics" strategy="afterInteractive">
+              {`window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-XPNTRFSGLV');`}
+            </Script>
+          </>
+        ) : null}
       </body>
     </html>
   );

@@ -201,8 +201,8 @@ export default function PrivacyPolicyPage() {
         <p>
           We use cookies and equivalent local storage that are necessary to sign you in, keep your
           session, and remember interface preferences. We also use privacy-respecting product
-          analytics to understand which features are used. We do not run third-party advertising
-          trackers.
+          analytics to understand which features are used, and Google Analytics to measure site
+          traffic, which sets its own cookies. We do not run third-party advertising trackers.
         </p>
       </Section>
 

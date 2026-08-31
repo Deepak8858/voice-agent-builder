@@ -45,16 +45,27 @@ export function buildContentSecurityPolicy(nonce: string): string {
   const livekitOrigins = livekitConnectOrigins(
     process.env.NEXT_PUBLIC_LIVEKIT_URL ?? process.env.LIVEKIT_URL,
   );
+  // Google Analytics (gtag.js, loaded by next/script in the root layout).
+  // Unlike PostHog it is not proxied — gtag has no supported same-origin mode —
+  // so its origins are named here, exactly the set Google documents for CSP:
+  // the loader host in script-src (a CSP2 fallback; under 'strict-dynamic' the
+  // nonce'd Next runtime already trusts the injected script), and the beacon
+  // hosts in connect-src/img-src (GA falls back to image pings when fetch is
+  // unavailable, and uses region subdomains, hence the wildcards).
+  const gtagScript = 'https://*.googletagmanager.com';
+  const gtagBeacons = 'https://*.google-analytics.com https://*.analytics.google.com';
 
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-eval' ${monacoCdn}`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-eval' ${monacoCdn} ${gtagScript}`,
     "script-src-attr 'none'",
     `style-src 'self' 'unsafe-inline' ${monacoCdn}`,
-    `img-src 'self' data: blob: ${supabaseOrigins}`,
+    `img-src 'self' data: blob: ${supabaseOrigins} ${gtagBeacons} ${gtagScript}`,
     `font-src 'self' data: ${monacoCdn}`,
     `media-src 'self' blob:`,
-    [`connect-src 'self'`, apiUrl, supabaseOrigins, livekitOrigins].filter(Boolean).join(' '),
+    [`connect-src 'self'`, apiUrl, supabaseOrigins, livekitOrigins, gtagBeacons, gtagScript]
+      .filter(Boolean)
+      .join(' '),
     `frame-src 'self' https://checkout.dodopayments.com ${supabaseOrigins}`,
     `worker-src 'self' blob: ${monacoCdn}`,
     "object-src 'none'",

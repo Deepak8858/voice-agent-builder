@@ -76,18 +76,30 @@ describe('next.config security headers', () => {
     ]);
   });
 
-  it('connects only to self, the configured API, and Supabase', () => {
+  it('connects only to self, the configured API, Supabase, and GA beacons', () => {
     process.env.NEXT_PUBLIC_API_URL = 'https://api.voiceforge.example';
     const directives = cspDirectives();
 
     // No payment-provider origin: hosted Checkout and the customer portal are
     // top-level redirects, so the browser never calls Dodo Payments directly.
+    // Google Analytics is the one third party gtag cannot reach through a
+    // same-origin proxy, so its documented beacon hosts are named explicitly.
     expect(directives.get('connect-src')).toEqual([
       "'self'",
       'https://api.voiceforge.example',
       'https://*.supabase.co',
       'https://*.supabase.com',
+      'https://*.google-analytics.com',
+      'https://*.analytics.google.com',
+      'https://*.googletagmanager.com',
     ]);
+  });
+
+  it('allows the gtag loader host for CSP2 browsers', () => {
+    const directives = cspDirectives();
+
+    expect(directives.get('script-src')).toContain('https://*.googletagmanager.com');
+    expect(directives.get('img-src')).toContain('https://*.google-analytics.com');
   });
 
   it('proxies PostHog through the same origin instead of widening connect-src', () => {
