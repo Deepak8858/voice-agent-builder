@@ -72,7 +72,11 @@ export class SettingsController {
     if (!workspaceId) throw new ForbiddenError('No active workspace for this session.');
 
     const days = body.retentionDays;
-    await this.retention.updateWorkspaceRetention(workspaceId, days, user.id);
-    return { success: true, retentionDays: days };
+    const restampedCalls = await this.retention.updateWorkspaceRetention(workspaceId, days, user.id);
+    // Surfaced because shortening is destructive: every re-stamped call whose
+    // new expires_at is already past gets deleted by the next sweep, and until
+    // now the only record of that blast radius was a server-side log line the
+    // caller never sees.
+    return { success: true, retentionDays: days, restampedCalls };
   }
 }

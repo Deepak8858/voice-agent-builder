@@ -343,11 +343,12 @@ export class RetentionService {
    * whole point of the record -- an optional parameter would let a caller write
    * an unattributed row for the most destructive setting in the product.
    */
+  /** @returns how many existing calls had `expires_at` re-stamped by the change. */
   async updateWorkspaceRetention(
     workspaceId: string,
     retentionDays: number,
     actorUserId: string,
-  ): Promise<void> {
+  ): Promise<number> {
     const clamped = Math.min(3650, Math.max(30, retentionDays));
     // Read before the write, so the audit row can say what the period *was*.
     // A retention change is only meaningful against its previous value: "set to
@@ -420,5 +421,9 @@ export class RetentionService {
     // Shortening can make rows immediately expired, so the next sweep deletes
     // them. Log the blast radius: the change is destructive and irreversible.
     this.logger.log({ workspaceId, retentionDays: clamped, restamped }, 'Workspace retention updated');
+    // Returned so the caller can be told how many existing calls the change
+    // reached — a shortened window makes those immediately sweepable, and a
+    // count only in the server log warns nobody who can still undo it.
+    return restamped;
   }
 }

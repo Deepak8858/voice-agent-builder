@@ -212,6 +212,7 @@ describe('the 429 a client actually receives', () => {
 
     let sentStatus: number | undefined;
     let sentBody: unknown;
+    const headers: Record<string, string> = {};
     const res = {
       status(code: number) {
         sentStatus = code;
@@ -219,6 +220,10 @@ describe('the 429 a client actually receives', () => {
       },
       json(body: unknown) {
         sentBody = body;
+        return res;
+      },
+      setHeader(name: string, value: string) {
+        headers[name] = value;
         return res;
       },
     };
@@ -241,6 +246,9 @@ describe('the 429 a client actually receives', () => {
         details: { retryAfterSeconds: env.RATE_LIMIT_WINDOW_SECONDS },
       },
     });
+    // The JSON hint is the convenience copy; `Retry-After` is the channel
+    // proxies and SDK backoff actually read.
+    expect(headers['Retry-After']).toBe(String(env.RATE_LIMIT_WINDOW_SECONDS));
   });
 });
 

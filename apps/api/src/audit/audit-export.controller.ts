@@ -92,7 +92,11 @@ export class AuditExportController {
     });
   }
 
-  // Regulator signed URL. Same reasoning as the export above: operator-only,
+  // Records a signed regulator report and returns its id, expiry and content
+  // hash. It used to email an external auditor a link to
+  // `/api/audit/report/:token`, which no route has ever served; serving it
+  // would take a new unauthenticated endpoint, so the report is retrieved by
+  // the operator instead. Same reasoning as the export above: operator-only,
   // so user context must be refused, not just authenticated.
   @InternalOnly()
   @Post('admin/audit/report')

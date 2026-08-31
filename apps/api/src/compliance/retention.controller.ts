@@ -18,6 +18,13 @@ export class RetentionController {
   @Post('sweep')
   @UseGuards(InternalAuthGuard)
   async sweep() {
-    return this.retention.sweepExpiredCalls();
+    // Parity with RetentionSweepWorker: an operator firing the sweep by hand
+    // expects the same coverage as the nightly run, and until this second call
+    // was added the manual path aged out no telephony webhook payloads at all —
+    // the rows the scheduled sweep exists to purge (caller phone numbers with
+    // no callId to reach them by).
+    const calls = await this.retention.sweepExpiredCalls();
+    const telephonyWebhookEventsDeleted = await this.retention.sweepStaleTelephonyWebhookEvents();
+    return { ...calls, telephonyWebhookEventsDeleted };
   }
 }

@@ -1,8 +1,9 @@
 import 'reflect-metadata';
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
 import type { PipeTransform } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
+import { env } from '../config/env';
 import { ValidationError } from '../common/errors';
 import { AuditExportController } from './audit-export.controller';
 import { AuditExportService } from './audit-export.service';
@@ -123,27 +124,77 @@ describe('audit export projection', () => {
   });
 });
 
-// S-007: the download token is the whole authorization for 72h of one
-// organization's audit log, and it was stored in the clear next to the report.
-describe('signed audit report token', () => {
-  it('stores only the digest of the token it puts in the URL', async () => {
-    const create = vi.fn(async (_args: { data: { token: string } }) => ({ id: 'report-1' }));
-    const service = new AuditExportService(
-      { auditLog: { findMany: vi.fn(async () => [row()]) }, auditReport: { create } } as never,
-      { send: vi.fn(async () => undefined) } as never,
-    );
+describe('signed audit report', () => {
+  /** Enough rows that the report exceeds the 10k chars `content` used to keep. */
+  const rows = Array.from({ length: 200 }, (_, i) => ({ ...row(), id: `log-${i}` }));
 
-    const { url } = await service.generateSignedReport(
-      'org-1',
-      new Date('2026-08-01T00:00:00.000Z'),
-      new Date('2026-08-29T00:00:00.000Z'),
-      'auditor@example.com',
+  function makeReportService() {
+    const findMany = vi.fn(async (_args: { select: Record<string, true> }) => rows);
+    const create = vi.fn(
+      async (_args: { data: { token: string; content: string; contentHash: string } }) => ({
+        id: 'report-1',
+      }),
     );
+    const send = vi.fn(async () => undefined);
+    return {
+      findMany,
+      create,
+      send,
+      report: () =>
+        new AuditExportService(
+          { auditLog: { findMany }, auditReport: { create } } as never,
+          { send } as never,
+        ).generateSignedReport(
+          'org-1',
+          new Date('2026-08-01T00:00:00.000Z'),
+          new Date('2026-08-29T00:00:00.000Z'),
+          'auditor@example.com',
+        ),
+    };
+  }
 
-    const token = url.split('/').pop()!;
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    const stored = create.mock.calls[0][0].data.token;
-    expect(stored).not.toBe(token);
-    expect(stored).toBe(createHash('sha256').update(token).digest('hex'));
+  // The report is handed to an EXTERNAL auditor, and it read whole rows.
+  it('reads the same projection as the export', async () => {
+    const { report, findMany } = makeReportService();
+
+    await report();
+
+    const { select } = findMany.mock.calls[0][0];
+    expect(select).toEqual(EXPORT_SELECT);
+    for (const field of ['metadata', 'ipAddress', 'userAgent']) {
+      expect(select).not.toHaveProperty(field);
+    }
+  });
+
+  // contentHash covered the untruncated JSON while content was sliced to 10k,
+  // so any report over 10KB stored a signature nothing could re-verify.
+  it('stores content that verifies against the stored hash', async () => {
+    const { report, create } = makeReportService();
+
+    const { hash } = await report();
+
+    const { content, contentHash } = create.mock.calls[0][0].data;
+    expect(content.length).toBeGreaterThan(10000);
+    expect(content).toBe(JSON.stringify(rows));
+    expect(contentHash).toBe(hash);
+    expect(createHmac('sha256', env.ENCRYPTION_KEY ?? 'dev-secret-key').update(content).digest('hex')).toBe(hash);
+  });
+
+  // S-007: the token is a bearer credential for 72h of one org's audit log, so
+  // the row stores only a digest. Nothing serves /api/audit/report/:token, so
+  // no link is issued and no auditor is emailed a guaranteed 404.
+  it('issues no download link and emails nobody', async () => {
+    const { report, create, send } = makeReportService();
+
+    const result = await report();
+
+    expect(result).toEqual({
+      reportId: 'report-1',
+      expiresAt: expect.any(Date),
+      hash: expect.any(String),
+    });
+    expect(JSON.stringify(result)).not.toMatch(/http/);
+    expect(send).not.toHaveBeenCalled();
+    expect(create.mock.calls[0][0].data.token).toMatch(/^[0-9a-f]{64}$/);
   });
 });

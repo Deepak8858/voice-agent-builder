@@ -105,6 +105,19 @@ export class HttpExceptionFilter implements ExceptionFilter {
       });
     }
 
+    // A 429 must carry the standard `Retry-After` header, not only the JSON
+    // hint: HTTP clients, proxies and SDK backoff logic read the header and
+    // never look inside `error.details`. Delay-seconds form per RFC 9110.
+    // Details survive production stripping for exactly this code (see
+    // `keepDetails`), so the header fires in production too. A missing or
+    // non-positive value emits no header rather than `Retry-After: NaN`.
+    const retryAfter = error.code === 'RATE_LIMITED' ? error.details?.retryAfterSeconds : undefined;
+    if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter > 0) {
+      // Capped at one year: delay-seconds is 1*DIGIT, and String() renders
+      // numbers >= 1e21 in exponential notation, which no real window needs.
+      res.setHeader('Retry-After', String(Math.min(Math.ceil(retryAfter), 31_536_000)));
+    }
+
     res.status(status).json({ success: false, data: null, error });
   }
 
