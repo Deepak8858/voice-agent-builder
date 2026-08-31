@@ -255,6 +255,50 @@ function makeVobizWebhookService(overrides?: { admitted?: boolean; signatureVali
   return { service, prisma, admission, audit };
 }
 
+/**
+ * A registry whose adapter reports exactly what the connection's credentials can
+ * see. `importNumbers` matches every requested number against this listing, so a
+ * test that imports has to state what the provider account actually carries.
+ */
+function registryWithInventory(
+  numbers: Array<{ providerNumberId: string; phoneNumberE164: string | null }>,
+) {
+  return {
+    adapterFor: vi.fn(() => ({
+      listPhoneNumbers: vi.fn(async () => numbers),
+    })),
+  };
+}
+
+/** A Vobiz account exposing no DIDs, so its listing falls back to a trunk. */
+const TRUNK_ONLY_INVENTORY = [{ providerNumberId: 'trunk-console-1', phoneNumberE164: null }];
+
+function makeImportPrisma(provider: 'twilio' | 'vobiz', createdAt = new Date('2026-05-29T00:00:00.000Z')) {
+  return {
+    workspace: {
+      findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+    },
+    telephonyProviderConnection: {
+      findFirst: vi.fn(async () => ({
+        id: 'connection-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        provider,
+        status: 'connected',
+      })),
+    },
+    telephonyPhoneNumber: {
+      findUnique: vi.fn(async () => null),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'number-1',
+        assignedAgentId: null,
+        createdAt,
+        ...data,
+      })),
+    },
+  };
+}
+
 function makePrisma() {
   return {
     workspace: {
@@ -1282,35 +1326,12 @@ describe('TelephonyService', () => {
   });
 
   it('keeps trunk-only Vobiz imports pending verification with the user-entered E.164 number', async () => {
-    const createdAt = new Date('2026-05-29T00:00:00.000Z');
-    const prisma = {
-      workspace: {
-        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
-      },
-      telephonyProviderConnection: {
-        findFirst: vi.fn(async () => ({
-          id: 'connection-1',
-          workspaceId: 'workspace-1',
-          organizationId: 'org-1',
-          provider: 'vobiz',
-          status: 'connected',
-        })),
-      },
-      telephonyPhoneNumber: {
-        findUnique: vi.fn(async () => null),
-        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-          id: 'number-1',
-          assignedAgentId: null,
-          createdAt,
-          ...data,
-        })),
-      },
-    };
+    const prisma = makeImportPrisma('vobiz');
     const audit = { log: vi.fn(async () => undefined) };
     const service = new TelephonyService(
       prisma as never,
       {} as never,
-      { adapterFor: vi.fn() } as never,
+      registryWithInventory(TRUNK_ONLY_INVENTORY) as never,
       {
         encryptJson: vi.fn((value: unknown) => ({
           encrypted: (value as { secret?: string }).secret,
@@ -1406,28 +1427,11 @@ describe('TelephonyService', () => {
   });
 
   it('rejects trunk-only Vobiz imports without the user-specific SIP domain', async () => {
-    const prisma = {
-      workspace: {
-        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
-      },
-      telephonyProviderConnection: {
-        findFirst: vi.fn(async () => ({
-          id: 'connection-1',
-          workspaceId: 'workspace-1',
-          organizationId: 'org-1',
-          provider: 'vobiz',
-          status: 'connected',
-        })),
-      },
-      telephonyPhoneNumber: {
-        findUnique: vi.fn(),
-        create: vi.fn(),
-      },
-    };
+    const prisma = makeImportPrisma('vobiz');
     const service = new TelephonyService(
       prisma as never,
       {} as never,
-      { adapterFor: vi.fn() } as never,
+      registryWithInventory(TRUNK_ONLY_INVENTORY) as never,
       { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
       { log: vi.fn() } as never,
       allowByoTelephony() as never,
@@ -1457,28 +1461,11 @@ describe('TelephonyService', () => {
   });
 
   it('rejects Vobiz imports without a per-number webhook secret', async () => {
-    const prisma = {
-      workspace: {
-        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
-      },
-      telephonyProviderConnection: {
-        findFirst: vi.fn(async () => ({
-          id: 'connection-1',
-          workspaceId: 'workspace-1',
-          organizationId: 'org-1',
-          provider: 'vobiz',
-          status: 'connected',
-        })),
-      },
-      telephonyPhoneNumber: {
-        findUnique: vi.fn(),
-        create: vi.fn(),
-      },
-    };
+    const prisma = makeImportPrisma('vobiz');
     const service = new TelephonyService(
       prisma as never,
       {} as never,
-      { adapterFor: vi.fn() } as never,
+      registryWithInventory(TRUNK_ONLY_INVENTORY) as never,
       { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
       { log: vi.fn() } as never,
       allowByoTelephony() as never,
@@ -1506,5 +1493,151 @@ describe('TelephonyService', () => {
     ).rejects.toThrow(/webhook secret/);
 
     expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `importNumbers` used to take `dto.numbers` on faith while holding the very
+   * credentials that prove ownership. `phoneNumberE164` is uniquely indexed, so
+   * an unchecked import lets one workspace claim any number string and deny its
+   * rightful owner a connection forever.
+   */
+  it('refuses to import a number that is not in the connection account', async () => {
+    const prisma = makeImportPrisma('twilio');
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      registryWithInventory([
+        { providerNumberId: 'PN1', phoneNumberE164: '+14155550000' },
+      ]) as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.importNumbers('workspace-1', 'user-1', {
+        connection_id: 'connection-1',
+        numbers: [{ provider_number_id: 'PN2', phone_number: '+14155559999' }],
+      }),
+    ).rejects.toThrow(/\+14155559999 is not in this provider connection's account/);
+
+    // Refused before the duplicate lookup, so the caller learns nothing about
+    // which numbers other workspaces hold.
+    expect(prisma.telephonyPhoneNumber.findUnique).not.toHaveBeenCalled();
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
+  it('imports a number the provider account carries and marks it verified', async () => {
+    const prisma = makeImportPrisma('twilio');
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      registryWithInventory([
+        { providerNumberId: 'PN1', phoneNumberE164: '+14155551234' },
+      ]) as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    const result = await service.importNumbers('workspace-1', 'user-1', {
+      connection_id: 'connection-1',
+      // The status must come from the provider listing, not from this metadata:
+      // it is client-supplied, so a squatter could otherwise label its own claim.
+      numbers: [
+        {
+          provider_number_id: 'PN1',
+          phone_number: '+14155551234',
+          metadata: { requiresPhoneNumber: true },
+        },
+      ],
+    });
+
+    expect(prisma.telephonyPhoneNumber.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ phoneNumberE164: '+14155551234', status: 'verified' }),
+      }),
+    );
+    expect(result.items[0]).toEqual(expect.objectContaining({ status: 'verified' }));
+  });
+
+  /**
+   * `pending_verification` was written by `createManualNumber` and read by
+   * nothing: assign → configure-livekit walked an unproven claim straight to
+   * `livekit_configured`. Inbound stays open on purpose — a carrier only delivers
+   * for numbers actually in its account.
+   */
+  it('refuses to assign an agent to a number that is still pending verification', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'vobiz',
+      phoneNumberE164: '+912271264217',
+      status: 'pending_verification',
+      inboundEnabled: true,
+      outboundEnabled: false,
+    } as never);
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.assignAgent('workspace-1', 'number-1', 'user-1', { agent_id: 'agent-1' }),
+    ).rejects.toMatchObject({ errorCode: 'INVALID_STATUS' });
+
+    expect(prisma.telephonyPhoneNumber.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses an outbound call from a number that is still pending verification', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'vobiz',
+      phoneNumberE164: '+912271264217',
+      status: 'pending_verification',
+      assignedAgentId: 'agent-1',
+      outboundEnabled: true,
+      livekitConfig: { outboundTrunkId: 'trunk-out-1' },
+    } as never);
+    const livekit = { createOutboundCall: vi.fn(), livekitSipHost: 'tenant.sip.livekit.cloud' };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      allowByoTelephony() as never,
+      { check: vi.fn(), attachCheckToCall: vi.fn() } as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.startOutboundCall('workspace-1', 'user-1', {
+        phone_number_id: 'number-1',
+        to_number: '+14155559876',
+      }),
+    ).rejects.toMatchObject({ errorCode: 'INVALID_STATUS' });
+
+    expect(prisma.call.create).not.toHaveBeenCalled();
+    expect(livekit.createOutboundCall).not.toHaveBeenCalled();
   });
 });

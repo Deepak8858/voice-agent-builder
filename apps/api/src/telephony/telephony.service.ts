@@ -23,7 +23,11 @@ import { LiveKitService } from '../livekit/livekit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PipelineRouterService } from '../voice/pipeline-router.service';
 import { ProviderRegistry } from './providers/provider-registry';
-import type { ConnectedPhoneNumber, NormalizedCallStatus } from './providers/provider.types';
+import type {
+  ConnectedPhoneNumber,
+  NormalizedCallStatus,
+  ProviderPhoneNumber,
+} from './providers/provider.types';
 import { TwilioProviderAdapter } from './providers/twilio.provider';
 
 type WebhookRequestContext = {
@@ -165,12 +169,7 @@ export class TelephonyService {
     const workspace = await this.workspace(workspaceId);
     await this.assertByoTelephonyAllowed(workspace.organizationId);
     const connection = await this.connection(workspaceId, connectionId);
-    const credentials = this.encryption.decryptJson<ProviderCredentials>(
-      connection.encryptedCredentials,
-    );
-    const numbers = await this.registry
-      .adapterFor(connection.provider as never)
-      .listPhoneNumbers(credentials);
+    const numbers = await this.providerInventory(connection);
 
     await this.prisma.telephonyProviderConnection.update({
       where: { id: connection.id },
@@ -200,6 +199,11 @@ export class TelephonyService {
     const workspace = await this.workspace(workspaceId);
     await this.assertByoTelephonyAllowed(workspace.organizationId);
     const connection = await this.connection(workspaceId, dto.connection_id);
+    // One listing for the whole request. The connection's credentials are the
+    // only ownership proof this API holds, and `phoneNumberE164` is uniquely
+    // indexed, so importing a number the account does not carry lets a workspace
+    // squat a string and deny its rightful owner a 409 forever.
+    const inventory = await this.providerInventory(connection);
     const created = [];
     for (const number of dto.numbers) {
       const metadata = this.objectMetadata(number.metadata);
@@ -227,6 +231,30 @@ export class TelephonyService {
           400,
         );
       }
+      // Matched by E.164 against the provider's own inventory. Checked before the
+      // duplicate lookup below so a caller importing a number it does not own
+      // learns nothing about which numbers other workspaces hold.
+      const owned = inventory.some((item) => item.phoneNumberE164 === number.phone_number);
+      // Vobiz falls back to listing trunks when the account exposes no DIDs, and
+      // a trunk carries no E.164 to match on, so the number entered against one
+      // is unverifiable here by construction. That branch keeps its previous
+      // behavior and stays `pending_verification` — which is now enforced at
+      // assign and outbound — instead of being refused outright. The trunk itself
+      // must still be in the account, and the branch is taken from the provider's
+      // response rather than the caller's `metadata`, which is client-supplied.
+      const unverifiableTrunk =
+        !owned &&
+        inventory.some(
+          (item) => item.providerNumberId === number.provider_number_id && !item.phoneNumberE164,
+        );
+      if (!owned && !unverifiableTrunk) {
+        throw new AppError(
+          'VALIDATION_ERROR',
+          `${number.phone_number} is not in this provider connection's account.`,
+          400,
+        );
+      }
+
       const existing = await this.prisma.telephonyPhoneNumber.findUnique({
         where: { phoneNumberE164: number.phone_number },
       });
@@ -248,7 +276,7 @@ export class TelephonyService {
           ...(sipTrunkDomain ? { sipTrunkDomain } : {}),
           ...this.webhookSecretMetadata(webhookSecret),
         } as Prisma.InputJsonValue,
-        status: this.importedNumberStatus(number.metadata),
+        status: owned ? 'verified' : 'pending_verification',
         lastSyncedAt: new Date(),
       };
 
@@ -282,6 +310,13 @@ export class TelephonyService {
     return { items: created.map((row) => this.phoneNumberDto(row)) };
   }
 
+  /**
+   * Records a number the caller says it controls, with no connection to check it
+   * against, so the row lands `pending_verification` and is refused at assign,
+   * configure-livekit, and outbound until an import proves it (see
+   * `assertNumberVerified` and `importNumbers`). Nothing here moves it out of
+   * that state: a manual row carries no credentials this API can query.
+   */
   async createManualNumber(workspaceId: string, actorUserId: string, dto: ManualPhoneNumberDto) {
     const workspace = await this.workspace(workspaceId);
     await this.assertByoTelephonyAllowed(workspace.organizationId);
@@ -356,6 +391,7 @@ export class TelephonyService {
   ) {
     const number = await this.number(workspaceId, numberId);
     await this.assertByoTelephonyAllowed(number.organizationId);
+    this.assertNumberVerified(number);
     if (dto.agent_id) {
       await this.agent(workspaceId, dto.agent_id);
     }
@@ -385,6 +421,7 @@ export class TelephonyService {
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     await this.assertByoTelephonyAllowed(number.organizationId);
+    this.assertNumberVerified(number);
     if (!number.assignedAgentId) {
       throw new AppError('VALIDATION_ERROR', 'Assign an agent before configuring LiveKit.', 400);
     }
@@ -534,6 +571,7 @@ export class TelephonyService {
       include: { livekitConfig: true },
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
+    this.assertNumberVerified(number);
     if (!number.assignedAgentId || !number.livekitConfig?.outboundTrunkId) {
       throw new AppError(
         'VALIDATION_ERROR',
@@ -1324,6 +1362,43 @@ export class TelephonyService {
     }
   }
 
+  /** The numbers (or, for a DID-less Vobiz account, trunks) this connection's own credentials can see. */
+  private async providerInventory(connection: {
+    provider: string;
+    encryptedCredentials: unknown;
+  }): Promise<ProviderPhoneNumber[]> {
+    const credentials = this.encryption.decryptJson<ProviderCredentials>(
+      connection.encryptedCredentials,
+    );
+    return this.registry.adapterFor(connection.provider as never).listPhoneNumbers(credentials);
+  }
+
+  /**
+   * Refuses a number whose ownership was never proven against a provider account.
+   *
+   * `createManualNumber` writes `pending_verification` and nothing used to read
+   * it: assign → configure-livekit walked a squatted row straight to
+   * `livekit_configured`. Both mutations are gated here, not just assign, because
+   * a row assigned before this gate existed would otherwise still be launderable
+   * through configure. Outbound placement is gated too, so a pre-existing pending
+   * row cannot dial.
+   *
+   * Inbound is deliberately NOT refused. A carrier only delivers webhooks for
+   * numbers actually in its account and the signature is verified against those
+   * credentials, so a squatter cannot receive calls for a number it does not
+   * hold; refusing inbound here would only drop the legitimate owner's calls
+   * while they are mid-verification.
+   */
+  private assertNumberVerified(number: { status: string; phoneNumberE164: string }): void {
+    if (number.status !== 'pending_verification') return;
+    throw new AppError(
+      'INVALID_STATUS',
+      `${number.phoneNumberE164} has not been verified against a provider account. ` +
+        'Connect the provider, sync its numbers, and import this one before using it.',
+      409,
+    );
+  }
+
   private async connection(workspaceId: string, connectionId: string) {
     const connection = await this.prisma.telephonyProviderConnection.findFirst({
       where: { id: connectionId, workspaceId, status: { not: 'disconnected' } },
@@ -1580,13 +1655,6 @@ export class TelephonyService {
       );
     }
     return domain.toLowerCase();
-  }
-
-  private importedNumberStatus(metadata: Record<string, unknown> | undefined): string {
-    if (metadata?.requiresPhoneNumber === true || metadata?.phoneNumberSource === 'manual_import') {
-      return 'pending_verification';
-    }
-    return 'verified';
   }
 
   private statusMap(status: string): string {
