@@ -104,6 +104,26 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Script id="google-analytics" strategy="afterInteractive">
               {`window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
+// Consent Mode v2. No ads product is in use, so every ad signal is denied
+// everywhere. Analytics cookies are denied by default in the jurisdictions
+// that require opt-in consent (EEA + UK + CH) — GA then falls back to
+// cookieless aggregate pings there — and granted elsewhere. Region-scoped
+// defaults take precedence over the general one, and both must be set
+// before gtag('js'). If a consent banner ever ships, it flips these with
+// gtag('consent','update',...) instead of adding a second tag.
+gtag('consent', 'default', {
+  ad_storage: 'denied',
+  ad_user_data: 'denied',
+  ad_personalization: 'denied',
+  analytics_storage: 'granted'
+});
+gtag('consent', 'default', {
+  ad_storage: 'denied',
+  ad_user_data: 'denied',
+  ad_personalization: 'denied',
+  analytics_storage: 'denied',
+  region: ['AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE','IS','LI','NO','GB','CH']
+});
 gtag('js', new Date());
 gtag('config', 'G-XPNTRFSGLV');`}
             </Script>

@@ -202,7 +202,9 @@ export default function PrivacyPolicyPage() {
           We use cookies and equivalent local storage that are necessary to sign you in, keep your
           session, and remember interface preferences. We also use privacy-respecting product
           analytics to understand which features are used, and Google Analytics to measure site
-          traffic, which sets its own cookies. We do not run third-party advertising trackers.
+          traffic, which sets its own cookies. In regions that require opt-in consent (including the
+          EEA, UK and Switzerland), Google Analytics cookies are disabled by default and only
+          aggregate, cookieless measurement occurs. We do not run third-party advertising trackers.
         </p>
       </Section>
 
