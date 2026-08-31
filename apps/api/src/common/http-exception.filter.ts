@@ -113,7 +113,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // non-positive value emits no header rather than `Retry-After: NaN`.
     const retryAfter = error.code === 'RATE_LIMITED' ? error.details?.retryAfterSeconds : undefined;
     if (typeof retryAfter === 'number' && Number.isFinite(retryAfter) && retryAfter > 0) {
-      res.setHeader('Retry-After', String(Math.ceil(retryAfter)));
+      // Capped at one year: delay-seconds is 1*DIGIT, and String() renders
+      // numbers >= 1e21 in exponential notation, which no real window needs.
+      res.setHeader('Retry-After', String(Math.min(Math.ceil(retryAfter), 31_536_000)));
     }
 
     res.status(status).json({ success: false, data: null, error });

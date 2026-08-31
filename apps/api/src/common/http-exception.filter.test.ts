@@ -309,6 +309,20 @@ describe('HttpExceptionFilter Retry-After header', () => {
     expect(headers['Retry-After']).toBe('2');
   });
 
+  it('caps an absurd wait so the header stays decimal digits, never exponential', async () => {
+    // Number.MAX_VALUE passes the positive-finite check, and String() renders
+    // anything >= 1e21 as exponential notation, which violates the RFC 9110
+    // delay-seconds grammar (1*DIGIT).
+    const HttpExceptionFilter = await loadFilter(false);
+    const filter = new HttpExceptionFilter(makePosthog() as never);
+    const { host, headers } = makeHost();
+
+    filter.catch(rateLimited({ retryAfterSeconds: Number.MAX_VALUE }), host);
+
+    expect(headers['Retry-After']).toBe('31536000');
+    expect(headers['Retry-After']).toMatch(/^\d+$/);
+  });
+
   it('emits no header when retryAfterSeconds is missing or not a positive number', async () => {
     const HttpExceptionFilter = await loadFilter(false);
     const filter = new HttpExceptionFilter(makePosthog() as never);
