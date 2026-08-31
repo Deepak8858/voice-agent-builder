@@ -30,13 +30,16 @@ plan, not two.
 - **Enterprise** — sales-assisted, from `$999` / month. Product id goes in
   `DODO_ENTERPRISE_PRODUCT_ID`. Enterprise is deliberately excluded from
   self-serve checkout (`isCheckoutPlan` in the catalog returns false for it), so
-  this product is only used for contracts created by sales — but the id is still
-  required, because the webhook plan-inferrer recognises such a subscription by
-  product id alone.
+  this product is only used for contracts created by sales. Its id gates no
+  checkout flow (starter/growth checkout works without it), but the webhook
+  plan-inferrer recognises a sales-assisted subscription by product id alone and
+  the deploy gate requires it on a fully live host — without it such a
+  subscription is audited as `billing.subscription_product_unrecognized` and
+  stays on its previous plan.
 
-Free has no Dodo product. Free grants one lifetime browser test of 180 seconds and
-no PSTN access; it is not a recurring entitlement and must never be provisioned by
-a Dodo object.
+Free has no Dodo product. Free's 10 included minutes are a *recurring monthly*
+grant on the in-house standard pipeline only (no PSTN access), provisioned by the
+free-credit worker on its schedule — never by a Dodo object.
 
 ### 1.2 One-time product for the prepaid minute pack
 
@@ -83,8 +86,9 @@ these events — this is the set the dispatcher acts on, and
 - `subscription.expired`
 - `subscription.failed`
 
-Dodo has no invoice object and no checkout-session object: a one-time pack is
-granted from `payment.succeeded`, and recurring included minutes from
+This integration consumes no invoice or checkout-session webhooks (Dodo offers
+those APIs; the webhook flow here does not use them): a one-time pack is granted
+from `payment.succeeded`, and recurring included minutes from
 `subscription.renewed`.
 
 `dispute.opened` is deliberately **not** in that list. Credit is reversed only when
@@ -492,8 +496,13 @@ Then confirm, in order:
    `[BillingReconciliation] Repairs scheduled` with the configured cron and batch
    size at startup. If registration failed after retries, the log says the repair
    will not run until the API restarts successfully; treat that as a failed release.
-4. One test checkout in Dodo `test_mode` reaches the return page, and the plan
-   only activates after the webhook is processed.
+4. Checkout verification, split by environment because production refuses
+   `test_mode` at boot: run the full `test_mode` checkout (return page reached,
+   plan activates only after the webhook is processed) against a non-production
+   deployment *before* the release; on production itself, one **live-mode**
+   minute-pack checkout with a real card, then refund it from the Dodo dashboard
+   (the ~$1 refund fee is the cost of the smoke test) and confirm the refund
+   webhook reverses the credit.
 5. `/pricing` states the current catalog prices and included minutes, and makes no
    claim of unlimited usage, rollover, free inbound calls, a Starter free trial,
    HIPAA readiness, an SLA, or multi-region deployment. `apps/web/lib/billing-copy.test.ts`

@@ -465,11 +465,21 @@ describe('env validation', () => {
    * failure no boot or health check would surface.
    */
   describe('configured Dodo Checkout requires a reachable public URL', () => {
+    // Production-shaped: the URL guard is production-only now (a developer
+    // running test-mode checkout locally keeps the localhost default), so the
+    // reject cases must run as production, which drags in everything a
+    // production boot requires.
     const configuredBase = {
-      NODE_ENV: 'development',
+      NODE_ENV: 'production',
       REDIS_URL: 'redis://localhost:6379',
-      JWT_SECRET: 'development-jwt-secret-with-32-chars',
+      JWT_SECRET: 'production-jwt-secret-with-32-chars',
+      ALLOWED_ORIGINS: 'https://app.voiceforge.example',
+      VOICE_WEBHOOK_SECRET: 'production-webhook-secret',
+      VOICE_PROVIDER: 'openai-realtime',
+      LLM_BASE_URL: 'https://llm.voiceforge.example',
+      SUPABASE_SERVICE_ROLE_KEY: 'production-service-role-key',
       DODO_PAYMENTS_API_KEY: 'configured-test-value',
+      DODO_PAYMENTS_ENVIRONMENT: 'live_mode',
       DODO_WEBHOOK_SECRET: 'whsec_configured',
       DODO_STARTER_PRODUCT_ID: 'pdt_starter',
       DODO_GROWTH_PRODUCT_ID: 'pdt_growth',
@@ -499,6 +509,40 @@ describe('env validation', () => {
 
       const mod = await import('./env');
       expect(mod.env.WEB_BASE_URL).toBe('https://incfrog.ai');
+    });
+
+    /**
+     * Outside production the guard steps aside for the localhost default: a
+     * developer exercising test-mode checkout locally is exactly who holds a
+     * fully-configured Dodo env with a localhost WEB_BASE_URL, and Dodo will
+     * happily redirect a test session back to it.
+     */
+    it('allows the localhost default outside production for test-mode checkout', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, configuredBase, {
+        NODE_ENV: 'development',
+        DODO_PAYMENTS_ENVIRONMENT: 'test_mode',
+      });
+
+      const mod = await import('./env');
+      expect(mod.env.WEB_BASE_URL).toBe('http://localhost:3000');
+    });
+
+    /**
+     * The symmetric mode refusal: live_mode outside production means a staging
+     * or dev deployment that inherited a production env file would charge real
+     * cards in the live Dodo account.
+     */
+    it('refuses live_mode outside production', async () => {
+      vi.resetModules();
+      restoreEnv();
+      Object.assign(process.env, configuredBase, {
+        NODE_ENV: 'development',
+        WEB_BASE_URL: 'https://staging.voiceforge.example',
+      });
+
+      await expect(import('./env')).rejects.toThrow(/DODO_PAYMENTS_ENVIRONMENT/);
     });
 
     /**

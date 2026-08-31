@@ -46,7 +46,7 @@ export interface OrganizationFacts {
   status: string;
   createdAt: Date;
   /** Ever attached to a Stripe subscription — a real, billable customer. */
-  hasStripeSubscription: boolean;
+  hasDodoSubscription: boolean;
   /** Ever bought a minute pack. */
   hasPurchasedCredits: boolean;
   /** Somebody other than the owner is a member — a real team, not a farm. */
@@ -144,7 +144,7 @@ function isCappedSlug(slug: string): boolean {
 }
 
 function sparingReason(organization: OrganizationFacts): string | null {
-  if (organization.hasStripeSubscription) return 'has a Stripe subscription';
+  if (organization.hasDodoSubscription) return 'has a Dodo subscription';
   if (organization.hasPurchasedCredits) return 'purchased minutes';
   if (organization.hasOtherMembers) return 'has members besides the owner';
   if (organization.status !== 'active') return `status is already '${organization.status}'`;
@@ -222,7 +222,7 @@ async function main() {
     name: row.name,
     status: row.status,
     createdAt: row.createdAt,
-    hasStripeSubscription: row.subscriptions.some(
+    hasDodoSubscription: row.subscriptions.some(
       (subscription) => subscription.dodoSubscriptionId !== null,
     ),
     hasPurchasedCredits: row.billingCreditBuckets.length > 0,

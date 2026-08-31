@@ -868,7 +868,10 @@ describe('DodoWebhookService production webhook handling', () => {
     const [args] = prisma.subscription.updateMany.mock.calls as unknown as [
       [{ data: Record<string, unknown> }],
     ];
-    expect(args[0].data.status).toBe('active');
+    // No `status` in the write at all: the update leaves the stored, reviewed
+    // status in place. The old assertion pinned `?? 'active'` — which funded
+    // usage on a state nobody reviewed, the exact thing the docblock forbids.
+    expect(args[0].data).not.toHaveProperty('status');
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('quantum_limbo'));
   });
 

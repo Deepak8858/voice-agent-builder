@@ -245,8 +245,8 @@ export function BillingPanel({ workspaceId }: BillingPanelProps) {
           <div className="flex-1">
             <p className="font-medium">Payment received by Dodo Payments</p>
             <p className="mt-0.5 text-xs text-emerald-800/90 dark:text-emerald-100/80">
-              Credits and plan changes appear after Dodo&apos;s webhook is verified. This page keeps
-              refreshing until the confirmed balance arrives.
+              Credits and plan changes appear after Dodo&apos;s webhook is verified — usually within
+              a few seconds. If the balance still looks unchanged, reload the page.
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => setDismissedBanner(true)}>

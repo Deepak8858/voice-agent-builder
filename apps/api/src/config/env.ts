@@ -434,6 +434,23 @@ const EnvSchema = z
           'revenue outage',
       });
     }
+    // The symmetric refusal, which the Stripe prefix check never gave us either
+    // but the mode variable makes free: live_mode outside production means a
+    // staging or dev deployment that inherited a production env file charges
+    // real cards and creates real customers in the live Dodo account.
+    if (
+      value.NODE_ENV !== 'production' &&
+      value.DODO_PAYMENTS_API_KEY &&
+      value.DODO_PAYMENTS_ENVIRONMENT === 'live_mode'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['DODO_PAYMENTS_ENVIRONMENT'],
+        message:
+          'DODO_PAYMENTS_ENVIRONMENT must not be live_mode outside production; a dev or ' +
+          'staging deployment holding a live key would charge real cards',
+      });
+    }
     // A deployment that enables the in-house pipeline without complete Azure
     // configuration would accept free-plan calls and then fail once the caller is
     // already connected. Fail at boot naming the missing variable instead.
@@ -525,13 +542,22 @@ const EnvSchema = z
       } catch {
         parsed = null;
       }
-      if (!parsed || parsed.protocol !== 'https:' || isLocalHostname(parsed.hostname)) {
+      // Same production/development split as the GOOGLE_OAUTH_REDIRECT_URI guard
+      // above: production demands a non-local HTTPS origin, while a developer
+      // exercising test-mode checkout locally may keep the localhost default —
+      // Dodo will happily redirect a test session back to it.
+      const valid =
+        value.NODE_ENV === 'production'
+          ? parsed !== null && parsed.protocol === 'https:' && !isLocalHostname(parsed.hostname)
+          : parsed !== null &&
+            (parsed.protocol === 'https:' || isLocalHostname(parsed.hostname));
+      if (!valid) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['WEB_BASE_URL'],
           message:
             'WEB_BASE_URL must be an absolute non-local HTTPS URL when Dodo Checkout is ' +
-            'configured, because Dodo redirects customers back to it',
+            'configured in production, because Dodo redirects customers back to it',
         });
       }
     }
@@ -566,10 +592,15 @@ export const DODO_SUBSCRIPTION_REQUIRED_ENV = [
   ...DODO_PORTAL_REQUIRED_ENV,
   'DODO_STARTER_PRODUCT_ID',
   'DODO_GROWTH_PRODUCT_ID',
-  // Not a self-serve Checkout target, but the webhook plan-inferrer maps a
-  // sales-assisted enterprise subscription by product id, and without it such a
-  // subscription silently resolves to the wrong plan's limits.
-  'DODO_ENTERPRISE_PRODUCT_ID',
+  // DODO_ENTERPRISE_PRODUCT_ID is deliberately NOT here, exactly as its Stripe
+  // twin never was: self-serve checkout maps only starter and growth, so gating
+  // those flows on an enterprise product would 503 every paid upgrade for a
+  // deployment that simply has no sales-assisted product yet. The variable is
+  // still read (the webhook plan-inferrer maps a sales-assisted subscription by
+  // product id) and the deploy gate's dodo_required[] still demands it on a
+  // fully live host; when it is unset, an enterprise subscription arrives as an
+  // unrecognized product and is audited as
+  // billing.subscription_product_unrecognized rather than misfiled.
 ] as const;
 
 export const DODO_TOPUP_REQUIRED_ENV = [
@@ -577,7 +608,12 @@ export const DODO_TOPUP_REQUIRED_ENV = [
   'DODO_MINUTE_PACK_PRODUCT_ID',
 ] as const;
 
-/** The union: what a fully live deployment sets, and what the deploy gate checks. */
+/**
+ * The union: what a fully live deployment sets. The deploy gate's list is this
+ * plus DODO_ENTERPRISE_PRODUCT_ID — the gate checks host completeness for live
+ * billing, while these lists gate only the entry points that read each name, so
+ * the gate is a superset and env.test.ts asserts exactly that direction.
+ */
 export const DODO_CHECKOUT_REQUIRED_ENV = [
   ...DODO_SUBSCRIPTION_REQUIRED_ENV,
   'DODO_MINUTE_PACK_PRODUCT_ID',

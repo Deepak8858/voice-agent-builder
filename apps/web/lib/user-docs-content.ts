@@ -409,7 +409,7 @@ export const dashboardDocumentation: DashboardDocGroup[] = [
           'Open the customer portal for paid plans.',
         ],
         notes: [
-          'Demo billing mode disables live checkout and portal actions while retaining trial limits.',
+          'Demo billing mode disables live checkout and portal actions while retaining Free-plan limits.',
           'Checkout success and cancel banners appear after returning from Dodo Payments.',
           'Invoices show when live billing data is available.',
         ],

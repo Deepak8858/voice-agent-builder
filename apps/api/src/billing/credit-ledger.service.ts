@@ -2385,7 +2385,7 @@ export class CreditLedgerService {
     paymentId: string,
     consumedOrReservedSeconds: number,
   ): string {
-    return `Purchased credit refund for checkout ${paymentId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`;
+    return `Purchased credit refund for payment ${paymentId} could not reverse ${consumedOrReservedSeconds} consumed or reserved seconds; manual review required.`;
   }
 
   private purchasedReversalOperation(

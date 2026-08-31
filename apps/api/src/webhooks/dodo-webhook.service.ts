@@ -627,7 +627,14 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
       dodoMetadata: asRecord(data['metadata']) as Prisma.InputJsonValue,
       plan,
       catalogVersion: BILLING_CATALOG_VERSION,
-      status: this.localStatus(data['status']) ?? 'active',
+      // Spread, not `?? 'active'`: localStatus's null contract is "leave the
+      // stored status untouched", and defaulting an unreviewed provider status
+      // to active would fund usage on it. A brand-new row was created
+      // 'incomplete' by linkSubscription, which PAID_ACCESS_STATUSES excludes,
+      // so the omission fails closed either way.
+      ...(this.localStatus(data['status']) !== null
+        ? { status: this.localStatus(data['status'])! }
+        : {}),
       cancelAtPeriodEnd: data['cancel_at_next_billing_date'] === true,
       ...(periodStart ? { currentPeriodStart: periodStart } : {}),
       ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}),
@@ -826,7 +833,11 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
     const { organizationId } = await this.resolveSubscription(customerId, subscriptionId);
     const applied = await this.applySubscriptionState(organizationId, event.created, {
       dodoSubscriptionId: subscriptionId,
-      status: this.localStatus(data['status']) ?? 'active',
+      // Same null contract as handleSubscriptionCycle: an unmapped provider
+      // status leaves the stored, reviewed status in place instead of guessing.
+      ...(this.localStatus(data['status']) !== null
+        ? { status: this.localStatus(data['status'])! }
+        : {}),
       cancelAtPeriodEnd: data['cancel_at_next_billing_date'] === true,
       ...(periodStart ? { currentPeriodStart: periodStart } : {}),
       ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}),

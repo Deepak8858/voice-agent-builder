@@ -99,8 +99,13 @@ product. The three entry points fail independently, each on its own list in
 `apps/api/src/config/env.ts`, because one unset product ID used to 503 all three:
 
 - portal: `DODO_PAYMENTS_API_KEY`, `DODO_WEBHOOK_SECRET`
-- subscription checkout: those two plus `DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`, `DODO_ENTERPRISE_PRODUCT_ID`
+- subscription checkout: those two plus `DODO_STARTER_PRODUCT_ID`, `DODO_GROWTH_PRODUCT_ID`
 - minute-pack top-up: those two plus `DODO_MINUTE_PACK_PRODUCT_ID`
+
+`DODO_ENTERPRISE_PRODUCT_ID` is on none of the lists: enterprise has no checkout
+path, so gating starter/growth checkout on it would 503 every paid upgrade for a
+deployment with no sales-assisted product yet. It is still read by the webhook
+plan-inferrer and still required by the deploy gate on a fully live host.
 
 `DODO_PAYMENTS_ENVIRONMENT` (`test_mode` | `live_mode`) is on none of those lists
 because it has a schema default of `test_mode`. It is checked separately: with a

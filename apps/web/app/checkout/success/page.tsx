@@ -85,11 +85,14 @@ function CheckoutSuccessInner() {
   }, [workspaceId, call]);
 
   const headline = useMemo(() => {
+    // Only the observed active-subscription state may claim success; a timeout
+    // proves nothing about the payment (delayed webhook, failed charge, or a
+    // subscription that never activated all land here).
     if (error) return 'Something went wrong';
     if (pending) return 'Activating your plan';
-    if (timedOut) return 'Payment received — activation in progress';
+    if (timedOut) return 'Activation still in progress';
     if (subscription && isPaidPlan(subscription.plan)) return `You're on the ${subscription.plan} plan`;
-    return 'Payment received';
+    return 'Checkout complete';
   }, [error, pending, timedOut, subscription]);
 
   return (
@@ -107,8 +110,9 @@ function CheckoutSuccessInner() {
             </p>
           ) : timedOut ? (
             <p className="text-sm text-muted-foreground">
-              Dodo Payments confirmed your payment but activation hasn’t finished yet. Refresh in a
-              minute or open the billing page to see the latest status.
+              Activation is taking longer than expected. The subscription wasn’t active yet when we
+              last checked — the webhook may still be on its way, or the payment may not have
+              completed. Check the billing page for the latest status.
             </p>
           ) : error ? (
             <p className="text-sm text-destructive">{error}</p>

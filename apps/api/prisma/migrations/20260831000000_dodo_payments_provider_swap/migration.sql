@@ -87,7 +87,8 @@ SET dodo_subscription_id = NULL,
     dodo_product_id = NULL,
     dodo_metadata = NULL
 WHERE dodo_subscription_id LIKE 'sub_%'
-   OR dodo_customer_id LIKE 'cus_%';
+   OR dodo_customer_id LIKE 'cus_%'
+   OR dodo_product_id LIKE 'prod_%';
 
 UPDATE public.billing_credit_buckets
 SET dodo_payment_id = NULL
