@@ -1112,12 +1112,15 @@ describe('DodoWebhookService production webhook handling', () => {
     });
 
     /**
-     * A `payment.succeeded` is true of a fully-discounted payment and of one
-     * settled in another currency, neither of which paid for a pack at our price.
+     * A `payment.succeeded` is also true of a fully-discounted payment, which
+     * paid nothing. Currency is deliberately NOT in this refusal table: the
+     * payment object carries the BUYER's settled currency, and Dodo (a Merchant
+     * of Record) localizes at checkout, so refusing non-USD would strand every
+     * localized buyer's pack in manual review — observed live in the 2026-08-31
+     * test E2E, where a USD product's payment settled as INR.
      */
     it.each([
       ['a fully discounted payment', { total_amount: 0 }],
-      ['a payment settled in another currency', { currency: 'EUR' }],
       ['a payment with no amount at all', { total_amount: null }],
     ])('does not grant a pack for %s', async (_label, overrides) => {
       const prisma = makePrisma();
@@ -1138,6 +1141,66 @@ describe('DodoWebhookService production webhook handling', () => {
             organizationId: 'org-1',
             action: 'billing.grant_amount_review',
           }),
+        }),
+      );
+    });
+
+    /**
+     * The real payment for the E2E test subscription settled as 1155716 INR for
+     * a $99 USD product — Dodo converts and folds tax in at checkout. A pack
+     * bought the same way is paid in full and must be granted.
+     */
+    it('grants a pack settled in the buyer\'s localized currency', async () => {
+      const prisma = makePrisma();
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        makeEvent(
+          'payment.succeeded',
+          packPaymentData({ total_amount: 1155716, currency: 'INR' }),
+        ),
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantPurchasedCredits).toHaveBeenCalledTimes(1);
+      // The observed settlement lands in the grant's audit row, since the gate
+      // no longer pins the currency.
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            metadata: expect.objectContaining({
+              collectedAmount: 1155716,
+              collectedCurrency: 'INR',
+            }),
+          }),
+        }),
+      );
+    });
+
+    /**
+     * The cycle proof reads the SUBSCRIPTION object, whose currency is the
+     * product's own — non-USD there is a misconfigured product, not a localized
+     * buyer, so the equality stays.
+     */
+    it('refuses a cycle whose subscription is priced in a non-catalog currency', async () => {
+      const prisma = makePrisma();
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(
+        prisma,
+        makeEvent('subscription.renewed', subscriptionData({ currency: 'INR' })),
+        { creditLedger },
+      );
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.grantSubscriptionCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ action: 'billing.grant_amount_review' }),
         }),
       );
     });
