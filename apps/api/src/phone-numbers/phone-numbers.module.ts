@@ -5,8 +5,8 @@ import { BillingModule } from '../billing/billing.module';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  // BillingModule for the plan gate on provision/byo. AuditModule is @Global,
-  // hence absent here.
+  // BillingModule for the plan gate on provision. AuditModule is @Global, hence
+  // absent here.
   imports: [PrismaModule, BillingModule],
   controllers: [PhoneNumbersController],
   providers: [PhoneNumbersService],

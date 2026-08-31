@@ -10,8 +10,10 @@ const envState = vi.hoisted(() => ({
 vi.mock('../config/env', () => ({ env: envState }));
 
 import { EntitlementService } from '../billing/entitlement.service';
+import * as path from 'path';
+import { findUnguardedRoutes } from '../security/route-guard-analyzer';
 import { PhoneNumbersService } from './phone-numbers.service';
-import { AddByoPhoneNumberDtoSchema, ProvisionPhoneNumberDtoSchema } from './phone-numbers.schemas';
+import { ProvisionPhoneNumberDtoSchema } from './phone-numbers.schemas';
 
 const PROVISIONED_NUMBER = {
   id: 'number-1',
@@ -77,29 +79,6 @@ describe('PhoneNumbersService plan gates', () => {
     vi.stubGlobal('fetch', fetchMock);
   });
 
-  it('refuses addByo on a plan without byo_telephony and writes no row', async () => {
-    const { service, prisma, billing } = makeService({ gateAllows: false });
-
-    await expect(
-      service.addByo('workspace-1', '+14155551234'),
-    ).rejects.toMatchObject({ errorCode: 'PLAN_LIMIT_EXCEEDED' });
-
-    expect(billing.checkFeatureGate).toHaveBeenCalledWith('org-1', 'byo_telephony');
-    expect(prisma.twilioPhoneNumber.create).not.toHaveBeenCalled();
-  });
-
-  it('reports a duplicate BYO number as a conflict rather than a 500', async () => {
-    const { service } = makeService({
-      create: async () => {
-        throw Object.assign(new Error('unique constraint'), { code: 'P2002' });
-      },
-    });
-
-    await expect(service.addByo('workspace-1', '+14155551234')).rejects.toMatchObject({
-      errorCode: 'PHONE_NUMBER_ALREADY_CONNECTED',
-    });
-  });
-
   it('refuses provision on an unpaid plan before any Twilio call is made', async () => {
     const { service, billing } = makeService({ gateAllows: false });
 
@@ -162,20 +141,6 @@ describe('PhoneNumbersService plan gates', () => {
     expect(prisma.twilioPhoneNumber.count).toHaveBeenCalledWith({
       where: { workspace: { organizationId: 'org-1' } },
     });
-  });
-
-  it('caps addByo against the same quota, so BYO cannot outrun the plan', async () => {
-    // BYO spends no platform money, but registration does not prove ownership
-    // and `phoneNumber` is uniquely indexed, so an uncapped addByo lets one
-    // workspace permanently squat unbounded numbers it does not own.
-    const { service, prisma } = makeService({ plan: 'starter', numberCount: 2 });
-
-    await expect(service.addByo('workspace-1', '+14155551234')).rejects.toMatchObject({
-      errorCode: 'PLAN_LIMIT_EXCEEDED',
-      details: expect.objectContaining({ reason: 'phone_number_limit_reached' }),
-    });
-
-    expect(prisma.twilioPhoneNumber.create).not.toHaveBeenCalled();
   });
 
   it('hands a purchased number back to Twilio when the local row cannot be written', async () => {
@@ -259,46 +224,6 @@ describe('PhoneNumbersService acquisition audit trail', () => {
     expect(audit.log).not.toHaveBeenCalled();
   });
 
-  it('logs a BYO registration', async () => {
-    const { service, audit } = makeService();
-
-    await service.addByo(
-      'workspace-1',
-      '+14155551234',
-      'PN00000000000000000000000000000001',
-      'user-1',
-    );
-
-    expect(audit.log).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: 'workspace-1',
-        actorUserId: 'user-1',
-        action: 'phone_number.byo_add',
-        resourceType: 'twilio_phone_number',
-        resourceId: 'number-1',
-        metadata: expect.objectContaining({
-          phone_number: '+14155551234',
-          twilio_sid: 'PN00000000000000000000000000000001',
-        }),
-      }),
-    );
-  });
-
-  // A rejected duplicate claim wrote no row, so it must leave no audit record
-  // either - otherwise the log implies a number this workspace does not hold.
-  it('writes no entry when a BYO claim is rejected as a duplicate', async () => {
-    const { service, audit } = makeService({
-      create: async () => {
-        throw Object.assign(new Error('unique constraint'), { code: 'P2002' });
-      },
-    });
-
-    await expect(
-      service.addByo('workspace-1', '+14155551234', undefined, 'user-1'),
-    ).rejects.toMatchObject({ errorCode: 'PHONE_NUMBER_ALREADY_CONNECTED' });
-
-    expect(audit.log).not.toHaveBeenCalled();
-  });
 });
 
 describe('PhoneNumbersService.release', () => {
@@ -346,23 +271,37 @@ describe('PhoneNumbersService.release', () => {
   });
 });
 
+describe('phone number routes', () => {
+  /**
+   * `POST phone-numbers/byo` claimed a globally unique `phoneNumber` row from a
+   * caller-supplied string that nothing tied to a carrier account, so a first
+   * mover could squat numbers it did not own and deny the rightful owner through
+   * the unique index. It had no caller in `apps/web` and is gone; the verified
+   * BYO path is `telephony/phone-numbers/import`, which matches each number
+   * against the connection's own provider inventory.
+   *
+   * Enumerated through the route-guard analyzer rather than a fresh parser:
+   * `guardCoverage: {}` makes it report every workspace-scoped route.
+   */
+  const routes = findUnguardedRoutes(path.resolve(__dirname, '..'), { guardCoverage: {} })
+    .filter((route) => route.controller === 'PhoneNumbersController')
+    .map((route) => `${route.method} ${route.route}`);
+
+  it('no longer serves the unverified BYO registration route', () => {
+    expect(routes).not.toContain('Post /workspaces/:workspaceId/phone-numbers/byo');
+  });
+
+  it('still serves the live routes, so the assertion above is not vacuous', () => {
+    expect(routes).toEqual([
+      'Patch /workspaces/:workspaceId/phone-numbers/:numberId/assign',
+      'Get /workspaces/:workspaceId/phone-numbers',
+      'Post /workspaces/:workspaceId/phone-numbers/provision',
+      'Delete /workspaces/:workspaceId/phone-numbers/:numberId',
+    ]);
+  });
+});
+
 describe('phone number request schemas', () => {
-  it('rejects a phone number that is not E.164', () => {
-    expect(AddByoPhoneNumberDtoSchema.safeParse({ phone_number: '4155551234' }).success).toBe(false);
-    expect(AddByoPhoneNumberDtoSchema.safeParse({ phone_number: '+14155551234' }).success).toBe(
-      true,
-    );
-  });
-
-  it('rejects a twilio_sid that is not a PN SID', () => {
-    expect(
-      AddByoPhoneNumberDtoSchema.safeParse({
-        phone_number: '+14155551234',
-        twilio_sid: '../../Accounts/ACother/IncomingPhoneNumbers/PN1',
-      }).success,
-    ).toBe(false);
-  });
-
   it('rejects an area code carrying extra Twilio query parameters', () => {
     expect(ProvisionPhoneNumberDtoSchema.safeParse({ area_code: '415&Limit=50' }).success).toBe(
       false,

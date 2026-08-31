@@ -62,6 +62,11 @@ function makePrisma(overrides?: {
   foreignOwner?: SubscriptionRow;
   /** The bucket the reversed payment funded. */
   fundedBucket?: unknown;
+  /**
+   * `included` buckets whose cycle covers the refunded payment — the rows the
+   * `sourceId startsWith 'sub:<id>:'` + `expiresAt > paidAt` query returns.
+   */
+  cycleBuckets?: Array<{ sourceId: string }>;
   /** Rows the stuck-event sweep should find still holding a processing lease. */
   stuckEvents?: unknown[];
   /**
@@ -109,6 +114,11 @@ function makePrisma(overrides?: {
     },
     billingCreditBucket: {
       findUnique: vi.fn(async () => overrides?.fundedBucket ?? null),
+      // `take: 2` in the real query is what makes "more than one" detectable, so
+      // the stub honours it rather than returning the whole fixture.
+      findMany: vi.fn(async (input?: { take?: number }) =>
+        (overrides?.cycleBuckets ?? []).slice(0, input?.take ?? Infinity),
+      ),
     },
     subscription: {
       update: vi.fn(async () => ({ id: 'sub-local' })),
@@ -154,6 +164,13 @@ function makeService(
     cacheInvalidator?: { invalidateBillingSubscription: ReturnType<typeof vi.fn> };
     /** Replaces the SDK verifier; omit to keep the real Standard Webhooks one. */
     unwrap?: ReturnType<typeof vi.fn>;
+    /**
+     * Replaces `payments.retrieve`. Always stubbed, because the constructor builds
+     * a real client from `setEnv`'s key and an unstubbed retrieve would put a live
+     * HTTP call inside the reversal tests. The default answers "one-off payment,
+     * no subscription", which is the pre-existing behaviour for a pack refund.
+     */
+    retrievePayment?: ReturnType<typeof vi.fn>;
   },
 ) {
   const svc = new DodoWebhookService(
@@ -168,6 +185,18 @@ function makeService(
       webhooks: { unwrap: deps?.unwrap ?? vi.fn(() => event) },
     });
   }
+  Object.assign(svc as unknown as { payments: unknown }, {
+    payments: {
+      retrieve:
+        deps?.retrievePayment ??
+        vi.fn(async () => ({
+          payment_id: 'pay_pack_1',
+          subscription_id: null,
+          customer: { customer_id: 'cus_123' },
+          created_at: EVENT_AT,
+        })),
+    },
+  });
   return svc;
 }
 
@@ -1413,6 +1442,176 @@ describe('DodoWebhookService production webhook handling', () => {
           }),
         }),
       );
+    });
+
+    /**
+     * A refunded SUBSCRIPTION CYCLE. Nothing on the refund payload names the cycle
+     * and an included bucket carries no `dodo_payment_id`, so the payment is read
+     * back from Dodo for its `subscription_id` and the bucket is found by the same
+     * period join `bucketCoversPayment` uses in reconciliation.
+     */
+    function cycleRefund(overrides?: Record<string, unknown>): Record<string, unknown> {
+      return makeEvent('refund.succeeded', {
+        refund_id: 're_cycle',
+        payment_id: 'pay_cycle_1',
+        status: 'succeeded',
+        is_partial: false,
+        amount: 4900,
+        customer: { customer_id: 'cus_123' },
+        ...overrides,
+      });
+    }
+
+    const CYCLE_SOURCE_ID = `sub:sub_123:${EVENT_AT}`;
+
+    const retrievesCycle = (): ReturnType<typeof vi.fn> =>
+      vi.fn(async () => ({
+        payment_id: 'pay_cycle_1',
+        subscription_id: 'sub_123',
+        customer: { customer_id: 'cus_123' },
+        created_at: EVENT_AT,
+      }));
+
+    it('reverses a refunded subscription cycle found by retrieving the payment', async () => {
+      const prisma = makePrisma({
+        fundedBucket: null,
+        cycleBuckets: [{ sourceId: CYCLE_SOURCE_ID }],
+      });
+      const creditLedger = makeCreditLedger();
+      const retrievePayment = retrievesCycle();
+      const svc = makeService(prisma, cycleRefund(), { creditLedger, retrievePayment });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(retrievePayment).toHaveBeenCalledWith('pay_cycle_1');
+      // Organization-scoped and keyed by the cycle prefix, with the period join:
+      // the bucket whose period had not ended when the money was collected.
+      expect(prisma.billingCreditBucket.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            organizationId: 'org-1',
+            sourceType: 'included',
+            sourceId: { startsWith: 'sub:sub_123:' },
+            expiresAt: { gt: new Date(EVENT_AT) },
+          },
+          take: 10,
+        }),
+      );
+      // The bucket's `sourceId`, not the payment id: that is what the ledger's
+      // (organizationId, sourceType, sourceId) unique index is keyed by.
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith({
+        organizationId: 'org-1',
+        paymentId: CYCLE_SOURCE_ID,
+        refundId: 're_cycle',
+        sourceType: 'included',
+      });
+    });
+
+    /**
+     * The regression the review asked for: after a renewal, the LATER cycle's
+     * bucket shares the prefix and outlives the refunded payment, but its cycle
+     * started after the payment — the lower bound must exclude it so an earlier
+     * cycle's refund still resolves to exactly its own bucket instead of reading
+     * as ambiguous forever (which would acknowledge the refund and leave the
+     * refunded credit active).
+     */
+    it('still resolves an earlier cycle refund when a later renewal bucket exists', async () => {
+      const prisma = makePrisma({
+        fundedBucket: null,
+        cycleBuckets: [
+          { sourceId: CYCLE_SOURCE_ID },
+          // A month after paidAt (EVENT_AT): unexpired, same prefix, later cycle.
+          { sourceId: 'sub:sub_123:2027-02-15T00:00:00.000Z' },
+        ],
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, cycleRefund(), {
+        creditLedger,
+        retrievePayment: retrievesCycle(),
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: CYCLE_SOURCE_ID, sourceType: 'included' }),
+      );
+    });
+
+    /**
+     * Genuine ambiguity is never guessed: a bucket whose cycle starts within the
+     * grace window of the payment (the seconds-skew protection) and the payment's
+     * own bucket both qualify, and that sliver goes to a human. An `activation`
+     * key qualifies by construction and creates the same ambiguity.
+     */
+    it('records a cycle refund matching two qualifying buckets for review instead of guessing', async () => {
+      const fiveMinAfterPaidAt = '2027-01-15T00:05:00.000Z';
+      const prisma = makePrisma({
+        fundedBucket: null,
+        cycleBuckets: [
+          { sourceId: CYCLE_SOURCE_ID },
+          { sourceId: `sub:sub_123:${fiveMinAfterPaidAt}` },
+        ],
+      });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, cycleRefund(), {
+        creditLedger,
+        retrievePayment: retrievesCycle(),
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.credit_reversal_unresolved',
+            metadata: expect.objectContaining({
+              reason: 'ambiguous_cycle_bucket',
+              dodoSubscriptionId: 'sub_123',
+              coveringBuckets: 2,
+            }),
+          }),
+        }),
+      );
+    });
+
+    /**
+     * The Dodo read-back is a best-effort enrichment, never a gate on the
+     * delivery: the money already moved at Dodo, so a failed retrieve must leave
+     * the event PROCESSED with a review row, not 500-looping until Dodo gives up.
+     */
+    it('records a cycle refund for review when the payment cannot be retrieved', async () => {
+      const prisma = makePrisma({ fundedBucket: null });
+      const creditLedger = makeCreditLedger();
+      const svc = makeService(prisma, cycleRefund(), {
+        creditLedger,
+        retrievePayment: vi.fn(async () => {
+          throw new Error('503 Service Unavailable');
+        }),
+      });
+
+      const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+      expect(result).toMatchObject({ handled: true, statusCode: 200 });
+      expect(creditLedger.reversePurchasedCredits).not.toHaveBeenCalled();
+      expect(prisma.billingCreditBucket.findMany).not.toHaveBeenCalled();
+      expect(prisma.auditLog.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            action: 'billing.credit_reversal_unresolved',
+            metadata: expect.objectContaining({
+              reason: 'payment_retrieve_failed',
+              retrieveError: expect.stringContaining('503'),
+            }),
+          }),
+        }),
+      );
+      // Processed, so Dodo stops redelivering a reversal that will never resolve
+      // itself: the review row is the record now.
+      expect(prisma.dodoWebhookEvent.update).toHaveBeenCalled();
     });
 
     /**

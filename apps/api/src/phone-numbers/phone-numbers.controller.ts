@@ -7,9 +7,7 @@ import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import {
-  AddByoPhoneNumberDtoSchema,
   ProvisionPhoneNumberDtoSchema,
-  type AddByoPhoneNumberDto,
   type ProvisionPhoneNumberDto,
 } from './phone-numbers.schemas';
 
@@ -27,14 +25,12 @@ export class PhoneNumbersController {
     return { items: nums };
   }
 
-  // Both bodies are validated at the boundary rather than trusted: `area_code`
-  // is interpolated into a Twilio carrier-search URL, `phone_number` claims a
-  // globally unique row that routes inbound calls, and `twilio_sid` is
-  // interpolated into a Twilio API path on release. The DTO types are imported
-  // from the schema module, never restated - a hand-written required-property
+  // The body is validated at the boundary rather than trusted: `area_code` is
+  // interpolated into a Twilio carrier-search URL. The DTO type is imported from
+  // the schema module, never restated - a hand-written required-property
   // parameter cannot be satisfied by a zod-inferred type under the build
   // config's `strict: false`.
-  // Every route below spends money or reroutes live calls, so all four are
+  // Every route below spends money or reroutes live calls, so all three are
   // owner/admin — matching the equivalent routes on `telephony.controller.ts`.
   // `WorkspaceGuard` alone admits any member, viewers included.
   @UseGuards(RoleGuard)
@@ -52,18 +48,6 @@ export class PhoneNumbersController {
       user?.id ?? null,
     );
     return { phone_number: number };
-  }
-
-  @UseGuards(RoleGuard)
-  @RequiredRole('owner', 'admin')
-  @Post('byo')
-  async addByo(
-    @Param('workspaceId') workspaceId: string,
-    @Body(new ZodValidationPipe(AddByoPhoneNumberDtoSchema)) body: AddByoPhoneNumberDto,
-    @CurrentUser() user: SessionUser | undefined,
-  ) {
-    await this.numbers.addByo(workspaceId, body.phone_number, body.twilio_sid, user?.id ?? null);
-    return { success: true };
   }
 
   @UseGuards(RoleGuard)

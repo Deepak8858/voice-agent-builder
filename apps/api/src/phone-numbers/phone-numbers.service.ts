@@ -1,22 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { FeatureGate } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
 import { EntitlementService } from '../billing/entitlement.service';
 import { env } from '../config/env';
 import { AppError } from '../common/errors';
-import type { AddByoPhoneNumberDto, ProvisionPhoneNumberDto } from './phone-numbers.schemas';
+import type { ProvisionPhoneNumberDto } from './phone-numbers.schemas';
 
 const BILLING_UPGRADE_PATH = '/dashboard/billing';
-
-/**
- * Same wording TelephonyService.assertByoTelephonyAllowed uses, because this is
- * the same capability on a second route: a workspace refused there must be
- * refused here for the same stated reason.
- */
-const BYO_TELEPHONY_REFUSAL =
-  'BYO phone numbers and GPT Realtime calling require a paid plan. Free workspaces can use the VoiceForge voice pipeline only.';
 
 @Injectable()
 export class PhoneNumbersService {
@@ -62,34 +53,21 @@ export class PhoneNumbersService {
   }
 
   /**
-   * The whole plan gate for adding a phone number: the capability, then the
-   * count. Both write paths hand the workspace real PSTN capability - `provision`
-   * by spending money on a carrier number, `addByo` by binding a number the
-   * caller claims to own - so both go through here and neither can acquire a
-   * number the plan does not cover.
+   * The whole plan gate for `provision`, the only remaining door on this
+   * service that acquires a number: the capability, then the count.
    *
-   * The capability refusal mirrors TelephonyService.assertByoTelephonyAllowed
-   * exactly, so the upgrade modal reads the same `limitType` whichever surface
-   * refused.
+   * `managed_telephony` rather than `outbound` because the two answer different
+   * questions and the refusal's `limitType` is customer-visible: this is a
+   * recurring carrier rental on the platform's card, not permission to dial out.
    *
    * The count is second because a plan that never included telephony should hear
    * that, not "you are at 0 of 0". It is organization-wide, not per workspace,
    * because a workspace is never a quota boundary: capping per workspace caps
-   * nothing on a plan that can create more workspaces.
-   *
-   * BYO is capped too even though it spends no platform money. A BYO row is a
-   * live inbound route resolved by `phoneNumber` alone, and - as the `addByo`
-   * comment records - registration does not prove ownership, so an uncapped
-   * `addByo` lets one workspace pre-claim unbounded numbers it does not own and
-   * permanently deny the rightful owners through the unique index. One quota over
-   * both doors also means the plan's stated number of phone numbers is a number a
-   * customer can actually hold.
+   * nothing on a plan that can create more workspaces. One quota over the door
+   * also means the plan's stated number of phone numbers is a number a customer
+   * can actually hold.
    */
-  private async assertMayAddNumber(
-    workspaceId: string,
-    gate: FeatureGate,
-    message: string,
-  ): Promise<void> {
+  private async assertMayAddNumber(workspaceId: string): Promise<void> {
     if (!this.billing || !this.entitlements) {
       throw new AppError('BILLING_UNAVAILABLE', 'Plan entitlements are unavailable.', 503);
     }
@@ -97,10 +75,13 @@ export class PhoneNumbersService {
       where: { id: workspaceId },
       select: { organizationId: true },
     });
-    const allowed = await this.billing.checkFeatureGate(workspace.organizationId, gate);
+    const allowed = await this.billing.checkFeatureGate(
+      workspace.organizationId,
+      'managed_telephony',
+    );
     if (!allowed) {
-      throw new ForbiddenPlanError(message, {
-        limitType: gate,
+      throw new ForbiddenPlanError('Provisioning a phone number requires a paid plan.', {
+        limitType: 'managed_telephony',
         currentPlan: 'free',
         upgradePath: BILLING_UPGRADE_PATH,
       });
@@ -174,15 +155,8 @@ export class PhoneNumbersService {
     // Before the credential check and long before the purchase: this route buys
     // a number on VoiceForge's own Twilio account, so a plan that is not paying
     // for PSTN - or that already holds every number it is allowed - must be
-    // refused before any money leaves. `managed_telephony` rather than `outbound`
-    // because the two answer different questions and the refusal's `limitType` is
-    // customer-visible: this is a recurring carrier rental on the platform's
-    // card, not permission to dial out.
-    await this.assertMayAddNumber(
-      workspaceId,
-      'managed_telephony',
-      'Provisioning a phone number requires a paid plan.',
-    );
+    // refused before any money leaves.
+    await this.assertMayAddNumber(workspaceId);
 
     const sid = env.TWILIO_ACCOUNT_SID;
     const token = env.TWILIO_AUTH_TOKEN;
@@ -273,75 +247,6 @@ export class PhoneNumbersService {
 
     this.logger.log(`Provisioned ${purchased.phone_number} (${record.id}) for workspace ${workspaceId}`);
     return record.phoneNumber;
-  }
-
-  /**
-   * Registers a number the workspace already owns.
-   *
-   * This spends nothing, which is exactly why it went ungated: it looks like a
-   * bookkeeping write. It is in fact a second door to the paid BYO capability
-   * that TelephonyService gates, and it was open on every plan.
-   *
-   * Ownership is still not *proven*. Nothing in the request ties the number to a
-   * Twilio account this API can query, so a first mover can pre-claim a number
-   * it does not own; `phoneNumber` is uniquely indexed, so that claim then
-   * permanently denies the rightful owner (release requires membership of the
-   * holding workspace, and there is no operator override). Because the inbound
-   * webhook resolves calls by `phoneNumber` alone, inbound calls to that number
-   * would land in the squatter's workspace. Closing that needs a verification
-   * step and a place to record the pending state - see the report; it cannot be
-   * done from this method alone.
-   */
-  async addByo(
-    workspaceId: string,
-    phoneNumber: AddByoPhoneNumberDto['phone_number'],
-    twilioSid?: AddByoPhoneNumberDto['twilio_sid'],
-    actorUserId?: string | null,
-  ) {
-    await this.assertMayAddNumber(workspaceId, 'byo_telephony', BYO_TELEPHONY_REFUSAL);
-
-    let record;
-    try {
-      record = await this.prisma.twilioPhoneNumber.create({
-        data: {
-          workspaceId,
-          phoneNumber,
-          twilioSid,
-          type: 'byo',
-          status: 'active',
-          costPerMonth: 0,
-          provisionedAt: new Date(),
-        },
-      });
-    } catch (err) {
-      // Prisma reports the unique index on `phoneNumber` as P2002. Surfaced as a
-      // 409 rather than a 500, and deliberately without saying which workspace
-      // already holds the number.
-      if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002') {
-        throw new AppError(
-          'PHONE_NUMBER_ALREADY_CONNECTED',
-          'That phone number is already connected.',
-          409,
-        );
-      }
-      throw err;
-    }
-
-    // Outside the catch on purpose: a claim rejected as a duplicate must leave no
-    // record. Registering a number changes which workspace receives its inbound
-    // calls, which is the same reroute `phone_number.assign` is logged for.
-    await this.audit.log({
-      workspaceId,
-      actorUserId: actorUserId ?? null,
-      action: 'phone_number.byo_add',
-      resourceType: 'twilio_phone_number',
-      resourceId: record.id,
-      metadata: {
-        phone_number: phoneNumber,
-        twilio_sid: twilioSid ?? null,
-        agent_id: record.agentId,
-      },
-    });
   }
 
   async assignToAgent(

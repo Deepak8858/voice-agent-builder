@@ -124,6 +124,14 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
    * timestamp tolerance owned by the spec's own implementation.
    */
   private readonly webhooks: Pick<DodoPayments['webhooks'], 'unwrap'> | null;
+  /**
+   * The one read-back this service makes against the Dodo API, used by
+   * {@link resolveRefundedCycle}: a refund payload names a payment and nothing
+   * else, and only the payment object says which subscription that money funded.
+   * Derived from the same client as {@link webhooks} so a deployment can never
+   * hold one and not the other.
+   */
+  private readonly payments: Pick<DodoPayments['payments'], 'retrieve'> | null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -134,14 +142,16 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
     // Both, not either: the client refuses to construct without a bearer token,
     // and `DODO_PORTAL_REQUIRED_ENV` already requires the two together, so a
     // deployment holding one and not the other has no verifiable webhook feed.
-    this.webhooks =
+    const client =
       env.DODO_PAYMENTS_API_KEY && env.DODO_WEBHOOK_SECRET
         ? new DodoPayments({
             bearerToken: env.DODO_PAYMENTS_API_KEY,
             webhookKey: env.DODO_WEBHOOK_SECRET,
             environment: env.DODO_PAYMENTS_ENVIRONMENT,
-          }).webhooks
+          })
         : null;
+    this.webhooks = client?.webhooks ?? null;
+    this.payments = client?.payments ?? null;
   }
 
   async handleWebhook(
@@ -1074,12 +1084,10 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
    * gives up, masking real delivery failures the whole time. Those events are
    * recorded as manual-review rows and terminate.
    *
-   * A refunded *subscription cycle* lands there today: Dodo's refund payload names
-   * the payment but not the subscription or the cycle, and an included bucket is
-   * keyed by cycle rather than by payment (the subscription events carry no
-   * payment id to key it by), so nothing in the payload identifies which period
-   * was refunded. The row it writes carries the organization, which the Stripe
-   * version could not manage for a dispute.
+   * A refunded *subscription cycle* cannot be resolved from the payload at all —
+   * see {@link resolveRefundedCycle}, which reads the payment back from Dodo to
+   * find it. Whatever that learns is folded into the review row, so an
+   * unresolvable cycle refund is at least legible.
    */
   private async resolveReversalTarget(
     eventType: string,
@@ -1113,22 +1121,153 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
     // The Stripe version had two more fallbacks here — an invoice -> included
     // bucket lookup and an audit-log scan by payment intent — because a Checkout
     // session id and a PaymentIntent id could name the same money. Dodo has one
-    // payment id, `grantPurchasedCredits` always writes it onto the bucket, and it
-    // is the bucket's `sourceId` too, so the lookup above is the only one those
-    // fallbacks could ever have reached. Anything it misses genuinely has no
-    // recorded grant.
-    await this.recordUnresolvedReversal(eventType, data, paymentId, {
-      reason: 'no_recorded_grant',
-    });
+    // payment id and `grantPurchasedCredits` always writes it onto the bucket, so
+    // for a PACK the lookup above is the only one those fallbacks could have
+    // reached. An included (cycle) bucket carries no payment id at all, so it can
+    // only be found by asking Dodo what the payment funded.
+    const cycle = await this.resolveRefundedCycle(paymentId);
+    if ('target' in cycle) return cycle.target;
+
+    await this.recordUnresolvedReversal(eventType, data, paymentId, cycle.detail);
     return null;
+  }
+
+  /**
+   * The included bucket a refunded subscription cycle was granted from, or the
+   * detail of why it could not be identified.
+   *
+   * Dodo's refund and dispute payloads name a payment and nothing else, while an
+   * included bucket is keyed by cycle (`sub:<subscriptionId>:<previousBillingDate>`)
+   * with `dodo_payment_id` null — the subscription events that grant it carry no
+   * payment id — so the payment has to be read back from Dodo to learn which
+   * subscription the money belonged to. That call runs only after the signature
+   * was verified and the event claimed, and a failure degrades to the
+   * manual-review row rather than failing the delivery: the refund already
+   * happened at Dodo, and a 500-loop would not undo it.
+   *
+   * The period join below is the same one `bucketCoversPayment` in
+   * `billing/reconciliation.service.ts` applies to the drift comparison: the
+   * bucket whose period had not yet ended when the money was collected. The two
+   * are deliberately separate implementations (an in-memory predicate over a
+   * fetched list there, one query here, because the shapes differ) and they must
+   * stay in step — if they ever attribute a payment to different cycles, a refund
+   * would claw back one period while drift reported another as unfunded.
+   *
+   * Fail-closed at every step: exactly one covering bucket is reversed, zero or
+   * several are reviewed by a human. Never a guess.
+   */
+  private async resolveRefundedCycle(paymentId: string): Promise<
+    | { target: { organizationId: string; sourceType: 'included'; sourceId: string } }
+    | { detail: Record<string, unknown> }
+  > {
+    if (!this.payments) {
+      return { detail: { reason: 'no_recorded_grant', dodoConfigured: false } };
+    }
+
+    // Field reads inside the try as well, so a payload shaped differently from the
+    // SDK's types degrades the same way a network failure does.
+    let subscriptionId: string | null;
+    let customerId: string | null;
+    let paidAt: Date | null;
+    try {
+      const payment = await this.payments.retrieve(paymentId);
+      subscriptionId = str(payment.subscription_id);
+      customerId = str(payment.customer.customer_id);
+      paidAt = toDate(payment.created_at);
+    } catch (err) {
+      this.logger.error(`Retrieving Dodo payment ${paymentId} failed: ${String(err)}`);
+      return { detail: { reason: 'payment_retrieve_failed', retrieveError: String(err) } };
+    }
+
+    // No subscription means this was a one-off, and the pack lookup already
+    // missed it: there is no recorded grant anywhere.
+    if (!subscriptionId || !customerId || !paidAt) {
+      return {
+        detail: {
+          reason: 'no_recorded_grant',
+          dodoSubscriptionId: subscriptionId,
+          dodoCustomerId: customerId,
+        },
+      };
+    }
+
+    // Both ids, not just the subscription: `resolveSubscription` requires exactly
+    // one local row carrying this customer AND this subscription, so the reversal
+    // can only ever reach the organization that owns both.
+    let organizationId: string;
+    try {
+      ({ organizationId } = await this.resolveSubscription(customerId, subscriptionId));
+    } catch (err) {
+      return {
+        detail: {
+          reason: 'subscription_not_linked',
+          dodoSubscriptionId: subscriptionId,
+          dodoCustomerId: customerId,
+          resolveError: String(err),
+        },
+      };
+    }
+
+    // `expiresAt > paidAt` alone is not enough: after renewals, every LATER
+    // cycle's bucket shares the prefix and also outlives the refunded payment,
+    // so an old cycle's refund would always read as ambiguous. The lower bound —
+    // cycle start on or before the payment — lives in the sourceId itself
+    // (`sub:<id>:<previousBillingDate>`), which SQL cannot parse, so the query
+    // over-fetches a few rows and the date filter runs here. `:activation` keys
+    // carry no date and pass the lower bound by construction: an activation
+    // bucket's cycle started when the subscription did, before any payment that
+    // refunds against it.
+    const candidates = await this.prisma.billingCreditBucket.findMany({
+      where: {
+        organizationId,
+        sourceType: 'included',
+        sourceId: { startsWith: `sub:${subscriptionId}:` },
+        expiresAt: { gt: paidAt },
+      },
+      select: { sourceId: true },
+      take: 10,
+    });
+    // The grace widens the lower bound rather than narrowing it: if a renewal's
+    // payment timestamp lands seconds BEFORE the cycle start Dodo stamps on the
+    // subscription, a strict bound would exclude the right bucket and leave
+    // exactly one WRONG (previous-cycle) match — an auto-reversal of money the
+    // customer legitimately consumed. Inside the grace both cycles match, which
+    // is ambiguous, which is a human. Fail closed, never fail wrong.
+    const CYCLE_START_GRACE_MS = 15 * 60 * 1000;
+    const covering = candidates.filter((row) => {
+      const suffix = row.sourceId.slice(`sub:${subscriptionId}:`.length);
+      if (suffix === 'activation') return true;
+      const cycleStart = new Date(suffix);
+      return (
+        !Number.isNaN(cycleStart.getTime()) &&
+        cycleStart.getTime() <= paidAt.getTime() + CYCLE_START_GRACE_MS
+      );
+    });
+    const bucket = covering.length === 1 ? covering[0] : undefined;
+    if (!bucket) {
+      return {
+        detail: {
+          reason: covering.length === 0 ? 'no_cycle_bucket' : 'ambiguous_cycle_bucket',
+          dodoSubscriptionId: subscriptionId,
+          dodoCustomerId: customerId,
+          coveringBuckets: covering.length,
+          paidAt: paidAt.toISOString(),
+        },
+      };
+    }
+    return {
+      target: { organizationId, sourceType: 'included', sourceId: bucket.sourceId },
+    };
   }
 
   /**
    * Records a reversal we cannot attribute to a grant, so it lands somewhere a
    * human looks instead of in a 500-loop or a warn line.
    *
-   * The organization comes from the refund's customer when there is one; a dispute
-   * has none, so an unattributable dispute can only be logged.
+   * The organization comes from the refund's customer when there is one. A dispute
+   * payload has none, so the fallback is the customer `resolveRefundedCycle`
+   * learned from the payment object — without it an unattributable dispute could
+   * only ever be logged, never audited.
    */
   private async recordUnresolvedReversal(
     eventType: string,
@@ -1141,7 +1280,8 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
       `${eventType} ${String(reversalId)} could not be mapped to a credit grant ` +
         `(payment ${String(paymentId)}); recorded for manual review`,
     );
-    const customerId = str(asRecord(data['customer'])['customer_id']);
+    const customerId =
+      str(asRecord(data['customer'])['customer_id']) ?? str(detail['dodoCustomerId']);
     if (!customerId) return;
     await this.logBillingAuditForCustomer(customerId, 'billing.credit_reversal_unresolved', {
       eventType,
