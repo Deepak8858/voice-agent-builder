@@ -14,14 +14,14 @@ describe('faqJsonLd', () => {
   ];
 
   it('produces a valid FAQPage node', () => {
-    const node = faqJsonLd(faqs) as Record<string, any>;
+    const node = faqJsonLd(faqs);
     expect(node['@context']).toBe('https://schema.org');
     expect(node['@type']).toBe('FAQPage');
     expect(node.mainEntity).toHaveLength(2);
   });
 
   it('wraps every question/answer in Question/Answer types', () => {
-    const node = faqJsonLd(faqs) as Record<string, any>;
+    const node = faqJsonLd(faqs);
     for (const q of node.mainEntity) {
       expect(q['@type']).toBe('Question');
       expect(q.name.length).toBeGreaterThan(0);
@@ -46,25 +46,25 @@ describe('techArticleJsonLd', () => {
   };
 
   it('produces a valid TechArticle node with absolute URLs', () => {
-    const node = techArticleJsonLd(args) as Record<string, any>;
+    const node = techArticleJsonLd(args);
     expect(node['@type']).toBe('TechArticle');
     expect(node.url).toMatch(/^https?:\/\/.+\/resources\/test-ai-voice-agent$/);
     expect(node.mainEntityOfPage).toBe(node.url);
   });
 
   it('attributes authorship to the Organization entity', () => {
-    const node = techArticleJsonLd(args) as Record<string, any>;
+    const node = techArticleJsonLd(args);
     expect(node.author['@type']).toBe('Organization');
     expect(node.publisher['@id']).toContain('#organization');
   });
 
   it('defaults dateModified to datePublished when omitted', () => {
-    const node = techArticleJsonLd({ ...args, dateModified: undefined }) as Record<string, any>;
+    const node = techArticleJsonLd({ ...args, dateModified: undefined });
     expect(node.dateModified).toBe(args.datePublished);
   });
 
   it('uses ISO date format', () => {
-    const node = techArticleJsonLd(args) as Record<string, any>;
+    const node = techArticleJsonLd(args);
     expect(node.datePublished).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(node.dateModified).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
@@ -75,9 +75,10 @@ describe('breadcrumbJsonLd', () => {
     const node = breadcrumbJsonLd([
       { name: 'Home', path: '/' },
       { name: 'Pricing', path: '/pricing' },
-    ]) as Record<string, any>;
+    ]);
     expect(node.itemListElement[0].position).toBe(1);
     expect(node.itemListElement[1].position).toBe(2);
     expect(node.itemListElement[1].item).toMatch(/\/pricing$/);
   });
 });
+
