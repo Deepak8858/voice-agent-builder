@@ -561,18 +561,7 @@ export class TelephonyService {
     // Re-configuration replaces the LiveKit resources, so the previous ones
     // are deleted first — otherwise every reconfigure leaks a trunk and the
     // new inbound trunk conflicts with the old one over the number.
-    if (number.livekitConfig) {
-      const previous = number.livekitConfig;
-      if (previous.dispatchRuleId) {
-        await this.livekit.deleteDispatchRule(previous.dispatchRuleId).catch(() => undefined);
-      }
-      if (previous.inboundTrunkId) {
-        await this.livekit.deleteSipTrunk(previous.inboundTrunkId).catch(() => undefined);
-      }
-      if (previous.outboundTrunkId) {
-        await this.livekit.deleteSipTrunk(previous.outboundTrunkId).catch(() => undefined);
-      }
-    }
+    await this.deleteRecordedLiveKitResources(number.livekitConfig);
 
     const roomPrefix = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-`;
     let inboundTrunkId: string | null = null;
@@ -702,25 +691,37 @@ export class TelephonyService {
     return { status: config.status, config, provider_routing: providerRouting };
   }
 
+  /**
+   * Delete the LiveKit dispatch rule and SIP trunks a config row recorded. Each
+   * delete swallows its error so a resource LiveKit already dropped does not
+   * block the rest, which lets a retry clear an earlier half-finished attempt.
+   */
+  private async deleteRecordedLiveKitResources(
+    config: {
+      dispatchRuleId: string | null;
+      inboundTrunkId: string | null;
+      outboundTrunkId: string | null;
+    } | null,
+  ): Promise<void> {
+    if (!config) return;
+    if (config.dispatchRuleId) {
+      await this.livekit.deleteDispatchRule(config.dispatchRuleId).catch(() => undefined);
+    }
+    if (config.inboundTrunkId) {
+      await this.livekit.deleteSipTrunk(config.inboundTrunkId).catch(() => undefined);
+    }
+    if (config.outboundTrunkId) {
+      await this.livekit.deleteSipTrunk(config.outboundTrunkId).catch(() => undefined);
+    }
+  }
+
   async disconnectNumber(workspaceId: string, numberId: string, actorUserId: string) {
     const number = await this.prisma.telephonyPhoneNumber.findFirst({
       where: { id: numberId, workspaceId },
       include: { livekitConfig: true },
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
-    if (number.livekitConfig?.dispatchRuleId) {
-      await this.livekit
-        .deleteDispatchRule(number.livekitConfig.dispatchRuleId)
-        .catch(() => undefined);
-    }
-    if (number.livekitConfig?.inboundTrunkId) {
-      await this.livekit.deleteSipTrunk(number.livekitConfig.inboundTrunkId).catch(() => undefined);
-    }
-    if (number.livekitConfig?.outboundTrunkId) {
-      await this.livekit
-        .deleteSipTrunk(number.livekitConfig.outboundTrunkId)
-        .catch(() => undefined);
-    }
+    await this.deleteRecordedLiveKitResources(number.livekitConfig);
     const updated = await this.prisma.telephonyPhoneNumber.update({
       where: { id: number.id },
       data: { status: 'disconnected' },
