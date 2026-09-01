@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 14 40 38" fill="none" role="img" aria-label="VoiceForge AI">
+  <path d="M22 18 c-5 0 -5 4 -5 7 c0 3 -3 4 -3 7 c0 3 3 4 3 7 c0 3 0 7 5 7"
+        stroke="currentColor" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M42 18 c5 0 5 4 5 7 c0 3 3 4 3 7 c0 3 -3 4 -3 7 c0 3 0 7 -5 7"
+        stroke="currentColor" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <line x1="27" y1="28" x2="27" y2="36" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+  <line x1="32" y1="23" x2="32" y2="41" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+  <line x1="37" y1="27" x2="37" y2="37" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+</svg>
