@@ -77,6 +77,19 @@ export class LowBalanceWorker extends BaseWorker<LowBalanceJob> {
       return;
     }
 
+    // Purchased packs survive a downgrade, so the spendable total can exceed
+    // this month's grant; warn only when the whole balance is at the threshold.
+    const balance = await this.prisma.organizationCreditBalance.findUnique({
+      where: { organizationId },
+      select: { availableSeconds: true },
+    });
+    if ((balance?.availableSeconds ?? 0) > bucket.originalSeconds * LOW_BALANCE_FRACTION) {
+      this.logger.debug(
+        `[LowBalance] Organization ${organizationId} skipped: total available balance is above the threshold`,
+      );
+      return;
+    }
+
     const organization = await this.prisma.organization.findUnique({
       where: { id: organizationId },
       select: { name: true, owner: { select: { email: true } } },

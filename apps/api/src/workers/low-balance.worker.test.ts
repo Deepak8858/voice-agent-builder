@@ -24,6 +24,9 @@ const mockPrisma = {
   billingCreditBucket: {
     findUnique: vi.fn(),
   },
+  organizationCreditBalance: {
+    findUnique: vi.fn(),
+  },
   organization: {
     findUnique: vi.fn(),
   },
@@ -69,6 +72,9 @@ describe('LowBalanceWorker', () => {
     mockPrisma.billingCreditBucket.findUnique.mockResolvedValue({
       originalSeconds: 600,
       remainingSeconds: 60,
+    });
+    mockPrisma.organizationCreditBalance.findUnique.mockResolvedValue({
+      availableSeconds: 60,
     });
     mockPrisma.organization.findUnique.mockResolvedValue({
       name: 'Acme',
@@ -125,6 +131,20 @@ describe('LowBalanceWorker', () => {
     mockPrisma.billingCreditBucket.findUnique.mockResolvedValueOnce({
       originalSeconds: 600,
       remainingSeconds: 300,
+    });
+
+    await build().processor(checkJob({ organizationId: 'org-1' }));
+
+    expect(mockEmail.sendLowBalanceWarning).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Purchased packs survive a downgrade, so a lapsed-paid organization can
+   * hold spendable credit well beyond this month's free grant.
+   */
+  it('skips when the total available balance exceeds the threshold', async () => {
+    mockPrisma.organizationCreditBalance.findUnique.mockResolvedValueOnce({
+      availableSeconds: 3000,
     });
 
     await build().processor(checkJob({ organizationId: 'org-1' }));

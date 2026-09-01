@@ -527,7 +527,8 @@ jobs:
             | grep -Eqi '^(1|true|yes|on)$'; then
             for name in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY \
               AZURE_VOICE_LLM_DEPLOYMENT AZURE_SPEECH_KEY AZURE_SPEECH_REGION; do
-              if [ -z "$(env_value "$name")" ]; then
+              # The agent trims these before use, so whitespace-only must fail here too.
+              if [ -z "$(env_value "$name" | tr -d '[:space:]')" ]; then
                 echo "VOICE_STANDARD_PIPELINE_ENABLED requires $name to be set" >&2
                 exit 1
               fi
