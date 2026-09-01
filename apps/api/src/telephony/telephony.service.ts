@@ -541,6 +541,12 @@ export class TelephonyService {
       throw new AppError('VALIDATION_ERROR', 'Assign an agent before configuring LiveKit.', 400);
     }
     const agent = await this.agent(workspaceId, number.assignedAgentId);
+    // Read before any LiveKit resource is created: this getter throws when
+    // LIVEKIT_SIP_HOST is unconfigured, and a configuration error must fail
+    // the call before it can strand a trunk — LiveKit refuses a second
+    // inbound trunk covering the same number, so a stranded one blocks every
+    // retry (observed live: trunk ST_cMBRdWguE3yR, 2026-09-01).
+    const livekitSipHost = this.livekit.livekitSipHost;
 
     const metadata = this.objectMetadata(number.providerMetadata);
     const sipAuthUsernameEncrypted = metadata.sipAuthUsernameEncrypted ?? null;
@@ -552,47 +558,79 @@ export class TelephonyService {
       ? this.encryption.decryptJson<{ value?: string }>(sipAuthPasswordEncrypted).value
       : undefined;
 
-    const inbound = await this.livekit.createInboundSipTrunk({
-      workspaceId,
-      phoneNumberId: number.id,
-      phoneNumberE164: number.phoneNumberE164,
-      provider: number.provider as PhoneNumberProvider,
-      ...(authUsername ? { authUsername } : {}),
-      ...(authPassword ? { authPassword } : {}),
-    });
+    // Re-configuration replaces the LiveKit resources, so the previous ones
+    // are deleted first — otherwise every reconfigure leaks a trunk and the
+    // new inbound trunk conflicts with the old one over the number.
+    if (number.livekitConfig) {
+      const previous = number.livekitConfig;
+      if (previous.dispatchRuleId) {
+        await this.livekit.deleteDispatchRule(previous.dispatchRuleId).catch(() => undefined);
+      }
+      if (previous.inboundTrunkId) {
+        await this.livekit.deleteSipTrunk(previous.inboundTrunkId).catch(() => undefined);
+      }
+      if (previous.outboundTrunkId) {
+        await this.livekit.deleteSipTrunk(previous.outboundTrunkId).catch(() => undefined);
+      }
+    }
 
+    const roomPrefix = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-`;
+    let inboundTrunkId: string | null = null;
     let outboundTrunkId: string | null = null;
-    if (number.outboundEnabled) {
-      const outbound = await this.livekit.createOutboundSipTrunk({
+    let dispatchRuleId: string;
+    try {
+      const inbound = await this.livekit.createInboundSipTrunk({
         workspaceId,
         phoneNumberId: number.id,
         phoneNumberE164: number.phoneNumberE164,
         provider: number.provider as PhoneNumberProvider,
-        sipAddress: typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
         ...(authUsername ? { authUsername } : {}),
         ...(authPassword ? { authPassword } : {}),
       });
-      outboundTrunkId = outbound.trunkId;
-    }
+      inboundTrunkId = inbound.trunkId;
 
-    const roomPrefix = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-`;
-    const dispatch = await this.livekit.createDispatchRule({
-      workspaceId,
-      phoneNumberId: number.id,
-      agentId: agent.id,
-      trunkId: inbound.trunkId,
-      roomPrefix,
-      agentName: env.LIVEKIT_AGENT_NAME,
-      metadata: {
-        // The dispatch rule is created once per number, so it cannot carry a
-        // call id. It carries the organization instead, which is what lets the
-        // runtime resolve the admitted call for this room and meter it.
-        organizationId: number.organizationId,
-        provider: number.provider,
-        direction: 'inbound',
-        model: env.OPENAI_REALTIME_MODEL,
-      },
-    });
+      if (number.outboundEnabled) {
+        const outbound = await this.livekit.createOutboundSipTrunk({
+          workspaceId,
+          phoneNumberId: number.id,
+          phoneNumberE164: number.phoneNumberE164,
+          provider: number.provider as PhoneNumberProvider,
+          sipAddress: typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
+          ...(authUsername ? { authUsername } : {}),
+          ...(authPassword ? { authPassword } : {}),
+        });
+        outboundTrunkId = outbound.trunkId;
+      }
+
+      const dispatch = await this.livekit.createDispatchRule({
+        workspaceId,
+        phoneNumberId: number.id,
+        agentId: agent.id,
+        trunkId: inboundTrunkId,
+        roomPrefix,
+        agentName: env.LIVEKIT_AGENT_NAME,
+        metadata: {
+          // The dispatch rule is created once per number, so it cannot carry a
+          // call id. It carries the organization instead, which is what lets the
+          // runtime resolve the admitted call for this room and meter it.
+          organizationId: number.organizationId,
+          provider: number.provider,
+          direction: 'inbound',
+          model: env.OPENAI_REALTIME_MODEL,
+        },
+      });
+      dispatchRuleId = dispatch.dispatchRuleId;
+    } catch (err) {
+      // A partially configured number must stay retryable: delete whatever
+      // this run created so the next attempt starts from a clean slate.
+      if (inboundTrunkId) {
+        await this.livekit.deleteSipTrunk(inboundTrunkId).catch(() => undefined);
+      }
+      if (outboundTrunkId) {
+        await this.livekit.deleteSipTrunk(outboundTrunkId).catch(() => undefined);
+      }
+      throw err;
+    }
 
     const config = await this.prisma.liveKitTelephonyConfig.upsert({
       where: { phoneNumberId: number.id },
@@ -602,10 +640,10 @@ export class TelephonyService {
         phoneNumberId: number.id,
         agentId: agent.id,
         livekitRoomPrefix: roomPrefix,
-        livekitSipHost: this.livekit.livekitSipHost,
-        inboundTrunkId: inbound.trunkId,
+        livekitSipHost,
+        inboundTrunkId,
         outboundTrunkId,
-        dispatchRuleId: dispatch.dispatchRuleId,
+        dispatchRuleId,
         sipAuthUsernameEncrypted:
           (sipAuthUsernameEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
         sipAuthPasswordEncrypted:
@@ -615,10 +653,10 @@ export class TelephonyService {
       update: {
         agentId: agent.id,
         livekitRoomPrefix: roomPrefix,
-        livekitSipHost: this.livekit.livekitSipHost,
-        inboundTrunkId: inbound.trunkId,
+        livekitSipHost,
+        inboundTrunkId,
         outboundTrunkId,
-        dispatchRuleId: dispatch.dispatchRuleId,
+        dispatchRuleId,
         sipAuthUsernameEncrypted:
           (sipAuthUsernameEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
         sipAuthPasswordEncrypted:
@@ -637,7 +675,7 @@ export class TelephonyService {
         .configureInboundRouting({
           credentials,
           phoneNumber: this.connectedNumber(number),
-          livekitSipUri: `sip:${this.livekit.livekitSipHost}`,
+          livekitSipUri: `sip:${livekitSipHost}`,
           fallbackWebhookUrl: this.webhookUrl(`telephony/${number.provider}/fallback/${number.id}`),
           statusCallbackUrl: this.webhookUrl(`telephony/${number.provider}/status/${number.id}`),
         });
@@ -655,9 +693,9 @@ export class TelephonyService {
       resourceType: 'telephony_phone_number',
       resourceId: number.id,
       metadata: {
-        inbound_trunk_id: inbound.trunkId,
+        inbound_trunk_id: inboundTrunkId,
         outbound_trunk_id: outboundTrunkId,
-        dispatch_rule_id: dispatch.dispatchRuleId,
+        dispatch_rule_id: dispatchRuleId,
       },
     });
 
