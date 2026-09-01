@@ -18,8 +18,9 @@ import { ForbiddenError, UnauthorizedError } from '../common/errors';
  * reachable from the browser where the doubled path was not. That is the
  * intended state — it is tenant self-service scoped to the session's
  * `active_workspace_id`, and ContactsController's sibling contact mutations are
- * already reachable the same way. `users/me/erasure` stays unreachable:
- * `/users` is not an allow-listed proxy prefix and this change does not add one.
+ * already reachable the same way. `users/me/erasure` is browser-reachable too:
+ * the settings page's delete-account flow is its client, and the proxy
+ * allow-lists exactly `/users/me/erasure`, not a `/users` prefix.
  *
  * Neither path can be captured by another controller: no route under
  * `workspaces/:workspaceId` serves DELETE at five segments, and nothing else

@@ -88,6 +88,13 @@ describe('ErasureService', () => {
     deleteStoredFileImpl?: (file: unknown) => Promise<void>;
     user?: { id: string; email: string; authUserId: string | null } | null;
     memberships?: Array<{ workspaceId: string; userId: string }>;
+    /** Organizations owned by the user under eraseUser test. */
+    ownedOrganizations?: Array<{ id: string; name: string }>;
+    /** Simulates another user holding a membership in the owned org. */
+    otherOrgMember?: boolean;
+    /** Rows on the two ON DELETE RESTRICT financial tables. */
+    ledgerEntryCount?: number;
+    costEventCount?: number;
     subscription?: {
       dodoCustomerId: string | null;
       dodoSubscriptionId: string | null;
@@ -132,11 +139,14 @@ describe('ErasureService', () => {
       },
       organization: {
         findUnique: vi.fn(async () => opts.organization ?? null),
+        findMany: vi.fn(async () => opts.ownedOrganizations ?? []),
         delete: vi.fn(async ({ where }: { where: { id: string } }) => {
           deletedOrganizations.push(where.id);
           return { id: where.id };
         }),
       },
+      billingLedgerEntry: { count: vi.fn(async () => opts.ledgerEntryCount ?? 0) },
+      providerCostEvent: { count: vi.fn(async () => opts.costEventCount ?? 0) },
       workspace: {
         findMany: vi.fn(async () => opts.workspaces ?? []),
         delete: vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -158,12 +168,16 @@ describe('ErasureService', () => {
       },
       membership: {
         findMany: vi.fn(async () => opts.memberships ?? []),
+        findFirst: vi.fn(async () => (opts.otherOrgMember ? { id: 'm-other' } : null)),
         deleteMany: vi.fn(async () => {
           deleteOrder.push('membership');
           return { count: 0 };
         }),
       },
-      workspaceMembership: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      workspaceMembership: {
+        findFirst: vi.fn(async () => null),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+      },
       subscription: {
         findUnique: vi.fn(async () => opts.subscription ?? null),
       },
@@ -1047,6 +1061,158 @@ describe('ErasureService', () => {
       expect(result.success).toBe(false);
       expect(auditLogs).toEqual([]);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    // `organizations.owner_user_id` is ON DELETE RESTRICT and signup makes
+    // every user an owner, so `user.delete` cannot succeed while an owned
+    // organization exists — self-service deletion has to erase it first.
+    it('erases a solo-owned organization before deleting the user', async () => {
+      const { service, deletedOrganizations, auditLogs } = makeService({
+        user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
+        ownedOrganizations: [{ id: 'org-1', name: 'Acme' }],
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+      });
+
+      const result = await service.eraseUser('user-1');
+
+      expect(result.success).toBe(true);
+      expect(deletedOrganizations).toEqual(['org-1']);
+      expect(auditLogs.map((row) => row.action)).toEqual([
+        'gdpr.organization_deleted',
+        'gdpr.user_deleted',
+      ]);
+    });
+
+    it('refuses when an owned organization still has other members', async () => {
+      // One data subject's erasure request does not extend to another tenant
+      // user's data, so the org (and the user) must survive untouched.
+      const { service, deletedOrganizations, auditLogs, prisma } = makeService({
+        user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
+        ownedOrganizations: [{ id: 'org-1', name: 'Acme' }],
+        organization: { id: 'org-1', name: 'Acme' },
+        otherOrgMember: true,
+      });
+
+      const result = await service.eraseUser('user-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('other members');
+      expect(deletedOrganizations).toEqual([]);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(auditLogs).toHaveLength(1);
+      expect(auditLogs[0]).toMatchObject({
+        action: 'gdpr.user_erasure_refused',
+        resourceId: 'user-1',
+        metadata: expect.objectContaining({
+          reason: 'organization_has_other_members',
+          organizationId: 'org-1',
+        }),
+      });
+    });
+
+    it('returns the organization refusal as-is when the owned org cannot be erased', async () => {
+      // The org-level refusal (here: retained financial records) is already
+      // recorded with the organization attributed; eraseUser must not proceed
+      // to the user delete, which would throw on the same RESTRICT posture.
+      const { service, deletedOrganizations, auditLogs } = makeService({
+        user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
+        ownedOrganizations: [{ id: 'org-1', name: 'Acme' }],
+        organization: { id: 'org-1', name: 'Acme' },
+        ledgerEntryCount: 3,
+      });
+
+      const result = await service.eraseUser('user-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('must be retained');
+      expect(deletedOrganizations).toEqual([]);
+      expect(auditLogs.map((row) => row.action)).toEqual([
+        'gdpr.organization_erasure_refused',
+      ]);
+    });
+
+    it('turns a RESTRICT violation on the user delete into a recorded refusal', async () => {
+      // `referrals.referrer_user_id` / `trial_redemptions.initiating_user_id`
+      // are RESTRICT too; a coded P2003 must become a refusal, not a raw 500.
+      const { service, prisma, auditLogs } = makeService({
+        user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
+      });
+      (prisma.user as { delete: ReturnType<typeof vi.fn> }).delete = vi.fn(async () => {
+        const err = new Error('Foreign key constraint failed') as Error & { code: string };
+        err.code = 'P2003';
+        throw err;
+      });
+
+      const result = await service.eraseUser('user-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('must be retained');
+      // The rolled-back `gdpr.user_deleted` claim is withdrawn; only the
+      // refusal row survives.
+      expect(auditLogs.map((row) => row.action)).toEqual(['gdpr.user_erasure_refused']);
+    });
+  });
+
+  describe('eraseOrganization financial-records refusal', () => {
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchMock = vi.fn(async () => ({ ok: true, status: 204 }));
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    it('refuses before touching the carrier when ledger rows exist', async () => {
+      const { service, auditLogs, prisma, deletedNumbers } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+        phoneNumbers: [
+          {
+            id: '0007',
+            workspaceId: 'ws-1',
+            phoneNumber: '+14155550007',
+            type: 'provisioned',
+            twilioSid: 'PN0007',
+          },
+        ],
+        ledgerEntryCount: 1,
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('must be retained');
+      // The refusal is side-effect free: no carrier call, no rows destroyed,
+      // no transaction opened. A retry after manual anonymization starts clean.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(deletedNumbers).toEqual([]);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(auditLogs).toHaveLength(1);
+      expect(auditLogs[0]).toMatchObject({
+        action: 'gdpr.organization_erasure_refused',
+        metadata: expect.objectContaining({ reason: 'financial_records_restrict' }),
+      });
+    });
+
+    it('turns a RESTRICT violation inside the transaction into a recorded refusal', async () => {
+      // Backstop for a RESTRICT foreign key the pre-check does not enumerate.
+      const { service, prisma, auditLogs } = makeService({
+        organization: { id: 'org-1', name: 'Acme' },
+        workspaces: [{ id: 'ws-1' }],
+      });
+      (prisma.organization as { delete: ReturnType<typeof vi.fn> }).delete = vi.fn(async () => {
+        const err = new Error('Foreign key constraint failed') as Error & { code: string };
+        err.code = 'P2003';
+        throw err;
+      });
+
+      const result = await service.eraseOrganization('org-1');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('must be retained');
+      expect(auditLogs.map((row) => row.action)).toEqual([
+        'gdpr.organization_erasure_refused',
+      ]);
     });
   });
 });

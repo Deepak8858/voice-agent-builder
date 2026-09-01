@@ -1,7 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { useApi } from '@/lib/use-api';
 import { User, ClipboardList } from 'lucide-react';
 
@@ -33,10 +37,42 @@ interface AuditLog {
 
 export function SettingsPanel() {
   const { call } = useApi();
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('general');
   const [me, setMe] = useState<MeResponse | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // The API returns a refusal (success: false + reason) instead of deleting
+  // when the account's organization has other members, retained billing
+  // records, or a live subscription — surface that reason, don't retry.
+  async function handleDeleteAccount() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const result = await call<{ success: boolean; error?: string }>('/users/me/erasure', {
+        method: 'DELETE',
+      });
+      if (!result.success) {
+        setDeleteError(result.error ?? 'Account deletion was refused.');
+        return;
+      }
+      try {
+        await createBrowserSupabaseClient().auth.signOut();
+      } catch {
+        // The account is gone; a failed sign-out only leaves a dead session.
+      }
+      router.push('/');
+      router.refresh();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Account deletion failed.');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const currentWorkspaceId = me?.active_workspace_id ?? me?.workspaces?.[0]?.id;
   // The API restricts audit-log reads to owners and admins, so offering the tab
@@ -89,6 +125,42 @@ export function SettingsPanel() {
                 {me?.active_workspace_id ? 1 : (me?.workspaces?.length ?? 0)}
               </span>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="mt-6 border-destructive/50">
+          <CardHeader>
+            <CardTitle className="text-destructive">Delete account</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <p className="text-sm text-muted-foreground">
+              Permanently deletes your account and, if you are its only member, your
+              organization with all of its workspaces, agents, calls, and recordings.
+              This cannot be undone. Accounts with billing history or an active
+              subscription cannot be deleted automatically — contact{' '}
+              <a href="mailto:privacy@incfrog.ai" className="underline">privacy@incfrog.ai</a>.
+            </p>
+            <div className="flex items-center gap-2">
+              <Input
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                placeholder='Type "DELETE" to confirm'
+                className="max-w-56"
+                aria-label="Type DELETE to confirm account deletion"
+              />
+              <Button
+                variant="destructive"
+                disabled={deleteConfirm !== 'DELETE' || deleting}
+                onClick={handleDeleteAccount}
+              >
+                {deleting ? 'Deleting…' : 'Delete my account'}
+              </Button>
+            </div>
+            {deleteError && (
+              <p className="text-sm text-destructive" role="alert">
+                {deleteError}
+              </p>
+            )}
           </CardContent>
         </Card>
       </TabsContent>

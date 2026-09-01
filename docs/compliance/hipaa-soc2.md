@@ -35,31 +35,47 @@
 ### Retention & Disposal
 - expires_at column on Call records — auto-set on insert
 - Daily sweep (BullMQ worker, 03:30 UTC, batches of 5000) deletes expired
-  calls and ages out raw telephony webhook payloads; gated behind
-  `RETENTION_SWEEP_ENABLED`
+  calls and ages out raw telephony webhook payloads. Gated behind
+  `RETENTION_SWEEP_ENABLED`, which defaults to false and is not required by
+  the env contract — the deletion guarantee holds only where the flag is set
+  and the sweep monitored (it is enabled in production)
 - Per-workspace configurable (30-3650 days); shortening retention re-stamps
   existing calls, which can make older recordings immediately sweepable
 
 ### Data Erasure (GDPR)
 - Contact erasure: cascades to calls, analytics, evaluations
-- Organization deletion: cascades workspace data, releases carrier phone
-  numbers, and cancels any live subscription — but billing-ledger and
-  provider-cost rows are `ON DELETE RESTRICT`, so an organization with
-  payment or call history cannot currently be hard-deleted
-  (anonymize-vs-delete is an open product decision)
-- User deletion: removes memberships and the user record; blocked for users
-  who own an organization (the same RESTRICT posture)
+- Organization deletion: refuses while a live Dodo subscription exists
+  (nothing in this codebase can cancel one, and deleting the organization
+  would destroy the only record of the subscription id — cancel first, then
+  retry); refuses while billing-ledger or provider-cost rows exist, BEFORE
+  touching the carrier, because those rows are `ON DELETE RESTRICT` and an
+  organization with payment or call history cannot be hard-deleted
+  (anonymize-vs-delete is an open product decision); otherwise releases
+  carrier phone numbers and cascades workspace data. Every refusal is
+  audit-logged with its reason
+- User self-deletion (`DELETE /users/me/erasure`, available from Settings):
+  erases organizations the user owns first — refusing if any still has other
+  members — then removes memberships and the user record; the same RESTRICT
+  posture applies, so an account with billing history is refused with an
+  instruction to contact the operator
 - Erasure audit rows are written inside the same transaction as the deletes,
   so a rolled-back erasure never leaves a false "erased" attestation
 
 ## Infrastructure
 
-- Primary DB: Supabase managed Postgres (AWS ap-northeast-1, Tokyo)
-- Backups: Supabase automated daily + point-in-time recovery
+- Primary DB: Supabase managed Postgres (AWS ap-northeast-1, Tokyo — verified
+  against the production `DATABASE_URL` pooler host, 2026-09-01)
+- Backups: managed by Supabase per project plan; verify the daily-backup and
+  point-in-time-recovery entitlement in the Supabase dashboard before relying
+  on either in an incident
 - Voice transport: LiveKit + Twilio (encryption handled by provider)
 - Voice runtimes: OpenAI Realtime (paid plans) and the in-house pipeline on Azure
   AI (Azure Speech STT/TTS + Azure OpenAI)
-- No PHI leaves the platform except to subprocessors listed in DPA
+- PHI may reach only the voice-path subprocessors (LiveKit, Twilio, Vobiz,
+  OpenAI, Microsoft Azure) and the database (Supabase). The DPA's other
+  subprocessors — Dodo Payments (billing), Resend (email), Google
+  (integrations/analytics) — are NOT PHI destinations and must never receive
+  call audio, transcripts, or caller phone numbers.
 
 ## BAAs and provider HIPAA prerequisites
 

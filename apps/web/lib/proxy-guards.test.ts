@@ -36,8 +36,13 @@ describe('isAllowedProxyPath', () => {
     expect(isAllowedProxyPath('/orgs/o1/audit-logs')).toBe(false);
     expect(isAllowedProxyPath('/v1/workspaces/me/retention')).toBe(false);
     expect(isAllowedProxyPath('/v1/users/me/erasure')).toBe(false);
-    // The API serves this at its new path; the browser is not given `/users`.
-    expect(isAllowedProxyPath('/users/me/erasure')).toBe(false);
+    // Account self-deletion is allow-listed as an exact path for the settings
+    // page's delete-account flow — but only that path: the browser is still
+    // not given a `/users` prefix.
+    expect(isAllowedProxyPath('/users/me/erasure')).toBe(true);
+    expect(isAllowedProxyPath('/users')).toBe(false);
+    expect(isAllowedProxyPath('/users/me')).toBe(false);
+    expect(isAllowedProxyPath('/users/other-user/erasure')).toBe(false);
   });
 
   it('matches whole segments, not raw string prefixes', () => {

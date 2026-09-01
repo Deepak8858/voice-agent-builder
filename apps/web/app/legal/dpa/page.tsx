@@ -26,17 +26,24 @@ export default function DpaPage() {
             <li><strong>Vobiz</strong> — SIP voice telephony, if you connect a Vobiz number (optional)</li>
             <li><strong>OpenAI</strong> — Realtime voice runtime and language models</li>
             <li><strong>Microsoft Azure</strong> — Speech-to-text, text-to-speech, and Azure OpenAI</li>
-            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional); Google Analytics for consent-gated website usage analytics</li>
+            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional); Google Analytics for website usage analytics (Consent Mode v2 — analytics cookies are denied by default in regions requiring opt-in consent)</li>
             <li><strong>Supabase</strong> — Database and authentication</li>
             <li><strong>Dodo Payments</strong> — Payment processing as merchant of record (billing name, email, and address)</li>
             <li><strong>Resend</strong> — Transactional email</li>
           </ul>
+          <p className="mt-3">
+            Dodo Payments, Resend, and Google Analytics never receive call audio,
+            transcripts, or caller phone numbers; call content reaches only the voice-path
+            subprocessors above (LiveKit, Twilio, Vobiz, OpenAI, Microsoft Azure) and our
+            database (Supabase).
+          </p>
         </Section>
 
         <Section title="Encryption">
-          All data is encrypted in transit (TLS 1.2+) and at rest (AES-256).
-          Integration credentials and access tokens are additionally envelope-encrypted
-          with AES-256-GCM under rotatable, application-managed keys.
+          Platform-managed data is encrypted in transit (TLS 1.2+) and at rest (AES-256);
+          each subprocessor&apos;s encryption is governed by its own DPA. Integration
+          credentials and access tokens are additionally envelope-encrypted with
+          AES-256-GCM under rotatable, application-managed keys.
         </Section>
 
         <Section title="Retention">
@@ -46,12 +53,15 @@ export default function DpaPage() {
         </Section>
 
         <Section title="Your Rights">
-          You may request erasure of all personal data at any time. Contact privacy@voiceforge.ai
-          or use the account deletion feature in your settings.
+          You may request erasure of all personal data at any time: use the delete-account
+          option in Settings, or contact privacy@incfrog.ai. Financial records must be
+          retained by law, so accounts with billing history cannot be hard-deleted
+          automatically — contact privacy@incfrog.ai and remaining personal data will be
+          removed from those records.
         </Section>
 
         <Section title="Contact">
-          For data privacy inquiries: <a href="mailto:privacy@voiceforge.ai" className="text-primary underline">privacy@voiceforge.ai</a>
+          For data privacy inquiries: <a href="mailto:privacy@incfrog.ai" className="text-primary underline">privacy@incfrog.ai</a>
         </Section>
       </div>
     </div>

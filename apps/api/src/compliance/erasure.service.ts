@@ -16,6 +16,16 @@ interface ErasureResult {
   error?: string;
 }
 
+/**
+ * Prisma's P2003: a delete hit an ON DELETE RESTRICT foreign key. Duck-typed
+ * rather than instanceof, matching isUniqueConstraintError in
+ * dodo-webhook.service.ts.
+ */
+function isRestrictViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err
+    && (err as { code?: unknown }).code === 'P2003';
+}
+
 @Injectable()
 export class ErasureService {
   private readonly logger = new Logger(ErasureService.name);
@@ -139,6 +149,30 @@ export class ErasureService {
       );
     }
 
+    // Refuse BEFORE the carrier release below, not after. `billing_ledger_entries.
+    // organization_id` and `provider_cost_events.organization_id` are ON DELETE
+    // RESTRICT — financial records that outlive the organization on purpose — so
+    // for any organization that ever paid or placed a call the transaction at the
+    // bottom is guaranteed to fail. Discovering that AFTER the numbers were
+    // released at the carrier leaves a half-erased tenant: organization intact,
+    // numbers gone. Checking the two known RESTRICT holders first keeps the
+    // refusal free of side effects; the P2003 catch on the transaction remains
+    // the backstop for any RESTRICT foreign key not enumerated here.
+    const [ledgerEntries, costEvents] = await Promise.all([
+      this.prisma.billingLedgerEntry.count({ where: { organizationId: orgId }, take: 1 }),
+      this.prisma.providerCostEvent.count({ where: { organizationId: orgId }, take: 1 }),
+    ]);
+    if (ledgerEntries > 0 || costEvents > 0) {
+      return this.refuseOrganizationErasure(
+        orgId,
+        'financial_records_restrict',
+        { ledgerEntries: String(ledgerEntries), costEvents: String(costEvents) },
+        `Organization ${orgId} has billing or usage records that must be retained; `
+        + 'hard deletion is unavailable and the remaining personal data must be '
+        + 'anonymized by an operator.',
+      );
+    }
+
     const workspaces = await this.prisma.workspace.findMany({
       where: { organizationId: orgId },
       select: { id: true },
@@ -230,7 +264,7 @@ export class ErasureService {
          AND jsonb_exists(metadata, 'phoneNumber')
     `;
 
-    await this.prisma.$transaction(async (tx) => {
+    const restrictRefusal = await this.prisma.$transaction(async (tx) => {
       // Inside the transaction and before the deletes, for the reasons set out
       // in eraseContact: today every organization that has ever paid an invoice
       // or placed a call fails the delete below on an ON DELETE RESTRICT foreign
@@ -264,7 +298,25 @@ export class ErasureService {
         await tx.workspace.delete({ where: { id: workspaceId } });
       }
       await tx.organization.delete({ where: { id: orgId } });
-    });
+    }).then(
+      () => null,
+      (err: unknown) => {
+        if (!isRestrictViolation(err)) throw err;
+        // Backstop for a RESTRICT foreign key the pre-check above does not
+        // enumerate. The transaction (audit row included) has rolled back, so
+        // the refusal record is the only trace — same contract as the other
+        // refusal paths: a truthful outcome, not a raw 500.
+        return this.refuseOrganizationErasure(
+          orgId,
+          'financial_records_restrict',
+          {},
+          `Organization ${orgId} has records that must be retained (ON DELETE RESTRICT); `
+          + 'hard deletion is unavailable and the remaining personal data must be '
+          + 'anonymized by an operator.',
+        );
+      },
+    );
+    if (restrictRefusal) return restrictRefusal;
 
     // Erased members must lose access on the next request, not when the
     // 300s access/session/org caches happen to expire.
@@ -333,6 +385,33 @@ export class ErasureService {
       },
     });
     this.logger.warn({ orgId, reason }, 'GDPR organization erasure refused');
+    return { success: false, error };
+  }
+
+  /**
+   * The user-level twin of refuseOrganizationErasure, for the self-service
+   * `DELETE users/me/erasure` path. Same contract: a refusal is a
+   * data-subject-request outcome that has to be answerable later, it commits no
+   * mutation, and it is written outside any transaction. Unlike the org variant
+   * there IS an actor — the caller asking about their own account — and the row
+   * can carry it, because a refused user still exists.
+   */
+  private async refuseUserErasure(
+    userId: string,
+    reason: string,
+    metadata: Record<string, string | null>,
+    error: string,
+  ): Promise<ErasureResult> {
+    await this.prisma.auditLog.create({
+      data: {
+        actorUserId: userId,
+        action: 'gdpr.user_erasure_refused',
+        resourceType: 'user',
+        resourceId: userId,
+        metadata: { reason, refusedAt: new Date().toISOString(), ...metadata },
+      },
+    });
+    this.logger.warn({ userId, reason }, 'GDPR user erasure refused');
     return { success: false, error };
   }
 
@@ -477,6 +556,44 @@ export class ErasureService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) return { success: false, error: 'User not found' };
 
+    // `organizations.owner_user_id` is ON DELETE RESTRICT and signup makes every
+    // user an owner, so `user.delete` below is guaranteed to fail while an owned
+    // organization exists. Self-service deletion therefore erases the account's
+    // own organizations first — but never one that other users still work in:
+    // one data subject's erasure request does not extend to another tenant
+    // user's data, so a multi-member organization refuses with an instruction
+    // instead.
+    const ownedOrgs = await this.prisma.organization.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true, name: true },
+    });
+    for (const org of ownedOrgs) {
+      const [otherMembership, otherWorkspaceMembership] = await Promise.all([
+        this.prisma.membership.findFirst({
+          where: { userId: { not: userId }, workspace: { organizationId: org.id } },
+          select: { id: true },
+        }),
+        this.prisma.workspaceMembership.findFirst({
+          where: { userId: { not: userId }, workspace: { organizationId: org.id } },
+          select: { id: true },
+        }),
+      ]);
+      if (otherMembership || otherWorkspaceMembership) {
+        return this.refuseUserErasure(
+          userId,
+          'organization_has_other_members',
+          { organizationId: org.id },
+          `Organization "${org.name}" still has other members. Remove them or transfer `
+          + 'ownership first, then retry account deletion.',
+        );
+      }
+      // eraseOrganization records its own refusals (live subscription, carrier
+      // release, retained financial records) with the organization attributed,
+      // so a failure here is returned as-is rather than re-wrapped.
+      const orgResult = await this.eraseOrganization(org.id);
+      if (!orgResult.success) return orgResult;
+    }
+
     // Enumerate before deleteMany: the rows are the only record of which
     // workspace access caches this user holds.
     const memberships = await this.prisma.membership.findMany({
@@ -484,7 +601,7 @@ export class ErasureService {
       select: { workspaceId: true },
     });
 
-    await this.prisma.$transaction(async (tx) => {
+    const restrictRefusal = await this.prisma.$transaction(async (tx) => {
       // Inside the transaction and before the delete, for the reasons set out in
       // eraseContact. This method is self-service (the controller passes the
       // caller's own id), so the erased user is genuinely the actor -- but
@@ -509,7 +626,24 @@ export class ErasureService {
       await tx.workspaceMembership.deleteMany({ where: { userId } });
       // Delete user
       await tx.user.delete({ where: { id: userId } });
-    });
+    }).then(
+      () => null,
+      (err: unknown) => {
+        if (!isRestrictViolation(err)) throw err;
+        // `referrals.referrer_user_id` and `trial_redemptions.initiating_user_id`
+        // are also ON DELETE RESTRICT: rows a promotional grant was paid against
+        // outlive the user. The transaction rolled back, so nothing is
+        // half-deleted; the refusal is recorded instead of surfacing a raw 500.
+        return this.refuseUserErasure(
+          userId,
+          'financial_records_restrict',
+          {},
+          'This account has referral or trial records that must be retained; deletion '
+          + 'requires manual anonymization by an operator.',
+        );
+      },
+    );
+    if (restrictRefusal) return restrictRefusal;
 
     // An erased user must stop authenticating on the next request, not when
     // the 300s access/session caches happen to expire.

@@ -122,32 +122,43 @@ DELETE /workspaces/:workspaceId/calendar/disconnect
 
 ## Authorization and Roles
 Workspace membership carries one of four roles: `owner`, `admin`, `editor`,
-`viewer`. Reads require membership only (any role); mutations on
-`:workspaceId` routes carry an explicit `@RequiredRole(...)` allow-list
-enforced by `RoleGuard`. The mapping is machine-checked, not maintained here:
-`security/route-guard-baseline.test.ts` fails the build for any workspace
-mutation without a role gate, so the decorators in the controllers are the
-authoritative per-route matrix.
+`viewer`. On workspace-scoped routes (`:workspaceId` in the path, or
+`@SessionScoped` routes reading `active_workspace_id`), reads require
+membership only (any role) and mutations carry an explicit
+`@RequiredRole(...)` allow-list enforced by `RoleGuard` — so on these routes a
+`viewer` can read and never mutate. The mapping is machine-checked, not
+maintained here: `security/route-guard-baseline.test.ts` fails the build for
+any workspace mutation without a role gate, so the decorators in the
+controllers are the authoritative per-route matrix.
 
-The tiers in use:
+The tiers in use on role-gated workspace routes:
 
 - **owner, admin** — configuration, money, and destructive operations:
   billing, telephony/phone numbers, tools CRUD, compliance/DNC, CRM routing,
-  campaigns, white-label, workspace audit log, retention settings, erasure.
-  Destructive routes (erasure, campaign start, knowledge delete/backfill,
-  retention change) additionally use `{ fresh: true }`, which re-resolves the
-  membership row instead of trusting the cached role.
+  campaigns, white-label, workspace audit log, retention settings, and
+  contact erasure (`DELETE /workspaces/me/contacts/:contactId/erasure`).
+  Destructive routes (contact erasure, campaign start, knowledge
+  delete/backfill, retention change) additionally use `{ fresh: true }`,
+  which re-resolves the membership row instead of trusting the cached role.
 - **owner, admin, editor** — day-to-day authoring: agents CRUD/publish/flow,
   knowledge-source writes, test sessions, outbound calls, tool invocation,
   Google connection management.
-- **viewer** — read-only everywhere.
 
 Org-scoped routes (`/orgs/:orgId/...`) use `@RequiredOrgRole(...)` read by
-`OrganizationGuard` — `@RequiredRole` deliberately throws on org routes. The
-deliberate exemptions: knowledge `search` (read-shaped POST), analytics
-`record` (ingestion), white-label `invites/accept` (the invite token is the
-authorization), calendar `connect`/`disconnect` (internal-key caller), and
-`DELETE /users/me/erasure` (user-keyed).
+`OrganizationGuard` — `@RequiredRole` deliberately throws on org routes.
+
+Routes outside the workspace-role model, each with its own authorization:
+
+- `DELETE /users/me/erasure` — account self-deletion, called from the
+  Settings page. Authenticated by the verified Supabase session; the user id
+  comes from the session, never the path, so there is no cross-user surface
+  and no workspace role to check. The service refuses (rather than deletes)
+  when the account's organization has other members, a live subscription, or
+  retained financial records.
+- Knowledge `search` (read-shaped POST) and analytics `record` (ingestion):
+  membership only.
+- White-label `invites/accept`: the invite token is the authorization.
+- Calendar `connect`/`disconnect`: internal-key caller, no membership row.
 
 ## API Rules
 Every route validates workspace access. Every mutation logs audit event. Every outbound call runs compliance check. Every webhook is idempotent. Never expose encrypted credentials.
