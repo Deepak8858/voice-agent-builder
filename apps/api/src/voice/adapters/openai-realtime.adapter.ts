@@ -122,7 +122,7 @@ function buildSessionConfig(spec: AgentSpec): Record<string, unknown> {
         turn_detection: { type: 'semantic_vad' },
       },
       output: {
-        format: { type: 'audio/pcm' },
+        format: { type: 'audio/pcm', rate: 24000 },
         voice: spec.voice.voice_id ?? env.OPENAI_REALTIME_VOICE,
       },
     },
