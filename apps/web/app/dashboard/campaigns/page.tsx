@@ -42,6 +42,7 @@ interface SessionUser {
 interface AgentSummary {
   id: string;
   name: string;
+  status: string;
 }
 
 interface TelephonyNumberSummary {
@@ -537,10 +538,15 @@ export default function CampaignsPage() {
                   required
                 >
                   <option value="">Select agent...</option>
-                  {agents.map((a) => (
+                  {agents.filter((a) => a.status === 'published').map((a) => (
                     <option key={a.id} value={a.id}>{a.name}</option>
                   ))}
                 </select>
+                {agents.length > 0 && agents.every((a) => a.status !== 'published') && (
+                  <p className="mt-1 text-xs text-destructive">
+                    No published agents. Publish an agent in the builder before creating a campaign.
+                  </p>
+                )}
               </div>
               <div>
                 <Label>Call purpose</Label>

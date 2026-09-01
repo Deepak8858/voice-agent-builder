@@ -34,7 +34,7 @@ describe('OutboundCampaignService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockPrisma.agent.findFirst.mockResolvedValue({ id: 'agent-1' });
+    mockPrisma.agent.findFirst.mockResolvedValue({ id: 'agent-1', status: 'published' });
     mockPrisma.outboundCampaign.updateMany.mockResolvedValue({ count: 1 });
     // Default: a usable BYO number exists, so the phone-number gate passes.
     mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
@@ -70,7 +70,7 @@ describe('OutboundCampaignService', () => {
       expect(result.status).toBe('draft');
       expect(mockPrisma.agent.findFirst).toHaveBeenCalledWith({
         where: { id: 'agent-1', workspaceId: 'ws-1' },
-        select: { id: true },
+        select: { id: true, status: true },
       });
       expect(mockPrisma.outboundCampaign.create).toHaveBeenCalledWith({
         data: {
@@ -159,6 +159,24 @@ describe('OutboundCampaignService', () => {
       await expect(
         service.create('ws-1', 'user-1', { agent_id: 'agent-1', purpose: 'appointment_reminder', name: 'BYO', contacts: [] }),
       ).resolves.toMatchObject({ id: 'camp-1' });
+    });
+
+    it('refuses creation for a draft agent with a publish message', async () => {
+      mockPrisma.agent.findFirst.mockResolvedValue({ id: 'agent-1', status: 'draft' });
+
+      const err = await service
+        .create('ws-1', 'user-1', {
+          agent_id: 'agent-1',
+          purpose: 'appointment_reminder',
+          name: 'Draft Agent Campaign',
+          contacts: [{ phone: '+15551234567' }],
+        })
+        .catch((e) => e);
+
+      expect(err.errorCode).toBe('AGENT_NOT_PUBLISHED');
+      expect(err.getStatus()).toBe(409);
+      expect(err.message).toContain('Publish the agent');
+      expect(mockPrisma.outboundCampaign.create).not.toHaveBeenCalled();
     });
 
     it('allows creation via a legacy managed Twilio number', async () => {

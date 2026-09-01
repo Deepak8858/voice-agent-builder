@@ -34,6 +34,7 @@ interface SessionUser {
 interface AgentSummary {
   id: string;
   name: string;
+  status: string;
 }
 
 interface TelephonyConnection {
@@ -819,10 +820,15 @@ export default function PhoneNumbersPage() {
                     disabled={busy === `assign-${number.id}`}
                   >
                     <option value="">Unassigned</option>
-                    {agents.map((agent) => (
+                    {agents.filter((agent) => agent.status === 'published').map((agent) => (
                       <option key={agent.id} value={agent.id}>{agent.name}</option>
                     ))}
                   </select>
+                  {agents.length > 0 && agents.every((agent) => agent.status !== 'published') && (
+                    <p className="text-xs text-destructive">
+                      No published agents. Publish an agent in the builder before assigning it to a number.
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                     <label className="flex items-center gap-1.5">
                       <input

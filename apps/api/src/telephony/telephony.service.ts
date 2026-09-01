@@ -495,7 +495,17 @@ export class TelephonyService {
     await this.assertByoTelephonyAllowed(number.organizationId);
     this.assertNumberVerified(number);
     if (dto.agent_id) {
-      await this.agent(workspaceId, dto.agent_id);
+      const agent = await this.agent(workspaceId, dto.agent_id);
+      // The compliance engine refuses calls for non-published agents at dial
+      // time; failing here instead gives the user the fix while they are
+      // still on the assignment screen.
+      if (agent.status !== 'published') {
+        throw new AppError(
+          'AGENT_NOT_PUBLISHED',
+          'Publish the agent before assigning it to a phone number.',
+          409,
+        );
+      }
     }
     const updated = await this.prisma.telephonyPhoneNumber.update({
       where: { id: number.id },
@@ -1594,7 +1604,7 @@ export class TelephonyService {
   private async agent(workspaceId: string, agentId: string) {
     const agent = await this.prisma.agent.findFirst({
       where: { id: agentId, workspaceId },
-      select: { id: true, name: true, activeVersionId: true },
+      select: { id: true, name: true, status: true, activeVersionId: true },
     });
     if (!agent) throw new AppError('AGENT_NOT_FOUND', 'Agent not found.', 404);
     return agent;

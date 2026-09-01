@@ -74,9 +74,10 @@ export class OutboundCampaignService {
   ) {
     const agent = await this.prisma.agent.findFirst({
       where: { id: dto.agent_id, workspaceId },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (!agent) throw new AgentNotFoundError(dto.agent_id);
+    this.assertAgentPublished(agent.status, 'creating');
     await this.assertPhoneNumberAvailable(workspaceId, dto.agent_id, 'create');
 
     const campaign = await this.prisma.outboundCampaign.create({
@@ -103,6 +104,19 @@ export class OutboundCampaignService {
       },
     });
     return campaign;
+  }
+
+  /**
+   * The compliance engine refuses non-published agents per dial; failing at
+   * create/start gives the user the fix before any contact is enqueued.
+   */
+  private assertAgentPublished(status: string, stage: 'creating' | 'starting'): void {
+    if (status === 'published') return;
+    throw new AppError(
+      'AGENT_NOT_PUBLISHED',
+      `Publish the agent before ${stage} a campaign.`,
+      409,
+    );
   }
 
   // create asks "does a usable-intent number exist" (assignment/configure legitimately
@@ -154,6 +168,11 @@ export class OutboundCampaignService {
       throw new AppError('INVALID_STATUS', `Cannot start campaign in ${campaign.status} status`, 400);
     }
 
+    const agent = await this.prisma.agent.findFirst({
+      where: { id: campaign.agentId, workspaceId },
+      select: { status: true },
+    });
+    this.assertAgentPublished(agent?.status ?? 'missing', 'starting');
     await this.assertPhoneNumberAvailable(workspaceId, campaign.agentId, 'start');
 
     const contacts = this.readContacts(campaign.contacts);
