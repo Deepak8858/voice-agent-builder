@@ -1,30 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="VoiceForge AI">
-  <defs>
-    <linearGradient id="vf-grad" x1="4" y1="4" x2="60" y2="60" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ef4444"/>
-      <stop offset="0.55" stop-color="#dc2626"/>
-      <stop offset="1" stop-color="#991b1b"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#vf-grad)"/>
-  <!--
-    Headset mark: the same three paths the app renders in
-    apps/web/components/logo.tsx and packages/ui/src/logo.tsx (headband arc +
-    two earcups), scaled from the 24-unit viewBox and centred in the tile.
-    Keep these paths in sync with the components if the mark ever changes.
-
-    stroke-width is 2.5 rather than the component's 1.75: this file is rendered
-    as a favicon down to 16x16, and at 1.75 the strokes fell below one device
-    pixel and the mark disappeared entirely. Verified visible at 16/32/64/256.
-  -->
-  <g transform="translate(10.6 12.1) scale(1.8)"
-     fill="none"
-     stroke="#ffffff"
-     stroke-width="2.5"
-     stroke-linecap="round"
-     stroke-linejoin="round">
-    <path d="M4 11a8 8 0 0 1 16 0"/>
-    <path d="M4 15a4 4 0 0 0 4 4h1v-6H4z"/>
-    <path d="M20 15a4 4 0 0 1-4 4h-1v-6h5z"/>
-  </g>
+  <!-- Spec Bracket mark: the agent is a contract; the voice lives inside it.
+       Palette matches the marketing site (lime #bfff4a / ink #07130f).
+       Geometry pixel-verified: mark bbox centered 0/0 at 256px. -->
+  <rect width="64" height="64" rx="14" fill="#bfff4a"/>
+  <path d="M22 18 c-5 0 -5 4 -5 7 c0 3 -3 4 -3 7 c0 3 3 4 3 7 c0 3 0 7 5 7"
+        stroke="#07130f" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M42 18 c5 0 5 4 5 7 c0 3 3 4 3 7 c0 3 -3 4 -3 7 c0 3 0 7 -5 7"
+        stroke="#07130f" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <line x1="27" y1="28" x2="27" y2="36" stroke="#07130f" stroke-width="4" stroke-linecap="round"/>
+  <line x1="32" y1="23" x2="32" y2="41" stroke="#07130f" stroke-width="4" stroke-linecap="round"/>
+  <line x1="37" y1="27" x2="37" y2="37" stroke="#07130f" stroke-width="4" stroke-linecap="round"/>
 </svg>
