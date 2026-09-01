@@ -69,7 +69,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       // This record carries the stack; the 5xx summary below is skipped for
       // this branch so each exception produces exactly one error record.
       logger.error(
-        { err: exception, correlationId, method: req.method, url: stripQuery(req.url), status },
+        { err: exception, correlationId, method: req.method, url: stripQuery(req.url), status, code: error.code },
         exception.message,
       );
       loggedWithStack = true;
