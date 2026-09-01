@@ -940,4 +940,20 @@ describe('deploy gate covers every variable Dodo Checkout requires', () => {
     expect(workflowSrc).toMatch(/BILLING_DISABLED.*=.*true/);
     expect(workflowSrc).toContain('must be empty when BILLING_DISABLED=true');
   });
+
+  // The standard-pipeline pre-flight is prose rather than one of the parsed
+  // arrays, so pin its presence: the flag and every Azure variable the worker
+  // refuses to boot without must be checked before the old container stops.
+  it('pre-flights the standard voice pipeline configuration', () => {
+    for (const name of [
+      'VOICE_STANDARD_PIPELINE_ENABLED',
+      'AZURE_OPENAI_ENDPOINT',
+      'AZURE_OPENAI_API_KEY',
+      'AZURE_VOICE_LLM_DEPLOYMENT',
+      'AZURE_SPEECH_KEY',
+      'AZURE_SPEECH_REGION',
+    ]) {
+      expect(workflowSrc).toContain(name);
+    }
+  });
 });

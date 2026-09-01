@@ -4,6 +4,7 @@ import type { AgentSpec } from '@voiceforge/shared';
 import {
   StandardPipelineConfigurationError,
   buildStandardSession,
+  missingStandardPipelineConfig,
   resolveStandardVoice,
   resolveSttLanguage,
   type StandardPipelineEnv,
@@ -194,6 +195,15 @@ describe('resolveSttLanguage', () => {
       'ko-KR',
       'zh-CN',
     ]);
+  });
+});
+
+describe('missingStandardPipelineConfig', () => {
+  it('names nothing for a complete configuration and only the absent variable otherwise', () => {
+    expect(missingStandardPipelineConfig(completeEnv)).toEqual([]);
+    expect(
+      missingStandardPipelineConfig({ ...completeEnv, AZURE_SPEECH_REGION: undefined }),
+    ).toEqual(['AZURE_SPEECH_REGION']);
   });
 });
 

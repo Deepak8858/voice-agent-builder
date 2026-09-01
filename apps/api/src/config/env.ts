@@ -120,6 +120,9 @@ const EnvSchema = z
     AZURE_SPEECH_KEY: z.string().optional(),
     AZURE_SPEECH_REGION: z.string().optional(),
     AZURE_TTS_VOICE: z.string().default('en-US-AvaMultilingualNeural'),
+    // Hard cap the worker enforces on a browser test session, so an abandoned
+    // tab cannot meter minutes until the monthly allowance is gone.
+    BROWSER_TEST_MAX_DURATION_SECONDS: z.coerce.number().int().min(60).max(7200).default(600),
 
     DEEPGRAM_API_KEY: z.string().optional(),
     DEEPGRAM_STT_MODEL: z.string().default('nova-3'),

@@ -520,6 +520,25 @@ jobs:
             exit 1
           fi
 
+          # The standard pipeline is the only runtime the free plan may use, so
+          # enabling the flag with missing Azure config or no LiveKit would fail
+          # every free-tier call at runtime instead of failing this deploy.
+          if printf '%s' "$(env_value VOICE_STANDARD_PIPELINE_ENABLED)" \
+            | grep -Eqi '^(1|true|yes|on)$'; then
+            for name in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY \
+              AZURE_VOICE_LLM_DEPLOYMENT AZURE_SPEECH_KEY AZURE_SPEECH_REGION; do
+              # The agent trims these before use, so whitespace-only must fail here too.
+              if [ -z "$(env_value "$name" | tr -d '[:space:]')" ]; then
+                echo "VOICE_STANDARD_PIPELINE_ENABLED requires $name to be set" >&2
+                exit 1
+              fi
+            done
+            if [ "$livekit_enabled" != true ]; then
+              echo "VOICE_STANDARD_PIPELINE_ENABLED requires the LiveKit triplet" >&2
+              exit 1
+            fi
+          fi
+
           candidate_bundle="$release_dir/$deploy_sha"
           install -d -m 755 "$candidate_bundle/nginx/docker-entrypoint.d" "$candidate_bundle/systemd"
           install -m 644 "$uploaded_compose" "$candidate_bundle/docker-compose.aws.yml"
@@ -747,22 +766,20 @@ jobs:
           install_release_assets "$candidate_bundle"
           assert_bind_sources
           nginx_config_desired="$(nginx_config_checksum)"
-          nginx_config_applied=""
-          if [ -s "$applied_nginx_file" ]; then
-            nginx_config_applied="$(tr -d '\r\n' < "$applied_nginx_file")"
-          fi
           sudo systemctl daemon-reload
           sudo systemctl enable --now voiceforge-certbot-renew.timer
           replacement_started=true
           live_compose=(docker compose --env-file "$env_file" -f "$compose_file")
           "${live_compose[@]}" "${candidate_profile[@]}" up -d --no-build --remove-orphans "${services[@]}"
-          # An empty $nginx_config_applied means we have never recorded what the
-          # running container applied, so we cannot prove it matches disk. Treat
-          # that as drift and recreate once to establish a known-good baseline.
-          if [ "$nginx_config_desired" != "$nginx_config_applied" ]; then
-            echo "nginx config differs from what the running container applied; recreating" >&2
-            "${live_compose[@]}" up -d --no-build --no-deps --force-recreate nginx
-          fi
+          # Recreate nginx unconditionally, exactly like the rollback path. Its
+          # static upstream blocks resolve api/web container DNS once at nginx
+          # startup, and the `up` above just recreated those containers — when
+          # they come back on different IPs (e.g. a new service like the
+          # livekit-agent shifts the network allocation), a surviving nginx
+          # serves 502s from stale IPs even though every container is healthy.
+          # Config drift used to be the only recreate trigger, which is how run
+          # 33501705959 failed its public web check and rolled back.
+          "${live_compose[@]}" up -d --no-build --no-deps --force-recreate nginx
           if [ "$livekit_enabled" = false ]; then
             "${live_compose[@]}" --profile livekit rm -sf livekit-agent
           fi

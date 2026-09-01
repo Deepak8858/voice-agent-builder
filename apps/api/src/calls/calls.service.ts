@@ -335,6 +335,7 @@ export class CallsService {
       callId: call.id,
       direction: 'browser_test',
       pipeline: 'standard' as const,
+      maxDurationSeconds: env.BROWSER_TEST_MAX_DURATION_SECONDS,
     };
 
     let token: string;
