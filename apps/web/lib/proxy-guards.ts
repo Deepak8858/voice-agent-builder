@@ -23,7 +23,9 @@ import { siteUrl } from '@/lib/site-url';
  * prefix, which changed what the browser can reach and is deliberate on both
  * sides: contact erasure is now `/workspaces/me/contacts/:id/erasure` and so is
  * covered by the `/workspaces` prefix, like ContactsController's other contact
- * mutations, while `/users/me/erasure` gets no entry and stays unreachable.
+ * mutations, while `/users/me/erasure` is allow-listed as an exact path — not a
+ * `/users` prefix — because the settings page's delete-account flow is its
+ * client and nothing else under `users/` is meant to be browser-reachable.
  * `GET orgs/:orgId/audit-logs` was the last route under the doubled namespace
  * and has since dropped it too, so no doubled path exists anywhere. Neither
  * spelling is reachable here: there is no `/orgs` prefix and none is wanted —
@@ -40,6 +42,7 @@ export const ALLOWED_PROXY_PREFIXES = [
   '/templates',
   '/invites/accept',
   '/agents/generate',
+  '/users/me/erasure',
 ] as const;
 
 /**

@@ -187,13 +187,14 @@ const REVIEWED_BASELINE: readonly string[] = [
   // Keyed on the authenticated user id, or on the Workspace/Organization row
   // itself, where the id IS the tenant identifier.
   'auth/supabase-auth.service.ts:membership.findFirst',
-  // eraseUser() enumerates the user's memberships before deleteMany wipes
-  // them, so their workspace:access cache entries can be revoked. Keyed on
-  // the erased user's id — cross-workspace by design, like the deleteMany
-  // below it.
-  'compliance/erasure.service.ts:membership.findMany',
-  'compliance/erasure.service.ts:membership.deleteMany',
-  'compliance/erasure.service.ts:workspaceMembership.deleteMany',
+  // eraseUser()'s user-keyed membership enumeration/deleteMany used to be
+  // baselined here. The self-service account-deletion change added
+  // membership/workspaceMembership.findFirst calls earlier in the file whose
+  // `where` names `workspace.organizationId`, and the analyzer's
+  // scoped-sibling rule now treats the later user-keyed queries as covered —
+  // the entries went stale and were removed. The queries themselves are
+  // unchanged and remain cross-workspace by design (keyed on the erased
+  // user's id).
   'workspaces/workspaces.service.ts:membership.findMany',
   'referral/referral.service.ts:workspace.findUnique',
   'white-label/white-label.service.ts:workspace.findMany',
@@ -273,10 +274,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'compliance/erasure.service.ts:analyticsEvent.deleteMany': 1,
   'compliance/erasure.service.ts:call.findMany': 1,
   'compliance/erasure.service.ts:callEvaluation.deleteMany': 1,
-  'compliance/erasure.service.ts:membership.deleteMany': 1,
-  'compliance/erasure.service.ts:membership.findMany': 1,
   'compliance/erasure.service.ts:toolInvocation.deleteMany': 1,
-  'compliance/erasure.service.ts:workspaceMembership.deleteMany': 1,
   'compliance/retention.service.ts:call.count': 2,
   'compliance/retention.service.ts:call.deleteMany': 1,
   'compliance/retention.service.ts:call.findMany': 1,
