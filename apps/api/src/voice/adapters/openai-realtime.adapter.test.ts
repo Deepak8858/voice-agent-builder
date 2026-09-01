@@ -130,8 +130,11 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
     });
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(
+        // Top-level secret, as the GA /realtime/client_secrets endpoint returns it.
         JSON.stringify({
-          client_secret: { value: 'ek_test', expires_at: 1893456000 },
+          value: 'ek_test',
+          expires_at: 1893456000,
+          session: { type: 'realtime' },
         }),
         { status: 200 },
       ),

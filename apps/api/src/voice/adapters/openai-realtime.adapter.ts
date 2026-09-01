@@ -22,11 +22,12 @@ import type {
   VoiceRuntimeProvider,
 } from './voice.provider.interface';
 
+// The GA `/realtime/client_secrets` endpoint returns the secret at the top
+// level ({ value, expires_at, session }), not nested under `client_secret`
+// the way the pre-GA `/realtime/sessions` response did.
 const ClientSecretResponseSchema = z.object({
-  client_secret: z.object({
-    value: z.string().min(1),
-    expires_at: z.number().int().positive(),
-  }),
+  value: z.string().min(1),
+  expires_at: z.number().int().positive(),
 });
 
 function openAiRealtimeRuntimeId(agentVersionId: string): string {
@@ -180,8 +181,8 @@ export class OpenAIRealtimeVoiceAdapter implements VoiceRuntimeProvider {
     return {
       test_session_id: testSessionId,
       web_socket_url: realtimeWebSocketUrl(),
-      token: response.client_secret.value,
-      expires_at: new Date(response.client_secret.expires_at * 1000).toISOString(),
+      token: response.value,
+      expires_at: new Date(response.expires_at * 1000).toISOString(),
     };
   }
 
