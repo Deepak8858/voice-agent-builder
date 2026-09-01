@@ -428,6 +428,64 @@ describe('DodoWebhookService production webhook handling', () => {
     expect(prisma.subscription.upsert).toHaveBeenCalled();
   });
 
+  /**
+   * A subscription created straight in the Dodo dashboard has no local row, and a
+   * metadata-less activation of it names no organization to build one from. The
+   * old fallback threw the same "not exactly one" error the several-rows case
+   * threw, so the two grouped together. The failure now names the missing metadata
+   * so it is fixed by hand, and throws from its own site so error tracking keeps it
+   * apart from the ambiguous case.
+   */
+  it('fails distinctly when neither a local row nor metadata resolves the organization', async () => {
+    const prisma = makePrisma({ subscription: null });
+    const svc = makeService(
+      prisma,
+      makeEvent('subscription.active', subscriptionData({ metadata: {} })),
+    );
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+    expect(result).toMatchObject({ handled: false, statusCode: 500 });
+    expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+    expect(prisma.dodoWebhookEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          errorMessage: expect.stringContaining('no organizationId metadata'),
+        }),
+      }),
+    );
+  });
+
+  /**
+   * Two organizations claiming one Dodo customer is genuinely ambiguous: linking
+   * either way could grant one payer's renewals to the other's balance. It stays a
+   * hard failure, but a distinct one that no longer shares a message or a throw
+   * site with the no-row case.
+   */
+  it('fails distinctly when the customer is claimed by more than one organization', async () => {
+    const prisma = makePrisma();
+    prisma.subscription.findMany = vi.fn(async () => [
+      { organizationId: 'org-1' },
+      { organizationId: 'org-2' },
+    ]);
+    const svc = makeService(
+      prisma,
+      makeEvent('subscription.active', subscriptionData({ metadata: {} })),
+    );
+
+    const result = await svc.handleWebhook(Buffer.from('{}'), HEADERS);
+
+    expect(result).toMatchObject({ handled: false, statusCode: 500 });
+    expect(prisma.subscription.upsert).not.toHaveBeenCalled();
+    expect(prisma.dodoWebhookEvent.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          errorMessage: expect.stringContaining('more than one organization'),
+        }),
+      }),
+    );
+  });
+
   it('acknowledges already processed duplicate events without dispatching again', async () => {
     const prisma = makePrisma({ processedEvent: { processedAt: new Date() } });
     const svc = makeService(prisma, makeEvent('subscription.renewed', subscriptionData()));

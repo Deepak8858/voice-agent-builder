@@ -749,8 +749,7 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
     customerId: string,
   ): Promise<string | null> {
     const claimedOrgId = str(asRecord(event.data['metadata'])['organizationId']);
-    const orgId =
-      claimedOrgId ?? (await this.resolveSubscription(customerId, null)).organizationId;
+    const orgId = claimedOrgId ?? (await this.resolveLinkOwner(customerId, subscriptionId));
 
     const conflict = await this.findSubscriptionLinkConflict(orgId, customerId, subscriptionId);
     if (conflict) {
@@ -1329,6 +1328,43 @@ export class DodoWebhookService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
     return local;
+  }
+
+  /**
+   * The organization owning a metadata-less activation, from the customer ->
+   * organization mapping `getOrCreateCustomer` writes before checkout.
+   *
+   * `resolveSubscription` is not reused here because its "exactly one" contract
+   * reports "no local row" and "several rows" through one message, and they are
+   * different failures with different fixes. No row is a subscription created
+   * straight in the Dodo dashboard: it can only be linked when the activation
+   * carries an `organizationId` in metadata (which the caller's upsert then
+   * creates the row from), so a metadata-less one names the missing metadata
+   * plainly for whoever links it by hand. Several rows is a Dodo customer two
+   * organizations both claim, which must never be guessed at. The two throw from
+   * distinct sites with distinct text so error tracking stops grouping them.
+   * `take: 2` is what makes the several-rows case detectable.
+   */
+  private async resolveLinkOwner(customerId: string, subscriptionId: string): Promise<string> {
+    const owners = await this.prisma.subscription.findMany({
+      where: { dodoCustomerId: customerId },
+      select: { organizationId: true },
+      take: 2,
+    });
+    if (owners.length > 1) {
+      throw new Error(
+        `Dodo customer ${customerId} is claimed by more than one organization; ` +
+          `subscription ${subscriptionId} has no unambiguous owner to link`,
+      );
+    }
+    const owner = owners[0];
+    if (!owner) {
+      throw new Error(
+        `Dodo customer ${customerId} has no local subscription and the activation of ` +
+          `${subscriptionId} carries no organizationId metadata to create one from`,
+      );
+    }
+    return owner.organizationId;
   }
 
   private async resolveSubscription(
