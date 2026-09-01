@@ -4,6 +4,7 @@ import { BillingReconciliationWorker } from './billing-reconciliation.worker';
 import { CallLeaseRenewalWorker } from './call-lease-renewal.worker';
 import { EvaluationWorker } from './evaluation.worker';
 import { FreeCreditGrantWorker } from './free-credit-grant.worker';
+import { LowBalanceWorker } from './low-balance.worker';
 import { AnalyticsWorker } from './analytics.worker';
 import { AuditWorker } from './audit.worker';
 import { EmbeddingsWorker } from './embeddings.worker';
@@ -56,6 +57,7 @@ import { ComplianceModule } from '../compliance/compliance.module';
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
     FreeCreditGrantWorker,
+    LowBalanceWorker,
     RetentionSweepWorker,
   ],
   exports: [
@@ -70,6 +72,7 @@ import { ComplianceModule } from '../compliance/compliance.module';
     BillingReconciliationWorker,
     CallLeaseRenewalWorker,
     FreeCreditGrantWorker,
+    LowBalanceWorker,
     RetentionSweepWorker,
   ],
 })

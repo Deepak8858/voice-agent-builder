@@ -520,6 +520,24 @@ jobs:
             exit 1
           fi
 
+          # The standard pipeline is the only runtime the free plan may use, so
+          # enabling the flag with missing Azure config or no LiveKit would fail
+          # every free-tier call at runtime instead of failing this deploy.
+          if printf '%s' "$(env_value VOICE_STANDARD_PIPELINE_ENABLED)" \
+            | grep -Eqi '^(1|true|yes|on)$'; then
+            for name in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_API_KEY \
+              AZURE_VOICE_LLM_DEPLOYMENT AZURE_SPEECH_KEY AZURE_SPEECH_REGION; do
+              if [ -z "$(env_value "$name")" ]; then
+                echo "VOICE_STANDARD_PIPELINE_ENABLED requires $name to be set" >&2
+                exit 1
+              fi
+            done
+            if [ "$livekit_enabled" != true ]; then
+              echo "VOICE_STANDARD_PIPELINE_ENABLED requires the LiveKit triplet" >&2
+              exit 1
+            fi
+          fi
+
           candidate_bundle="$release_dir/$deploy_sha"
           install -d -m 755 "$candidate_bundle/nginx/docker-entrypoint.d" "$candidate_bundle/systemd"
           install -m 644 "$uploaded_compose" "$candidate_bundle/docker-compose.aws.yml"

@@ -43,6 +43,11 @@ vi.mock('@/lib/analytics/posthog-server', () => ({
   ) => captureServerEvent(event, properties, context),
 }));
 
+const apiFetch = vi.fn(async (_path: string, _init?: RequestInit) => undefined);
+vi.mock('@/lib/api', () => ({
+  apiFetch: (path: string, init?: RequestInit) => apiFetch(path, init),
+}));
+
 import { POST } from './route';
 
 // ---------------------------------------------------------------------------
@@ -185,6 +190,7 @@ beforeEach(() => {
   sequence = 0;
   updateUserById.mockClear();
   captureServerEvent.mockClear();
+  apiFetch.mockClear();
 });
 
 describe('POST /api/onboarding organization cap', () => {
@@ -297,6 +303,18 @@ describe('POST /api/onboarding organization cap', () => {
       owner_user_id: 'users-999',
     });
     expect((await res.json()).organizationId).not.toBe('org-someone-else');
+  });
+
+  it('triggers the welcome email only for the request that created the app user', async () => {
+    await POST(onboardingRequest({ orgName: 'Farm One' }));
+
+    expect(apiFetch).toHaveBeenCalledWith('/auth/me/welcome-email', { method: 'POST' });
+
+    // A repeat submission finds the existing user row and must not re-send.
+    apiFetch.mockClear();
+    await POST(onboardingRequest({ orgName: 'Farm Two' }));
+
+    expect(apiFetch).not.toHaveBeenCalled();
   });
 
   it('still writes the session app_metadata the web app reads', async () => {

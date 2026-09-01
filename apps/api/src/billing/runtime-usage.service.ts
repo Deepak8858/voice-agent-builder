@@ -1,11 +1,28 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { RuntimeUsageDecision, RuntimeUsageEvent } from '@voiceforge/shared';
+import { FREE_MONTHLY_MINUTES } from '@voiceforge/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { QueueService } from '../queue/queue.service';
+import { LOW_BALANCE_CHECK_JOB, LOW_BALANCE_QUEUE } from '../workers/low-balance.worker';
 import { CallAdmissionService } from './call-admission.service';
-import { CreditLedgerService, type CreditBalance } from './credit-ledger.service';
+import {
+  CreditLedgerService,
+  currentMonthKey,
+  type CreditBalance,
+} from './credit-ledger.service';
 
 const SECONDS_PER_MINUTE = 60;
+
+/**
+ * At or below 20% of the free plan's monthly minutes, an allowed decision also
+ * enqueues the low-balance warning. Derived from the catalog so a resized
+ * allowance moves the threshold with it.
+ */
+const LOW_BALANCE_THRESHOLD_MINUTES = Math.floor(FREE_MONTHLY_MINUTES * 0.2);
+
+/** Keeps the month-keyed dedup jobId alive past the month it belongs to. */
+const LOW_BALANCE_JOB_RETENTION_SECONDS = 45 * 24 * 3600;
 
 /**
  * How long a delivery may hold an unfinished event before another delivery is
@@ -63,6 +80,7 @@ export class RuntimeUsageService {
     private readonly prisma: PrismaService,
     private readonly creditLedger: CreditLedgerService,
     private readonly admission: CallAdmissionService,
+    private readonly queues: QueueService,
   ) {}
 
   async handleEvent(event: RuntimeUsageEvent): Promise<RuntimeUsageDecision> {
@@ -301,6 +319,7 @@ export class RuntimeUsageService {
       );
     }
 
+    void this.maybeWarnLowBalance(event.organizationId, balance);
     return this.decision(event, true, 'allowed', 1, balance);
   }
 
@@ -339,6 +358,7 @@ export class RuntimeUsageService {
     }
 
     if (decision.allowed) {
+      void this.maybeWarnLowBalance(event.organizationId, decision.creditBalance);
       try {
         await this.prisma.callUsage.updateMany({
           where: { callId: event.callId, organizationId: event.organizationId },
@@ -362,6 +382,44 @@ export class RuntimeUsageService {
     }
 
     return decision;
+  }
+
+  /**
+   * Enqueues the low-balance warning when an allowed decision leaves the
+   * balance at or below the threshold.
+   *
+   * Fire-and-forget off the metering hot path: a Redis hiccup must never fail
+   * or delay a decision, so every failure is swallowed into a warning. The
+   * month-keyed `jobId` dedupes to at most one email per organization per
+   * month, and its retention outlives the month so a late duplicate cannot
+   * re-arm the key. Paid organizations may enqueue here; the worker is the
+   * authoritative plan and balance check.
+   */
+  private async maybeWarnLowBalance(
+    organizationId: string,
+    balance: { includedMinutesRemaining: number; purchasedMinutesRemaining: number },
+  ): Promise<void> {
+    try {
+      const remaining = balance.includedMinutesRemaining + balance.purchasedMinutesRemaining;
+      if (remaining > LOW_BALANCE_THRESHOLD_MINUTES) return;
+      await this.queues.enqueue(
+        LOW_BALANCE_QUEUE,
+        LOW_BALANCE_CHECK_JOB,
+        { organizationId },
+        {
+          jobId: `low-balance:${organizationId}:${currentMonthKey()}`,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 30_000 },
+          removeOnComplete: { age: LOW_BALANCE_JOB_RETENTION_SECONDS },
+          removeOnFail: 50,
+        },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Low-balance warning could not be enqueued for organization ${organizationId}: ` +
+          `${(err as Error).message}`,
+      );
+    }
   }
 
   /**

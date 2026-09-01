@@ -3,6 +3,7 @@ import { after, NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { captureServerEvent } from '@/lib/analytics/posthog-server';
+import { apiFetch } from '@/lib/api';
 
 interface OnboardingBody {
   orgName?: string;
@@ -261,6 +262,8 @@ export async function POST(req: NextRequest) {
               { workspace_id: workspace.id },
               analyticsContext,
             ),
+            // Fire-and-forget: a failed welcome email must not fail onboarding.
+            apiFetch('/auth/me/welcome-email', { method: 'POST' }).catch(() => {}),
           ]
         : []),
       // Same idempotency reasoning as `user_signed_up`: a reused workspace was
