@@ -1,4 +1,4 @@
-import type { PhoneProvider } from '@voiceforge/shared';
+import type { PhoneNumberProvider } from '@voiceforge/shared';
 
 export interface LiveKitRoomResult {
   roomName: string;
@@ -22,7 +22,7 @@ export interface CreateInboundSipTrunkParams {
   workspaceId: string;
   phoneNumberId: string;
   phoneNumberE164: string;
-  provider: PhoneProvider;
+  provider: PhoneNumberProvider;
   authUsername?: string;
   authPassword?: string;
 }
@@ -31,7 +31,7 @@ export interface CreateOutboundSipTrunkParams {
   workspaceId: string;
   phoneNumberId: string;
   phoneNumberE164: string;
-  provider: PhoneProvider;
+  provider: PhoneNumberProvider;
   sipAddress?: string | null;
   authUsername?: string | null;
   authPassword?: string | null;

@@ -6,7 +6,9 @@ import type {
   CreateTelephonyConnectionDto,
   ImportPhoneNumbersDto,
   ManualPhoneNumberDto,
+  PhoneNumberProvider,
   ProviderCredentials,
+  SipTrunkNumberDto,
   StartTelephonyOutboundCallDto,
   SyncedProviderPhoneNumber,
   VoicePipeline,
@@ -107,6 +109,13 @@ export class TelephonyService {
           name: 'Vobiz / Vobiz.ai',
           supportsAutomaticSync: true,
           supportsAutomaticRouting: true,
+          supportsManualSetup: true,
+        },
+        {
+          id: 'sip',
+          name: 'SIP trunk',
+          supportsAutomaticSync: false,
+          supportsAutomaticRouting: false,
           supportsManualSetup: true,
         },
       ],
@@ -322,7 +331,9 @@ export class TelephonyService {
    * against, so the row lands `pending_verification` and is refused at assign,
    * configure-livekit, and outbound until an import proves it (see
    * `assertNumberVerified` and `importNumbers`). Nothing here moves it out of
-   * that state: a manual row carries no credentials this API can query.
+   * that state: a manual row carries no credentials this API can query. That
+   * "pending until an import proves it" rule covers twilio/vobiz rows only —
+   * provider 'sip' rows go through `createSipTrunkNumber` below instead.
    */
   async createManualNumber(workspaceId: string, actorUserId: string, dto: ManualPhoneNumberDto) {
     const workspace = await this.workspace(workspaceId);
@@ -377,6 +388,90 @@ export class TelephonyService {
     return this.phoneNumberDto(row);
   }
 
+  /**
+   * Records a generic BYO SIP trunk number as 'verified' on create: no provider
+   * API exists to verify a generic trunk. Inbound only rings if the user points
+   * their carrier at our SIP host, outbound authenticates with their own trunk
+   * credentials, and the global @unique on phoneNumberE164 remains the squat guard.
+   */
+  async createSipTrunkNumber(workspaceId: string, actorUserId: string, dto: SipTrunkNumberDto) {
+    const workspace = await this.workspace(workspaceId);
+    await this.assertByoTelephonyAllowed(workspace.organizationId);
+    if (dto.sip_auth_password && !dto.sip_auth_username) {
+      throw new AppError(
+        'VALIDATION_ERROR',
+        'A SIP auth password requires a SIP auth username.',
+        400,
+      );
+    }
+    const sipTrunkDomain = this.normalizeSipTrunkDomain('sip', dto.sip_trunk_domain);
+    if (!sipTrunkDomain) {
+      throw new AppError('VALIDATION_ERROR', 'Enter the SIP trunk domain.', 400);
+    }
+
+    if (!this.entitlements) {
+      throw new AppError('BILLING_UNAVAILABLE', 'Plan entitlements are unavailable.', 503);
+    }
+    // The phone-number quota is one plan number across both worlds: managed
+    // (platform-rented Twilio) and BYO rows.
+    const [managed, byo] = await Promise.all([
+      this.prisma.twilioPhoneNumber.count({
+        where: { workspace: { organizationId: workspace.organizationId } },
+      }),
+      this.prisma.telephonyPhoneNumber.count({
+        where: { organizationId: workspace.organizationId, status: { not: 'disconnected' } },
+      }),
+    ]);
+    await this.entitlements.assertAllowed(workspace.organizationId, {
+      kind: 'phone_number_create',
+      current: managed + byo,
+    });
+
+    let row;
+    try {
+      row = await this.prisma.telephonyPhoneNumber.create({
+        data: {
+          workspaceId,
+          organizationId: workspace.organizationId,
+          provider: 'sip',
+          phoneNumberE164: dto.phone_number,
+          friendlyName: dto.phone_number,
+          status: 'verified',
+          inboundEnabled: true,
+          outboundEnabled: true,
+          providerMetadata: {
+            sipTrunkDomain,
+            sipAuthUsernameEncrypted: dto.sip_auth_username
+              ? this.encryption.encryptJson({ value: dto.sip_auth_username })
+              : null,
+            sipAuthPasswordEncrypted: dto.sip_auth_password
+              ? this.encryption.encryptJson({ value: dto.sip_auth_password })
+              : null,
+          } as unknown as Prisma.InputJsonValue,
+        },
+      });
+    } catch (err) {
+      // The global @unique on phoneNumberE164 is the uniqueness check.
+      if (isUniqueConstraintViolation(err)) {
+        throw new AppError(
+          'PHONE_NUMBER_ALREADY_CONNECTED',
+          'This phone number is already connected.',
+          409,
+        );
+      }
+      throw err;
+    }
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'telephony.phone_number.sip_create',
+      resourceType: 'telephony_phone_number',
+      resourceId: row.id,
+      metadata: { provider: 'sip' },
+    });
+    return this.phoneNumberDto(row);
+  }
+
   async listPhoneNumbers(workspaceId: string) {
     const rows = await this.prisma.telephonyPhoneNumber.findMany({
       where: { workspaceId, status: { not: 'disconnected' } },
@@ -418,6 +513,19 @@ export class TelephonyService {
       resourceId: number.id,
       metadata: { agent_id: dto.agent_id },
     });
+    // A generic SIP trunk has no provider console step after assignment, so
+    // assigning the agent is the moment LiveKit routing is (idempotently) set
+    // up. Other providers keep their explicit configure-livekit step.
+    if (dto.agent_id && number.provider === 'sip') {
+      await this.configureLiveKit(workspaceId, number.id, actorUserId);
+      // Re-read: configure just flipped the status and created the LiveKit
+      // config, and the assign response must reflect what a refresh shows.
+      const configured = await this.prisma.telephonyPhoneNumber.findFirst({
+        where: { id: number.id, workspaceId },
+        include: { livekitConfig: true },
+      });
+      if (configured) return this.phoneNumberDto(configured);
+    }
     return this.phoneNumberDto(updated);
   }
 
@@ -434,22 +542,35 @@ export class TelephonyService {
     }
     const agent = await this.agent(workspaceId, number.assignedAgentId);
 
+    const metadata = this.objectMetadata(number.providerMetadata);
+    const sipAuthUsernameEncrypted = metadata.sipAuthUsernameEncrypted ?? null;
+    const sipAuthPasswordEncrypted = metadata.sipAuthPasswordEncrypted ?? null;
+    const authUsername = sipAuthUsernameEncrypted
+      ? this.encryption.decryptJson<{ value?: string }>(sipAuthUsernameEncrypted).value
+      : undefined;
+    const authPassword = sipAuthPasswordEncrypted
+      ? this.encryption.decryptJson<{ value?: string }>(sipAuthPasswordEncrypted).value
+      : undefined;
+
     const inbound = await this.livekit.createInboundSipTrunk({
       workspaceId,
       phoneNumberId: number.id,
       phoneNumberE164: number.phoneNumberE164,
-      provider: number.provider as never,
+      provider: number.provider as PhoneNumberProvider,
+      ...(authUsername ? { authUsername } : {}),
+      ...(authPassword ? { authPassword } : {}),
     });
 
     let outboundTrunkId: string | null = null;
     if (number.outboundEnabled) {
-      const metadata = this.objectMetadata(number.providerMetadata);
       const outbound = await this.livekit.createOutboundSipTrunk({
         workspaceId,
         phoneNumberId: number.id,
         phoneNumberE164: number.phoneNumberE164,
-        provider: number.provider as never,
+        provider: number.provider as PhoneNumberProvider,
         sipAddress: typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
+        ...(authUsername ? { authUsername } : {}),
+        ...(authPassword ? { authPassword } : {}),
       });
       outboundTrunkId = outbound.trunkId;
     }
@@ -485,6 +606,10 @@ export class TelephonyService {
         inboundTrunkId: inbound.trunkId,
         outboundTrunkId,
         dispatchRuleId: dispatch.dispatchRuleId,
+        sipAuthUsernameEncrypted:
+          (sipAuthUsernameEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
+        sipAuthPasswordEncrypted:
+          (sipAuthPasswordEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
         status: 'configured',
       },
       update: {
@@ -494,6 +619,10 @@ export class TelephonyService {
         inboundTrunkId: inbound.trunkId,
         outboundTrunkId,
         dispatchRuleId: dispatch.dispatchRuleId,
+        sipAuthUsernameEncrypted:
+          (sipAuthUsernameEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
+        sipAuthPasswordEncrypted:
+          (sipAuthPasswordEncrypted as Prisma.InputJsonValue | null) ?? Prisma.JsonNull,
         status: 'configured',
       },
     });

@@ -75,6 +75,7 @@ export class OutboundCampaignService {
       select: { id: true },
     });
     if (!agent) throw new AgentNotFoundError(dto.agent_id);
+    await this.assertPhoneNumberAvailable(workspaceId, dto.agent_id, 'create');
 
     const campaign = await this.prisma.outboundCampaign.create({
       data: {
@@ -100,6 +101,46 @@ export class OutboundCampaignService {
     return campaign;
   }
 
+  // create asks "does a usable-intent number exist" (assignment/configure legitimately
+  // happen after the wizard); start mirrors the worker's exact dial predicate
+  // (findAssignedByoOutboundNumber) so a started campaign can never fail per-contact
+  // with NO_PHONE_NUMBER; the legacy count keeps managed-Twilio workspaces working.
+  private async assertPhoneNumberAvailable(
+    workspaceId: string,
+    agentId: string,
+    stage: 'create' | 'start',
+  ) {
+    const [legacyCount, byoNumber] = await Promise.all([
+      this.prisma.twilioPhoneNumber.count({ where: { workspaceId } }),
+      this.prisma.telephonyPhoneNumber.findFirst({
+        where:
+          stage === 'create'
+            ? {
+                workspaceId,
+                outboundEnabled: true,
+                status: { notIn: ['pending_verification', 'disconnected'] },
+              }
+            : {
+                workspaceId,
+                assignedAgentId: agentId,
+                outboundEnabled: true,
+                status: { not: 'disconnected' },
+                livekitConfig: { is: { outboundTrunkId: { not: null } } },
+              },
+        select: { id: true },
+      }),
+    ]);
+    if (legacyCount > 0 || byoNumber) return;
+    throw new AppError(
+      'PHONE_NUMBER_REQUIRED',
+      stage === 'create'
+        ? 'Add an outbound-enabled phone number before creating a campaign.'
+        : 'Assign a configured outbound phone number to this agent before starting the campaign.',
+      409,
+      { redirect: '/dashboard/settings/phone-numbers', stage },
+    );
+  }
+
   async start(workspaceId: string, campaignId: string, actorUserId: string) {
     const campaign = await this.prisma.outboundCampaign.findFirst({
       where: { id: campaignId, workspaceId },
@@ -108,6 +149,8 @@ export class OutboundCampaignService {
     if (campaign.status !== 'draft' && campaign.status !== 'paused') {
       throw new AppError('INVALID_STATUS', `Cannot start campaign in ${campaign.status} status`, 400);
     }
+
+    await this.assertPhoneNumberAvailable(workspaceId, campaign.agentId, 'start');
 
     const contacts = this.readContacts(campaign.contacts);
     // Resume, never replay: contacts the dispatcher already handed to the dialer

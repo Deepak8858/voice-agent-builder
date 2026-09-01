@@ -8,6 +8,11 @@ const E164PhoneSchema = z
 export const PhoneProviderSchema = z.enum(['twilio', 'vobiz']);
 export type PhoneProvider = z.infer<typeof PhoneProviderSchema>;
 
+// Superset of PhoneProviderSchema for phone-number rows: 'sip' rows are
+// generic BYO trunks with no provider connection, credentials, or adapter.
+export const PhoneNumberProviderSchema = z.enum(['twilio', 'vobiz', 'sip']);
+export type PhoneNumberProvider = z.infer<typeof PhoneNumberProviderSchema>;
+
 export const TelephonyConnectionStatusSchema = z.enum([
   'connected',
   'invalid',
@@ -102,6 +107,16 @@ export const ManualPhoneNumberDtoSchema = z
   })
   .strict();
 export type ManualPhoneNumberDto = z.infer<typeof ManualPhoneNumberDtoSchema>;
+
+export const SipTrunkNumberDtoSchema = z
+  .object({
+    phone_number: E164PhoneSchema,
+    sip_trunk_domain: z.string().trim().min(1).max(255),
+    sip_auth_username: z.string().trim().min(1).max(120).optional(),
+    sip_auth_password: z.string().min(1).max(255).optional(),
+  })
+  .strict();
+export type SipTrunkNumberDto = z.infer<typeof SipTrunkNumberDtoSchema>;
 
 export const AssignPhoneNumberAgentDtoSchema = z
   .object({

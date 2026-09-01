@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { ForbiddenPlanError } from '../billing/billing.service';
 import { ComplianceBlockedError } from '../common/errors';
@@ -1683,5 +1684,321 @@ describe('TelephonyService', () => {
 
     expect(prisma.call.create).not.toHaveBeenCalled();
     expect(livekit.createOutboundCall).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Workspace with 2 managed and 3 BYO numbers, so the quota assertion has a
+   * combined count to be checked against.
+   */
+  function makeSipCreateService(overrides?: { assertAllowed?: ReturnType<typeof vi.fn> }) {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      twilioPhoneNumber: { count: vi.fn(async () => 2) },
+      telephonyPhoneNumber: {
+        count: vi.fn(async () => 3),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'number-1',
+          assignedAgentId: null,
+          createdAt: new Date('2026-09-01T00:00:00.000Z'),
+          ...data,
+        })),
+      },
+    };
+    const encryption = {
+      encryptJson: vi.fn((value: unknown) => ({ encrypted: value })),
+      decryptJson: vi.fn(),
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const entitlements = {
+      assertAllowed: overrides?.assertAllowed ?? vi.fn(async () => ({ allowed: true })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      { adapterFor: vi.fn() } as never,
+      encryption as never,
+      audit as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+      undefined,
+      entitlements as never,
+    );
+    return { service, prisma, encryption, audit, entitlements };
+  }
+
+  it('creates a verified SIP trunk number with encrypted auth and a combined quota count', async () => {
+    const { service, prisma, encryption, audit, entitlements } = makeSipCreateService();
+
+    const result = await service.createSipTrunkNumber('workspace-1', 'user-1', {
+      phone_number: '+14155551234',
+      sip_trunk_domain: 'sip.example.com',
+      sip_auth_username: 'alice',
+      sip_auth_password: 'secret-pass',
+    });
+
+    expect(entitlements.assertAllowed).toHaveBeenCalledWith('org-1', {
+      kind: 'phone_number_create',
+      current: 5,
+    });
+    expect(encryption.encryptJson).toHaveBeenCalledTimes(2);
+    expect(prisma.telephonyPhoneNumber.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'sip',
+          phoneNumberE164: '+14155551234',
+          friendlyName: '+14155551234',
+          status: 'verified',
+          inboundEnabled: true,
+          outboundEnabled: true,
+          providerMetadata: expect.objectContaining({
+            sipTrunkDomain: 'sip.example.com',
+            sipAuthUsernameEncrypted: { encrypted: { value: 'alice' } },
+            sipAuthPasswordEncrypted: { encrypted: { value: 'secret-pass' } },
+          }),
+        }),
+      }),
+    );
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'telephony.phone_number.sip_create',
+        resourceId: 'number-1',
+      }),
+    );
+    expect(result).toMatchObject({
+      status: 'verified',
+      phone_number: '+14155551234',
+      friendly_name: '+14155551234',
+      inbound_enabled: true,
+      outbound_enabled: true,
+    });
+  });
+
+  it('rejects a SIP auth password supplied without a username', async () => {
+    const { service, prisma, encryption } = makeSipCreateService();
+
+    await expect(
+      service.createSipTrunkNumber('workspace-1', 'user-1', {
+        phone_number: '+14155551234',
+        sip_trunk_domain: 'sip.example.com',
+        sip_auth_password: 'secret-pass',
+      }),
+    ).rejects.toMatchObject({ errorCode: 'VALIDATION_ERROR' });
+
+    expect(encryption.encryptJson).not.toHaveBeenCalled();
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
+  it('propagates an over-quota rejection before creating the SIP number', async () => {
+    const assertAllowed = vi.fn(async () => {
+      throw new Error('phone number quota exceeded');
+    });
+    const { service, prisma } = makeSipCreateService({ assertAllowed });
+
+    await expect(
+      service.createSipTrunkNumber('workspace-1', 'user-1', {
+        phone_number: '+14155551234',
+        sip_trunk_domain: 'sip.example.com',
+      }),
+    ).rejects.toThrow(/quota exceeded/);
+
+    expect(prisma.telephonyPhoneNumber.create).not.toHaveBeenCalled();
+  });
+
+  it('passes decrypted SIP auth to both trunk calls and persists the encrypted blobs', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'sip',
+      phoneNumberE164: '+14155551234',
+      status: 'verified',
+      assignedAgentId: 'agent-1',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      providerConnection: null,
+      livekitConfig: null,
+      providerMetadata: {
+        sipTrunkDomain: 'sip.example.com',
+        sipAuthUsernameEncrypted: { encrypted: 'user-blob' },
+        sipAuthPasswordEncrypted: { encrypted: 'pass-blob' },
+      },
+    } as never);
+    const livekit = {
+      createInboundSipTrunk: vi.fn(async (_params: Record<string, unknown>) => ({
+        trunkId: 'trunk-in-1',
+      })),
+      createOutboundSipTrunk: vi.fn(async (_params: Record<string, unknown>) => ({
+        trunkId: 'trunk-out-1',
+      })),
+      createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const decryptJson = vi.fn((blob: { encrypted: string }) => ({
+      value: blob.encrypted === 'user-blob' ? 'alice' : 'secret-pass',
+    }));
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.configureLiveKit('workspace-1', 'number-1', 'user-1');
+
+    expect(livekit.createInboundSipTrunk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'sip',
+        authUsername: 'alice',
+        authPassword: 'secret-pass',
+      }),
+    );
+    expect(livekit.createOutboundSipTrunk).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'sip',
+        sipAddress: 'sip.example.com',
+        authUsername: 'alice',
+        authPassword: 'secret-pass',
+      }),
+    );
+    expect(prisma.liveKitTelephonyConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          sipAuthUsernameEncrypted: { encrypted: 'user-blob' },
+          sipAuthPasswordEncrypted: { encrypted: 'pass-blob' },
+        }),
+        update: expect.objectContaining({
+          sipAuthUsernameEncrypted: { encrypted: 'user-blob' },
+          sipAuthPasswordEncrypted: { encrypted: 'pass-blob' },
+        }),
+      }),
+    );
+  });
+
+  it('does not pass SIP auth to LiveKit when the number carries no stored credentials', async () => {
+    const prisma = makePrisma();
+    const livekit = {
+      createInboundSipTrunk: vi.fn(async (_params: Record<string, unknown>) => ({
+        trunkId: 'trunk-in-1',
+      })),
+      createOutboundSipTrunk: vi.fn(async (_params: Record<string, unknown>) => ({
+        trunkId: 'trunk-out-1',
+      })),
+      createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const decryptJson = vi.fn();
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.configureLiveKit('workspace-1', 'number-1', 'user-1');
+
+    expect(decryptJson).not.toHaveBeenCalled();
+    const inboundParams = livekit.createInboundSipTrunk.mock.calls[0][0];
+    expect('authUsername' in inboundParams).toBe(false);
+    expect('authPassword' in inboundParams).toBe(false);
+    const outboundParams = livekit.createOutboundSipTrunk.mock.calls[0][0];
+    expect('authUsername' in outboundParams).toBe(false);
+    expect('authPassword' in outboundParams).toBe(false);
+    expect(prisma.liveKitTelephonyConfig.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          sipAuthUsernameEncrypted: Prisma.JsonNull,
+          sipAuthPasswordEncrypted: Prisma.JsonNull,
+        }),
+      }),
+    );
+  });
+
+  /** A verified number with an agent to assign, varying only the provider. */
+  function makeAssignService(provider: 'sip' | 'vobiz') {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider,
+      phoneNumberE164: '+14155551234',
+      status: 'verified',
+      assignedAgentId: 'agent-1',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      providerConnection: null,
+      livekitConfig: null,
+      providerMetadata: { sipTrunkDomain: 'sip.example.com' },
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    } as never);
+    prisma.telephonyPhoneNumber.update.mockImplementation(
+      async ({ data }: { data: Record<string, unknown> }) =>
+        ({
+          id: 'number-1',
+          provider,
+          phoneNumberE164: '+14155551234',
+          friendlyName: null,
+          status: 'verified',
+          inboundEnabled: true,
+          outboundEnabled: true,
+          createdAt: new Date('2026-09-01T00:00:00.000Z'),
+          ...data,
+        }) as never,
+    );
+    const livekit = {
+      createInboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-in-1' })),
+      createOutboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-out-1' })),
+      createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+    return { service, prisma, livekit };
+  }
+
+  it('auto-configures LiveKit when an agent is assigned to a SIP trunk number', async () => {
+    const { service, prisma, livekit } = makeAssignService('sip');
+
+    await service.assignAgent('workspace-1', 'number-1', 'user-1', { agent_id: 'agent-1' });
+
+    expect(livekit.createInboundSipTrunk).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'sip', phoneNumberId: 'number-1' }),
+    );
+    expect(prisma.liveKitTelephonyConfig.upsert).toHaveBeenCalled();
+  });
+
+  it('does not auto-configure LiveKit when assigning an agent to a vobiz number', async () => {
+    const { service, prisma, livekit } = makeAssignService('vobiz');
+
+    await service.assignAgent('workspace-1', 'number-1', 'user-1', { agent_id: 'agent-1' });
+
+    expect(livekit.createInboundSipTrunk).not.toHaveBeenCalled();
+    expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
   });
 });

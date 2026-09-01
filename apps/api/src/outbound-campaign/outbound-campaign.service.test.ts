@@ -13,6 +13,12 @@ const mockPrisma = {
     update: vi.fn(),
     updateMany: vi.fn(),
   },
+  twilioPhoneNumber: {
+    count: vi.fn(),
+  },
+  telephonyPhoneNumber: {
+    findFirst: vi.fn(),
+  },
 };
 
 const mockQueue = {
@@ -30,6 +36,9 @@ describe('OutboundCampaignService', () => {
     vi.clearAllMocks();
     mockPrisma.agent.findFirst.mockResolvedValue({ id: 'agent-1' });
     mockPrisma.outboundCampaign.updateMany.mockResolvedValue({ count: 1 });
+    // Default: a usable BYO number exists, so the phone-number gate passes.
+    mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
+    mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue({ id: 'num-1' });
     service = new OutboundCampaignService(mockPrisma as any, mockQueue as any, mockAudit as any);
   });
 
@@ -114,6 +123,47 @@ describe('OutboundCampaignService', () => {
         errorCode: 'AGENT_NOT_FOUND',
       });
       expect(mockPrisma.outboundCampaign.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses creation when the workspace has no usable phone number', async () => {
+      mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
+      mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
+      const dto = { agent_id: 'agent-1', name: 'No Numbers', contacts: [{ phone: '+15551234567' }] };
+
+      const err = await service.create('ws-1', 'user-1', dto).catch((e) => e);
+      expect(err.errorCode).toBe('PHONE_NUMBER_REQUIRED');
+      expect(err.getStatus()).toBe(409);
+      expect(err.details).toEqual({ redirect: '/dashboard/settings/phone-numbers', stage: 'create' });
+      expect(mockPrisma.outboundCampaign.create).not.toHaveBeenCalled();
+      // The create-stage gate asks for intent, not full configuration.
+      expect(mockPrisma.telephonyPhoneNumber.findFirst).toHaveBeenCalledWith({
+        where: {
+          workspaceId: 'ws-1',
+          outboundEnabled: true,
+          status: { notIn: ['pending_verification', 'disconnected'] },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('allows creation via an outbound-enabled BYO number', async () => {
+      mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
+      mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue({ id: 'num-1' });
+      mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
+
+      await expect(
+        service.create('ws-1', 'user-1', { agent_id: 'agent-1', name: 'BYO', contacts: [] }),
+      ).resolves.toMatchObject({ id: 'camp-1' });
+    });
+
+    it('allows creation via a legacy managed Twilio number', async () => {
+      mockPrisma.twilioPhoneNumber.count.mockResolvedValue(1);
+      mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
+      mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
+
+      await expect(
+        service.create('ws-1', 'user-1', { agent_id: 'agent-1', name: 'Legacy', contacts: [] }),
+      ).resolves.toMatchObject({ id: 'camp-1' });
     });
   });
 
@@ -241,6 +291,54 @@ describe('OutboundCampaignService', () => {
         backoff: { type: 'exponential', delay: 15_000 },
       });
       expect(options.jobId).toMatch(/^camp-1:0:\d+$/);
+    });
+
+    it('refuses start when the agent has no configured outbound assignment', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'draft',
+        dispatchedCount: 0,
+        contacts: twoContacts,
+      });
+      // Workspace has a create-grade number, but nothing matches the start-shaped
+      // (worker dial) predicate for this agent.
+      mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
+
+      const err = await service.start('ws-1', 'camp-1', 'user-1').catch((e) => e);
+      expect(err.errorCode).toBe('PHONE_NUMBER_REQUIRED');
+      expect(err.getStatus()).toBe(409);
+      expect(err.details).toEqual({ redirect: '/dashboard/settings/phone-numbers', stage: 'start' });
+      expect(mockPrisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
+      expect(mockQueue.enqueue).not.toHaveBeenCalled();
+      expect(mockPrisma.telephonyPhoneNumber.findFirst).toHaveBeenCalledWith({
+        where: {
+          workspaceId: 'ws-1',
+          assignedAgentId: 'agent-1',
+          outboundEnabled: true,
+          status: { not: 'disconnected' },
+          livekitConfig: { is: { outboundTrunkId: { not: null } } },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('allows start when the worker dial predicate matches', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        workspaceId: 'ws-1',
+        agentId: 'agent-1',
+        status: 'draft',
+        dispatchedCount: 0,
+        contacts: twoContacts,
+      });
+      mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
+      mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue({ id: 'num-1' });
+
+      await service.start('ws-1', 'camp-1', 'user-1');
+
+      expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
     });
 
     it('scopes campaign start by workspace', async () => {
