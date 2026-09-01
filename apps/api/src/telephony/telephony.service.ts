@@ -732,18 +732,21 @@ export class TelephonyService {
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     await this.deleteRecordedLiveKitResources(number.livekitConfig);
-    const updated = await this.prisma.telephonyPhoneNumber.update({
-      where: { id: number.id },
-      data: { status: 'disconnected' },
-    });
+    // Hard delete, not a status flip: `phone_number_e164` is globally unique,
+    // so a lingering "disconnected" row permanently blocked re-adding the same
+    // number. Call history survives (`calls.phone_number_id` is ON DELETE SET
+    // NULL) and the LiveKit config row cascades; the audit row below is the
+    // durable record of the number ever having existed.
+    await this.prisma.telephonyPhoneNumber.delete({ where: { id: number.id } });
     await this.audit.log({
       workspaceId,
       actorUserId,
       action: 'telephony.phone_number.disconnect',
       resourceType: 'telephony_phone_number',
       resourceId: number.id,
+      metadata: { phone_number: number.phoneNumberE164, provider: number.provider },
     });
-    return this.phoneNumberDto(updated);
+    return this.phoneNumberDto({ ...number, status: 'disconnected' });
   }
 
   async startOutboundCall(
