@@ -26,15 +26,17 @@ export default function DpaPage() {
             <li><strong>Vobiz</strong> — SIP voice telephony, if you connect a Vobiz number (optional)</li>
             <li><strong>OpenAI</strong> — Realtime voice runtime and language models</li>
             <li><strong>Microsoft Azure</strong> — Speech-to-text, text-to-speech, and Azure OpenAI</li>
-            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional)</li>
+            <li><strong>Google</strong> — Calendar, Gmail, and Sheets integrations (optional); Google Analytics for consent-gated website usage analytics</li>
             <li><strong>Supabase</strong> — Database and authentication</li>
+            <li><strong>Dodo Payments</strong> — Payment processing as merchant of record (billing name, email, and address)</li>
             <li><strong>Resend</strong> — Transactional email</li>
           </ul>
         </Section>
 
         <Section title="Encryption">
-          All data is encrypted in transit (TLS 1.2+). Data at rest uses AES-256 encryption
-          via Supabase&apos;s storage layer. Encryption keys are managed via ENCRYPTION_KEY environment variable.
+          All data is encrypted in transit (TLS 1.2+) and at rest (AES-256).
+          Integration credentials and access tokens are additionally envelope-encrypted
+          with AES-256-GCM under rotatable, application-managed keys.
         </Section>
 
         <Section title="Retention">
