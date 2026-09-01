@@ -325,6 +325,7 @@ function makePrisma() {
         id: 'number-1',
         ...data,
       })),
+      delete: vi.fn(async () => ({})),
     },
     call: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
@@ -2064,6 +2065,84 @@ describe('TelephonyService', () => {
     expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-in-1');
     expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-out-1');
     expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it('hard-deletes the number and its LiveKit resources on disconnect', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'sip',
+      phoneNumberE164: '+14155551234',
+      friendlyName: '+14155551234',
+      status: 'livekit_configured',
+      assignedAgentId: 'agent-1',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      livekitConfig: {
+        inboundTrunkId: 'trunk-in-1',
+        outboundTrunkId: 'trunk-out-1',
+        dispatchRuleId: 'dispatch-1',
+      },
+      providerMetadata: { sipTrunkDomain: 'sip.example.com' },
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+    } as never);
+    const livekit = {
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const audit = { log: vi.fn(async () => undefined) };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      audit as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    const dto = await service.disconnectNumber('workspace-1', 'number-1', 'user-1');
+
+    // The row is removed, not status-flipped: the global E.164 unique
+    // constraint would otherwise block ever re-adding the number.
+    expect(prisma.telephonyPhoneNumber.delete).toHaveBeenCalledWith({
+      where: { id: 'number-1' },
+    });
+    expect(livekit.deleteDispatchRule).toHaveBeenCalledWith('dispatch-1');
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-in-1');
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-out-1');
+    expect(dto.status).toBe('disconnected');
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'telephony.phone_number.disconnect',
+        metadata: { phone_number: '+14155551234', provider: 'sip' },
+      }),
+    );
+  });
+
+  it('404s a disconnect for a number outside the workspace', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null as never);
+    const service = new TelephonyService(
+      prisma as never,
+      { deleteSipTrunk: vi.fn(), deleteDispatchRule: vi.fn() } as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.disconnectNumber('workspace-1', 'number-x', 'user-1'),
+    ).rejects.toMatchObject({ errorCode: 'TELEPHONY_NOT_FOUND' });
   });
 
   /** A verified number with an agent to assign, varying only the provider. */
