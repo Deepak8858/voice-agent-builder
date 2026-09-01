@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { DemoAudioPlayer } from '@/components/demo-audio-player';
 import { JsonLd } from '@/lib/seo';
 import { siteUrl } from '@/lib/site-url';
+import { PLAN_CATALOG } from '@voiceforge/shared';
 import {
   ArrowRight,
   AudioLines,
@@ -185,12 +186,16 @@ export default function Home() {
     url: siteUrl,
     description:
       'A spec-first voice AI operating system for building, testing, governing, and white-labeling client voice-agent deployments.',
-    offers: [
-      { '@type': 'Offer', name: 'Free', price: '0', priceCurrency: 'USD' },
-      { '@type': 'Offer', name: 'Starter', price: '49', priceCurrency: 'USD' },
-      { '@type': 'Offer', name: 'Growth', price: '149', priceCurrency: 'USD' },
-      { '@type': 'Offer', name: 'Enterprise', price: '499', priceCurrency: 'USD' },
-    ],
+    // Prices derive from PLAN_CATALOG for the same reason documented in
+    // pricing-structured-data.ts: hand-written offers drifted to
+    // $49/$149/$499 while the product charges $99/$299/$999, and Google
+    // drops rich results when schema disagrees with the visible price.
+    offers: PLAN_CATALOG.map((plan) => ({
+      '@type': 'Offer',
+      name: plan.name,
+      price: String(plan.monthlyPriceUsd),
+      priceCurrency: 'USD',
+    })),
   };
   return (
     <div className="flex flex-1 flex-col overflow-x-hidden bg-[#f3efe5] text-[#07130f]">
