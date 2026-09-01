@@ -82,7 +82,7 @@ export class LowBalanceWorker extends BaseWorker<LowBalanceJob> {
       select: { name: true, owner: { select: { email: true } } },
     });
     const to = organization?.owner?.email?.trim();
-    if (!to) {
+    if (!organization || !to) {
       this.logger.warn(
         `[LowBalance] Organization ${organizationId} skipped: owner has no email address`,
       );

@@ -194,7 +194,7 @@ describe('Session validation edge cases', () => {
           findOrProvisionUser: (
             authUserId: string,
             supabaseUserId: string,
-            claims: typeof claims,
+            sessionClaims: typeof claims,
           ) => Promise<unknown>;
         }).findOrProvisionUser.bind(service),
       };
