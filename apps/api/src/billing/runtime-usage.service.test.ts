@@ -1,5 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LOW_BALANCE_CHECK_JOB, LOW_BALANCE_QUEUE } from '../workers/low-balance.worker';
+import { currentMonthKey } from './credit-ledger.service';
 import { RuntimeUsageService } from './runtime-usage.service';
 
 /**
@@ -100,6 +102,10 @@ function makeService(overrides?: {
   replayDecision?: unknown;
   commitThrows?: boolean;
   nextMinuteAllowed?: boolean;
+  /** Balance every ledger call reports; defaults to the healthy {@link BALANCE}. */
+  balance?: typeof BALANCE;
+  /** The low-balance enqueue fails, which must never fail metering. */
+  enqueueThrows?: boolean;
   /** The ledger debit itself fails, so nothing was charged. */
   debitThrows?: boolean;
   /** The bookkeeping write fails after a committed debit. */
@@ -143,8 +149,9 @@ function makeService(overrides?: {
     },
   };
 
+  const balance = overrides?.balance ?? BALANCE;
   const creditLedger = {
-    commitReservation: vi.fn(async () => BALANCE),
+    commitReservation: vi.fn(async () => balance),
     reserveAndDebitNextMinute: vi.fn(async () => ({
       eventId: 'evt-1',
       callId: 'call-1',
@@ -152,9 +159,9 @@ function makeService(overrides?: {
       allowed: overrides?.nextMinuteAllowed ?? true,
       reason: (overrides?.nextMinuteAllowed ?? true) ? 'allowed' : 'credit_insufficient',
       billableMinutes: (overrides?.nextMinuteAllowed ?? true) ? 1 : 0,
-      creditBalance: BALANCE,
+      creditBalance: balance,
     })),
-    getBalance: vi.fn(async () => BALANCE),
+    getBalance: vi.fn(async () => balance),
   };
   if (overrides?.commitThrows) {
     creditLedger.commitReservation.mockRejectedValue(new Error('ledger unavailable'));
@@ -168,13 +175,21 @@ function makeService(overrides?: {
     releaseLease: vi.fn(async () => undefined),
   };
 
+  const queues = {
+    enqueue: vi.fn(async () => {
+      if (overrides?.enqueueThrows) throw new Error('redis unavailable');
+      return undefined;
+    }),
+  };
+
   const service = new RuntimeUsageService(
     prisma as never,
     creditLedger as never,
     admission as never,
+    queues as never,
   );
 
-  return { service, prisma, creditLedger, admission };
+  return { service, prisma, creditLedger, admission, queues };
 }
 
 describe('RuntimeUsageService.handleEvent', () => {
@@ -643,5 +658,90 @@ describe('RuntimeUsageService.handleEvent', () => {
     expect(prisma.callUsage.updateMany).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
     expect(first).toMatchObject({ allowed: true });
+  });
+
+  describe('low-balance warning', () => {
+    /** 2 of the free plan's 10 minutes: exactly the 20% threshold. */
+    const LOW_BALANCE = {
+      organizationId: 'org-1',
+      includedMinutesRemaining: 2,
+      purchasedMinutesRemaining: 0,
+    };
+
+    it('enqueues the warning under a month-keyed dedup id when an allowed decision is at the threshold', async () => {
+      const { service, queues } = makeService({ balance: LOW_BALANCE });
+
+      await expect(
+        service.handleEvent({
+          type: 'call_connected',
+          eventId: 'evt-1',
+          callId: 'call-1',
+          organizationId: 'org-1',
+          occurredAt: '2026-06-07T10:00:00.000Z',
+          providerCallId: 'pc-1',
+        }),
+      ).resolves.toMatchObject({ allowed: true });
+
+      expect(queues.enqueue).toHaveBeenCalledWith(
+        LOW_BALANCE_QUEUE,
+        LOW_BALANCE_CHECK_JOB,
+        { organizationId: 'org-1' },
+        expect.objectContaining({
+          // The month-keyed id is the once-per-month guarantee.
+          jobId: `low-balance:org-1:${currentMonthKey()}`,
+        }),
+      );
+    });
+
+    it('enqueues when a debited minute leaves the balance at the threshold', async () => {
+      const { service, queues } = makeService({ balance: LOW_BALANCE });
+
+      await expect(
+        service.handleEvent({
+          type: 'minute_boundary',
+          eventId: 'evt-2',
+          callId: 'call-1',
+          organizationId: 'org-1',
+          occurredAt: '2026-06-07T10:01:00.000Z',
+          minute: 2,
+        }),
+      ).resolves.toMatchObject({ allowed: true });
+
+      expect(queues.enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not enqueue for a healthy balance', async () => {
+      const { service, queues } = makeService();
+
+      await expect(
+        service.handleEvent({
+          type: 'call_connected',
+          eventId: 'evt-1',
+          callId: 'call-1',
+          organizationId: 'org-1',
+          occurredAt: '2026-06-07T10:00:00.000Z',
+          providerCallId: 'pc-1',
+        }),
+      ).resolves.toMatchObject({ allowed: true });
+
+      expect(queues.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('never fails metering when the enqueue itself fails', async () => {
+      const { service, queues } = makeService({ balance: LOW_BALANCE, enqueueThrows: true });
+
+      await expect(
+        service.handleEvent({
+          type: 'call_connected',
+          eventId: 'evt-1',
+          callId: 'call-1',
+          organizationId: 'org-1',
+          occurredAt: '2026-06-07T10:00:00.000Z',
+          providerCallId: 'pc-1',
+        }),
+      ).resolves.toMatchObject({ allowed: true, reason: 'allowed' });
+
+      expect(queues.enqueue).toHaveBeenCalled();
+    });
   });
 });

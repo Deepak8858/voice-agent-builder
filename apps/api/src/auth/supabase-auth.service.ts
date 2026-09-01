@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UnauthorizedError } from '../common/errors';
 import { AuthService, type LoginInput, type SignupInput } from './auth.service';
 import { CacheService } from '../cache/cache.service';
+import { EmailService } from '../email/email.service';
 import {
   sessionClaimsCacheKey,
   sessionUserCacheKey,
@@ -54,6 +55,7 @@ export class SupabaseAuthService extends AuthService {
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
     @Optional() private readonly posthog?: PostHogService,
+    @Optional() private readonly email?: EmailService,
   ) {
     super();
     this.supabaseUrl = env.SUPABASE_URL;
@@ -246,7 +248,7 @@ export class SupabaseAuthService extends AuthService {
     });
 
     const activeMembership = membership
-      ?? (await this.provisionPersonalWorkspace(user.id, supabaseUserId)).membership;
+      ?? (await this.provisionPersonalWorkspace(user.id, supabaseUserId, user.name)).membership;
 
     const sessionUser: SessionUser = {
       id: user.id,
@@ -279,7 +281,7 @@ export class SupabaseAuthService extends AuthService {
           where: { id: byEmail.id },
           data: { authUserId, name },
         });
-        await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+        await this.provisionPersonalWorkspace(user.id, supabaseUserId, name);
         return user;
       }
       return byEmail;
@@ -292,13 +294,18 @@ export class SupabaseAuthService extends AuthService {
         create: { authUserId, email, name },
         update: { email, name },
       });
-      const provisioned = await this.provisionPersonalWorkspace(user.id, supabaseUserId);
+      const provisioned = await this.provisionPersonalWorkspace(user.id, supabaseUserId, name);
       this.captureSignedUp(
         user.id,
         provisioned.membership.workspace.id,
         provisioned.membership.workspace.organizationId,
         provisioned.workspaceCreated,
       );
+      void this.email
+        ?.sendWelcomeEmail({ to: user.email, name })
+        .catch((err: Error) =>
+          this.logger.warn(`[supabase] welcome email failed: ${err.message}`),
+        );
       return user;
     } catch (err: unknown) {
       const prismaErr = err as { code?: string };
@@ -311,10 +318,10 @@ export class SupabaseAuthService extends AuthService {
               where: { id: raced.id },
               data: { authUserId, name: name ?? raced.name },
             });
-            await this.provisionPersonalWorkspace(updated.id, supabaseUserId);
+            await this.provisionPersonalWorkspace(updated.id, supabaseUserId, name);
             return updated;
           }
-          await this.provisionPersonalWorkspace(raced.id, supabaseUserId);
+          await this.provisionPersonalWorkspace(raced.id, supabaseUserId, name);
           return raced;
         }
       }
@@ -322,7 +329,11 @@ export class SupabaseAuthService extends AuthService {
     }
   }
 
-  private async provisionPersonalWorkspace(userId: string, supabaseUserId: string) {
+  private async provisionPersonalWorkspace(
+    userId: string,
+    supabaseUserId: string,
+    displayName?: string | null,
+  ) {
     // A truncated auth ID can collide and attach one user's workspace to
     // another organization. A bounded SHA-256 suffix is deterministic while
     // preserving the opaque source ID.
@@ -337,13 +348,16 @@ export class SupabaseAuthService extends AuthService {
       where: { slug: legacySlug, ownerUserId: userId },
     });
 
+    // Name applies on create only: the update side stays empty so an
+    // onboarding rename of an existing organization survives re-provisioning.
+    const trimmedName = displayName?.trim();
     const organization =
       legacyOrganization ??
       (await this.prisma.organization.upsert({
         where: { slug: orgSlug },
         create: {
           slug: orgSlug,
-          name: 'Personal',
+          name: trimmedName ? `${trimmedName}'s Organization` : 'Personal',
           ownerUserId: userId,
         },
         update: {},
@@ -358,8 +372,9 @@ export class SupabaseAuthService extends AuthService {
       workspace = await this.prisma.workspace.create({
         data: {
           organizationId: organization.id,
-          name: 'Demo Workspace',
-          slug: 'demo',
+          // Byte-matches the onboarding fallback in apps/web/app/api/onboarding/route.ts.
+          name: 'My Workspace',
+          slug: 'my-workspace',
           type: 'direct',
         },
       });

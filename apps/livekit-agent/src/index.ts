@@ -23,7 +23,11 @@ import {
   resolveRealtimeVoice,
   type DispatchMetadata,
 } from './agent-runtime.js';
-import { buildStandardSession } from './standard-pipeline.js';
+import {
+  buildStandardSession,
+  missingStandardPipelineConfig,
+  type StandardPipelineEnv,
+} from './standard-pipeline.js';
 import {
   createKnowledgeSearchClient,
   createKnowledgeTool,
@@ -309,6 +313,17 @@ function buildStandardPipelineSession(
     );
   }
   return buildStandardSession({ spec, vad });
+}
+
+// Fail at boot like the API does, instead of failing every free-tier call at runtime.
+if (/^(1|true|yes|on)$/i.test(process.env.VOICE_STANDARD_PIPELINE_ENABLED ?? '')) {
+  const missingConfig = missingStandardPipelineConfig(process.env as StandardPipelineEnv);
+  if (missingConfig.length > 0) {
+    console.error(
+      `VOICE_STANDARD_PIPELINE_ENABLED is set but the worker is missing ${missingConfig.join(', ')}.`,
+    );
+    process.exit(1);
+  }
 }
 
 const agentName = process.env.LIVEKIT_AGENT_NAME ?? 'voiceforge-agent';

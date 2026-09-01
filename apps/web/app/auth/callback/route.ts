@@ -1,12 +1,31 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import type { EmailOtpType } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/admin';
 import { safeRedirectPath } from '@/lib/safe-redirect';
 import { publicRedirectUrl } from '@/lib/public-origin';
 
+const EMAIL_OTP_TYPES: readonly EmailOtpType[] = [
+  'signup',
+  'email',
+  'recovery',
+  'invite',
+  'email_change',
+  'magiclink',
+];
+
+function sessionErrorRedirect(req: NextRequest, message: string) {
+  const redirect = publicRedirectUrl('/sign-in', req);
+  redirect.searchParams.set('error', 'session_error');
+  redirect.searchParams.set('error_description', message);
+  return NextResponse.redirect(redirect);
+}
+
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
   const code = searchParams.get('code');
+  const tokenHash = searchParams.get('token_hash');
+  const otpType = searchParams.get('type') as EmailOtpType | null;
   const next = safeRedirectPath(searchParams.get('next'));
   const error = searchParams.get('error');
   const errorDescription = searchParams.get('error_description');
@@ -18,22 +37,43 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(redirect);
   }
 
-  if (!code) {
+  const usableTokenHash = tokenHash && otpType && EMAIL_OTP_TYPES.includes(otpType);
+
+  if (!code && !usableTokenHash) {
     return NextResponse.redirect(publicRedirectUrl('/sign-in', req));
   }
 
   const supabase = await createServerSupabaseClient();
 
-  const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
+  let user;
+  if (code) {
+    const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
 
-  if (sessionError || !data.user) {
-    const redirect = publicRedirectUrl('/sign-in', req);
-    redirect.searchParams.set('error', 'session_error');
-    redirect.searchParams.set('error_description', sessionError?.message ?? 'Failed to create session');
-    return NextResponse.redirect(redirect);
+    if (sessionError || !data.user) {
+      return sessionErrorRedirect(req, sessionError?.message ?? 'Failed to create session');
+    }
+
+    user = data.user;
+  } else {
+    // Email-confirmation links carry a token_hash instead of a PKCE code, so
+    // they work when opened on a device without the code-verifier cookie. The
+    // server client's cookie adapter persists the verified session.
+    const { data, error: otpError } = await supabase.auth.verifyOtp({
+      type: otpType!,
+      token_hash: tokenHash!,
+    });
+
+    if (otpError || !data.user) {
+      return sessionErrorRedirect(req, otpError?.message ?? 'Failed to create session');
+    }
+
+    if (otpType === 'recovery') {
+      return NextResponse.redirect(publicRedirectUrl('/reset-password', req));
+    }
+
+    user = data.user;
   }
 
-  const user = data.user;
   const adminClient = createSupabaseAdminClient();
 
   // For new OAuth signups, app_metadata.app_user_id is not set by default.

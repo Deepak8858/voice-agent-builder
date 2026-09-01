@@ -22,6 +22,8 @@ interface WeeklyDigest {
  */
 const DIGEST_RECIPIENT_ROLES = ['owner', 'admin'] as const;
 
+const DEFAULT_EMAIL_FROM = 'VoiceForge <noreply@incfrog.ai>';
+
 export type WeeklyDigestSkipReason =
   | 'email_not_configured'
   | 'workspace_not_found'
@@ -62,7 +64,7 @@ export class EmailService {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: env.EMAIL_FROM ?? 'VoiceForge <noreply@voiceforge.ai>',
+          from: env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
           to: params.to,
           subject: `You've been invited to ${params.workspaceName}`,
           html,
@@ -88,7 +90,7 @@ export class EmailService {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: env.EMAIL_FROM || 'noreply@' + (env.WEB_BASE_URL?.replace('https://', '') || 'localhost'),
+        from: env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
         to: params.to,
         subject: params.subject,
         html: params.html,
@@ -100,6 +102,40 @@ export class EmailService {
       this.logger.error(`[EmailService.send] Resend error: ${err}`);
       throw new Error(`Failed to send email: ${err}`);
     }
+  }
+
+  async sendWelcomeEmail({ to, name }: { to: string; name?: string | null }): Promise<void> {
+    const trimmed = name?.trim();
+    const greeting = trimmed ? `Hi ${this.escapeHtml(trimmed)},` : 'Hi,';
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+  <h2 style="color: #18181b;">Welcome to VoiceForge</h2>
+  <p>${greeting}</p>
+  <p>Thanks for signing up. You can create a voice agent and test it right in your browser — the free plan includes 10 free minutes every month.</p>
+  <a href="https://incfrog.ai/dashboard" style="display:inline-block;background:#10b981;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;margin:16px 0;">Open your dashboard</a>
+</body></html>`;
+    await this.send({ to, subject: 'Welcome to VoiceForge', html });
+  }
+
+  async sendLowBalanceWarning({
+    to,
+    organizationName,
+    remainingMinutes,
+    includedMinutes,
+  }: {
+    to: string;
+    organizationName: string;
+    remainingMinutes: number;
+    includedMinutes: number;
+  }): Promise<void> {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+  <h2 style="color: #18181b;">Your free minutes are almost used up</h2>
+  <p>${this.escapeHtml(organizationName)} has <strong>${this.escapeHtml(String(remainingMinutes))}</strong> of ${this.escapeHtml(String(includedMinutes))} free minutes left this month.</p>
+  <p>Upgrade to keep your voice agents running without interruption.</p>
+  <a href="https://incfrog.ai/dashboard" style="display:inline-block;background:#10b981;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;margin:16px 0;">Upgrade now</a>
+</body></html>`;
+    await this.send({ to, subject: 'Your free minutes are almost used up', html });
   }
 
   async buildWeeklyDigest(workspaceId: string): Promise<WeeklyDigest> {

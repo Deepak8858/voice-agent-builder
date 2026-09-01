@@ -143,6 +143,20 @@ function toAzureLocale(value: string | undefined): string | undefined {
   return DEFAULT_LOCALE_BY_LANGUAGE[lower] ?? undefined;
 }
 
+/**
+ * Names every standard-pipeline variable that is unset or blank, so both the
+ * per-call check and the worker's boot check reject the same configurations.
+ */
+export function missingStandardPipelineConfig(env: StandardPipelineEnv): string[] {
+  return [
+    env.AZURE_OPENAI_ENDPOINT?.trim() ? undefined : 'AZURE_OPENAI_ENDPOINT',
+    env.AZURE_OPENAI_API_KEY?.trim() ? undefined : 'AZURE_OPENAI_API_KEY',
+    env.AZURE_VOICE_LLM_DEPLOYMENT?.trim() ? undefined : 'AZURE_VOICE_LLM_DEPLOYMENT',
+    env.AZURE_SPEECH_KEY?.trim() ? undefined : 'AZURE_SPEECH_KEY',
+    env.AZURE_SPEECH_REGION?.trim() ? undefined : 'AZURE_SPEECH_REGION',
+  ].filter((name): name is string => name !== undefined);
+}
+
 export interface BuildStandardSessionOptions {
   spec: AgentSpec;
   /** Preloaded Silero VAD. Loading it per job would add seconds to call setup. */
@@ -166,13 +180,7 @@ export function buildStandardSession(
   const endpoint = env.AZURE_OPENAI_ENDPOINT?.trim();
   const apiKey = env.AZURE_OPENAI_API_KEY?.trim();
   const deployment = env.AZURE_VOICE_LLM_DEPLOYMENT?.trim();
-  const missing = [
-    endpoint ? undefined : 'AZURE_OPENAI_ENDPOINT',
-    apiKey ? undefined : 'AZURE_OPENAI_API_KEY',
-    deployment ? undefined : 'AZURE_VOICE_LLM_DEPLOYMENT',
-    env.AZURE_SPEECH_KEY?.trim() ? undefined : 'AZURE_SPEECH_KEY',
-    env.AZURE_SPEECH_REGION?.trim() ? undefined : 'AZURE_SPEECH_REGION',
-  ].filter((name): name is string => name !== undefined);
+  const missing = missingStandardPipelineConfig(env);
   if (missing.length > 0) {
     throw new StandardPipelineConfigurationError(
       `The standard voice pipeline requires ${missing.join(', ')} to be configured on the agent worker.`,

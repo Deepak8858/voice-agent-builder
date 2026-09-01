@@ -297,7 +297,9 @@ describe('CallsService.startTestSession', () => {
       });
       expect(voice.createBrowserTestSession).not.toHaveBeenCalled();
       expect(livekit.dispatchAgent).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ pipeline: 'standard' }) }),
+        expect.objectContaining({
+          metadata: expect.objectContaining({ pipeline: 'standard', maxDurationSeconds: 600 }),
+        }),
       );
       expect(prisma.call.create).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ pipeline: 'standard' }) }),

@@ -17,6 +17,7 @@ vi.mock('../config/env', () => ({
 type Membership = { role: string; user: { email: string | null } | null };
 
 interface SentPayload {
+  from: string;
   to: string;
   subject: string;
   html: string;
@@ -318,5 +319,66 @@ describe('EmailService.sendWeeklyDigest', () => {
     expect(payload.text).not.toContain('test-resend-key');
     // The key belongs in the Authorization header only.
     expect(sentHeaders(fetchSpy).Authorization).toBe('Bearer test-resend-key');
+  });
+});
+
+describe('EmailService.sendWelcomeEmail / sendLowBalanceWarning', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    envMock.env.RESEND_API_KEY = 'test-resend-key';
+    envMock.env.EMAIL_FROM = 'VoiceForge <noreply@voiceforge.test>';
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it('sends the welcome email with an escaped greeting and the dashboard link', async () => {
+    const fetchSpy = makeFetchSpy();
+    const { service } = makeService();
+
+    await service.sendWelcomeEmail({ to: 'new@acme.test', name: '<Jane>' });
+
+    const payload = sentPayload(fetchSpy);
+    expect(payload.to).toBe('new@acme.test');
+    expect(payload.subject).toBe('Welcome to VoiceForge');
+    expect(payload.from).toBe('VoiceForge <noreply@voiceforge.test>');
+    expect(payload.html).toContain('Hi &lt;Jane&gt;,');
+    expect(payload.html).not.toContain('<Jane>');
+    expect(payload.html).toContain('https://incfrog.ai/dashboard');
+    expect(payload.html).toContain('10 free minutes');
+  });
+
+  it('falls back to the default from address when EMAIL_FROM is unset', async () => {
+    const fetchSpy = makeFetchSpy();
+    envMock.env.EMAIL_FROM = undefined;
+    const { service } = makeService();
+
+    await service.sendWelcomeEmail({ to: 'new@acme.test' });
+
+    expect(sentPayload(fetchSpy).from).toBe('VoiceForge <noreply@incfrog.ai>');
+  });
+
+  it('sends the low-balance warning with escaped org name and minute counts', async () => {
+    const fetchSpy = makeFetchSpy();
+    const { service } = makeService();
+
+    await service.sendLowBalanceWarning({
+      to: 'owner@acme.test',
+      organizationName: 'Acme & Co',
+      remainingMinutes: 2,
+      includedMinutes: 10,
+    });
+
+    const payload = sentPayload(fetchSpy);
+    expect(payload.to).toBe('owner@acme.test');
+    expect(payload.subject).toBe('Your free minutes are almost used up');
+    expect(payload.from).toBe('VoiceForge <noreply@voiceforge.test>');
+    expect(payload.html).toContain('Acme &amp; Co');
+    expect(payload.html).toContain('<strong>2</strong> of 10 free minutes');
+    expect(payload.html).toContain('https://incfrog.ai/dashboard');
   });
 });

@@ -123,6 +123,34 @@ describe('Session validation edge cases', () => {
       expect(slugs.every((slug: string) => /^user-[0-9a-f]{24}$/.test(slug))).toBe(true);
     });
 
+    it('personalizes the org and workspace names on the create branch', async () => {
+      mockPrisma.organization.findFirst.mockResolvedValue(null);
+      mockPrisma.organization.upsert.mockResolvedValue({ id: organizationId });
+      mockPrisma.workspace.findFirst.mockResolvedValue(null);
+      mockPrisma.workspace.create.mockResolvedValue(workspace);
+      mockPrisma.membership.upsert.mockResolvedValue({ role: 'owner', workspace });
+      const service = new SupabaseAuthService(mockPrisma as never, mockCache as never);
+
+      await (service as unknown as {
+        provisionPersonalWorkspace: (
+          appUserId: string,
+          authUserId: string,
+          displayName?: string | null,
+        ) => Promise<unknown>;
+      }).provisionPersonalWorkspace(userId, 'auth-user-123', '  Jane Doe  ');
+
+      expect(mockPrisma.organization.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ name: "Jane Doe's Organization" }),
+          // The update side must stay name-free so onboarding renames survive.
+          update: {},
+        }),
+      );
+      expect(mockPrisma.workspace.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ name: 'My Workspace', slug: 'my-workspace' }),
+      });
+    });
+
     it('reuses a legacy-slug organization owned by the user instead of creating a second one', async () => {
       const authUserId = 'legacy-auth-user-id';
       mockPrisma.organization.findFirst.mockResolvedValue({
@@ -140,6 +168,70 @@ describe('Session validation edge cases', () => {
       });
       expect(mockPrisma.organization.upsert).not.toHaveBeenCalled();
       expect(result.workspaceCreated).toBe(false);
+    });
+  });
+
+  describe('welcome email on first sign-up', () => {
+    const claims = {
+      sub: 'auth-123',
+      email: 'new@example.com',
+      aud: 'authenticated',
+      exp: Math.floor(Date.now() / 1000) + 300,
+      user_metadata: { full_name: 'Jane Doe' },
+    };
+
+    function serviceWithEmail() {
+      const sendWelcomeEmail = vi.fn(async () => undefined);
+      const service = new SupabaseAuthService(
+        mockPrisma as never,
+        mockCache as never,
+        undefined,
+        { sendWelcomeEmail } as never,
+      );
+      return {
+        sendWelcomeEmail,
+        findOrProvision: (service as unknown as {
+          findOrProvisionUser: (
+            authUserId: string,
+            supabaseUserId: string,
+            sessionClaims: typeof claims,
+          ) => Promise<unknown>;
+        }).findOrProvisionUser.bind(service),
+      };
+    }
+
+    it('fires the welcome email on a genuine first sign-up', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+      mockPrisma.user.upsert.mockResolvedValue({
+        id: '11111111-1111-4111-8111-111111111111',
+        email: 'new@example.com',
+        name: 'Jane Doe',
+      });
+      mockPrisma.organization.findFirst.mockResolvedValue(null);
+      mockPrisma.organization.upsert.mockResolvedValue({ id: 'org-1' });
+      mockPrisma.workspace.findFirst.mockResolvedValue({ id: 'ws-1', organizationId: 'org-1' });
+      mockPrisma.membership.upsert.mockResolvedValue({
+        role: 'owner',
+        workspace: { id: 'ws-1', organizationId: 'org-1' },
+      });
+      const { sendWelcomeEmail, findOrProvision } = serviceWithEmail();
+
+      await findOrProvision('auth-123', 'auth-123', claims);
+
+      expect(sendWelcomeEmail).toHaveBeenCalledWith({ to: 'new@example.com', name: 'Jane Doe' });
+    });
+
+    it('does not fire the welcome email when the user already exists', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({
+        id: '11111111-1111-4111-8111-111111111111',
+        email: 'new@example.com',
+        authUserId: 'auth-123',
+      });
+      const { sendWelcomeEmail, findOrProvision } = serviceWithEmail();
+
+      await findOrProvision('auth-123', 'auth-123', claims);
+
+      expect(sendWelcomeEmail).not.toHaveBeenCalled();
     });
   });
 
