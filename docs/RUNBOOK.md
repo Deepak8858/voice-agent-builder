@@ -131,9 +131,11 @@ all six Dodo variables — `DODO_PAYMENTS_API_KEY`, `DODO_WEBHOOK_SECRET`,
 `DODO_MINUTE_PACK_PRODUCT_ID` and `DODO_ENTERPRISE_PRODUCT_ID` — an `https://`
 non-localhost `WEB_BASE_URL`, a numeric `TRUST_PROXY_HOPS`, and — when
 `KNOWLEDGE_STORAGE_PROVIDER=s3` — a non-empty `S3_KNOWLEDGE_BUCKET` with
-`AWS_REGION=us-east-1`. LiveKit must be configured with all three of
-`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, or none; a partial set
-aborts the deploy. See `.env.production.example`.
+`AWS_REGION=us-east-1`. LiveKit must be configured with all four of
+`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_SIP_HOST`, or
+none; a partial set aborts the deploy. `LIVEKIT_SIP_HOST` is required because
+telephony setup reads it, so the triplet alone is a broken half-config. See
+`.env.production.example`.
 
 **2a. Breaking env change (2026-08): Vapi and Retell removed.** Before deploying
 this release, edit `/opt/voiceforge/.env` on the host. The API no longer reads
