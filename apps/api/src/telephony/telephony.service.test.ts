@@ -347,6 +347,7 @@ function makePrisma() {
         id: 'agent-1',
         workspaceId: 'workspace-1',
         name: 'Sales Agent',
+        status: 'published',
         activeVersionId: 'version-1',
       })),
     },
@@ -2065,6 +2066,33 @@ describe('TelephonyService', () => {
     expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-in-1');
     expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-out-1');
     expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it('refuses assigning a draft agent with a publish message', async () => {
+    const prisma = makePrisma();
+    prisma.agent.findFirst.mockResolvedValue({
+      id: 'agent-1',
+      workspaceId: 'workspace-1',
+      name: 'Sales Agent',
+      status: 'draft',
+      activeVersionId: 'version-1',
+    } as never);
+    const service = new TelephonyService(
+      prisma as never,
+      { deleteSipTrunk: vi.fn(), deleteDispatchRule: vi.fn() } as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.assignAgent('workspace-1', 'number-1', 'user-1', { agent_id: 'agent-1' } as never),
+    ).rejects.toMatchObject({ errorCode: 'AGENT_NOT_PUBLISHED' });
+    expect(prisma.telephonyPhoneNumber.update).not.toHaveBeenCalled();
   });
 
   it('hard-deletes the number and its LiveKit resources on disconnect', async () => {
