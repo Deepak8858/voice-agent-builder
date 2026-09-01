@@ -374,6 +374,8 @@ describe('TelephonyService', () => {
       createInboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-in-1' })),
       createOutboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-out-1' })),
       createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
       livekitSipHost: 'tenant.sip.livekit.cloud',
     };
     const registry = {
@@ -1838,6 +1840,8 @@ describe('TelephonyService', () => {
         trunkId: 'trunk-out-1',
       })),
       createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
       livekitSipHost: 'tenant.sip.livekit.cloud',
     };
     const decryptJson = vi.fn((blob: { encrypted: string }) => ({
@@ -1896,6 +1900,8 @@ describe('TelephonyService', () => {
         trunkId: 'trunk-out-1',
       })),
       createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
       livekitSipHost: 'tenant.sip.livekit.cloud',
     };
     const decryptJson = vi.fn();
@@ -1928,6 +1934,136 @@ describe('TelephonyService', () => {
         }),
       }),
     );
+  });
+
+  it('fails before creating any trunk when LIVEKIT_SIP_HOST is unconfigured', async () => {
+    const prisma = makePrisma();
+    const livekit = {
+      createInboundSipTrunk: vi.fn(),
+      createOutboundSipTrunk: vi.fn(),
+      createDispatchRule: vi.fn(),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
+      get livekitSipHost(): string {
+        throw new Error('LIVEKIT_SIP_HOST is not configured.');
+      },
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.configureLiveKit('workspace-1', 'number-1', 'user-1'),
+    ).rejects.toThrow('LIVEKIT_SIP_HOST');
+
+    // A configuration error must not strand a trunk: LiveKit refuses a second
+    // inbound trunk covering the same number, which would block every retry.
+    expect(livekit.createInboundSipTrunk).not.toHaveBeenCalled();
+    expect(livekit.createOutboundSipTrunk).not.toHaveBeenCalled();
+  });
+
+  it('deletes the previous LiveKit resources before re-configuring a number', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'sip',
+      phoneNumberE164: '+14155551234',
+      status: 'livekit_configured',
+      assignedAgentId: 'agent-1',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      providerConnection: null,
+      livekitConfig: {
+        inboundTrunkId: 'old-in',
+        outboundTrunkId: 'old-out',
+        dispatchRuleId: 'old-dispatch',
+      },
+      providerMetadata: { sipTrunkDomain: 'sip.example.com' },
+    } as never);
+    const livekit = {
+      createInboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-in-2' })),
+      createOutboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-out-2' })),
+      createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-2' })),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.configureLiveKit('workspace-1', 'number-1', 'user-1');
+
+    expect(livekit.deleteDispatchRule).toHaveBeenCalledWith('old-dispatch');
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('old-in');
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('old-out');
+    expect(livekit.createInboundSipTrunk).toHaveBeenCalled();
+  });
+
+  it('deletes the trunks it created when a later configure step fails', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'sip',
+      phoneNumberE164: '+14155551234',
+      status: 'verified',
+      assignedAgentId: 'agent-1',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      providerConnection: null,
+      livekitConfig: null,
+      providerMetadata: { sipTrunkDomain: 'sip.example.com' },
+    } as never);
+    const livekit = {
+      createInboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-in-1' })),
+      createOutboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-out-1' })),
+      createDispatchRule: vi.fn(async () => {
+        throw new Error('dispatch exploded');
+      }),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
+      livekitSipHost: 'tenant.sip.livekit.cloud',
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.configureLiveKit('workspace-1', 'number-1', 'user-1'),
+    ).rejects.toThrow('dispatch exploded');
+
+    // The partially configured number stays retryable.
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-in-1');
+    expect(livekit.deleteSipTrunk).toHaveBeenCalledWith('trunk-out-1');
+    expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
   });
 
   /** A verified number with an agent to assign, varying only the provider. */
@@ -1966,6 +2102,8 @@ describe('TelephonyService', () => {
       createInboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-in-1' })),
       createOutboundSipTrunk: vi.fn(async () => ({ trunkId: 'trunk-out-1' })),
       createDispatchRule: vi.fn(async () => ({ dispatchRuleId: 'dispatch-1' })),
+      deleteSipTrunk: vi.fn(async () => undefined),
+      deleteDispatchRule: vi.fn(async () => undefined),
       livekitSipHost: 'tenant.sip.livekit.cloud',
     };
     const service = new TelephonyService(
