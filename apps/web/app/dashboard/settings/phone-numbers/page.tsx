@@ -25,7 +25,7 @@ import {
   Trash2,
 } from 'lucide-react';
 
-type Provider = 'twilio' | 'vobiz';
+type Provider = 'twilio' | 'vobiz' | 'sip';
 
 interface SessionUser {
   active_workspace_id: string;
@@ -114,6 +114,20 @@ const emptyManualForm: ManualForm = {
   outboundEnabled: false,
 };
 
+interface SipForm {
+  phoneNumber: string;
+  sipTrunkDomain: string;
+  sipAuthUsername: string;
+  sipAuthPassword: string;
+}
+
+const emptySipForm: SipForm = {
+  phoneNumber: '',
+  sipTrunkDomain: '',
+  sipAuthUsername: '',
+  sipAuthPassword: '',
+};
+
 const E164_PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
 export default function PhoneNumbersPage() {
@@ -131,7 +145,8 @@ export default function PhoneNumbersPage() {
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [connectForm, setConnectForm] = useState<ConnectForm>(emptyConnectForm);
   const [manualForm, setManualForm] = useState<ManualForm>(emptyManualForm);
-  const [panel, setPanel] = useState<'connect' | 'manual' | null>(null);
+  const [sipForm, setSipForm] = useState<SipForm>(emptySipForm);
+  const [panel, setPanel] = useState<'connect' | 'manual' | 'sip' | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -350,6 +365,31 @@ export default function PhoneNumbersPage() {
     }
   }
 
+  async function createSipNumber(e: React.FormEvent) {
+    e.preventDefault();
+    if (!workspaceId) return;
+    setBusy('sip');
+    setError(null);
+    try {
+      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/sip`, {
+        method: 'POST',
+        body: JSON.stringify({
+          phone_number: sipForm.phoneNumber,
+          sip_trunk_domain: sipForm.sipTrunkDomain,
+          sip_auth_username: sipForm.sipAuthUsername || undefined,
+          sip_auth_password: sipForm.sipAuthPassword || undefined,
+        }),
+      });
+      setSipForm(emptySipForm);
+      setPanel(null);
+      await refresh();
+    } catch (err) {
+      handleApiError(err, 'SIP trunk setup failed');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function updateNumberSettings(
     number: PhoneNumber,
     patch: { agentId?: string | null; inboundEnabled?: boolean; outboundEnabled?: boolean },
@@ -428,7 +468,11 @@ export default function PhoneNumbersPage() {
         description="Connect Twilio or Vobiz numbers and route calls through LiveKit to GPT Realtime voice agents."
         actions={
           <>
-            <Button onClick={() => setPanel(panel === 'connect' ? null : 'connect')} className="gap-2">
+            <Button onClick={() => setPanel(panel === 'sip' ? null : 'sip')} className="gap-2">
+              <Phone className="h-4 w-4" />
+              Add SIP trunk number
+            </Button>
+            <Button variant="outline" onClick={() => setPanel(panel === 'connect' ? null : 'connect')} className="gap-2">
               <PlugZap className="h-4 w-4" />
               Connect Number
             </Button>
@@ -451,6 +495,56 @@ export default function PhoneNumbersPage() {
         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
         </div>
+      )}
+
+      {panel === 'sip' && (
+        <FormSection
+          title="Add SIP trunk number"
+          description="Bring a number from any carrier. Enter your SIP trunk details; we configure the LiveKit route and show the SIP host to point your carrier at."
+        >
+          <form onSubmit={createSipNumber} className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Phone number</Label>
+              <Input
+                value={sipForm.phoneNumber}
+                onChange={(e) => setSipForm((prev) => ({ ...prev, phoneNumber: e.target.value }))}
+                placeholder="+15551234567"
+                inputMode="tel"
+                pattern="^\+[1-9]\d{6,14}$"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>SIP trunk domain</Label>
+              <Input
+                value={sipForm.sipTrunkDomain}
+                onChange={(e) => setSipForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))}
+                placeholder="sip.yourcarrier.com"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>SIP trunk username (optional)</Label>
+              <Input
+                value={sipForm.sipAuthUsername}
+                onChange={(e) => setSipForm((prev) => ({ ...prev, sipAuthUsername: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>SIP trunk password (optional)</Label>
+              <Input
+                type="password"
+                value={sipForm.sipAuthPassword}
+                onChange={(e) => setSipForm((prev) => ({ ...prev, sipAuthPassword: e.target.value }))}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <Button type="submit" disabled={busy === 'sip'}>
+                {busy === 'sip' ? 'Adding...' : 'Add SIP trunk number'}
+              </Button>
+            </div>
+          </form>
+        </FormSection>
       )}
 
       {panel === 'connect' && (
@@ -763,6 +857,13 @@ export default function PhoneNumbersPage() {
                   </Button>
                 </div>
 
+                {number.provider === 'sip' && number.livekit?.sip_host && (
+                  <p className="text-xs text-muted-foreground lg:col-span-3">
+                    Point your carrier&apos;s trunk at{' '}
+                    <span className="font-mono">sip:{number.livekit.sip_host}</span> to receive inbound calls.
+                  </p>
+                )}
+
                 {number.livekit && (
                   <Textarea
                     readOnly
@@ -791,5 +892,5 @@ export default function PhoneNumbersPage() {
 }
 
 function providerLabel(provider: Provider): string {
-  return provider === 'twilio' ? 'Twilio' : 'Vobiz';
+  return { twilio: 'Twilio', vobiz: 'Vobiz', sip: 'SIP trunk' }[provider];
 }

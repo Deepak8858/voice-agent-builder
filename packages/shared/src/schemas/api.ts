@@ -34,6 +34,7 @@ export const API_ERROR_CODES = [
   'LIVEKIT_NOT_CONFIGURED',
   'PROVIDER_CREDENTIALS_INVALID',
   'PHONE_NUMBER_ALREADY_CONNECTED',
+  'PHONE_NUMBER_REQUIRED',
   'TELEPHONY_NOT_FOUND',
   // A provider call identifier resolved to a call owned by another tenant,
   // number, or agent. Billing must refuse rather than attribute the call.

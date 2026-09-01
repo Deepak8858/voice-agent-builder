@@ -4,12 +4,14 @@ import {
   CreateTelephonyConnectionDtoSchema,
   ImportPhoneNumbersDtoSchema,
   ManualPhoneNumberDtoSchema,
+  SipTrunkNumberDtoSchema,
   StartTelephonyOutboundCallDtoSchema,
   type AssignPhoneNumberAgentDto,
   type CreateTelephonyConnectionDto,
   type ImportPhoneNumbersDto,
   type ManualPhoneNumberDto,
   type SessionUser,
+  type SipTrunkNumberDto,
   type StartTelephonyOutboundCallDto,
 } from '@voiceforge/shared';
 import { CurrentUser } from '../common/current-user.decorator';
@@ -85,6 +87,17 @@ export class TelephonyController {
     @Body(new ZodValidationPipe(ManualPhoneNumberDtoSchema)) dto: ManualPhoneNumberDto,
   ) {
     return this.telephony.createManualNumber(workspaceId, user.id, dto);
+  }
+
+  @UseGuards(RoleGuard)
+  @RequiredRole('owner', 'admin')
+  @Post('phone-numbers/sip')
+  sipTrunkNumber(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: SessionUser,
+    @Body(new ZodValidationPipe(SipTrunkNumberDtoSchema)) dto: SipTrunkNumberDto,
+  ) {
+    return this.telephony.createSipTrunkNumber(workspaceId, user.id, dto);
   }
 
   @UseGuards(RoleGuard)

@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { EmptyState, FormSection, PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import { useApi } from '@/lib/use-api';
-import { AlertCircle, Megaphone, Pause, Play, Plus, Upload, Users } from 'lucide-react';
+import { AlertCircle, Megaphone, Pause, Phone, Play, Plus, Upload, Users } from 'lucide-react';
 import { normalizePhone } from '@voiceforge/shared';
 
 interface Campaign {
@@ -42,6 +44,12 @@ interface AgentSummary {
   name: string;
 }
 
+interface TelephonyNumberSummary {
+  id: string;
+  status: string;
+  outbound_enabled: boolean;
+}
+
 function parseCSV(text: string): { headers: string[]; rows: string[][] } {
   const lines = text.trim().split('\n');
   const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
@@ -53,10 +61,12 @@ function parseCSV(text: string): { headers: string[]; rows: string[][] } {
 
 export default function CampaignsPage() {
   const { call } = useApi();
+  const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [hasNumber, setHasNumber] = useState(false);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState<'list' | 'upload' | 'preview' | 'schedule' | 'compliance'>('list');
   const [formName, setFormName] = useState('');
@@ -79,10 +89,18 @@ export default function CampaignsPage() {
     Promise.all([
       call<{ items: Campaign[] }>(`/workspaces/${workspaceId}/campaigns`),
       call<{ items: AgentSummary[] }>(`/workspaces/${workspaceId}/agents`),
+      call<{ items: TelephonyNumberSummary[] }>(`/workspaces/${workspaceId}/telephony/phone-numbers`),
+      call<{ items: { id: string }[] }>(`/workspaces/${workspaceId}/phone-numbers`),
     ])
-      .then(([c, a]) => {
+      .then(([c, a, telephony, legacy]) => {
         setCampaigns(c.items ?? []);
         setAgents(a.items ?? []);
+        setHasNumber(
+          (legacy.items ?? []).length > 0 ||
+            (telephony.items ?? []).some(
+              (n) => n.outbound_enabled && !['pending_verification', 'disconnected'].includes(n.status),
+            ),
+        );
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -149,10 +167,21 @@ export default function CampaignsPage() {
       setCampaigns(res.items ?? []);
       setStep('list');
     } catch (err) {
-      console.error(err);
+      handleCampaignError(err);
     } finally {
       setCreating(false);
     }
+  }
+
+  // The API rejects campaign create/start with PHONE_NUMBER_REQUIRED (409) when
+  // the workspace has no outbound-capable number — route the user to fix it.
+  function handleCampaignError(err: unknown) {
+    if ((err as { code?: string })?.code === 'PHONE_NUMBER_REQUIRED') {
+      toast.error(err instanceof Error ? err.message : 'Add a phone number first');
+      router.push('/dashboard/settings/phone-numbers');
+      return;
+    }
+    console.error(err);
   }
 
   function resetForm() {
@@ -178,10 +207,12 @@ export default function CampaignsPage() {
           title="Outbound campaigns"
           description="Schedule and run bulk outbound calling campaigns with voice agents, guardrails, and per-campaign rate limits."
           actions={
-            <Button onClick={() => setStep('upload')} className="gap-2">
-              <Plus className="h-4 w-4" />
-              New campaign
-            </Button>
+            hasNumber ? (
+              <Button onClick={() => setStep('upload')} className="gap-2">
+                <Plus className="h-4 w-4" />
+                New campaign
+              </Button>
+            ) : undefined
           }
         >
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -214,7 +245,15 @@ export default function CampaignsPage() {
           </div>
         </PageHeader>
 
-        {campaigns.length > 0 ? (
+        {!hasNumber ? (
+          <EmptyState
+            icon={<Phone className="h-7 w-7" />}
+            title="Add a phone number first"
+            description="Campaigns place real outbound calls, so this workspace needs an outbound-enabled phone number before you can create or run one."
+            actionLabel="Go to phone numbers"
+            actionHref="/dashboard/settings/phone-numbers"
+          />
+        ) : campaigns.length > 0 ? (
           <div className="grid gap-4">
             {campaigns.map((c) => (
               <Card key={c.id} className="overflow-hidden bg-card/95 shadow-sm">
@@ -236,9 +275,13 @@ export default function CampaignsPage() {
                       <StatusBadge status={c.status} />
                       {c.status === 'draft' || c.status === 'paused' ? (
                         <Button size="sm" onClick={async () => {
-                          await call(`/workspaces/${workspaceId}/campaigns/${c.id}/start`, { method: 'POST' });
-                          const res = await call<{ items: Campaign[] }>(`/workspaces/${workspaceId}/campaigns`);
-                          setCampaigns(res.items ?? []);
+                          try {
+                            await call(`/workspaces/${workspaceId}/campaigns/${c.id}/start`, { method: 'POST' });
+                            const res = await call<{ items: Campaign[] }>(`/workspaces/${workspaceId}/campaigns`);
+                            setCampaigns(res.items ?? []);
+                          } catch (err) {
+                            handleCampaignError(err);
+                          }
                         }}>
                           <Play className="h-3 w-3" /> Start
                         </Button>
