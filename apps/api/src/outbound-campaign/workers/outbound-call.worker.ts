@@ -15,6 +15,12 @@ interface OutboundCallJob {
   campaignId: string;
   agentId: string;
   workspaceId: string;
+  /**
+   * Consent-based compliance purpose from the campaign row. Optional because
+   * jobs enqueued before the column existed are still in the queue across a
+   * deploy; those dial under the safest allowed purpose.
+   */
+  purpose?: string;
   actorUserId: string;
   to: string;
   contactName?: string;
@@ -226,7 +232,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     const metadata = {
       campaign_id: campaignId,
       ...customData,
-      purpose: 'outbound_campaign',
+      purpose: data.purpose ?? 'requested_follow_up',
     };
     const assignedByoNumber = await this.findAssignedByoOutboundNumber(workspaceId, agentId);
     if (assignedByoNumber) {

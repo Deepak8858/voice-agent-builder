@@ -60,6 +60,7 @@ describe('OutboundCampaignService', () => {
     it('creates campaign with draft status', async () => {
       const dto = {
         agent_id: 'agent-1',
+      purpose: 'appointment_reminder',
         name: 'Dental Recall',
         contacts: [{ phone: '+15551234567', full_name: 'John Doe' }],
       };
@@ -76,6 +77,7 @@ describe('OutboundCampaignService', () => {
           workspaceId: 'ws-1',
           agentId: 'agent-1',
           name: 'Dental Recall',
+          purpose: 'appointment_reminder',
           contacts: dto.contacts,
           schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
           status: 'draft',
@@ -89,6 +91,7 @@ describe('OutboundCampaignService', () => {
         resourceId: 'camp-1',
         metadata: {
           agent_id: 'agent-1',
+      purpose: 'appointment_reminder',
           contact_count: 1,
         },
       });
@@ -97,6 +100,7 @@ describe('OutboundCampaignService', () => {
     it('applies custom schedule', async () => {
       const dto = {
         agent_id: 'agent-1',
+      purpose: 'appointment_reminder',
         name: 'Fast Campaign',
         contacts: [],
         schedule: { max_calls_per_hour: 50, max_concurrent: 10 },
@@ -115,6 +119,7 @@ describe('OutboundCampaignService', () => {
       mockPrisma.agent.findFirst.mockResolvedValue(null);
       const dto = {
         agent_id: 'agent-2',
+        purpose: 'appointment_reminder',
         name: 'Invalid Campaign',
         contacts: [{ phone: '+15551234567' }],
       };
@@ -128,7 +133,7 @@ describe('OutboundCampaignService', () => {
     it('refuses creation when the workspace has no usable phone number', async () => {
       mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
       mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
-      const dto = { agent_id: 'agent-1', name: 'No Numbers', contacts: [{ phone: '+15551234567' }] };
+      const dto = { agent_id: 'agent-1', purpose: 'appointment_reminder', name: 'No Numbers', contacts: [{ phone: '+15551234567' }] };
 
       const err = await service.create('ws-1', 'user-1', dto).catch((e) => e);
       expect(err.errorCode).toBe('PHONE_NUMBER_REQUIRED');
@@ -152,7 +157,7 @@ describe('OutboundCampaignService', () => {
       mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
 
       await expect(
-        service.create('ws-1', 'user-1', { agent_id: 'agent-1', name: 'BYO', contacts: [] }),
+        service.create('ws-1', 'user-1', { agent_id: 'agent-1', purpose: 'appointment_reminder', name: 'BYO', contacts: [] }),
       ).resolves.toMatchObject({ id: 'camp-1' });
     });
 
@@ -162,7 +167,7 @@ describe('OutboundCampaignService', () => {
       mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
 
       await expect(
-        service.create('ws-1', 'user-1', { agent_id: 'agent-1', name: 'Legacy', contacts: [] }),
+        service.create('ws-1', 'user-1', { agent_id: 'agent-1', purpose: 'appointment_reminder', name: 'Legacy', contacts: [] }),
       ).resolves.toMatchObject({ id: 'camp-1' });
     });
   });

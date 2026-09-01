@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ALLOWED_OUTBOUND_PURPOSES } from './compliance';
 
 const E164PhoneSchema = z
   .string()
@@ -29,6 +30,9 @@ export const CreateOutboundCampaignDtoSchema = z
     name: z.string().trim().min(1).max(120),
     contacts: z.array(OutboundCampaignContactSchema).min(1).max(500),
     schedule: OutboundCampaignScheduleSchema,
+    // The compliance engine admits outbound calls by consent-based purpose,
+    // so a campaign must declare which one it is dialing under.
+    purpose: z.enum(ALLOWED_OUTBOUND_PURPOSES),
   })
   .strict();
 export type CreateOutboundCampaignDto = z.infer<typeof CreateOutboundCampaignDtoSchema>;

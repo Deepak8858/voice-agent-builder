@@ -116,7 +116,7 @@ describe('OutboundCallWorker', () => {
       metadata: {
         campaign_id: 'camp-1',
         source: 'csv',
-        purpose: 'outbound_campaign',
+        purpose: 'requested_follow_up',
       },
     });
     expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
@@ -146,7 +146,7 @@ describe('OutboundCallWorker', () => {
       metadata: {
         campaign_id: 'camp-1',
         source: 'csv',
-        purpose: 'outbound_campaign',
+        purpose: 'requested_follow_up',
       },
     });
     expect(calls.startOutboundCall).not.toHaveBeenCalled();

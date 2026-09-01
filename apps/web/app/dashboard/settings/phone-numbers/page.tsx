@@ -500,7 +500,7 @@ export default function PhoneNumbersPage() {
       {panel === 'sip' && (
         <FormSection
           title="Add SIP trunk number"
-          description="Bring a number from any carrier. Enter your SIP trunk details; we configure the LiveKit route and show the SIP host to point your carrier at."
+          description="Bring a number from any SIP trunk provider — VoiceLink (voicelink.co.in), Twilio Elastic SIP, Telnyx, or your own PBX. Enter the trunk details; we configure the LiveKit route and show the SIP host to point your carrier at."
         >
           <form onSubmit={createSipNumber} className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">

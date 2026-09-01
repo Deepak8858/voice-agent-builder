@@ -71,6 +71,7 @@ export default function CampaignsPage() {
   const [step, setStep] = useState<'list' | 'upload' | 'preview' | 'schedule' | 'compliance'>('list');
   const [formName, setFormName] = useState('');
   const [formAgent, setFormAgent] = useState('');
+  const [formPurpose, setFormPurpose] = useState('');
   const [contacts, setContacts] = useState<CampaignContact[]>([]);
   const [errors, setErrors] = useState<ContactValidationError[]>([]);
   const [schedule, setSchedule] = useState({ max_calls_per_hour: 10, max_concurrent: 3 });
@@ -147,7 +148,7 @@ export default function CampaignsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!workspaceId || !formName || !formAgent) return;
+    if (!workspaceId || !formName || !formAgent || !formPurpose) return;
     setCreating(true);
     try {
       const campaign = await call<Campaign>(`/workspaces/${workspaceId}/campaigns`, {
@@ -155,6 +156,7 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           name: formName,
           agent_id: formAgent,
+          purpose: formPurpose,
           contacts,
           schedule,
         }),
@@ -539,6 +541,26 @@ export default function CampaignsPage() {
                     <option key={a.id} value={a.id}>{a.name}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <Label>Call purpose</Label>
+                <select
+                  className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={formPurpose}
+                  onChange={(e) => setFormPurpose(e.target.value)}
+                  required
+                >
+                  <option value="">Select purpose...</option>
+                  <option value="appointment_reminder">Appointment reminder</option>
+                  <option value="missed_call_callback">Missed-call callback</option>
+                  <option value="lead_form_callback">Lead form callback</option>
+                  <option value="order_confirmation">Order confirmation</option>
+                  <option value="event_confirmation">Event confirmation</option>
+                  <option value="requested_follow_up">Requested follow-up</option>
+                </select>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Campaigns can only dial contacts who consented to this purpose; cold outreach is not supported.
+                </p>
               </div>
             </div>
           </FormSection>

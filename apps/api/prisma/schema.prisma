@@ -1344,6 +1344,9 @@ model OutboundCampaign {
   workspaceId String   @map("workspace_id") @db.Uuid
   agentId     String   @map("agent_id") @db.Uuid
   name        String
+  // Consent-based outbound purpose (ALLOWED_OUTBOUND_PURPOSES); the compliance
+  // engine blocks any dial whose purpose is not on that list.
+  purpose     String   @default("requested_follow_up")
   contacts    Json     @default("[]")
   schedule    Json     @default("{\"max_calls_per_hour\": 10, \"max_concurrent\": 3}")
   status      String   @default("draft") // draft | running | paused | completed | failed
