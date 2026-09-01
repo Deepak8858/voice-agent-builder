@@ -32,6 +32,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const correlationId = ((req as unknown) as Record<string, unknown>).correlationId as string | undefined;
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
+    let loggedWithStack = false;
     let error: ApiError = {
       code: 'INTERNAL_ERROR' as ApiErrorCode,
       message: 'Unexpected server error.',
@@ -65,7 +66,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         };
       }
     } else if (exception instanceof Error) {
-      logger.error({ err: exception, correlationId, method: req.method, url: stripQuery(req.url) }, exception.message);
+      // This record carries the stack; the 5xx summary below is skipped for
+      // this branch so each exception produces exactly one error record.
+      logger.error(
+        { err: exception, correlationId, method: req.method, url: stripQuery(req.url), status, code: error.code },
+        exception.message,
+      );
+      loggedWithStack = true;
       error.message = isProduction()
         ? 'Unexpected server error.'
         : exception.message;
@@ -85,9 +92,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error.details = correlationId ? { correlationId } : undefined;
     }
 
-    // Warn on 5xx — these are bugs, not client errors
-    if (status >= 500) {
-      logger.error({ correlationId, method: req.method, url: stripQuery(req.url), status }, 'HTTP 5xx response');
+    // Warn on 5xx — these are bugs, not client errors. The real exception
+    // message is logged even when the response body masks it: an HttpException
+    // (AppError included) skips the `instanceof Error` log branch above, and a
+    // production 502 with no recorded cause is undiagnosable after the fact.
+    if (status >= 500 && !loggedWithStack) {
+      logger.error(
+        {
+          correlationId,
+          method: req.method,
+          url: stripQuery(req.url),
+          status,
+          code: error.code,
+          cause: exception instanceof Error ? exception.message : String(exception),
+        },
+        'HTTP 5xx response',
+      );
     }
 
     if (this.shouldCapture(status)) {
