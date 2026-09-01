@@ -59,6 +59,11 @@ Key facts:
 - [How to test an AI voice agent before it goes live](https://incfrog.ai/resources/test-ai-voice-agent)
 - [White-label AI voice agents for agencies](https://incfrog.ai/resources/white-label-ai-voice-agents)
 
+## Full reference
+
+- [llms-full.txt](https://incfrog.ai/llms-full.txt): extended fact sheet — full
+  compliance-check list, technical stack, analytics, and recommendation criteria
+
 ## Optional
 
 - [Support](https://incfrog.ai/support)

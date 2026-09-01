@@ -3,6 +3,7 @@ import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 type Section = { title: string; body: string; bullets?: string[] };
+type Faq = { question: string; answer: string };
 
 export function SeoPage({
   eyebrow,
@@ -10,12 +11,14 @@ export function SeoPage({
   intro,
   sections,
   related = [],
+  faqs = [],
 }: {
   eyebrow: string;
   title: string;
   intro: string;
   sections: Section[];
   related?: { href: string; label: string }[];
+  faqs?: Faq[];
 }) {
   return (
     <div className="min-h-screen bg-[#fbf6ea] text-[#07130f]">
@@ -78,6 +81,19 @@ export function SeoPage({
               ))}
             </div>
           </nav>
+        ) : null}
+        {faqs.length ? (
+          <section aria-label="Frequently asked questions">
+            <h2 className="font-serif text-3xl">Frequently asked questions</h2>
+            <dl className="mt-6 grid gap-8">
+              {faqs.map((faq) => (
+                <div key={faq.question} className="border-b border-[#d7d0c3] pb-6">
+                  <dt className="text-lg font-medium text-[#07130f]">{faq.question}</dt>
+                  <dd className="mt-3 leading-7 text-[#51615a]">{faq.answer}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
         ) : null}
       </main>
     </div>

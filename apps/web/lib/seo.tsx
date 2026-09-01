@@ -38,3 +38,46 @@ export function breadcrumbJsonLd(items: { name: string; path: string }[]) {
     })),
   };
 }
+
+/**
+ * FAQPage node for answer engines. Only pass questions that are VISIBLY
+ * rendered on the page (Google's guideline and ours: markup must mirror
+ * on-page content, never invent hidden Q&A).
+ */
+export function faqJsonLd(faqs: { question: string; answer: string }[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqs.map((faq) => ({
+      '@type': 'Question',
+      name: faq.question,
+      acceptedAnswer: { '@type': 'Answer', text: faq.answer },
+    })),
+  };
+}
+
+/**
+ * TechArticle node for resource guides. `datePublished`/`dateModified` are
+ * ISO dates supplied by the page (kept manual so a deploy does not silently
+ * bump freshness signals).
+ */
+export function techArticleJsonLd(args: {
+  headline: string;
+  description: string;
+  path: string;
+  datePublished: string;
+  dateModified?: string;
+}) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'TechArticle',
+    headline: args.headline,
+    description: args.description,
+    url: `${siteUrl}${args.path}`,
+    datePublished: args.datePublished,
+    dateModified: args.dateModified ?? args.datePublished,
+    author: { '@type': 'Organization', name: 'VoiceForge AI', url: siteUrl },
+    publisher: { '@id': `${siteUrl}/#organization` },
+    mainEntityOfPage: `${siteUrl}${args.path}`,
+  };
+}
