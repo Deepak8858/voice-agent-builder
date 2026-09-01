@@ -152,6 +152,20 @@ describe('LiveKitService telephony operations', () => {
     );
   });
 
+  it('rejects with a 4xx, not a captured 500, when the SIP host is not configured', () => {
+    const service = new LiveKitService({});
+
+    // LIVEKIT_SIP_HOST is unset in the test env, so the getter takes its
+    // not-configured branch. A 4xx keeps the operator gap off error tracking.
+    try {
+      void service.livekitSipHost;
+      expect.unreachable('expected the getter to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AppError);
+      expect((error as AppError).getStatus()).toBe(422);
+    }
+  });
+
   it('does not fall back to a global Vobiz SIP domain for outbound trunks', async () => {
     const sipClient = {
       createSipOutboundTrunk: vi.fn(),

@@ -509,14 +509,18 @@ jobs:
             exit 1
           fi
 
+          # LIVEKIT_SIP_HOST joins the group: telephony setup (assigning an agent
+          # to a BYO SIP number) reads it and 4xx-fails without it, so a host
+          # with the triplet but no SIP host is a broken half-config, not a
+          # LiveKit-enabled one.
           livekit_count=0
-          for name in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+          for name in LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_SIP_HOST; do
             if [ -n "$(env_value "$name")" ]; then livekit_count=$((livekit_count + 1)); fi
           done
-          if [ "$livekit_count" -eq 3 ]; then
+          if [ "$livekit_count" -eq 4 ]; then
             livekit_enabled=true
           elif [ "$livekit_count" -ne 0 ]; then
-            echo "LiveKit configuration is partial; set all three variables or none" >&2
+            echo "LiveKit configuration is partial; set all four variables or none" >&2
             exit 1
           fi
 
@@ -534,7 +538,7 @@ jobs:
               fi
             done
             if [ "$livekit_enabled" != true ]; then
-              echo "VOICE_STANDARD_PIPELINE_ENABLED requires the LiveKit triplet" >&2
+              echo "VOICE_STANDARD_PIPELINE_ENABLED requires the full LiveKit configuration" >&2
               exit 1
             fi
           fi

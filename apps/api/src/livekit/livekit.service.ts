@@ -48,7 +48,11 @@ export class LiveKitService {
 
   get livekitSipHost(): string {
     if (!env.LIVEKIT_SIP_HOST) {
-      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LIVEKIT_SIP_HOST is not configured.', 500);
+      // A missing SIP host is an operator gap, not a code fault: the deploy gate
+      // should stop a host that has the LiveKit triplet but no SIP host. A 4xx
+      // keeps this off the default error-tracking path, where a captured 500
+      // reads like a bug in the assign flow that reaches this getter.
+      throw new AppError('LIVEKIT_NOT_CONFIGURED', 'LIVEKIT_SIP_HOST is not configured.', 422);
     }
     return env.LIVEKIT_SIP_HOST.replace(/^sip:/, '');
   }
