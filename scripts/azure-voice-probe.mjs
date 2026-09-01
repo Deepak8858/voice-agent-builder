@@ -77,7 +77,12 @@ outcomes.push(
         {
           method: 'POST',
           headers: { 'api-key': env('AZURE_OPENAI_API_KEY'), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+          // max_completion_tokens: newer model generations (gpt-5.x) reject the
+          // legacy max_tokens parameter with HTTP 400.
+          body: JSON.stringify({
+            messages: [{ role: 'user', content: 'ping' }],
+            max_completion_tokens: 16,
+          }),
         },
       );
     },
