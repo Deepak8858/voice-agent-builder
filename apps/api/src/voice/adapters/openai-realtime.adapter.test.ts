@@ -160,6 +160,8 @@ describe('OpenAIRealtimeVoiceAdapter', () => {
     expect(body.session.instructions).toContain('ask "What time works for you?"');
     expect(body.session.instructions).toContain('call tool google_calendar_booking');
     expect(body.session.audio.output.voice).toBe('marin');
+    expect(body.session.audio.input.format).toEqual({ type: 'audio/pcm', rate: 24000 });
+    expect(body.session.audio.output.format).toEqual({ type: 'audio/pcm', rate: 24000 });
     expect(body.session.tool_choice).toBe('auto');
     expect(body.session.tools).toEqual([
       {
