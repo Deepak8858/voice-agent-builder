@@ -588,10 +588,20 @@ export class ErasureService {
         );
       }
       // eraseOrganization records its own refusals (live subscription, carrier
-      // release, retained financial records) with the organization attributed,
-      // so a failure here is returned as-is rather than re-wrapped.
+      // release, retained financial records) with the operator detail in the
+      // audit row. Its message is written for an operator, though — raw org id,
+      // Dodo subscription id, "cancel it in Dodo" — so the self-service caller
+      // gets a translation naming the actions actually available to them.
       const orgResult = await this.eraseOrganization(org.id);
-      if (!orgResult.success) return orgResult;
+      if (!orgResult.success) {
+        return {
+          success: false,
+          error: `Your organization "${org.name}" cannot be deleted automatically: it has `
+            + 'an active subscription or records that must be retained. Cancel any active '
+            + 'subscription from the billing page and retry, or contact privacy@incfrog.ai '
+            + 'to complete the deletion.',
+        };
+      }
     }
 
     // Enumerate before deleteMany: the rows are the only record of which

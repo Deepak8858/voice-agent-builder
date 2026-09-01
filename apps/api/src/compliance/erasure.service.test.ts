@@ -1111,10 +1111,13 @@ describe('ErasureService', () => {
       });
     });
 
-    it('returns the organization refusal as-is when the owned org cannot be erased', async () => {
+    it('translates the organization refusal for the self-service caller', async () => {
       // The org-level refusal (here: retained financial records) is already
-      // recorded with the organization attributed; eraseUser must not proceed
-      // to the user delete, which would throw on the same RESTRICT posture.
+      // recorded with the organization attributed and the operator detail in
+      // the audit row; eraseUser must not proceed to the user delete, which
+      // would throw on the same RESTRICT posture. The caller-facing message is
+      // the translation, not the operator text: no raw org id, no Dodo
+      // subscription id, only actions the account holder can take.
       const { service, deletedOrganizations, auditLogs } = makeService({
         user: { id: 'user-1', email: 'u@example.com', authUserId: 'auth-1' },
         ownedOrganizations: [{ id: 'org-1', name: 'Acme' }],
@@ -1125,7 +1128,9 @@ describe('ErasureService', () => {
       const result = await service.eraseUser('user-1');
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('must be retained');
+      expect(result.error).toContain('Your organization "Acme"');
+      expect(result.error).toContain('privacy@incfrog.ai');
+      expect(result.error).not.toContain('org-1');
       expect(deletedOrganizations).toEqual([]);
       expect(auditLogs.map((row) => row.action)).toEqual([
         'gdpr.organization_erasure_refused',

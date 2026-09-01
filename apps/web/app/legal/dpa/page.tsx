@@ -54,10 +54,12 @@ export default function DpaPage() {
 
         <Section title="Your Rights">
           You may request erasure of all personal data at any time: use the delete-account
-          option in Settings, or contact privacy@incfrog.ai. Financial records must be
-          retained by law, so accounts with billing history cannot be hard-deleted
-          automatically — contact privacy@incfrog.ai and remaining personal data will be
-          removed from those records.
+          option in Settings, or contact privacy@incfrog.ai. Self-service deletion is
+          refused when your organization still has other members (one person&apos;s request
+          cannot delete teammates&apos; data — remove them or transfer ownership first) or an
+          active subscription (cancel it first). Financial records must be retained by law,
+          so accounts with billing history cannot be hard-deleted automatically — contact
+          privacy@incfrog.ai and remaining personal data will be removed from those records.
         </Section>
 
         <Section title="Contact">
