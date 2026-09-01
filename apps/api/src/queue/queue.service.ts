@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Queue, type ConnectionOptions, type JobsOptions } from 'bullmq';
 import IORedis, { type Redis, type RedisOptions } from 'ioredis';
 import { createConnection } from 'net';
@@ -18,11 +18,29 @@ const REDIS_HEALTH_TIMEOUT_MS = 300;
  * `REDIS_URL` is required (validated by `env`).
  */
 @Injectable()
-export class QueueService implements OnModuleDestroy {
+export class QueueService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(QueueService.name);
   private readonly queues = new Map<string, Queue>();
   private connection: Redis | null = null;
   private lastRedisErrorLogAt = 0;
+
+  /**
+   * `lazyConnect` + `enableOfflineQueue: false` make the first command after
+   * boot fail outright while the socket is still connecting, and the health
+   * endpoint probes a raw TCP socket rather than this client, so nothing else
+   * warms it — the first caller to pay that window in production was a
+   * concurrency lease on the live call path. Connect eagerly instead; a
+   * failure here is left to `retryStrategy`, because boot must not depend on
+   * Redis being reachable at this exact instant.
+   */
+  async onModuleInit(): Promise<void> {
+    const connection = this.getConnection();
+    if (connection.status === 'wait') {
+      await connection
+        .connect()
+        .catch((err) => this.logger.warn(`[redis] eager connect failed: ${(err as Error).message}`));
+    }
+  }
 
   /**
    * Shared ioredis connection. Used by QueueService itself for BullMQ and
