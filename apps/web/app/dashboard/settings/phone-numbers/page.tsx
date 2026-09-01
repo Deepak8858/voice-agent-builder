@@ -504,8 +504,9 @@ export default function PhoneNumbersPage() {
         >
           <form onSubmit={createSipNumber} className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label>Phone number</Label>
+              <Label htmlFor="sip-phone-number">Phone number</Label>
               <Input
+                id="sip-phone-number"
                 value={sipForm.phoneNumber}
                 onChange={(e) => setSipForm((prev) => ({ ...prev, phoneNumber: e.target.value }))}
                 placeholder="+15551234567"
@@ -515,8 +516,9 @@ export default function PhoneNumbersPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>SIP trunk domain</Label>
+              <Label htmlFor="sip-trunk-domain">SIP trunk domain</Label>
               <Input
+                id="sip-trunk-domain"
                 value={sipForm.sipTrunkDomain}
                 onChange={(e) => setSipForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))}
                 placeholder="sip.yourcarrier.com"
@@ -524,15 +526,17 @@ export default function PhoneNumbersPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>SIP trunk username (optional)</Label>
+              <Label htmlFor="sip-auth-username">SIP trunk username (optional)</Label>
               <Input
+                id="sip-auth-username"
                 value={sipForm.sipAuthUsername}
                 onChange={(e) => setSipForm((prev) => ({ ...prev, sipAuthUsername: e.target.value }))}
               />
             </div>
             <div className="space-y-2">
-              <Label>SIP trunk password (optional)</Label>
+              <Label htmlFor="sip-auth-password">SIP trunk password (optional)</Label>
               <Input
+                id="sip-auth-password"
                 type="password"
                 value={sipForm.sipAuthPassword}
                 onChange={(e) => setSipForm((prev) => ({ ...prev, sipAuthPassword: e.target.value }))}

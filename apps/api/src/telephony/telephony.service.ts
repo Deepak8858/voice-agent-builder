@@ -518,6 +518,13 @@ export class TelephonyService {
     // up. Other providers keep their explicit configure-livekit step.
     if (dto.agent_id && number.provider === 'sip') {
       await this.configureLiveKit(workspaceId, number.id, actorUserId);
+      // Re-read: configure just flipped the status and created the LiveKit
+      // config, and the assign response must reflect what a refresh shows.
+      const configured = await this.prisma.telephonyPhoneNumber.findFirst({
+        where: { id: number.id, workspaceId },
+        include: { livekitConfig: true },
+      });
+      if (configured) return this.phoneNumberDto(configured);
     }
     return this.phoneNumberDto(updated);
   }
