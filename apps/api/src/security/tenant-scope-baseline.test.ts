@@ -321,7 +321,11 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   // The fourth site was a dead `invalidateSubscriptionCacheForCustomer` that no
   // handler called; it was deleted rather than ported.
   'webhooks/dodo-webhook.service.ts:subscription.findFirst': 3,
-  'webhooks/dodo-webhook.service.ts:subscription.findMany': 1,
+  // 2: the audit-log owner scan plus `resolveLinkOwner`, which maps a Dodo
+  // customer id (globally unique, provider-issued) to its single owning
+  // organization for a metadata-less activation — a webhook context with no
+  // tenant in scope, keyed the same way as the adjacent baselined lookups.
+  'webhooks/dodo-webhook.service.ts:subscription.findMany': 2,
   'webhooks/dodo-webhook.service.ts:subscription.updateMany': 1,
   'white-label/white-label.service.ts:whiteLabelSettings.findUnique': 1,
   'white-label/white-label.service.ts:workspace.findMany': 1,
