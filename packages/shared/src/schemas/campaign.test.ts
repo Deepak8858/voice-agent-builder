@@ -6,6 +6,7 @@ describe('CreateOutboundCampaignDtoSchema', () => {
     const dto = CreateOutboundCampaignDtoSchema.parse({
       agent_id: '11111111-1111-1111-1111-111111111111',
       name: 'Consented Test Campaign',
+      purpose: 'requested_follow_up',
       contacts: [{ phone: '+917607185834', full_name: 'Aditya' }],
     });
 

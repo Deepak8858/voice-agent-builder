@@ -39,6 +39,7 @@ export interface DispatchableCampaign {
   id: string;
   agentId: string;
   workspaceId: string;
+  purpose: string;
   contacts: Prisma.JsonValue;
   schedule: Prisma.JsonValue;
 }
@@ -68,6 +69,7 @@ export class OutboundCampaignService {
       name: string;
       contacts: CampaignContact[];
       schedule?: Record<string, unknown>;
+      purpose: string;
     },
   ) {
     const agent = await this.prisma.agent.findFirst({
@@ -82,6 +84,7 @@ export class OutboundCampaignService {
         workspaceId,
         agentId: dto.agent_id,
         name: dto.name,
+        purpose: dto.purpose,
         contacts: dto.contacts as unknown as Prisma.InputJsonValue,
         schedule: (dto.schedule ?? { max_calls_per_hour: 10, max_concurrent: 3 }) as Prisma.InputJsonValue,
         status: 'draft',
@@ -95,6 +98,7 @@ export class OutboundCampaignService {
       resourceId: campaign.id,
       metadata: {
         agent_id: dto.agent_id,
+        purpose: dto.purpose,
         contact_count: dto.contacts.length,
       },
     });
@@ -226,6 +230,7 @@ export class OutboundCampaignService {
         campaignId: campaign.id,
         agentId: campaign.agentId,
         workspaceId: campaign.workspaceId,
+        purpose: campaign.purpose,
         actorUserId,
         to: contact.phone,
         contactName: contact.full_name,
