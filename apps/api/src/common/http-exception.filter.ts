@@ -85,9 +85,22 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error.details = correlationId ? { correlationId } : undefined;
     }
 
-    // Warn on 5xx — these are bugs, not client errors
+    // Warn on 5xx — these are bugs, not client errors. The real exception
+    // message is logged even when the response body masks it: an HttpException
+    // (AppError included) skips the `instanceof Error` log branch above, and a
+    // production 502 with no recorded cause is undiagnosable after the fact.
     if (status >= 500) {
-      logger.error({ correlationId, method: req.method, url: stripQuery(req.url), status }, 'HTTP 5xx response');
+      logger.error(
+        {
+          correlationId,
+          method: req.method,
+          url: stripQuery(req.url),
+          status,
+          code: error.code,
+          cause: exception instanceof Error ? exception.message : String(exception),
+        },
+        'HTTP 5xx response',
+      );
     }
 
     if (this.shouldCapture(status)) {
