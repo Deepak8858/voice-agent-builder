@@ -35,6 +35,7 @@ import {
 } from './knowledge-retrieval.js';
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
 import { createHandoffClient, createTransferTool } from './handoff.js';
+import { createReminderClient, createReminderTool } from './reminders.js';
 import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 import {
@@ -157,7 +158,26 @@ class VoiceForgeAgent extends voice.Agent {
   }
 }
 
-async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typeof parseAgentSpec>> {
+/** The calendar scope the reminder tool needs on the workspace's Google connection. */
+const CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+
+/**
+ * Whether the workspace can take reminders: Google connected with the calendar
+ * scope. Read once per call so a disconnected workspace is never offered a
+ * booking that would fail.
+ */
+async function workspaceHasCalendar(workspaceId: string): Promise<boolean> {
+  const connection = await prisma.googleOAuthConnection.findUnique({
+    where: { workspaceId },
+    select: { status: true, scopes: true },
+  });
+  if (!connection || connection.status !== 'connected') return false;
+  return Array.isArray(connection.scopes) && connection.scopes.includes(CALENDAR_EVENTS_SCOPE);
+}
+
+async function loadAgentSpec(
+  metadata: DispatchMetadata,
+): Promise<{ spec: ReturnType<typeof parseAgentSpec>; workspaceId: string }> {
   const agent = await prisma.agent.findUnique({
     where: { id: metadata.agentId },
     select: {
@@ -173,7 +193,7 @@ async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typ
   }
 
   if (agent.specJson) {
-    return parseAgentSpec(agent.specJson);
+    return { spec: parseAgentSpec(agent.specJson), workspaceId: agent.workspaceId };
   }
 
   if (agent.activeVersionId) {
@@ -182,7 +202,7 @@ async function loadAgentSpec(metadata: DispatchMetadata): Promise<ReturnType<typ
       select: { specJson: true },
     });
     if (version?.specJson) {
-      return parseAgentSpec(version.specJson);
+      return { spec: parseAgentSpec(version.specJson), workspaceId: agent.workspaceId };
     }
   }
 
@@ -248,7 +268,7 @@ async function runCall(
   meter: CallMeter | null,
   vad: VAD | undefined,
 ): Promise<void> {
-  const spec = await loadAgentSpec(metadata);
+  const { spec, workspaceId } = await loadAgentSpec(metadata);
   const fallbackVoice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
   const tools: llm.ToolContextEntry[] = [];
   const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
@@ -316,6 +336,18 @@ async function runCall(
     if (transferTool) tools.push(transferTool);
   }
 
+  // Reminders and callbacks on the business calendar, on every call of a
+  // workspace whose Google connection has the calendar scope.
+  let reminderTool: llm.ToolContextEntry | null = null;
+  if (apiBaseUrl && internalApiKey && (await workspaceHasCalendar(workspaceId))) {
+    reminderTool = createReminderTool({
+      agentId: metadata.agentId,
+      callId,
+      schedule: createReminderClient({ apiBaseUrl, internalApiKey }),
+    });
+    tools.push(reminderTool);
+  }
+
   // The pipeline is a billing decision made by the API when the call was
   // created (free plans and half of starter calls run in-house), so it is read
   // from dispatch metadata rather than re-derived here.
@@ -329,7 +361,10 @@ async function runCall(
 
   const startSession = async (): Promise<void> => {
     await session.start({
-      agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
+      agent: new VoiceForgeAgent(
+        buildVoiceForgeInstructions(spec, metadata, { reminderTool: reminderTool !== null }),
+        tools,
+      ),
       room: ctx.room,
     });
     await session.generateReply({

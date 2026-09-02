@@ -73,7 +73,11 @@ export function canTransferToHuman(spec: AgentSpec, metadata: DispatchMetadata):
   );
 }
 
-export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchMetadata): string {
+export function buildVoiceForgeInstructions(
+  spec: AgentSpec,
+  metadata: DispatchMetadata,
+  extras: { reminderTool?: boolean; now?: Date } = {},
+): string {
   const rules: string[] = [];
   if (spec.conversation_rules.ask_one_question_at_a_time) rules.push('ask one question at a time');
   if (spec.conversation_rules.confirm_critical_information) rules.push('confirm critical information');
@@ -113,6 +117,9 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
       : spec.handoff.enabled
         ? `Handoff is enabled but cannot be performed on this call. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}. If one applies, offer to take a message instead.`
         : 'Handoff is disabled unless explicitly requested by platform policy.',
+    extras.reminderTool
+      ? `The current date and time is ${(extras.now ?? new Date()).toISOString()} (UTC). If the caller wants a reminder or a callback at a particular time, agree the exact day and time with them, then call schedule_reminder with an absolute ISO 8601 date-time including the caller's timezone offset, and confirm it back in one sentence.`
+      : null,
     'Keep responses brief, natural, and suitable for a phone call.',
   ]
     .filter(Boolean)

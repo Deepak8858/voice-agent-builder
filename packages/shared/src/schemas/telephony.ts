@@ -195,3 +195,30 @@ export const HandoffDialResponseSchema = z
   })
   .strict();
 export type HandoffDialResponse = z.infer<typeof HandoffDialResponseSchema>;
+
+/**
+ * Runtime -> API: book a reminder or callback on the workspace's Google
+ * Calendar (primary), titled with the agent's name. Idempotent per call and
+ * time on the API side.
+ */
+export const ReminderRequestSchema = z
+  .object({
+    callId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    /** Absolute ISO 8601 date-time; an offset is expected but the API tolerates UTC. */
+    when_iso: z.string().min(10).max(40),
+    title: z.string().trim().min(1).max(120),
+    notes: z.string().trim().max(1000).optional(),
+    timezone: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+export type ReminderRequest = z.infer<typeof ReminderRequestSchema>;
+
+export const ReminderResponseSchema = z
+  .object({
+    scheduled: z.boolean(),
+    reason: z.string().nullable(),
+    event_link: z.string().nullable(),
+  })
+  .strict();
+export type ReminderResponse = z.infer<typeof ReminderResponseSchema>;
