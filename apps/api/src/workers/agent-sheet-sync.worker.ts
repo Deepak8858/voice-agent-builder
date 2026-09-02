@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { type Job } from 'bullmq';
 import { z } from 'zod';
 import { AGENT_SHEET_QUEUE } from '../agent-sheets/agent-sheet.queue';
-import { AgentSheetService } from '../agent-sheets/agent-sheet.service';
+import { AgentSheetService, type SheetSyncJob } from '../agent-sheets/agent-sheet.service';
 import { QueueService } from '../queue/queue.service';
 import { BaseWorker } from './base.worker';
 
@@ -32,6 +32,8 @@ export class AgentSheetSyncWorker extends BaseWorker<{ callId: string; workspace
       this.logger.warn(`Dropping malformed sheet sync job ${job.id}: ${parsed.error.message}`);
       return;
     }
-    await this.sheets.syncCallRow(parsed.data);
+    // `tsconfig.build.json` compiles with strict off, which turns the inferred
+    // zod type into all-optional fields; the parse above has already proven both.
+    await this.sheets.syncCallRow(parsed.data as SheetSyncJob);
   }
 }
