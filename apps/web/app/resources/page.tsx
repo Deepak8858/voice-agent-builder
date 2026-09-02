@@ -10,11 +10,25 @@ export const metadata = pageMetadata(
 
 const guides = [
   {
+    href: '/resources/why-voice-agents-fail',
+    label: 'Reliability engineering',
+    title: 'Why AI voice agents fail in production',
+    description:
+      'It is almost never the model. The failure map: shared state, turn detection, dropped transfers, unguarded tools, and unversioned change.',
+  },
+  {
     href: '/resources/test-ai-voice-agent',
     label: 'Testing and reliability',
     title: 'How to test an AI voice agent before launch',
     description:
       'A practical call-path checklist covering goals, tools, fallbacks, transfers, compliance, and production evidence.',
+  },
+  {
+    href: '/resources/ai-call-consent',
+    label: 'Compliance',
+    title: 'Do you need consent to make AI phone calls?',
+    description:
+      'Consent, DNC, opt-out, disclosure, and calling windows — treated as pre-call checks in the execution path, not post-incident paperwork.',
   },
   {
     href: '/resources/white-label-ai-voice-agents',
