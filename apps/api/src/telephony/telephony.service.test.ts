@@ -1548,6 +1548,26 @@ describe('TelephonyService', () => {
     );
   });
 
+  it.each([
+    ['the agent worker', { identity: 'agent-AJ_1', attributes: { 'lk.agent.name': 'voiceforge-agent' } }],
+    ['the warm-transfer human', { identity: 'sip-human-call-1', attributes: { 'sip.callID': 'SCL_2' } }],
+  ])('does not end the call when %s leaves the room', async (_who, participant) => {
+    const prisma = makeLiveKitTerminalPrisma('in_progress', null, new Date());
+    const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED', {
+      participant: {
+        sid: 'PA_999',
+        metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+        disconnectReason: 'CLIENT_INITIATED',
+        ...participant,
+      },
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-7"}', 'Bearer token');
+
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
+  });
+
   /**
    * Prod, three days to 2026-09-02: 277 livekit.* call_events for 93 distinct
    * LiveKit event ids. The unique (provider, event_id) index refused the
@@ -3044,5 +3064,65 @@ describe('TelephonyService.dialHandoff', () => {
       reason: 'invalid_target',
     });
     expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+});
+
+describe('TelephonyService.syncNumbers', () => {
+  // 2026-09-02: a connection made before the account type was recorded is the
+  // one that needs it most, so every sync re-reads it. The write is a JSON
+  // merge in the database: ensureProviderSipTrunk keeps the Twilio trunk SID in
+  // the same column, and a snapshot merge could erase it.
+  it('records the provider account type with an in-database merge on every sync', async () => {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      telephonyProviderConnection: {
+        findFirst: vi.fn(async () => ({
+          id: 'connection-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'twilio',
+          status: 'connected',
+          encryptedCredentials: { v: 1 },
+          metadata: { twilioTrunk: { sid: 'TK123' } },
+        })),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'connection-1', ...data })),
+      },
+      $executeRaw: vi.fn(async () => 1),
+    };
+    const registry = {
+      adapterFor: vi.fn(() => ({
+        listPhoneNumbers: vi.fn(async () => []),
+        validateCredentials: vi.fn(async () => ({
+          valid: true,
+          providerAccountId: 'AC123',
+          accountType: 'Trial',
+        })),
+      })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      registry as never,
+      { decryptJson: vi.fn(() => ({ provider: 'twilio', accountSid: 'AC123', authToken: 't' })) } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.syncNumbers('workspace-1', 'connection-1', 'user-1');
+
+    // Never a whole-metadata write that could carry a stale snapshot.
+    expect(prisma.telephonyProviderConnection.update).toHaveBeenCalledWith({
+      where: { id: 'connection-1' },
+      data: { lastSyncAt: expect.any(Date), status: 'connected' },
+    });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('account_type', ?::text)");
+    expect(values).toEqual(['Trial', 'connection-1']);
   });
 });

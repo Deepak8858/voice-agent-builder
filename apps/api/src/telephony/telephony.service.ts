@@ -221,12 +221,9 @@ export class TelephonyService {
 
     await this.prisma.telephonyProviderConnection.update({
       where: { id: connection.id },
-      data: {
-        lastSyncAt: new Date(),
-        status: 'connected',
-        ...(await this.accountTypeMetadata(connection)),
-      },
+      data: { lastSyncAt: new Date(), status: 'connected' },
     });
+    await this.refreshAccountType(connection);
     await this.audit.log({
       workspaceId,
       actorUserId,
@@ -1928,12 +1925,17 @@ export class TelephonyService {
    * flag existed pick it up. A Twilio trial account can only call numbers
    * verified in the Twilio console; every other dial is refused before it
    * rings, and nothing in the call itself says why.
+   *
+   * The write is a JSON merge in the database, not a read-modify-write:
+   * `ensureProviderSipTrunk` stores the Twilio trunk SID and SIP credentials in
+   * the same column, and a snapshot taken before the provider round trip would
+   * overwrite them.
    */
-  private async accountTypeMetadata(connection: {
+  private async refreshAccountType(connection: {
+    id: string;
     provider: string;
     encryptedCredentials: unknown;
-    metadata: Prisma.JsonValue | null;
-  }): Promise<{ metadata?: Prisma.InputJsonValue }> {
+  }): Promise<void> {
     try {
       const credentials = this.encryption.decryptJson<ProviderCredentials>(
         connection.encryptedCredentials,
@@ -1941,15 +1943,14 @@ export class TelephonyService {
       const validation = await this.registry
         .adapterFor(connection.provider as never)
         .validateCredentials(credentials);
-      if (!validation.valid || !validation.accountType) return {};
-      return {
-        metadata: {
-          ...this.objectMetadata(connection.metadata),
-          account_type: validation.accountType,
-        } as Prisma.InputJsonValue,
-      };
-    } catch {
-      return {};
+      if (!validation.valid || !validation.accountType) return;
+      await this.prisma.$executeRaw`UPDATE telephony_provider_connections
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('account_type', ${validation.accountType}::text)
+        WHERE id = ${connection.id}::uuid`;
+    } catch (err) {
+      this.logger.warn(
+        `Could not refresh the account type of connection ${connection.id}: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -2332,6 +2333,12 @@ export class TelephonyService {
     participantId: string | null,
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
+    if (!normalizedStatus) {
+      // The agent or the warm-transfer human leaving is not the caller hanging
+      // up; keep the event, leave the call alone.
+      await this.recordLiveKitCallEvent(call, eventType, payload);
+      return;
+    }
     // Whether anyone was ever on the line is the ledger's `connected_at`, which
     // the runtime stamps when the far end answers. The status column is not
     // that truth: the agent joining the room moved a still-dialing call to
@@ -2396,6 +2403,14 @@ export class TelephonyService {
       // The call is already settled; the carrier reason is still worth keeping.
       await this.prisma.call.update({ where: { id: call.id }, data: { metadata } });
     }
+    await this.recordLiveKitCallEvent(call, eventType, payload);
+  }
+
+  private async recordLiveKitCallEvent(
+    call: { id: string; workspaceId: string; organizationId: string | null },
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     await this.prisma.callEvent.create({
       data: {
         callId: call.id,
@@ -2405,6 +2420,19 @@ export class TelephonyService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /**
+   * Whether a participant is the caller's own carrier leg. The agent worker and
+   * the warm-transfer human (`sip-human-<callId>`) share the room; either of
+   * them leaving must not be filed as the caller hanging up.
+   */
+  private isCarrierLeg(
+    participant: Record<string, unknown>,
+    attributes: Record<string, unknown>,
+  ): boolean {
+    if ('lk.agent.name' in attributes || 'lk.agent_name' in attributes) return false;
+    return !(stringValue(participant.identity) ?? '').startsWith('sip-human-');
   }
 
   /** The disconnect reason of a SIP leg's `participant_left`, or null for any other event. */
@@ -2449,14 +2477,16 @@ export class TelephonyService {
     return 'no_answer';
   }
 
+  /** The call status an event implies, or null when the event says nothing about the call. */
   private liveKitStatus(
     eventType: string,
     payload: Record<string, unknown>,
-  ): { status: string; terminal: boolean } {
+  ): { status: string; terminal: boolean } | null {
     const participant = this.objectMetadata(payload.participant);
     const attributes = this.objectMetadata(participant.attributes);
     const sipStatus = stringValue(attributes['sip.callStatus'])?.toLowerCase();
     const event = eventType.toLowerCase();
+    if (event === 'participant_left' && !this.isCarrierLeg(participant, attributes)) return null;
     // A leg that has left is gone whatever its last attribute said. LiveKit
     // stops updating `sip.callStatus` once the participant disconnects, so a
     // refused dial leaves as `participant_left` still marked `dialing`; letting

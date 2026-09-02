@@ -251,6 +251,12 @@ export default function PhoneNumbersPage() {
       setSipDomainOverrides({});
       setImportWebhookSecret('');
       setActiveConnectionId(connectionId);
+      // Sync refreshes the provider account type server-side; re-read the
+      // connections so a trial account is flagged before any number is imported.
+      const connectionRes = await call<{ items: TelephonyConnection[] }>(
+        `/workspaces/${workspaceId}/telephony/connections`,
+      );
+      setConnections(connectionRes.items ?? []);
     } catch (err) {
       handleApiError(err, 'Number sync failed');
     } finally {
@@ -612,7 +618,7 @@ export default function PhoneNumbersPage() {
             </div>
           )}
 
-          {connections.some((c) => c.provider === 'twilio' && c.account_type === 'Trial') && (
+          {activeConnection?.provider === 'twilio' && activeConnection.account_type === 'Trial' && (
             <p
               role="status"
               className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-foreground"
