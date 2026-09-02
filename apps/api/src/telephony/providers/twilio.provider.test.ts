@@ -58,4 +58,143 @@ describe('TwilioProviderAdapter', () => {
     expect(params.get('StatusCallback')).toBe('https://vocal.devdeepak.me/api/v1/telephony/twilio/status/number-1');
     expect(params.get('StatusCallbackMethod')).toBe('POST');
   });
+
+  it('creates the trunk, its origination URL and its credentials on first connect', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        const target = `${init?.method ?? 'GET'} ${String(url)}`;
+        calls.push(target);
+        if (target.startsWith('GET') && target.includes('/Trunks?')) {
+          return json({ trunks: [] });
+        }
+        if (target.includes('/OriginationUrls') && target.startsWith('GET')) {
+          return json({ origination_urls: [] });
+        }
+        if (target.includes('/Trunks/TK1/OriginationUrls')) return json({ sid: 'OU1' });
+        if (target.endsWith('/Trunks')) {
+          return json({ sid: 'TK1', friendly_name: 'VoiceForge', domain_name: 'vf-abc.pstn.twilio.com' });
+        }
+        if (target.includes('CredentialLists.json')) return json({ sid: 'CL1' });
+        return json({});
+      },
+    });
+
+    const trunk = await adapter.ensureSipTrunk({
+      credentials: CREDENTIALS,
+      originationSipUri: 'sip:tenant.sip.livekit.cloud;transport=tcp',
+    });
+
+    expect(trunk).toMatchObject({
+      trunkSid: 'TK1',
+      domainName: 'vf-abc.pstn.twilio.com',
+      originationUrlSid: 'OU1',
+      credentialListSid: 'CL1',
+    });
+    expect(trunk.username).toMatch(/^vf_[0-9a-f]{8}$/);
+    // Twilio never reads a password back, so the only chance to keep it is now.
+    expect(trunk.password).toHaveLength(24);
+    expect(calls.some((call) => call.includes('/Credentials.json'))).toBe(true);
+    expect(calls.some((call) => call.endsWith('/Trunks/TK1/CredentialLists'))).toBe(true);
+  });
+
+  it('reuses an existing trunk, origination URL and credential without creating anything', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        const target = `${init?.method ?? 'GET'} ${String(url)}`;
+        calls.push(target);
+        if (target.includes('/OriginationUrls')) {
+          return json({
+            origination_urls: [
+              { sid: 'OU1', sip_url: 'sip:tenant.sip.livekit.cloud;transport=tcp' },
+            ],
+          });
+        }
+        return json({
+          trunks: [
+            { sid: 'TK1', friendly_name: 'VoiceForge', domain_name: 'vf-abc.pstn.twilio.com' },
+          ],
+        });
+      },
+    });
+
+    const trunk = await adapter.ensureSipTrunk({
+      credentials: CREDENTIALS,
+      originationSipUri: 'sip:tenant.sip.livekit.cloud;transport=tcp',
+      existingUsername: 'vf_deadbeef',
+    });
+
+    expect(trunk).toMatchObject({
+      trunkSid: 'TK1',
+      originationUrlSid: 'OU1',
+      username: 'vf_deadbeef',
+      password: null,
+    });
+    expect(calls.every((call) => call.startsWith('GET'))).toBe(true);
+  });
+
+  it('attaches the number to the trunk instead of rewriting webhooks, and tolerates a re-attach', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${String(url)}`);
+        // Twilio answers 409 when the number is already on the trunk, which is
+        // the state a reconfigure wants.
+        return new Response(JSON.stringify({ message: 'already attached', status: 409 }), {
+          status: 409,
+        });
+      },
+    });
+
+    const result = await adapter.configureInboundRouting({
+      credentials: CREDENTIALS,
+      phoneNumber: NUMBER,
+      livekitSipUri: 'sip:tenant.sip.livekit.cloud',
+      trunkSid: 'TK1',
+      fallbackWebhookUrl: 'https://example.test/fallback',
+      statusCallbackUrl: 'https://example.test/status',
+    });
+
+    expect(result).toMatchObject({ status: 'configured', providerRoutingId: 'TK1' });
+    expect(calls).toEqual([
+      'POST https://trunking.twilio.com/v1/Trunks/TK1/PhoneNumbers',
+    ]);
+  });
+
+  it('releases the number from the trunk when routing is removed', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${String(url)}`);
+        return new Response('', { status: 204 });
+      },
+    });
+
+    await adapter.removeRouting({ credentials: CREDENTIALS, phoneNumber: NUMBER, trunkSid: 'TK1' });
+
+    expect(calls).toEqual([
+      'DELETE https://trunking.twilio.com/v1/Trunks/TK1/PhoneNumbers/PN123',
+    ]);
+  });
 });
+
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+const CREDENTIALS: TwilioConnectionCredentials = {
+  provider: 'twilio',
+  accountSid: 'AC123',
+  authToken: 'auth-token',
+};
+
+const NUMBER = {
+  id: 'number-1',
+  provider: 'twilio' as const,
+  providerNumberId: 'PN123',
+  phoneNumberE164: '+14155551234',
+};

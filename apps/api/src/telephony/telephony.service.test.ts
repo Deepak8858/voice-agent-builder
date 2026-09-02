@@ -2332,13 +2332,17 @@ describe('TelephonyService', () => {
     expect(prisma.liveKitTelephonyConfig.upsert).toHaveBeenCalled();
   });
 
-  it('does not auto-configure LiveKit when assigning an agent to a vobiz number', async () => {
+  it('auto-configures LiveKit for a provider-connected number too', async () => {
+    // Assignment is the last step for every provider now: the separate
+    // "configure" button was a dead end that left numbers verified-but-silent.
     const { service, prisma, livekit } = makeAssignService('vobiz');
 
     await service.assignAgent('workspace-1', 'number-1', 'user-1', { agent_id: 'agent-1' });
 
-    expect(livekit.createInboundSipTrunk).not.toHaveBeenCalled();
-    expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
+    expect(livekit.createInboundSipTrunk).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'vobiz', phoneNumberId: 'number-1' }),
+    );
+    expect(prisma.liveKitTelephonyConfig.upsert).toHaveBeenCalled();
   });
 });
 

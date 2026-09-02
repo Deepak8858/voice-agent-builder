@@ -37,6 +37,10 @@ export const API_ERROR_CODES = [
   'PHONE_NUMBER_REQUIRED',
   'AGENT_NOT_PUBLISHED',
   'TELEPHONY_NOT_FOUND',
+  // A telephony provider's own API refused a call we made on the customer's
+  // behalf (trunk provisioning, number attachment). The provider's message is
+  // passed through, because only the account owner can act on it.
+  'TELEPHONY_PROVIDER_ERROR',
   // A provider call identifier resolved to a call owned by another tenant,
   // number, or agent. Billing must refuse rather than attribute the call.
   'CALL_IDENTITY_COLLISION',

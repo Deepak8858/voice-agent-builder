@@ -313,17 +313,19 @@ export class LiveKitService {
     return url.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
   }
 
-  private providerOutboundAddress(provider: string): string {
-    const address = provider === 'twilio' ? env.TWILIO_SIP_DOMAIN : null;
-    if (!address) {
-      throw new AppError(
-        'LIVEKIT_NOT_CONFIGURED',
-        provider === 'vobiz'
-          ? 'Vobiz outbound SIP domain must be provided by the user for this trunk.'
-          : `Outbound SIP domain is not configured for ${provider}.`,
-        500,
-      );
-    }
-    return address.replace(/^sip:/, '');
+  /**
+   * There is no platform-wide outbound SIP domain, by design: every provider's
+   * outbound address belongs to the customer's own account (a Twilio Elastic
+   * SIP trunk's termination domain, a BYO trunk's host), so the caller passes
+   * `sipAddress` and reaching here means that lookup failed.
+   */
+  private providerOutboundAddress(provider: string): never {
+    throw new AppError(
+      'LIVEKIT_NOT_CONFIGURED',
+      provider === 'twilio'
+        ? 'This Twilio connection has no SIP trunk yet. Reconnect the account and try again.'
+        : `Outbound SIP domain must be provided by the user for ${provider} trunks.`,
+      500,
+    );
   }
 }

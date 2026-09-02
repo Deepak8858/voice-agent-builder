@@ -69,8 +69,7 @@ const EnvSchema = z
     TWILIO_ACCOUNT_SID: z.string().optional(),
     TWILIO_AUTH_TOKEN: z.string().optional(),
     TWILIO_PHONE_NUMBER_PREFIX: z.string().default('+1'),
-    TWILIO_SIP_DOMAIN: z.string().optional(),
-    TWILIO_TWIML_WEBHOOK_URL: z.string().optional(),
+      TWILIO_TWIML_WEBHOOK_URL: z.string().optional(),
     TWILIO_STATUS_WEBHOOK_URL: z.string().optional(),
 
     APP_BASE_URL: z.string().optional(),

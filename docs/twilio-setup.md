@@ -37,7 +37,7 @@ OPENAI_REALTIME_MODEL=gpt-realtime-2
 ENCRYPTION_KEY=<32-byte key, for example 64 hex chars>
 ```
 
-Set `TWILIO_SIP_DOMAIN` only when enabling outbound SIP through a Twilio SIP Domain. The legacy `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_TWIML_WEBHOOK_URL`, and `TWILIO_STATUS_WEBHOOK_URL` variables are for the older platform-owned Twilio voice adapter, not the BYO LiveKit flow.
+Outbound SIP needs no platform-wide domain: VoiceForge creates an Elastic SIP trunk inside the customer's own Twilio account when they connect it, and both call directions use that trunk's termination domain and SIP credential. The legacy `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_TWIML_WEBHOOK_URL`, and `TWILIO_STATUS_WEBHOOK_URL` variables are for the older platform-owned Twilio voice adapter, not the BYO LiveKit flow.
 
 ## Security
 
