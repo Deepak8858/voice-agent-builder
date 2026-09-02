@@ -57,7 +57,7 @@ export default function WhyVoiceAgentsFailPage() {
         sections={[
           {
             title: 'Failure 1: shared state between calls',
-            body: 'One conversation works. Forty concurrent conversations expose every place your architecture shares context — history bleeding between callers, a tool result landing in the wrong session, an agent answering caller B with caller A\u2019s appointment. Session isolation is not an optimization; it is the difference between a product and an incident. Every call needs its own state, history, audio stream, and tool-execution context, with nothing shared by default.',
+            body: 'One conversation works. Forty concurrent conversations expose every place your architecture shares context — history bleeding between callers, a tool result landing in the wrong session, an agent answering caller B with caller A’s appointment. Session isolation is not an optimization; it is the difference between a product and an incident. Every call needs its own state, history, audio stream, and tool-execution context, with nothing shared by default.',
           },
           {
             title: 'Failure 2: turn detection, both directions',
@@ -65,7 +65,7 @@ export default function WhyVoiceAgentsFailPage() {
           },
           {
             title: 'Failure 3: the transfer that drops the context',
-            body: 'The highest-stakes moment in a business call is the handoff to a human — and it is where voice deployments fail most expensively, because the caller has already spent their patience. A transfer needs the human to receive who is calling, why, and what the agent already collected. If your platform treats transfer as \u201cdial a number and hope,\u201d every escalation deletes the work the agent just did.',
+            body: 'The highest-stakes moment in a business call is the handoff to a human — and it is where voice deployments fail most expensively, because the caller has already spent their patience. A transfer needs the human to receive who is calling, why, and what the agent already collected. If your platform treats transfer as “dial a number and hope,” every escalation deletes the work the agent just did.',
           },
           {
             title: 'Failure 4: tool calls without guardrails',

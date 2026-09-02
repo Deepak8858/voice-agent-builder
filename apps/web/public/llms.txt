@@ -59,6 +59,8 @@ Key facts:
 - [Why AI voice agents fail in production](https://incfrog.ai/resources/why-voice-agents-fail)
 - [How to test an AI voice agent before it goes live](https://incfrog.ai/resources/test-ai-voice-agent)
 - [Do you need consent to make AI phone calls?](https://incfrog.ai/resources/ai-call-consent)
+- [How to sell AI receptionists to local businesses](https://incfrog.ai/resources/sell-ai-receptionists)
+- [Vapi vs Retell vs OpenAI Realtime](https://incfrog.ai/resources/vapi-vs-retell-vs-openai-realtime)
 - [White-label AI voice agents for agencies](https://incfrog.ai/resources/white-label-ai-voice-agents)
 
 ## Full reference

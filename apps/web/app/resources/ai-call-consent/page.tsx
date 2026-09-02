@@ -62,19 +62,19 @@ export default function AiCallConsentGuidePage() {
         sections={[
           {
             title: 'The five checks every outbound AI call needs',
-            body: 'Before an AI agent dials, five questions need machine-checkable answers. Is the purpose permitted — appointment reminder, requested callback, order confirmation — or is it cold solicitation? Is there a consent record or existing relationship for this number and this purpose? Is the number on a do-not-call registry, or has this person opted out with your client specifically? Is it a lawful calling hour in the recipient\u2019s timezone? And will the call disclose recording and AI participation where required? Teams that answer these in a document have paperwork. Teams that answer them in the execution path have compliance.',
+            body: 'Before an AI agent dials, five questions need machine-checkable answers. Is the purpose permitted — appointment reminder, requested callback, order confirmation — or is it cold solicitation? Is there a consent record or existing relationship for this number and this purpose? Is the number on a do-not-call registry, or has this person opted out with your client specifically? Is it a lawful calling hour in the recipient’s timezone? And will the call disclose recording and AI participation where required? Teams that answer these in a document have paperwork. Teams that answer them in the execution path have compliance.',
           },
           {
             title: 'Consent is per-purpose, not per-company',
             body: 'The most common operational mistake: treating consent as one bit. A patient who consented to appointment reminders did not consent to a win-back campaign. A lead who filled a form asking about pricing did not consent to weekly follow-ups forever. Store consent as a record — number, purpose, source, timestamp — and check the record against the specific call being attempted. When a regulator or an angry customer asks, the answer must be a lookup, not an argument.',
           },
           {
-            title: 'Opt-out is your problem, not the registry\u2019s',
-            body: 'DNC registries are the public layer. The private layer is your own suppression list: every person who told any of your agents to stop calling. That state has to persist across agent versions, across campaigns, and across the client\u2019s staff changes. If your voice platform cannot answer \u201chas this number ever opted out with this client\u201d in one query, the platform is the risk.',
+            title: 'Opt-out is your problem, not the registry’s',
+            body: 'DNC registries are the public layer. The private layer is your own suppression list: every person who told any of your agents to stop calling. That state has to persist across agent versions, across campaigns, and across the client’s staff changes. If your voice platform cannot answer “has this number ever opted out with this client” in one query, the platform is the risk.',
           },
           {
             title: 'Disclosure costs one sentence',
-            body: 'An agent that opens with its name, the business it calls for, and the fact that it is an AI assistant loses almost no conversions and removes an entire class of complaint. Jurisdictions are moving toward mandatory AI disclosure at different speeds, and building it in now means never retrofitting it under deadline. In VoiceForge the disclosure requirement is a field in the agent\u2019s compliance policy, versioned with the spec — not a phrase someone remembers to keep in a prompt.',
+            body: 'An agent that opens with its name, the business it calls for, and the fact that it is an AI assistant loses almost no conversions and removes an entire class of complaint. Jurisdictions are moving toward mandatory AI disclosure at different speeds, and building it in now means never retrofitting it under deadline. In VoiceForge the disclosure requirement is a field in the agent’s compliance policy, versioned with the spec — not a phrase someone remembers to keep in a prompt.',
           },
           {
             title: 'Why cold calling is blocked by default in VoiceForge',

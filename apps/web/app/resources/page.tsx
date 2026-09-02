@@ -31,6 +31,20 @@ const guides = [
       'Consent, DNC, opt-out, disclosure, and calling windows — treated as pre-call checks in the execution path, not post-incident paperwork.',
   },
   {
+    href: '/resources/sell-ai-receptionists',
+    label: 'Agency playbook',
+    title: 'How to sell AI receptionists to local businesses',
+    description:
+      'Qualify on missed-call arithmetic, open with the prospect’s own phone line, price on outcomes, and know where build becomes buy.',
+  },
+  {
+    href: '/resources/vapi-vs-retell-vs-openai-realtime',
+    label: 'Choosing a runtime',
+    title: 'Vapi vs Retell vs OpenAI Realtime',
+    description:
+      'Three different altitudes, not three competitors. Cascaded versus native speech-to-speech, latency budgets, and keeping the agent contract portable.',
+  },
+  {
     href: '/resources/white-label-ai-voice-agents',
     label: 'Agency delivery',
     title: 'White-label AI voice agents need an operating layer',
