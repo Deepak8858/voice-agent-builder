@@ -130,6 +130,9 @@ export default async function CallDetailPage({ params }: PageProps) {
                 />
                 <Separator />
                 <Row label="Outcome" value={detail.outcome ?? '—'} />
+                {detail.carrier_reason ? (
+                  <Row label="Carrier reason" value={detail.carrier_reason} />
+                ) : null}
                 <Row label="Provider" value={detail.provider} />
               </dl>
             </CardContent>

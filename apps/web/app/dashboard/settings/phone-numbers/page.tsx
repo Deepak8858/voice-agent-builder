@@ -44,6 +44,8 @@ interface TelephonyConnection {
   provider_account_id: string | null;
   status: string;
   last_sync_at: string | null;
+  /** Twilio `Trial` accounts can only call numbers verified in the Twilio console. */
+  account_type?: string | null;
 }
 
 type ProviderNumber = SyncedProviderPhoneNumber;
@@ -249,6 +251,12 @@ export default function PhoneNumbersPage() {
       setSipDomainOverrides({});
       setImportWebhookSecret('');
       setActiveConnectionId(connectionId);
+      // Sync refreshes the provider account type server-side; re-read the
+      // connections so a trial account is flagged before any number is imported.
+      const connectionRes = await call<{ items: TelephonyConnection[] }>(
+        `/workspaces/${workspaceId}/telephony/connections`,
+      );
+      setConnections(connectionRes.items ?? []);
     } catch (err) {
       handleApiError(err, 'Number sync failed');
     } finally {
@@ -608,6 +616,18 @@ export default function PhoneNumbersPage() {
                 </Button>
               ))}
             </div>
+          )}
+
+          {activeConnection?.provider === 'twilio' && activeConnection.account_type === 'Trial' && (
+            <p
+              role="status"
+              className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-foreground"
+            >
+              This Twilio account is a trial. Twilio only connects trial calls to numbers you have
+              verified in the Twilio console; any other number is refused before it rings and shows
+              here as declined or no answer. Upgrade the Twilio account, or verify each number you
+              need to call, before running campaigns from this line.
+            </p>
           )}
 
           {providerNumbers.length > 0 && (

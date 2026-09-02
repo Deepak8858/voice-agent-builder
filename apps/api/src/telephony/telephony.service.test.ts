@@ -31,7 +31,12 @@ function makeAdmission() {
  * updating the attribute once the participant is gone, which is exactly the
  * shape that used to be filed as a plain `completed`.
  */
-function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null) {
+function makeLiveKitTerminalPrisma(
+  status: string,
+  outcome: string | null = null,
+  /** The ledger row's connected_at; `'none'` = no usage row at all (legacy call). */
+  connectedAt: Date | null | 'none' = 'none',
+) {
   return {
     telephonyPhoneNumber: {
       findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
@@ -42,6 +47,10 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
         ...data,
       })),
     },
+    callUsage: {
+      findUnique: vi.fn(async () => (connectedAt === 'none' ? null : { connectedAt })),
+    },
+    $executeRaw: vi.fn(async () => 1),
     call: {
       findFirst: vi.fn(async () => ({
         id: 'call-1',
@@ -71,6 +80,7 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
 function makeLiveKitTerminalService(
   prisma: ReturnType<typeof makeLiveKitTerminalPrisma>,
   disconnectReason: string,
+  event: Record<string, unknown> = {},
 ) {
   const livekit = {
     verifyWebhook: vi.fn(async () => ({
@@ -81,7 +91,10 @@ function makeLiveKitTerminalService(
         sid: 'PA_123',
         metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
         disconnectReason,
+        // Every SIP leg carries sip.callID, and keeps it after it has left.
+        attributes: { 'sip.callID': 'SCL_1' },
       },
+      ...event,
     })),
   };
   return new TelephonyService(
@@ -1436,7 +1449,9 @@ describe('TelephonyService', () => {
 
     await service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token');
 
+    // Status and outcome are untouched; only the carrier reason is merged in.
     expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
   });
 
@@ -1473,7 +1488,11 @@ describe('TelephonyService', () => {
   });
 
   it('still records a call that had connected as completed', async () => {
-    const prisma = makeLiveKitTerminalPrisma('in_progress');
+    const prisma = makeLiveKitTerminalPrisma(
+      'in_progress',
+      null,
+      new Date('2026-09-02T10:00:05.000Z'),
+    );
     const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED');
 
     await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
@@ -1481,6 +1500,100 @@ describe('TelephonyService', () => {
     const data = prisma.call.update.mock.calls[0][0].data as Record<string, unknown>;
     expect(data.status).toBe('completed');
     expect(data.outcome).toBeUndefined();
+  });
+
+  /**
+   * Prod 2026-09-02, call 37750155: the Twilio trial account refused the dial,
+   * but the agent had already joined the room, which moved the call to
+   * `in_progress`; when the room closed it was filed as `completed` with no
+   * outcome. Whether anyone was ever on the line is the ledger's connected_at.
+   */
+  it('files a call that never connected as failed even after the agent joined the room', async () => {
+    const prisma = makeLiveKitTerminalPrisma('in_progress', null, null);
+    const service = makeLiveKitTerminalService(prisma, '', {
+      event: 'room_finished',
+      participant: undefined,
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-9"}', 'Bearer token');
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'failed', outcome: 'no_answer' }),
+      }),
+    );
+  });
+
+  it('keeps the carrier leg disconnect reason on the call for the call detail page', async () => {
+    const prisma = makeLiveKitTerminalPrisma('ringing', null, null);
+    const service = makeLiveKitTerminalService(prisma, 'USER_REJECTED', {
+      participant: {
+        sid: 'PA_123',
+        metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+        disconnectReason: 'USER_REJECTED',
+        attributes: { 'sip.callID': 'SCL_1', 'sip.callStatus': 'dialing' },
+      },
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'failed', outcome: 'declined' }),
+      }),
+    );
+    // The reason is merged into metadata in the database, never by rewriting
+    // the whole object (the runtime writes caller details into the same column).
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("COALESCE(metadata, '{}'::jsonb) || ?::jsonb");
+    expect(values).toEqual([
+      JSON.stringify({ sip_disconnect_reason: 'USER_REJECTED', sip_last_status: 'dialing' }),
+      'call-1',
+    ]);
+  });
+
+  it.each([
+    ['the agent worker', { identity: 'agent-AJ_1', attributes: { 'lk.agent.name': 'voiceforge-agent' } }],
+    ['the warm-transfer human', { identity: 'sip-human-call-1', attributes: { 'sip.callID': 'SCL_2' } }],
+    ['a browser participant', { identity: 'user-42', attributes: {} }],
+  ])('does not end the call when %s leaves the room', async (_who, participant) => {
+    const prisma = makeLiveKitTerminalPrisma('in_progress', null, new Date());
+    const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED', {
+      participant: {
+        sid: 'PA_999',
+        metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+        disconnectReason: 'CLIENT_INITIATED',
+        ...participant,
+      },
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-7"}', 'Bearer token');
+
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Prod, three days to 2026-09-02: 277 livekit.* call_events for 93 distinct
+   * LiveKit event ids. The unique (provider, event_id) index refused the
+   * copies, the refusal was swallowed, and processing ran on every copy.
+   */
+  it('does not act on a LiveKit event it has already recorded', async () => {
+    const prisma = makeLiveKitTerminalPrisma('ringing', null, null);
+    prisma.telephonyWebhookEvent.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+    const service = makeLiveKitTerminalService(prisma, 'USER_UNAVAILABLE');
+
+    await expect(service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token')).resolves.toEqual(
+      { processed: false, event: 'participant_left', duplicate: true },
+    );
+
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).not.toHaveBeenCalled();
   });
 
   it('awaits the asynchronous LiveKit webhook verification before reading the event', async () => {
@@ -2956,5 +3069,65 @@ describe('TelephonyService.dialHandoff', () => {
       reason: 'invalid_target',
     });
     expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+});
+
+describe('TelephonyService.syncNumbers', () => {
+  // 2026-09-02: a connection made before the account type was recorded is the
+  // one that needs it most, so every sync re-reads it. The write is a JSON
+  // merge in the database: ensureProviderSipTrunk keeps the Twilio trunk SID in
+  // the same column, and a snapshot merge could erase it.
+  it('records the provider account type with an in-database merge on every sync', async () => {
+    const prisma = {
+      workspace: {
+        findUniqueOrThrow: vi.fn(async () => ({ id: 'workspace-1', organizationId: 'org-1' })),
+      },
+      telephonyProviderConnection: {
+        findFirst: vi.fn(async () => ({
+          id: 'connection-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          provider: 'twilio',
+          status: 'connected',
+          encryptedCredentials: { v: 1 },
+          metadata: { twilioTrunk: { sid: 'TK123' } },
+        })),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'connection-1', ...data })),
+      },
+      $executeRaw: vi.fn(async () => 1),
+    };
+    const registry = {
+      adapterFor: vi.fn(() => ({
+        listPhoneNumbers: vi.fn(async () => []),
+        validateCredentials: vi.fn(async () => ({
+          valid: true,
+          providerAccountId: 'AC123',
+          accountType: 'Trial',
+        })),
+      })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      {} as never,
+      registry as never,
+      { decryptJson: vi.fn(() => ({ provider: 'twilio', accountSid: 'AC123', authToken: 't' })) } as never,
+      { log: vi.fn(async () => undefined) } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.syncNumbers('workspace-1', 'connection-1', 'user-1');
+
+    // Never a whole-metadata write that could carry a stale snapshot.
+    expect(prisma.telephonyProviderConnection.update).toHaveBeenCalledWith({
+      where: { id: 'connection-1' },
+      data: { lastSyncAt: expect.any(Date), status: 'connected' },
+    });
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('account_type', ?::text)");
+    expect(values).toEqual(['Trial', 'connection-1']);
   });
 });

@@ -183,6 +183,7 @@ export class TelephonyService {
         ) as unknown as Prisma.InputJsonValue,
         status: 'connected',
         lastVerifiedAt: new Date(),
+        ...(validation.accountType ? { metadata: { account_type: validation.accountType } } : {}),
       },
     });
 
@@ -222,6 +223,7 @@ export class TelephonyService {
       where: { id: connection.id },
       data: { lastSyncAt: new Date(), status: 'connected' },
     });
+    await this.refreshAccountType(connection);
     await this.audit.log({
       workspaceId,
       actorUserId,
@@ -1559,7 +1561,7 @@ export class TelephonyService {
     const eventType = String(parsed.event ?? parsed.type ?? 'livekit.unknown');
     const eventId = String(parsed.id ?? `${eventType}:${parsed.createdAt ?? Date.now()}`);
     const context = await this.liveKitWebhookContext(parsed);
-    await this.recordWebhookEvent(
+    const recorded = await this.recordWebhookEvent(
       'livekit',
       eventId,
       eventType,
@@ -1568,6 +1570,12 @@ export class TelephonyService {
       true,
       context.call?.id ?? null,
     );
+    // LiveKit redelivers every event about three times. The unique
+    // (provider, event_id) index already refuses the copies; acting on them
+    // anyway tripled call_events and raced the status writes.
+    if (recorded === 'duplicate') {
+      return { processed: false, event: eventType, duplicate: true };
+    }
     if (context.call) {
       await this.updateCallFromLiveKitWebhook(
         context.call,
@@ -1863,8 +1871,8 @@ export class TelephonyService {
     payload: Record<string, unknown>,
     signatureValid: boolean,
     callId: string | null = null,
-  ) {
-    if (!eventId) return null;
+  ): Promise<'recorded' | 'duplicate' | 'skipped'> {
+    if (!eventId) return 'skipped';
     const phoneNumber = phoneNumberId
       ? await this.prisma.telephonyPhoneNumber.findUnique({
           where: { id: phoneNumberId },
@@ -1872,7 +1880,7 @@ export class TelephonyService {
         })
       : null;
     try {
-      return await this.prisma.telephonyWebhookEvent.create({
+      await this.prisma.telephonyWebhookEvent.create({
         data: {
           provider,
           eventId,
@@ -1886,8 +1894,11 @@ export class TelephonyService {
           processedAt: new Date(),
         },
       });
-    } catch {
-      return null;
+      return 'recorded';
+    } catch (err) {
+      // Recording is bookkeeping; a failure to write it must not drop the
+      // event. Only a duplicate is a signal the caller acts on.
+      return isUniqueConstraintViolation(err) ? 'duplicate' : 'skipped';
     }
   }
 
@@ -1909,6 +1920,40 @@ export class TelephonyService {
   }
 
   /** The numbers (or, for a DID-less Vobiz account, trunks) this connection's own credentials can see. */
+  /**
+   * Re-reads the provider account type on sync so connections made before the
+   * flag existed pick it up. A Twilio trial account can only call numbers
+   * verified in the Twilio console; every other dial is refused before it
+   * rings, and nothing in the call itself says why.
+   *
+   * The write is a JSON merge in the database, not a read-modify-write:
+   * `ensureProviderSipTrunk` stores the Twilio trunk SID and SIP credentials in
+   * the same column, and a snapshot taken before the provider round trip would
+   * overwrite them.
+   */
+  private async refreshAccountType(connection: {
+    id: string;
+    provider: string;
+    encryptedCredentials: unknown;
+  }): Promise<void> {
+    try {
+      const credentials = this.encryption.decryptJson<ProviderCredentials>(
+        connection.encryptedCredentials,
+      );
+      const validation = await this.registry
+        .adapterFor(connection.provider as never)
+        .validateCredentials(credentials);
+      if (!validation.valid || !validation.accountType) return;
+      await this.prisma.$executeRaw`UPDATE telephony_provider_connections
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('account_type', ${validation.accountType}::text)
+        WHERE id = ${connection.id}::uuid`;
+    } catch (err) {
+      this.logger.warn(
+        `Could not refresh the account type of connection ${connection.id}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   private async providerInventory(connection: {
     provider: string;
     encryptedCredentials: unknown;
@@ -1998,11 +2043,14 @@ export class TelephonyService {
     lastVerifiedAt: Date | null;
     lastSyncAt: Date | null;
     createdAt: Date;
+    metadata?: Prisma.JsonValue | null;
   }) {
     return {
       id: connection.id,
       provider: connection.provider,
       display_name: connection.displayName,
+      /** Twilio reports `Trial` or `Full`; other providers have no equivalent. */
+      account_type: stringValue(this.objectMetadata(connection.metadata).account_type),
       provider_account_id: this.encryption.mask(connection.providerAccountId),
       status: connection.status,
       last_verified_at: connection.lastVerifiedAt?.toISOString() ?? null,
@@ -2282,7 +2330,36 @@ export class TelephonyService {
     participantId: string | null,
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
-    const unanswered = normalizedStatus.terminal ? this.unansweredOutcome(call, payload) : null;
+    if (!normalizedStatus) {
+      // The agent or the warm-transfer human leaving is not the caller hanging
+      // up; keep the event, leave the call alone.
+      await this.recordLiveKitCallEvent(call, eventType, payload);
+      return;
+    }
+    // Whether anyone was ever on the line is the ledger's `connected_at`, which
+    // the runtime stamps when the far end answers. The status column is not
+    // that truth: the agent joining the room moved a still-dialing call to
+    // `in_progress`, and a dial the carrier refused was then filed as
+    // `completed` when the room closed.
+    const usage = normalizedStatus.terminal
+      ? await this.prisma.callUsage.findUnique({
+          where: { callId: call.id },
+          select: { connectedAt: true },
+        })
+      : null;
+    const neverConnected = usage !== null && usage.connectedAt === null;
+    const unanswered = normalizedStatus.terminal
+      ? this.unansweredOutcome(call, payload, neverConnected)
+      : null;
+    // The SIP leg's disconnect reason is the only carrier signal LiveKit gives
+    // us; keep it on the call so "no answer" can be told apart from "refused".
+    const sipLeg = this.sipLegDisconnect(payload);
+    const metadataPatch = sipLeg
+      ? {
+          sip_disconnect_reason: sipLeg.reason,
+          ...(sipLeg.status ? { sip_last_status: sipLeg.status } : {}),
+        }
+      : null;
     // Terminal events arrive more than once (participant_left, then
     // room_finished, plus LiveKit's own redelivery). A call already settled as
     // failed must not be promoted to completed by the second one, or the
@@ -2318,6 +2395,22 @@ export class TelephonyService {
         }
       }
     }
+    if (metadataPatch) {
+      // Merged in the database, whatever the call's status: the runtime's
+      // save_caller_details writes into the same JSON column during the call,
+      // and a read-modify-write here could erase what it saved.
+      await this.prisma.$executeRaw`UPDATE calls
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb
+        WHERE id = ${call.id}::uuid`;
+    }
+    await this.recordLiveKitCallEvent(call, eventType, payload);
+  }
+
+  private async recordLiveKitCallEvent(
+    call: { id: string; workspaceId: string; organizationId: string | null },
+    eventType: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
     await this.prisma.callEvent.create({
       data: {
         callId: call.id,
@@ -2327,6 +2420,33 @@ export class TelephonyService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /**
+   * Whether a participant is the caller's own carrier leg: a SIP participant
+   * (LiveKit stamps `sip.callID` on every SIP leg and keeps it after the leg is
+   * gone) that is not the warm-transfer human (`sip-human-<callId>`). The agent
+   * worker, a browser tester or any other room member leaving must not be filed
+   * as the caller hanging up while the carrier leg is still connected.
+   */
+  private isCarrierLeg(
+    participant: Record<string, unknown>,
+    attributes: Record<string, unknown>,
+  ): boolean {
+    if (!('sip.callID' in attributes)) return false;
+    return !(stringValue(participant.identity) ?? '').startsWith('sip-human-');
+  }
+
+  /** The disconnect reason of a SIP leg's `participant_left`, or null for any other event. */
+  private sipLegDisconnect(
+    payload: Record<string, unknown>,
+  ): { reason: string; status: string | null } | null {
+    const participant = this.objectMetadata(payload.participant);
+    const attributes = this.objectMetadata(participant.attributes);
+    if (!('sip.callID' in attributes)) return null;
+    const reason = stringValue(participant.disconnectReason);
+    if (!reason) return null;
+    return { reason, status: stringValue(attributes['sip.callStatus']) };
   }
 
   /**
@@ -2343,9 +2463,10 @@ export class TelephonyService {
   private unansweredOutcome(
     call: { status: string; outcome: string | null },
     payload: Record<string, unknown>,
+    neverConnected: boolean,
   ): string | null {
     if (call.outcome) return null;
-    if (call.status !== 'queued' && call.status !== 'ringing') return null;
+    if (!neverConnected && call.status !== 'queued' && call.status !== 'ringing') return null;
     const participant = this.objectMetadata(payload.participant);
     const reason = stringValue(participant.disconnectReason)?.toUpperCase() ?? '';
     if (reason === 'USER_REJECTED') return 'declined';
@@ -2358,14 +2479,23 @@ export class TelephonyService {
     return 'no_answer';
   }
 
+  /** The call status an event implies, or null when the event says nothing about the call. */
   private liveKitStatus(
     eventType: string,
     payload: Record<string, unknown>,
-  ): { status: string; terminal: boolean } {
+  ): { status: string; terminal: boolean } | null {
     const participant = this.objectMetadata(payload.participant);
     const attributes = this.objectMetadata(participant.attributes);
     const sipStatus = stringValue(attributes['sip.callStatus'])?.toLowerCase();
-    const rawStatus = sipStatus ?? eventType.toLowerCase();
+    const event = eventType.toLowerCase();
+    if (event === 'participant_left' && !this.isCarrierLeg(participant, attributes)) return null;
+    // A leg that has left is gone whatever its last attribute said. LiveKit
+    // stops updating `sip.callStatus` once the participant disconnects, so a
+    // refused dial leaves as `participant_left` still marked `dialing`; letting
+    // the attribute win filed that as a non-terminal `queued` and the carrier's
+    // disconnect reason was never read.
+    const rawStatus =
+      event === 'participant_left' || event === 'room_finished' ? event : (sipStatus ?? event);
     const map: Record<string, { status: string; terminal: boolean }> = {
       dialing: { status: 'queued', terminal: false },
       ringing: { status: 'ringing', terminal: false },

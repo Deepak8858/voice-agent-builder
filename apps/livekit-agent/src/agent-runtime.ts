@@ -113,6 +113,9 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
       : spec.handoff.enabled
         ? `Handoff is enabled but cannot be performed on this call. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}. If one applies, offer to take a message instead.`
         : 'Handoff is disabled unless explicitly requested by platform policy.',
+    spec.handoff.enabled && spec.handoff.target_phone?.trim()
+      ? `If the caller asks for a phone number to reach a person or the business, give them ${spec.handoff.target_phone.trim()}, reading it slowly, digit by digit, and repeat it once if asked.`
+      : null,
     'Keep responses brief, natural, and suitable for a phone call.',
   ]
     .filter(Boolean)
