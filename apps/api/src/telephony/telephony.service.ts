@@ -1197,7 +1197,13 @@ export class TelephonyService {
   }
 
   async handleLiveKitWebhook(rawBody: string, authorization: string | undefined) {
-    const parsed = this.livekit.verifyWebhook(rawBody, authorization) as Record<string, unknown>;
+    // `receive()` is async: without the await the Promise itself was parsed, so
+    // every event became `livekit.unknown` with a `{}` payload and never
+    // reached the call it belonged to.
+    const parsed = (await this.livekit.verifyWebhook(rawBody, authorization)) as Record<
+      string,
+      unknown
+    >;
     const eventType = String(parsed.event ?? parsed.type ?? 'livekit.unknown');
     const eventId = String(parsed.id ?? `${eventType}:${parsed.createdAt ?? Date.now()}`);
     const context = await this.liveKitWebhookContext(parsed);

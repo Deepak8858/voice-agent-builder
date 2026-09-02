@@ -219,7 +219,7 @@ export class LiveKitService {
     };
   }
 
-  verifyWebhook(rawBody: string, authorization: string | undefined): unknown {
+  verifyWebhook(rawBody: string, authorization: string | undefined): Promise<unknown> {
     this.assertCredentials();
     if (!authorization) {
       throw new AppError('UNAUTHORIZED', 'Missing LiveKit webhook authorization.', 401);

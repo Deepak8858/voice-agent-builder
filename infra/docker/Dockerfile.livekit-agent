@@ -43,8 +43,13 @@ FROM --platform=linux/amd64 node:22.22.3-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# ca-certificates is required: node:*-slim ships no system CA store, and the
+# LiveKit Rust engine inside @livekit/rtc-node (rustls, native roots) reads it
+# rather than Node's bundled roots. Without it every room connect fails with
+# "engine: signal failure: failed to retrieve region info" and the agent never
+# answers a call.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini openssl \
+    && apt-get install -y --no-install-recommends ca-certificates tini openssl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 voiceforge \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin voiceforge
