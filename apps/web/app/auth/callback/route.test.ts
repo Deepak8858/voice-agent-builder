@@ -3,7 +3,12 @@ import type { NextRequest } from 'next/server';
 
 const verifyOtp = vi.fn();
 const exchangeCodeForSession = vi.fn();
-const refreshSession = vi.fn(async () => ({ data: { session: null, user: null }, error: null }));
+const refreshSession = vi.fn(
+  async (): Promise<{
+    data: { session: null; user: null };
+    error: { message: string } | null;
+  }> => ({ data: { session: null, user: null }, error: null }),
+);
 /** Rows the callback reads back from `memberships`; empty means "no org yet". */
 const membershipRows = vi.fn(async () => ({ data: [] as unknown[] }));
 /** Arguments of every `.order()` the callback issued, so ordering is assertable. */
@@ -137,6 +142,26 @@ describe('GET /auth/callback token_hash branch', () => {
     expect(location.searchParams.get('error')).toBe('session_error');
     expect(location.searchParams.get('error_description')).toBe('admin api down');
     expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  // The metadata write succeeded but the cookie still carries the old claim, so
+  // the dashboard would fail the same way as if the refresh had been skipped.
+  it('redirects to sign-in when refreshing the session after the claim write fails', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({
+      data: [{ role: 'owner', workspaces: { organization_id: 'org-9' } }],
+    });
+    refreshSession.mockResolvedValueOnce({
+      data: { session: null, user: null },
+      error: { message: 'refresh_token_not_found' },
+    });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    const location = new URL(res.headers.get('location')!);
+    expect(location.pathname).toBe('/sign-in');
+    expect(location.searchParams.get('error')).toBe('session_error');
+    expect(location.searchParams.get('error_description')).toBe('refresh_token_not_found');
   });
 
   it('still sends a user with no membership to onboarding', async () => {

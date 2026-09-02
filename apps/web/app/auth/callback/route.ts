@@ -150,7 +150,13 @@ export async function GET(req: NextRequest) {
   // security reads `active_org_id` from the token, not from the user row. Without
   // this the first page load after sign-in still carries the empty claim.
   if (claimsChanged) {
-    await supabase.auth.refreshSession();
+    const { error } = await supabase.auth.refreshSession();
+    // A refresh that failed leaves the cookie carrying the empty claim this
+    // block exists to replace, so sending them on lands on the same broken
+    // dashboard as never refreshing.
+    if (error) {
+      return sessionErrorRedirect(req, error.message);
+    }
   }
 
   if (!activeOrgId) {

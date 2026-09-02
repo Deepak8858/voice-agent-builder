@@ -52,10 +52,12 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
         startedAt: new Date('2026-09-02T10:00:00.000Z'),
         endedAt: null,
       })),
-      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
-        id: 'call-1',
-        ...data,
-      })),
+      update: vi.fn(
+        async ({ data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => ({
+          id: 'call-1',
+          ...data,
+        }),
+      ),
     },
     callEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
@@ -1386,7 +1388,7 @@ describe('TelephonyService', () => {
     );
     expect(prisma.call.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'call-1' },
+        where: expect.objectContaining({ id: 'call-1' }),
         data: expect.objectContaining({ status: 'ringing', livekitParticipantId: 'PA_123' }),
       }),
     );
@@ -1416,7 +1418,7 @@ describe('TelephonyService', () => {
 
     expect(prisma.call.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'call-1' },
+        where: expect.objectContaining({ id: 'call-1' }),
         data: expect.objectContaining({ status: 'failed', outcome }),
       }),
     );
@@ -1434,9 +1436,40 @@ describe('TelephonyService', () => {
 
     await service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token');
 
-    const data = prisma.call.update.mock.calls[0][0].data as Record<string, unknown>;
-    expect(data.status).toBe('failed');
-    expect(data.outcome).toBeUndefined();
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The two events for one hang-up are handled concurrently, so both read the
+   * call as `ringing` and the read-side guard above sees nothing. The status
+   * guard in the update's WHERE makes the loser's write a P2025 instead of a
+   * second write over the outcome the winner recorded.
+   */
+  it('lets a concurrent duplicate terminal event lose the race without a second write', async () => {
+    const prisma = makeLiveKitTerminalPrisma('ringing');
+    prisma.call.update.mockResolvedValueOnce({ id: 'call-1' }).mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Record to update not found.', {
+        code: 'P2025',
+        clientVersion: 'test',
+      }),
+    );
+    const service = makeLiveKitTerminalService(prisma, 'USER_UNAVAILABLE');
+
+    await Promise.all([
+      service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token'),
+      service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token'),
+    ]);
+
+    expect(prisma.call.update).toHaveBeenCalledTimes(2);
+    for (const [args] of prisma.call.update.mock.calls) {
+      expect(args.where).toEqual({
+        id: 'call-1',
+        status: { notIn: ['failed', 'cancelled'] },
+      });
+    }
+    // Both deliveries are still recorded against the call.
+    expect(prisma.callEvent.create).toHaveBeenCalledTimes(2);
   });
 
   it('still records a call that had connected as completed', async () => {
@@ -1530,7 +1563,7 @@ describe('TelephonyService', () => {
     );
     expect(prisma.call.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'call-1' },
+        where: expect.objectContaining({ id: 'call-1' }),
         data: expect.objectContaining({ status: 'ringing', livekitParticipantId: 'PA_123' }),
       }),
     );

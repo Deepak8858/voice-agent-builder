@@ -1901,25 +1901,37 @@ export class TelephonyService {
     // room_finished, plus LiveKit's own redelivery). A call already settled as
     // failed must not be promoted to completed by the second one, or the
     // campaign counts a call nobody answered as a success.
-    const settled = call.status === 'failed' || call.status === 'cancelled';
+    //
+    // The read above can be stale as well: the two events for one hang-up are
+    // handled concurrently and both see `ringing`. The same guard in the WHERE
+    // lets the row decide, so the duplicate that loses the race gets P2025
+    // instead of a later write over the failure the winner recorded.
     const endedAt = normalizedStatus.terminal && !call.endedAt ? new Date() : null;
-    await this.prisma.call.update({
-      where: { id: call.id },
-      data: {
-        status: unanswered ? 'failed' : settled ? call.status : normalizedStatus.status,
-        ...(unanswered ? { outcome: unanswered } : {}),
-        ...(participantId ? { livekitParticipantId: participantId } : {}),
-        ...(endedAt ? { endedAt } : {}),
-        ...(endedAt && call.startedAt
-          ? {
-              durationSeconds: Math.max(
-                0,
-                Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000),
-              ),
-            }
-          : {}),
-      },
-    });
+    if (call.status !== 'failed' && call.status !== 'cancelled') {
+      try {
+        await this.prisma.call.update({
+          where: { id: call.id, status: { notIn: ['failed', 'cancelled'] } },
+          data: {
+            status: unanswered ? 'failed' : normalizedStatus.status,
+            ...(unanswered ? { outcome: unanswered } : {}),
+            ...(participantId ? { livekitParticipantId: participantId } : {}),
+            ...(endedAt ? { endedAt } : {}),
+            ...(endedAt && call.startedAt
+              ? {
+                  durationSeconds: Math.max(
+                    0,
+                    Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000),
+                  ),
+                }
+              : {}),
+          },
+        });
+      } catch (err) {
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025')) {
+          throw err;
+        }
+      }
+    }
     await this.prisma.callEvent.create({
       data: {
         callId: call.id,
