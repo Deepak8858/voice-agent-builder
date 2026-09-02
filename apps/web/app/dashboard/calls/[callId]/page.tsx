@@ -7,7 +7,7 @@ import { Separator } from '@/components/ui/separator';
 import { CallLiveMonitor } from '@/components/call-live-monitor';
 import { PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import type { CallDetail, SessionUser } from '@voiceforge/shared';
-import { ArrowLeft, Calendar, Clock3, MapPin, Phone, User } from 'lucide-react';
+import { ArrowLeft, Calendar, Clock3, MapPin, Phone, PlayCircle, User } from 'lucide-react';
 
 interface PageProps {
   params: Promise<{ callId: string }>;
@@ -102,6 +102,7 @@ export default async function CallDetailPage({ params }: PageProps) {
               workspaceId={me.active_workspace_id ?? ''}
               initialTurns={detail.turns}
               initialStatus={detail.status}
+              fallbackTranscript={detail.transcript_text}
             />
           </CardContent>
         </Card>
@@ -133,6 +134,29 @@ export default async function CallDetailPage({ params }: PageProps) {
               </dl>
             </CardContent>
           </Card>
+
+          {detail.recording_url ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <PlayCircle className="h-4 w-4 text-primary" />
+                  Recording
+                </CardTitle>
+                <CardDescription>Audio stored by the telephony provider for this call.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                {/* ph-no-capture: the audio is customer speech. */}
+                <audio controls preload="none" src={detail.recording_url} className="ph-no-capture w-full">
+                  <track kind="captions" />
+                </audio>
+                <Button asChild variant="outline" size="sm" className="w-fit gap-2">
+                  <a href={detail.recording_url} download>
+                    Download audio
+                  </a>
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
 
           {detail.evaluation ? (
             <Card>

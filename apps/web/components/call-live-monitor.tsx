@@ -23,6 +23,13 @@ interface CallLiveMonitorProps {
   /** Pre-loaded transcript from the GET /calls/:id endpoint */
   initialTurns?: CallTurn[];
   initialStatus?: string;
+  /**
+   * `transcript_text` from the same endpoint. Turns come from the voice
+   * provider and can come back empty for a finished call once the provider has
+   * expired its copy, while the flat transcript stays in our database — so this
+   * is the only transcript some completed calls still have.
+   */
+  fallbackTranscript?: string | null;
 }
 
 export function CallLiveMonitor({
@@ -30,6 +37,7 @@ export function CallLiveMonitor({
   workspaceId,
   initialTurns = [],
   initialStatus,
+  fallbackTranscript = null,
 }: CallLiveMonitorProps) {
   const [turns, setTurns] = useState<TranscriptSegment[]>(
     initialTurns.map((t) => ({ speaker: t.speaker, text: t.text, at_ms: t.at_ms })),
@@ -157,6 +165,16 @@ export function CallLiveMonitor({
           ))}
           <div ref={bottomRef} />
         </ul>
+      ) : status === 'completed' ? (
+        fallbackTranscript?.trim() ? (
+          <p className="ph-no-capture whitespace-pre-wrap text-sm text-foreground">
+            {fallbackTranscript}
+          </p>
+        ) : (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            No transcript captured for this call.
+          </p>
+        )
       ) : (
         <p className="text-sm text-muted-foreground py-8 text-center">
           {connected ? 'Waiting for first message...' : 'Connecting to call...'}

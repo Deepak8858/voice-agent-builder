@@ -83,7 +83,10 @@ export default function CampaignsPage() {
   useEffect(() => {
     call<SessionUser>('/auth/me')
       .then((me) => setWorkspaceId(me.active_workspace_id))
-      .catch(console.error);
+      .catch((err: unknown) => {
+        setLoading(false);
+        toast.error(err instanceof Error ? err.message : 'Could not load your workspace.');
+      });
   }, [call]);
 
   useEffect(() => {
@@ -104,7 +107,9 @@ export default function CampaignsPage() {
             ),
         );
       })
-      .catch(console.error)
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : 'Campaigns could not be loaded.'),
+      )
       .finally(() => setLoading(false));
   }, [workspaceId, call]);
 
@@ -184,7 +189,7 @@ export default function CampaignsPage() {
       router.push('/dashboard/settings/phone-numbers');
       return;
     }
-    console.error(err);
+    toast.error(err instanceof Error ? err.message : 'The campaign action failed.');
   }
 
   function resetForm() {
@@ -290,9 +295,13 @@ export default function CampaignsPage() {
                         </Button>
                       ) : c.status === 'running' ? (
                         <Button size="sm" variant="outline" onClick={async () => {
-                          await call(`/workspaces/${workspaceId}/campaigns/${c.id}/pause`, { method: 'PATCH' });
-                          const res = await call<{ items: Campaign[] }>(`/workspaces/${workspaceId}/campaigns`);
-                          setCampaigns(res.items ?? []);
+                          try {
+                            await call(`/workspaces/${workspaceId}/campaigns/${c.id}/pause`, { method: 'PATCH' });
+                            const res = await call<{ items: Campaign[] }>(`/workspaces/${workspaceId}/campaigns`);
+                            setCampaigns(res.items ?? []);
+                          } catch (err) {
+                            handleCampaignError(err);
+                          }
                         }}>
                           <Pause className="h-3 w-3" /> Pause
                         </Button>

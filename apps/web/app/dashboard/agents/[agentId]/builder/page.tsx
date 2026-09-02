@@ -15,6 +15,7 @@ import { KnowledgePanel } from '@/components/knowledge-panel';
 import { SuggestionsPanel } from '@/components/suggestions-panel';
 import { TestCallDrawer } from '@/components/test-call-drawer';
 import { PublishAgentButton } from '@/components/publish-agent-button';
+import { PauseAgentButton } from '@/components/pause-agent-button';
 import { PageHeader, StatCard, StatusBadge } from '@/components/dashboard';
 import {
   buildDefaultAgentFlow,
@@ -78,6 +79,9 @@ export default async function AgentBuilderPage({ params }: PageProps) {
               </Link>
             </Button>
             <TestCallDrawer workspaceId={workspaceId} agentId={agent.id} />
+            {agent.status === 'published' ? (
+              <PauseAgentButton workspaceId={workspaceId} agentId={agent.id} />
+            ) : null}
             <PublishAgentButton workspaceId={workspaceId} agentId={agent.id} />
           </>
         }
@@ -175,6 +179,9 @@ export default async function AgentBuilderPage({ params }: PageProps) {
             <CardContent className="flex flex-col gap-3 sm:flex-row">
               <TestCallDrawer workspaceId={workspaceId} agentId={agent.id} />
               <PublishAgentButton workspaceId={workspaceId} agentId={agent.id} />
+              {agent.status === 'published' ? (
+                <PauseAgentButton workspaceId={workspaceId} agentId={agent.id} />
+              ) : null}
             </CardContent>
           </Card>
 

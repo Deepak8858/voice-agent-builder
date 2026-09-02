@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { useApi } from '@/lib/use-api';
+import { toast } from 'sonner';
 import { User, ClipboardList } from 'lucide-react';
 
 /**
@@ -81,7 +82,11 @@ export function SettingsPanel() {
     me?.active_workspace_role === 'owner' || me?.active_workspace_role === 'admin';
 
   useEffect(() => {
-    call<MeResponse>('/auth/me').then(setMe).catch(console.error);
+    call<MeResponse>('/auth/me')
+      .then(setMe)
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : 'Your account details could not be loaded.'),
+      );
   }, [call]);
 
   useEffect(() => {
@@ -89,7 +94,9 @@ export function SettingsPanel() {
       setLoading(true);
       call<{ items: AuditLog[] }>(`/workspaces/${currentWorkspaceId}/audit-logs`)
         .then((res) => setAuditLogs(res.items))
-        .catch(console.error)
+        .catch((err: unknown) =>
+          toast.error(err instanceof Error ? err.message : 'The audit log could not be loaded.'),
+        )
         .finally(() => setLoading(false));
     }
   }, [activeTab, currentWorkspaceId, canReadAuditLog, call]);
