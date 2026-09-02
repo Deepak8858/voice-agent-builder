@@ -78,7 +78,8 @@ export async function GET(req: NextRequest) {
 
   // For new OAuth signups, app_metadata.app_user_id is not set by default.
   // Look up the public.users row and update server-controlled metadata.
-  if (!user.app_metadata?.app_user_id) {
+  let appUserId = user.app_metadata?.app_user_id as string | undefined;
+  if (!appUserId) {
     const { data: appUser } = await supabase
       .from('users')
       .select('id')
@@ -86,14 +87,48 @@ export async function GET(req: NextRequest) {
       .single();
 
     if (appUser) {
+      appUserId = appUser.id;
       await adminClient.auth.admin.updateUserById(user.id, {
         app_metadata: { ...user.app_metadata, app_user_id: appUser.id },
       });
     }
   }
 
-  // Check if user has an active org in app_metadata
-  const activeOrgId = user.app_metadata?.active_org_id;
+  // Only signup sets `active_org_id`, so a returning user whose token predates it
+  // — a magic link, an invite, a password reset — used to be sent through
+  // /onboarding even though they already own a workspace. The memberships are the
+  // truth; the claim is a cache, so refill it here rather than bounce.
+  let activeOrgId = user.app_metadata?.active_org_id as string | undefined;
+
+  if (!activeOrgId && appUserId) {
+    const { data: memberships } = await supabase
+      .from('memberships')
+      .select('role, workspaces!inner(organization_id)')
+      .eq('user_id', appUserId)
+      .limit(1);
+
+    const membership = memberships?.[0];
+    // PostgREST returns an embedded row as an object, or as an array when it
+    // cannot prove the relation is many-to-one. Both shapes are read here so a
+    // schema-cache difference cannot silently send the user to onboarding.
+    const joined = membership?.workspaces as
+      | { organization_id?: string }
+      | { organization_id?: string }[]
+      | undefined;
+    const organizationId = (Array.isArray(joined) ? joined[0] : joined)?.organization_id;
+
+    if (membership && organizationId) {
+      activeOrgId = organizationId;
+      await adminClient.auth.admin.updateUserById(user.id, {
+        app_metadata: {
+          ...user.app_metadata,
+          ...(appUserId ? { app_user_id: appUserId } : {}),
+          active_org_id: organizationId,
+          active_org_role: membership.role,
+        },
+      });
+    }
+  }
 
   if (!activeOrgId) {
     // New user or no org — push to onboarding and preserve the post-signup

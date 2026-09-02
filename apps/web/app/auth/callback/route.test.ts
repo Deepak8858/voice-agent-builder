@@ -3,10 +3,21 @@ import type { NextRequest } from 'next/server';
 
 const verifyOtp = vi.fn();
 const exchangeCodeForSession = vi.fn();
+/** Rows the callback reads back from `memberships`; empty means "no org yet". */
+const membershipRows = vi.fn(async () => ({ data: [] as unknown[] }));
 
 vi.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: async () => ({
     auth: { verifyOtp, exchangeCodeForSession },
+    from: () => {
+      const builder = {
+        select: () => builder,
+        eq: () => builder,
+        limit: () => membershipRows(),
+        single: async () => ({ data: { id: 'user-1' } }),
+      };
+      return builder;
+    },
   }),
 }));
 
@@ -33,6 +44,8 @@ beforeEach(() => {
   verifyOtp.mockReset();
   exchangeCodeForSession.mockReset();
   updateUserById.mockClear();
+  membershipRows.mockReset();
+  membershipRows.mockResolvedValue({ data: [] });
 });
 
 describe('GET /auth/callback token_hash branch', () => {
@@ -43,6 +56,41 @@ describe('GET /auth/callback token_hash branch', () => {
 
     expect(verifyOtp).toHaveBeenCalledWith({ type: 'signup', token_hash: 'abc123' });
     expect(exchangeCodeForSession).not.toHaveBeenCalled();
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/onboarding');
+  });
+
+  // 2026-09-02: a magic link for an existing owner bounced through /onboarding,
+  // because only signup ever wrote `active_org_id` into the token. The
+  // memberships row is the truth; the claim is just a cache.
+  it.each([
+    ['an embedded object', { organization_id: 'org-9' }],
+    ['an embedded array', [{ organization_id: 'org-9' }]],
+  ])('sends a magic link for an existing member straight to the dashboard, %s', async (
+    _shape,
+    workspaces,
+  ) => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({ data: [{ role: 'owner', workspaces }] });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/dashboard');
+    expect(updateUserById).toHaveBeenCalledWith(
+      verifiedUser.id,
+      expect.objectContaining({
+        app_metadata: expect.objectContaining({
+          active_org_id: 'org-9',
+          active_org_role: 'owner',
+        }),
+      }),
+    );
+  });
+
+  it('still sends a user with no membership to onboarding', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
     expect(new URL(res.headers.get('location')!).pathname).toBe('/onboarding');
   });
 

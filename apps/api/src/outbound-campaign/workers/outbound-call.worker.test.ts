@@ -19,7 +19,7 @@ const calls = {
   startOutboundCall: vi.fn(),
 };
 const campaigns = {
-  incrementStat: vi.fn(),
+  recordDispatchFailure: vi.fn(),
   getCampaign: vi.fn(),
   readSchedule: vi.fn(),
   dispatchContact: vi.fn(),
@@ -119,7 +119,7 @@ describe('OutboundCallWorker', () => {
         purpose: 'requested_follow_up',
       },
     });
-    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
   });
 
   it('uses an assigned outbound BYO telephony number for campaign calls when available', async () => {
@@ -150,7 +150,7 @@ describe('OutboundCallWorker', () => {
       },
     });
     expect(calls.startOutboundCall).not.toHaveBeenCalled();
-    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'in_progress');
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
   });
 
   it.each(['organization_concurrency_reached', 'billing_temporarily_unavailable'])(
@@ -162,7 +162,7 @@ describe('OutboundCallWorker', () => {
 
       await expect(makeWorker().processor(job)).rejects.toBeInstanceOf(AppError);
 
-      expect(campaigns.incrementStat).not.toHaveBeenCalled();
+      expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
       expect(prisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
     },
   );
@@ -178,7 +178,7 @@ describe('OutboundCallWorker', () => {
 
     await expect(makeWorker().processor(job)).resolves.toBeUndefined();
 
-    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
     expect(prisma.outboundCampaign.updateMany).toHaveBeenCalledWith({
       where: { id: 'camp-1', status: 'running', workspaceId: 'ws-1' },
       data: { status: 'paused' },
@@ -223,7 +223,7 @@ describe('OutboundCallWorker', () => {
     // Nothing further enqueued, and the cursor stays at 4 so a resume re-dials
     // the contact billing refused rather than starting at 5 - which is exactly
     // why contact 4 must not be counted as a failed dial on the way out.
-    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
     expect(campaigns.dispatchContact).not.toHaveBeenCalled();
     expect(campaigns.advanceCursor).not.toHaveBeenCalled();
     expect(campaigns.markCompleted).not.toHaveBeenCalled();
@@ -298,7 +298,7 @@ describe('OutboundCallWorker', () => {
     } as never);
 
     expect(calls.startOutboundCall).not.toHaveBeenCalled();
-    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
     // Same contact, re-queued under a fresh token so the delayed job is not
     // deduplicated against the one currently running.
     expect(campaigns.dispatchContact).toHaveBeenCalledWith(
@@ -330,7 +330,7 @@ describe('OutboundCallWorker', () => {
       } as never),
     ).resolves.toBeUndefined();
 
-    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
     expect(campaigns.dispatchContact).toHaveBeenCalledWith(
       expect.anything(),
       0,
@@ -360,7 +360,7 @@ describe('OutboundCallWorker', () => {
       15 * 60_000,
       8,
     );
-    expect(campaigns.incrementStat).not.toHaveBeenCalled();
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
     prisma.call.count.mockResolvedValue(0);
@@ -373,8 +373,10 @@ describe('OutboundCallWorker', () => {
       data: { ...(job as any).data, contactIndex: 0, dispatchToken: 7 },
     } as never);
 
-    // A permanent block is a failed dial, and the chain moves on.
-    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    // A permanent block is a failed dial, and the chain moves on. The compliance
+    // engine refuses before any call row exists, so this is the one failure the
+    // campaign has to count for itself.
+    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1');
     expect(campaigns.advanceCursor).toHaveBeenCalledWith('camp-1', 'ws-1', 1);
   });
 
@@ -392,7 +394,26 @@ describe('OutboundCallWorker', () => {
 
     await expect(makeWorker().processor(job)).resolves.toBeUndefined();
 
-    expect(campaigns.incrementStat).toHaveBeenCalledWith('camp-1', 'failed');
+    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1');
     expect(prisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
+  });
+
+  // The other half of that: a dial that failed after the call row was written is
+  // already counted from the row itself, so counting it here as well would show
+  // one failed contact as two.
+  it('does not count a dispatch error that already left a failed call row', async () => {
+    calls.startOutboundCall.mockRejectedValue(new Error('provider dispatch failed'));
+    prisma.call.count.mockResolvedValue(1);
+
+    await expect(makeWorker().processor(job)).resolves.toBeUndefined();
+
+    expect(prisma.call.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: 'ws-1',
+        toNumber: '+15551111111',
+        metadata: { path: ['campaign_id'], equals: 'camp-1' },
+      },
+    });
+    expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
   });
 });

@@ -25,6 +25,76 @@ function makeAdmission() {
  * that touches provider connections or numbers consults it, so a `{}` stand-in
  * only worked while the gate fail-opened on a missing dependency.
  */
+/**
+ * A LiveKit `participant_left` webhook for a call in `status`, plus the prisma
+ * doubles it touches. `sip.callStatus` is deliberately absent: LiveKit stops
+ * updating the attribute once the participant is gone, which is exactly the
+ * shape that used to be filed as a plain `completed`.
+ */
+function makeLiveKitTerminalPrisma(status: string) {
+  return {
+    telephonyPhoneNumber: {
+      findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
+    },
+    telephonyWebhookEvent: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'webhook-1',
+        ...data,
+      })),
+    },
+    call: {
+      findFirst: vi.fn(async () => ({
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        status,
+        outcome: null,
+        startedAt: new Date('2026-09-02T10:00:00.000Z'),
+        endedAt: null,
+      })),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'call-1',
+        ...data,
+      })),
+    },
+    callEvent: {
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'event-1',
+        ...data,
+      })),
+    },
+  };
+}
+
+function makeLiveKitTerminalService(
+  prisma: ReturnType<typeof makeLiveKitTerminalPrisma>,
+  disconnectReason: string,
+) {
+  const livekit = {
+    verifyWebhook: vi.fn(async () => ({
+      id: 'lk-event-2',
+      event: 'participant_left',
+      room: { name: 'call-number-1-outbound-123' },
+      participant: {
+        sid: 'PA_123',
+        metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+        disconnectReason,
+      },
+    })),
+  };
+  return new TelephonyService(
+    prisma as never,
+    livekit as never,
+    { adapterFor: vi.fn() } as never,
+    { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+    { log: vi.fn() } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    makeAdmission() as never,
+  );
+}
+
 function allowByoTelephony() {
   return { checkFeatureGate: vi.fn(async () => true) };
 }
@@ -1328,6 +1398,37 @@ describe('TelephonyService', () => {
         }),
       }),
     );
+  });
+
+  // 2026-09-02: a campaign dial to a mobile that never picked up was stored as
+  // `completed` with a null outcome, so the call list showed an unanswered dial
+  // as a finished conversation and campaign stats counted it as a success.
+  it.each([
+    ['USER_UNAVAILABLE', 'no_answer'],
+    ['USER_REJECTED', 'declined'],
+  ])('records a call that ended while still %s as failed / %s', async (reason, outcome) => {
+    const prisma = makeLiveKitTerminalPrisma('ringing');
+    const service = makeLiveKitTerminalService(prisma, reason);
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'failed', outcome }),
+      }),
+    );
+  });
+
+  it('still records a call that had connected as completed', async () => {
+    const prisma = makeLiveKitTerminalPrisma('in_progress');
+    const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED');
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
+
+    const data = prisma.call.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.status).toBe('completed');
+    expect(data.outcome).toBeUndefined();
   });
 
   it('awaits the asynchronous LiveKit webhook verification before reading the event', async () => {

@@ -5,7 +5,7 @@ import { EntitlementReasonSchema } from '@voiceforge/shared';
 import { AuditService } from '../../audit/audit.service';
 import { AppError } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
-import { HOUR_MS, OutboundCampaignService } from '../outbound-campaign.service';
+import { HOUR_MS, LIVE_CALL_STATUSES, OutboundCampaignService } from '../outbound-campaign.service';
 import { CallsService } from '../../calls/calls.service';
 import { OUTBOUND_CAMPAIGN_QUEUE } from '../outbound-campaign.queue';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -49,9 +49,6 @@ export const DEFER_MS = 30_000;
  * failed dials.
  */
 export const CALL_WINDOW_DEFER_MS = 15 * 60_000;
-
-/** Statuses in which a call still occupies a concurrency slot. */
-const LIVE_CALL_STATUSES = ['queued', 'ringing', 'in_progress'];
 
 /**
  * Admission denials that mean "not now" rather than "not ever". Retrying the
@@ -243,7 +240,6 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
         metadata,
       });
 
-      await this.campaigns.incrementStat(campaignId, 'in_progress');
       this.logger.log(`Outbound campaign call queued via ${assignedByoNumber.provider}: ${call.call_id} to ${to}`);
       return;
     }
@@ -254,7 +250,6 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       metadata,
     });
 
-    await this.campaigns.incrementStat(campaignId, 'in_progress');
     this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
   }
 
@@ -318,7 +313,18 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     }
 
     this.logger.error(`Outbound call failed for ${to}: ${message}`);
-    await this.campaigns.incrementStat(campaignId, 'failed');
+    // Counted only when the dial never became a call. A compliance block, an
+    // unpublished agent or a plan gate throws before any row exists, so nothing
+    // else would ever record it; every other failure already left a `failed`
+    // call row, which the campaign's stats count directly.
+    const dialled = await this.prisma.call.count({
+      where: {
+        workspaceId,
+        toNumber: to,
+        metadata: { path: ['campaign_id'], equals: campaignId },
+      },
+    });
+    if (dialled === 0) await this.campaigns.recordDispatchFailure(campaignId);
     return false;
   }
 

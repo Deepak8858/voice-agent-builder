@@ -51,6 +51,11 @@ interface TelephonyNumberSummary {
   outbound_enabled: boolean;
 }
 
+const CONTACTS_PLACEHOLDER = [
+  '+14155551111, John Doe',
+  '+14155552222, Jane Smith, jane@example.com',
+].join('\n');
+
 function parseCSV(text: string): { headers: string[]; rows: string[][] } {
   const lines = text.trim().split('\n');
   const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
@@ -356,7 +361,11 @@ export default function CampaignsPage() {
                 <code className="text-xs bg-muted px-1 rounded">name</code>,{' '}
                 <code className="text-xs bg-muted px-1 rounded">email</code> (optional)
               </p>
+              <label htmlFor="campaign-csv" className="sr-only">
+                Contacts CSV file
+              </label>
               <input
+                id="campaign-csv"
                 ref={fileRef}
                 type="file"
                 accept=".csv,text/csv"
@@ -370,10 +379,14 @@ export default function CampaignsPage() {
             <p className="mb-3 text-xs text-muted-foreground">
               One contact per line: <code className="bg-muted px-1 rounded">phone[, name[, email]]</code>
             </p>
+            <label htmlFor="campaign-contacts" className="sr-only">
+              Contacts, one per line
+            </label>
             <textarea
+              id="campaign-contacts"
               className="w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-sm"
               rows={6}
-              placeholder="+14155551111, John Doe\n+14155552222, Jane Smith, jane@example.com"
+              placeholder={CONTACTS_PLACEHOLDER}
               onChange={(e) => {
                 const lines = e.target.value.trim().split('\n').filter(Boolean);
                 const parsed: CampaignContact[] = [];
@@ -520,8 +533,9 @@ export default function CampaignsPage() {
           <FormSection title="Campaign details">
             <div className="flex flex-col gap-4">
               <div>
-                <Label>Campaign Name</Label>
+                <Label htmlFor="campaign-name">Campaign Name</Label>
                 <Input
+                  id="campaign-name"
                   className="mt-1"
                   value={formName}
                   onChange={(e) => setFormName(e.target.value)}
@@ -530,8 +544,9 @@ export default function CampaignsPage() {
                 />
               </div>
               <div>
-                <Label>Voice Agent</Label>
+                <Label htmlFor="campaign-agent">Voice Agent</Label>
                 <select
+                  id="campaign-agent"
                   className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={formAgent}
                   onChange={(e) => setFormAgent(e.target.value)}
@@ -549,8 +564,9 @@ export default function CampaignsPage() {
                 )}
               </div>
               <div>
-                <Label>Call purpose</Label>
+                <Label htmlFor="campaign-purpose">Call purpose</Label>
                 <select
+                  id="campaign-purpose"
                   className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   value={formPurpose}
                   onChange={(e) => setFormPurpose(e.target.value)}
@@ -574,8 +590,9 @@ export default function CampaignsPage() {
           <FormSection title="Rate limits">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <Label>Max calls per hour</Label>
+                <Label htmlFor="campaign-max-calls">Max calls per hour</Label>
                 <Input
+                  id="campaign-max-calls"
                   className="mt-1"
                   type="number"
                   min={1}
@@ -585,8 +602,9 @@ export default function CampaignsPage() {
                 />
               </div>
               <div>
-                <Label>Max concurrent calls</Label>
+                <Label htmlFor="campaign-max-concurrent">Max concurrent calls</Label>
                 <Input
+                  id="campaign-max-concurrent"
                   className="mt-1"
                   type="number"
                   min={1}

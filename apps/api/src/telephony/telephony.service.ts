@@ -1839,6 +1839,8 @@ export class TelephonyService {
       id: string;
       workspaceId: string;
       organizationId: string | null;
+      status: string;
+      outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
     } | null;
@@ -1868,6 +1870,8 @@ export class TelephonyService {
               id: true,
               workspaceId: true,
               organizationId: true,
+              status: true,
+              outcome: true,
               startedAt: true,
               endedAt: true,
             },
@@ -1882,6 +1886,8 @@ export class TelephonyService {
       id: string;
       workspaceId: string;
       organizationId: string | null;
+      status: string;
+      outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
     },
@@ -1890,11 +1896,13 @@ export class TelephonyService {
     participantId: string | null,
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
+    const unanswered = normalizedStatus.terminal ? this.unansweredOutcome(call, payload) : null;
     const endedAt = normalizedStatus.terminal && !call.endedAt ? new Date() : null;
     await this.prisma.call.update({
       where: { id: call.id },
       data: {
-        status: normalizedStatus.status,
+        status: unanswered ? 'failed' : normalizedStatus.status,
+        ...(unanswered ? { outcome: unanswered } : {}),
         ...(participantId ? { livekitParticipantId: participantId } : {}),
         ...(endedAt ? { endedAt } : {}),
         ...(endedAt && call.startedAt
@@ -1916,6 +1924,30 @@ export class TelephonyService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /**
+   * The outcome for a call that ended without ever connecting, or null when the
+   * call did connect and `completed` is the truth.
+   *
+   * A dial nobody answers reaches LiveKit as `participant_left` with a
+   * `disconnectReason` while the SIP status is still `dialing`, and the plain
+   * terminal mapping turned that into `completed` with no outcome: the call list
+   * showed an unanswered dial as a finished conversation. A call that did reach
+   * `in_progress`, and any call whose outcome is already recorded (a billing
+   * denial, for instance), is left alone.
+   */
+  private unansweredOutcome(
+    call: { status: string; outcome: string | null },
+    payload: Record<string, unknown>,
+  ): string | null {
+    if (call.outcome) return null;
+    if (call.status !== 'queued' && call.status !== 'ringing') return null;
+    const participant = this.objectMetadata(payload.participant);
+    const reason = stringValue(participant.disconnectReason)?.toUpperCase() ?? '';
+    if (reason === 'USER_REJECTED') return 'declined';
+    if (reason === 'DUPLICATE_IDENTITY' || reason === 'JOIN_FAILURE') return 'agent_connect_failed';
+    return 'no_answer';
   }
 
   private liveKitStatus(

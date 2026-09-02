@@ -19,6 +19,10 @@ const mockPrisma = {
   telephonyPhoneNumber: {
     findFirst: vi.fn(),
   },
+  call: {
+    groupBy: vi.fn(),
+    count: vi.fn(),
+  },
 };
 
 const mockQueue = {
@@ -39,19 +43,41 @@ describe('OutboundCampaignService', () => {
     // Default: a usable BYO number exists, so the phone-number gate passes.
     mockPrisma.twilioPhoneNumber.count.mockResolvedValue(0);
     mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue({ id: 'num-1' });
+    // No calls placed yet unless a test says otherwise.
+    mockPrisma.call.groupBy.mockResolvedValue([]);
     service = new OutboundCampaignService(mockPrisma as any, mockQueue as any, mockAudit as any);
   });
 
   describe('list', () => {
-    it('returns campaigns for workspace', async () => {
-      const campaigns = [{ id: 'c1', name: 'Campaign 1' }, { id: 'c2', name: 'Campaign 2' }];
-      mockPrisma.outboundCampaign.findMany.mockResolvedValue(campaigns);
+    it('returns campaigns for the workspace with their agent and live stats', async () => {
+      mockPrisma.outboundCampaign.findMany.mockResolvedValue([
+        {
+          id: 'c1',
+          name: 'Campaign 1',
+          stats: { total: 3 },
+          agent: { id: 'agent-1', name: 'Reception' },
+        },
+      ]);
+      mockPrisma.call.groupBy.mockResolvedValue([
+        { status: 'completed', _count: { _all: 1 } },
+        { status: 'in_progress', _count: { _all: 1 } },
+      ]);
 
       const result = await service.list('ws-1');
-      expect(result).toEqual(campaigns);
+
+      // The card names the agent, so the relation has to come back with the row.
+      expect(result[0].agent).toEqual({ id: 'agent-1', name: 'Reception' });
+      expect(result[0].stats).toEqual({
+        total: 3,
+        completed: 1,
+        failed: 0,
+        in_progress: 1,
+        dispatch_failed: 0,
+      });
       expect(mockPrisma.outboundCampaign.findMany).toHaveBeenCalledWith({
         where: { workspaceId: 'ws-1' },
         orderBy: { createdAt: 'desc' },
+        include: { agent: { select: { id: true, name: true } } },
       });
     });
   });
@@ -398,35 +424,85 @@ describe('OutboundCampaignService', () => {
   });
 
   describe('getStats', () => {
-    it('returns stats only for a campaign in the workspace', async () => {
+    it('counts progress from the calls, not from the stored counters', async () => {
+      // The stored counters are deliberately wrong here: this is the state the
+      // old hand-maintained increments left behind, two contacts stuck in
+      // progress forever after both calls had already ended.
       mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
         stats: { total: 2, completed: 0, failed: 0, in_progress: 2 },
       });
+      mockPrisma.call.groupBy.mockResolvedValue([
+        { status: 'completed', _count: { _all: 1 } },
+        { status: 'failed', _count: { _all: 1 } },
+      ]);
 
       const result = await service.getStats('ws-1', 'camp-1');
 
-      expect(result).toEqual({ total: 2, completed: 0, failed: 0, in_progress: 2 });
+      expect(result).toEqual({
+        total: 2,
+        completed: 1,
+        failed: 1,
+        in_progress: 0,
+        dispatch_failed: 0,
+      });
+      expect(mockPrisma.call.groupBy).toHaveBeenCalledWith({
+        by: ['status'],
+        where: {
+          workspaceId: 'ws-1',
+          metadata: { path: ['campaign_id'], equals: 'camp-1' },
+        },
+        _count: { _all: true },
+      });
+    });
+
+    it('scopes to the workspace and returns undefined for a campaign it cannot see', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue(null);
+
+      expect(await service.getStats('ws-1', 'camp-9')).toBeUndefined();
       expect(mockPrisma.outboundCampaign.findFirst).toHaveBeenCalledWith({
-        where: { id: 'camp-1', workspaceId: 'ws-1' },
+        where: { id: 'camp-9', workspaceId: 'ws-1' },
+        select: { id: true, stats: true },
+      });
+    });
+
+    it('adds contacts that never produced a call to the failure count', async () => {
+      mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
+        id: 'camp-1',
+        stats: { total: 3, dispatch_failed: 2 },
+      });
+      mockPrisma.call.groupBy.mockResolvedValue([{ status: 'completed', _count: { _all: 1 } }]);
+
+      expect(await service.getStats('ws-1', 'camp-1')).toEqual({
+        total: 3,
+        completed: 1,
+        failed: 2,
+        in_progress: 0,
+        dispatch_failed: 2,
       });
     });
   });
 
-  describe('incrementStat', () => {
-    it('increments in_progress instead of cancelling it back to zero', async () => {
+  describe('recordDispatchFailure', () => {
+    it('counts a contact that never became a call without touching the rest', async () => {
       mockPrisma.outboundCampaign.findUnique.mockResolvedValue({
-        id: 'camp-1',
-        stats: { total: 1, completed: 0, failed: 0, in_progress: 0 },
+        stats: { total: 3, dispatch_failed: 1 },
       });
 
-      await service.incrementStat('camp-1', 'in_progress');
+      await service.recordDispatchFailure('camp-1');
 
       expect(mockPrisma.outboundCampaign.update).toHaveBeenCalledWith({
         where: { id: 'camp-1' },
-        data: {
-          stats: { total: 1, completed: 0, failed: 0, in_progress: 1 },
-        },
+        data: { stats: { total: 3, dispatch_failed: 2 } },
       });
+    });
+
+    it('does nothing for a campaign that no longer exists', async () => {
+      mockPrisma.outboundCampaign.findUnique.mockResolvedValue(null);
+
+      await service.recordDispatchFailure('camp-gone');
+
+      expect(mockPrisma.outboundCampaign.update).not.toHaveBeenCalled();
     });
   });
 });
