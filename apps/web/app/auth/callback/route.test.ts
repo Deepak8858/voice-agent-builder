@@ -3,14 +3,39 @@ import type { NextRequest } from 'next/server';
 
 const verifyOtp = vi.fn();
 const exchangeCodeForSession = vi.fn();
+const refreshSession = vi.fn(
+  async (): Promise<{
+    data: { session: null; user: null };
+    error: { message: string } | null;
+  }> => ({ data: { session: null, user: null }, error: null }),
+);
+/** Rows the callback reads back from `memberships`; empty means "no org yet". */
+const membershipRows = vi.fn(async () => ({ data: [] as unknown[] }));
+/** Arguments of every `.order()` the callback issued, so ordering is assertable. */
+const orderCalls: unknown[][] = [];
 
 vi.mock('@/lib/supabase/server', () => ({
   createServerSupabaseClient: async () => ({
-    auth: { verifyOtp, exchangeCodeForSession },
+    auth: { verifyOtp, exchangeCodeForSession, refreshSession },
+    from: () => {
+      const builder = {
+        select: () => builder,
+        eq: () => builder,
+        order: (...args: unknown[]) => {
+          orderCalls.push(args);
+          return builder;
+        },
+        limit: () => membershipRows(),
+        single: async () => ({ data: { id: 'user-1' } }),
+      };
+      return builder;
+    },
   }),
 }));
 
-const updateUserById = vi.fn(async () => ({ error: null }));
+const updateUserById = vi.fn(async (): Promise<{ error: { message: string } | null }> => ({
+  error: null,
+}));
 
 vi.mock('@/lib/supabase/admin', () => ({
   createSupabaseAdminClient: () => ({ auth: { admin: { updateUserById } } }),
@@ -32,7 +57,12 @@ const verifiedUser = {
 beforeEach(() => {
   verifyOtp.mockReset();
   exchangeCodeForSession.mockReset();
-  updateUserById.mockClear();
+  updateUserById.mockReset();
+  updateUserById.mockResolvedValue({ error: null });
+  refreshSession.mockClear();
+  membershipRows.mockReset();
+  membershipRows.mockResolvedValue({ data: [] });
+  orderCalls.length = 0;
 });
 
 describe('GET /auth/callback token_hash branch', () => {
@@ -44,6 +74,103 @@ describe('GET /auth/callback token_hash branch', () => {
     expect(verifyOtp).toHaveBeenCalledWith({ type: 'signup', token_hash: 'abc123' });
     expect(exchangeCodeForSession).not.toHaveBeenCalled();
     expect(new URL(res.headers.get('location')!).pathname).toBe('/onboarding');
+  });
+
+  // 2026-09-02: a magic link for an existing owner bounced through /onboarding,
+  // because only signup ever wrote `active_org_id` into the token. The
+  // memberships row is the truth; the claim is just a cache.
+  it.each([
+    ['an embedded object', { organization_id: 'org-9' }],
+    ['an embedded array', [{ organization_id: 'org-9' }]],
+  ])('sends a magic link for an existing member straight to the dashboard, %s', async (
+    _shape,
+    workspaces,
+  ) => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({ data: [{ role: 'owner', workspaces }] });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/dashboard');
+    expect(updateUserById).toHaveBeenCalledWith(
+      verifiedUser.id,
+      expect.objectContaining({
+        app_metadata: expect.objectContaining({
+          active_org_id: 'org-9',
+          active_org_role: 'owner',
+        }),
+      }),
+    );
+    // The session cookie predates that metadata write, so without a refresh the
+    // dashboard's first load still carries an empty `active_org_id` claim.
+    expect(refreshSession).toHaveBeenCalled();
+  });
+
+  // Two organizations, one arbitrary winner: the adopted org has to be stable
+  // across logins, so the query orders by `created_at` instead of trusting the
+  // planner's row order.
+  it('adopts the oldest membership deterministically', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({
+      data: [{ role: 'admin', workspaces: { organization_id: 'org-old' } }],
+    });
+
+    await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    expect(orderCalls).toContainEqual(['created_at', { ascending: true }]);
+    expect(updateUserById).toHaveBeenCalledWith(
+      verifiedUser.id,
+      expect.objectContaining({
+        app_metadata: expect.objectContaining({ active_org_id: 'org-old' }),
+      }),
+    );
+  });
+
+  // A failed claim write used to be discarded: the user reached /dashboard with a
+  // token row-level security reads as belonging to no organization.
+  it('redirects to sign-in when writing the org claim fails', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({
+      data: [{ role: 'owner', workspaces: { organization_id: 'org-9' } }],
+    });
+    updateUserById.mockResolvedValue({ error: { message: 'admin api down' } });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    const location = new URL(res.headers.get('location')!);
+    expect(location.pathname).toBe('/sign-in');
+    expect(location.searchParams.get('error')).toBe('session_error');
+    expect(location.searchParams.get('error_description')).toBe('admin api down');
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  // The metadata write succeeded but the cookie still carries the old claim, so
+  // the dashboard would fail the same way as if the refresh had been skipped.
+  it('redirects to sign-in when refreshing the session after the claim write fails', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+    membershipRows.mockResolvedValue({
+      data: [{ role: 'owner', workspaces: { organization_id: 'org-9' } }],
+    });
+    refreshSession.mockResolvedValueOnce({
+      data: { session: null, user: null },
+      error: { message: 'refresh_token_not_found' },
+    });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    const location = new URL(res.headers.get('location')!);
+    expect(location.pathname).toBe('/sign-in');
+    expect(location.searchParams.get('error')).toBe('session_error');
+    expect(location.searchParams.get('error_description')).toBe('refresh_token_not_found');
+  });
+
+  it('still sends a user with no membership to onboarding', async () => {
+    verifyOtp.mockResolvedValue({ data: { user: verifiedUser }, error: null });
+
+    const res = await GET(callbackRequest('token_hash=abc123&type=magiclink'));
+
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/onboarding');
+    expect(refreshSession).not.toHaveBeenCalled();
   });
 
   it('sends a verified recovery token to the reset-password page', async () => {

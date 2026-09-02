@@ -2036,6 +2036,8 @@ export class TelephonyService {
       id: string;
       workspaceId: string;
       organizationId: string | null;
+      status: string;
+      outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
     } | null;
@@ -2065,6 +2067,8 @@ export class TelephonyService {
               id: true,
               workspaceId: true,
               organizationId: true,
+              status: true,
+              outcome: true,
               startedAt: true,
               endedAt: true,
             },
@@ -2079,6 +2083,8 @@ export class TelephonyService {
       id: string;
       workspaceId: string;
       organizationId: string | null;
+      status: string;
+      outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
     },
@@ -2087,23 +2093,42 @@ export class TelephonyService {
     participantId: string | null,
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
+    const unanswered = normalizedStatus.terminal ? this.unansweredOutcome(call, payload) : null;
+    // Terminal events arrive more than once (participant_left, then
+    // room_finished, plus LiveKit's own redelivery). A call already settled as
+    // failed must not be promoted to completed by the second one, or the
+    // campaign counts a call nobody answered as a success.
+    //
+    // The read above can be stale as well: the two events for one hang-up are
+    // handled concurrently and both see `ringing`. The same guard in the WHERE
+    // lets the row decide, so the duplicate that loses the race gets P2025
+    // instead of a later write over the failure the winner recorded.
     const endedAt = normalizedStatus.terminal && !call.endedAt ? new Date() : null;
-    await this.prisma.call.update({
-      where: { id: call.id },
-      data: {
-        status: normalizedStatus.status,
-        ...(participantId ? { livekitParticipantId: participantId } : {}),
-        ...(endedAt ? { endedAt } : {}),
-        ...(endedAt && call.startedAt
-          ? {
-              durationSeconds: Math.max(
-                0,
-                Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000),
-              ),
-            }
-          : {}),
-      },
-    });
+    if (call.status !== 'failed' && call.status !== 'cancelled') {
+      try {
+        await this.prisma.call.update({
+          where: { id: call.id, status: { notIn: ['failed', 'cancelled'] } },
+          data: {
+            status: unanswered ? 'failed' : normalizedStatus.status,
+            ...(unanswered ? { outcome: unanswered } : {}),
+            ...(participantId ? { livekitParticipantId: participantId } : {}),
+            ...(endedAt ? { endedAt } : {}),
+            ...(endedAt && call.startedAt
+              ? {
+                  durationSeconds: Math.max(
+                    0,
+                    Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000),
+                  ),
+                }
+              : {}),
+          },
+        });
+      } catch (err) {
+        if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025')) {
+          throw err;
+        }
+      }
+    }
     await this.prisma.callEvent.create({
       data: {
         callId: call.id,
@@ -2113,6 +2138,35 @@ export class TelephonyService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /**
+   * The outcome for a call that ended without ever connecting, or null when the
+   * call did connect and `completed` is the truth.
+   *
+   * A dial nobody answers reaches LiveKit as `participant_left` with a
+   * `disconnectReason` while the SIP status is still `dialing`, and the plain
+   * terminal mapping turned that into `completed` with no outcome: the call list
+   * showed an unanswered dial as a finished conversation. A call that did reach
+   * `in_progress`, and any call whose outcome is already recorded (a billing
+   * denial, for instance), is left alone.
+   */
+  private unansweredOutcome(
+    call: { status: string; outcome: string | null },
+    payload: Record<string, unknown>,
+  ): string | null {
+    if (call.outcome) return null;
+    if (call.status !== 'queued' && call.status !== 'ringing') return null;
+    const participant = this.objectMetadata(payload.participant);
+    const reason = stringValue(participant.disconnectReason)?.toUpperCase() ?? '';
+    if (reason === 'USER_REJECTED') return 'declined';
+    if (reason === 'DUPLICATE_IDENTITY' || reason === 'JOIN_FAILURE') return 'agent_connect_failed';
+    // A trunk failure is the carrier refusing or failing the dial (SIP 5xx, a
+    // rate limit, DNS). Nobody's phone rang, so it is not an unanswered call and
+    // it is not the agent's fault: it is the same class as the dispatch errors
+    // recorded elsewhere as `provider_dispatch_failed`.
+    if (reason === 'SIP_TRUNK_FAILURE') return 'provider_dispatch_failed';
+    return 'no_answer';
   }
 
   private liveKitStatus(

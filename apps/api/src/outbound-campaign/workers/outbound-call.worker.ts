@@ -5,7 +5,7 @@ import { EntitlementReasonSchema } from '@voiceforge/shared';
 import { AuditService } from '../../audit/audit.service';
 import { AppError } from '../../common/errors';
 import { QueueService } from '../../queue/queue.service';
-import { HOUR_MS, OutboundCampaignService } from '../outbound-campaign.service';
+import { HOUR_MS, LIVE_CALL_STATUSES, OutboundCampaignService } from '../outbound-campaign.service';
 import { CallsService } from '../../calls/calls.service';
 import { OUTBOUND_CAMPAIGN_QUEUE } from '../outbound-campaign.queue';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -49,9 +49,6 @@ export const DEFER_MS = 30_000;
  * failed dials.
  */
 export const CALL_WINDOW_DEFER_MS = 15 * 60_000;
-
-/** Statuses in which a call still occupies a concurrency slot. */
-const LIVE_CALL_STATUSES = ['queued', 'ringing', 'in_progress'];
 
 /**
  * Admission denials that mean "not now" rather than "not ever". Retrying the
@@ -160,7 +157,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       // happened, so the chain stops here: enqueueing the next contact would
       // restart dispatch, and advancing the cursor past `index` would make the
       // resume in `start()` skip that contact forever.
-      if (await this.handleDispatchFailure(campaignId, workspaceId, to, err)) return;
+      if (await this.handleDispatchFailure(campaignId, workspaceId, to, err, index)) return;
     }
 
     if (index === undefined) return;
@@ -230,8 +227,12 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
   private async dial(data: OutboundCallJob): Promise<void> {
     const { campaignId, agentId, workspaceId, actorUserId, to, contactName, customData } = data;
     const metadata = {
-      campaign_id: campaignId,
+      // Contact data first: everything below identifies the call to the campaign
+      // and to compliance, and a contact's own `custom_data` must not be able to
+      // move its call into another campaign or relabel why it was placed.
       ...customData,
+      campaign_id: campaignId,
+      ...(data.contactIndex === undefined ? {} : { contact_index: data.contactIndex }),
       purpose: data.purpose ?? 'requested_follow_up',
     };
     const assignedByoNumber = await this.findAssignedByoOutboundNumber(workspaceId, agentId);
@@ -243,7 +244,6 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
         metadata,
       });
 
-      await this.campaigns.incrementStat(campaignId, 'in_progress');
       this.logger.log(`Outbound campaign call queued via ${assignedByoNumber.provider}: ${call.call_id} to ${to}`);
       return;
     }
@@ -254,7 +254,6 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       metadata,
     });
 
-    await this.campaigns.incrementStat(campaignId, 'in_progress');
     this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
   }
 
@@ -296,6 +295,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     workspaceId: string,
     to: string,
     err: unknown,
+    contactIndex: number | undefined,
   ): Promise<boolean> {
     const reason = this.admissionReason(err);
     const message = (err as Error).message;
@@ -318,7 +318,33 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     }
 
     this.logger.error(`Outbound call failed for ${to}: ${message}`);
-    await this.campaigns.incrementStat(campaignId, 'failed');
+    // Counted only when the dial never became a call. A compliance block, an
+    // unpublished agent or a plan gate throws before any row exists, so nothing
+    // else would ever record it; every other failure already left a `failed`
+    // call row, which the campaign's stats count directly.
+    //
+    // Matched on the contact's position, not its number: a list may hold the
+    // same number twice, and matching on the number would let the first
+    // contact's call row hide the second contact's failure.
+    const dialled = await this.prisma.call.count({
+      where: {
+        workspaceId,
+        AND: [
+          { metadata: { path: ['campaign_id'], equals: campaignId } },
+          contactIndex === undefined
+            ? { toNumber: to }
+            : { metadata: { path: ['contact_index'], equals: contactIndex } },
+        ],
+      },
+    });
+    // The key is the contact, so a retry of this job reports the same failure
+    // rather than a second one.
+    if (dialled === 0) {
+      await this.campaigns.recordDispatchFailure(
+        campaignId,
+        contactIndex === undefined ? `to:${to}` : `contact:${contactIndex}`,
+      );
+    }
     return false;
   }
 

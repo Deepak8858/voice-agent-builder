@@ -16,6 +16,29 @@ export interface CampaignContact {
 
 export const HOUR_MS = 60 * 60 * 1000;
 
+/** Call statuses that mean the call has not finished yet. */
+/**
+ * Attempt keys of contacts that failed before any call row existed. One entry
+ * per contact, so a retried job cannot count the same contact twice.
+ */
+function readDispatchFailures(stats: Record<string, unknown>): string[] {
+  const raw = stats.dispatch_failures;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is string => typeof value === 'string');
+}
+
+export const LIVE_CALL_STATUSES = ['queued', 'ringing', 'in_progress'];
+
+/** Progress of a campaign, derived per read from its calls. */
+export interface CampaignStats {
+  total: number;
+  completed: number;
+  failed: number;
+  in_progress: number;
+  /** Contacts that never produced a call row (compliance, plan gate, agent). */
+  dispatch_failed: number;
+}
+
 /** Mirrors the DTO defaults, for a persisted `schedule` that no longer parses. */
 const DEFAULT_SCHEDULE = { max_calls_per_hour: 10, max_concurrent: 3 };
 
@@ -55,10 +78,21 @@ export class OutboundCampaignService {
   ) {}
 
   async list(workspaceId: string) {
-    return this.prisma.outboundCampaign.findMany({
+    const campaigns = await this.prisma.outboundCampaign.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
+      // The card names the agent. Without this the list only carried `agentId`
+      // and every campaign read "No agent".
+      include: { agent: { select: { id: true, name: true } } },
     });
+    // ponytail: one stats query per campaign; a workspace has a handful of
+    // campaigns. Group in SQL if that ever stops being true.
+    return Promise.all(
+      campaigns.map(async (campaign) => ({
+        ...campaign,
+        stats: await this.computeStats(workspaceId, campaign.id, campaign.stats),
+      })),
+    );
   }
 
   async create(
@@ -323,24 +357,96 @@ export class OutboundCampaignService {
   async getStats(workspaceId: string, campaignId: string) {
     const campaign = await this.prisma.outboundCampaign.findFirst({
       where: { id: campaignId, workspaceId },
+      select: { id: true, stats: true },
     });
-    return campaign?.stats;
+    if (!campaign) return undefined;
+    return this.computeStats(workspaceId, campaign.id, campaign.stats);
   }
 
   async getCampaign(workspaceId: string, campaignId: string) {
-    return this.prisma.outboundCampaign.findFirst({
+    const campaign = await this.prisma.outboundCampaign.findFirst({
       where: { id: campaignId, workspaceId },
+      include: { agent: { select: { id: true, name: true } } },
     });
+    if (!campaign) return null;
+    return { ...campaign, stats: await this.computeStats(workspaceId, campaign.id, campaign.stats) };
   }
 
-  async incrementStat(campaignId: string, field: 'completed' | 'failed' | 'in_progress') {
-    const campaign = await this.prisma.outboundCampaign.findUnique({ where: { id: campaignId } });
+  /**
+   * Campaign progress counted from the calls the campaign placed, not from
+   * counters kept by hand.
+   *
+   * The worker used to increment `in_progress` on dial and nothing ever
+   * decremented it, because a call is finalized by a webhook, a runtime report
+   * or a manual end — several writers, none of which knew about campaigns. Every
+   * campaign therefore showed its whole contact list as permanently in progress.
+   * Counting the rows instead cannot drift, whichever path ends the call.
+   *
+   * `dispatch_failed` is the one number that still has to be persisted: a
+   * contact blocked by compliance, an unpublished agent or a plan gate never
+   * produces a call row to count.
+   */
+  async computeStats(
+    workspaceId: string,
+    campaignId: string,
+    persisted: Prisma.JsonValue,
+  ): Promise<CampaignStats> {
+    const stats = (persisted ?? {}) as Record<string, unknown>;
+    const total = typeof stats.total === 'number' ? stats.total : 0;
+    const dispatchFailed = readDispatchFailures(stats).length;
+
+    // ponytail: campaign_id lives in the call's metadata JSON, so this is an
+    // unindexed path filter behind the workspace index. Add a `campaign_id`
+    // column if campaigns ever grow past a few thousand calls.
+    const grouped = await this.prisma.call.groupBy({
+      by: ['status'],
+      where: {
+        workspaceId,
+        metadata: { path: ['campaign_id'], equals: campaignId },
+      },
+      _count: { _all: true },
+    });
+    const count = (statuses: string[]) =>
+      grouped
+        .filter((row) => statuses.includes(row.status))
+        .reduce((sum, row) => sum + row._count._all, 0);
+
+    return {
+      total,
+      completed: count(['completed']),
+      failed: count(['failed', 'cancelled']) + dispatchFailed,
+      in_progress: count(LIVE_CALL_STATUSES),
+      dispatch_failed: dispatchFailed,
+    };
+  }
+
+  /**
+   * Records a contact that never became a call. Anything that did produce a call
+   * row is counted from that row by `computeStats`, so counting it here too
+   * would count the same failure twice.
+   *
+   * The failures are held as a set of attempt keys rather than a counter,
+   * because the job that reports one can be retried: BullMQ re-runs the whole
+   * job when a later step throws, and a counter would climb once per retry.
+   *
+   * ponytail: read-modify-write on the campaign's `stats` JSON. Safe because one
+   * campaign dispatches one contact at a time; needs a row lock (or its own
+   * table) if dispatch ever fans out within a campaign.
+   */
+  async recordDispatchFailure(campaignId: string, attemptKey: string): Promise<void> {
+    const campaign = await this.prisma.outboundCampaign.findUnique({
+      where: { id: campaignId },
+      select: { stats: true },
+    });
     if (!campaign) return;
-    const stats = campaign.stats as Record<string, number>;
-    stats[field] = (stats[field] ?? 0) + 1;
+    const stats = (campaign.stats ?? {}) as Record<string, unknown>;
+    const failures = readDispatchFailures(stats);
+    if (failures.includes(attemptKey)) return;
     await this.prisma.outboundCampaign.update({
       where: { id: campaignId },
-      data: { stats },
+      data: {
+        stats: { ...stats, dispatch_failures: [...failures, attemptKey] } as Prisma.InputJsonValue,
+      },
     });
   }
 }
