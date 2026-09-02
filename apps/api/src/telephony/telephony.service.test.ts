@@ -1330,6 +1330,100 @@ describe('TelephonyService', () => {
     );
   });
 
+  it('awaits the asynchronous LiveKit webhook verification before reading the event', async () => {
+    const startedAt = new Date('2026-06-07T10:00:00.000Z');
+    const prisma = {
+      telephonyPhoneNumber: {
+        findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
+      },
+      telephonyWebhookEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'webhook-1',
+          ...data,
+        })),
+      },
+      call: {
+        findFirst: vi.fn(async () => ({
+          id: 'call-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          startedAt,
+          endedAt: null,
+        })),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'call-1',
+          ...data,
+        })),
+      },
+      callEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'event-1',
+          ...data,
+        })),
+      },
+    };
+    const livekit = {
+      // WebhookReceiver.receive() returns a Promise in livekit-server-sdk v2. Parsing
+      // the Promise itself recorded every event as `livekit.unknown` with a `{}`
+      // payload and never linked it to a call (production incident 2026-09-01).
+      verifyWebhook: vi.fn(async () => ({
+        id: 'lk-event-1',
+        event: 'participant_joined',
+        room: { name: 'call-number-1-outbound-123' },
+        participant: {
+          sid: 'PA_123',
+          metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+          attributes: { 'sip.callStatus': 'ringing' },
+        },
+      })),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn() } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn() } as never,
+      { log: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await expect(
+      service.handleLiveKitWebhook('{"id":"lk-event-1"}', 'Bearer token'),
+    ).resolves.toEqual({
+      processed: true,
+      event: 'participant_joined',
+    });
+
+    expect(prisma.telephonyWebhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'livekit',
+          eventId: 'lk-event-1',
+          eventType: 'participant_joined',
+          phoneNumberId: 'number-1',
+          callId: 'call-1',
+          workspaceId: 'workspace-1',
+        }),
+      }),
+    );
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'ringing', livekitParticipantId: 'PA_123' }),
+      }),
+    );
+    expect(prisma.callEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          callId: 'call-1',
+          eventType: 'livekit.participant_joined',
+        }),
+      }),
+    );
+  });
+
   it('keeps trunk-only Vobiz imports pending verification with the user-entered E.164 number', async () => {
     const prisma = makeImportPrisma('vobiz');
     const audit = { log: vi.fn(async () => undefined) };

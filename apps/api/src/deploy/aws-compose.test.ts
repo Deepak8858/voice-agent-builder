@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const composePath = resolve(__dirname, '../../../../infra/docker/docker-compose.aws.yml');
+const livekitAgentDockerfilePath = resolve(
+  __dirname,
+  '../../../../infra/docker/Dockerfile.livekit-agent',
+);
 
 /**
  * Returns only the mapping lines belonging to `service`, so an assertion cannot
@@ -76,5 +80,18 @@ describe('AWS production compose', () => {
     expect(compose).toContain('ECR_REGISTRY:?');
     expect(compose).toContain('IMAGE_TAG:?');
     expect(compose).not.toContain(':${IMAGE_TAG:-latest}');
+  });
+});
+
+describe('LiveKit agent image', () => {
+  // node:*-slim has no system CA store. The Rust engine in @livekit/rtc-node
+  // trusts only that store, so without ca-certificates every room connect fails
+  // and dispatched calls are never answered (production incident 2026-09-01).
+  it('installs ca-certificates in the runtime stage', () => {
+    const dockerfile = readFileSync(livekitAgentDockerfilePath, 'utf8');
+    const runtimeStage = dockerfile.split(/^FROM .* AS runtime\r?$/m)[1];
+
+    expect(runtimeStage).toBeDefined();
+    expect(runtimeStage).toMatch(/apt-get install[^\n]*\bca-certificates\b/);
   });
 });
