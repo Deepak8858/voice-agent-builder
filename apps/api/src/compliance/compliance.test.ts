@@ -410,6 +410,8 @@ describe('ComplianceService.attestConsent', () => {
       skipDuplicates: true,
     });
     expect(prisma.consentRecord.createMany).toHaveBeenCalledWith({
+      // The partial unique index makes a racing duplicate a skipped row.
+      skipDuplicates: true,
       data: [
         expect.objectContaining({
           workspaceId: 'ws-1',

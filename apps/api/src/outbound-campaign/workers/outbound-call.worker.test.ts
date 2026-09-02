@@ -145,6 +145,30 @@ describe('OutboundCallWorker', () => {
     );
   });
 
+  it('passes the campaign calling window on the managed-number path as well', async () => {
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue(null);
+
+    await makeWorker().processor({
+      data: {
+        campaignId: 'camp-1',
+        agentId: 'agent-1',
+        workspaceId: 'ws-1',
+        actorUserId: 'user-1',
+        to: '+15551111111',
+        callWindow: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 },
+      },
+    } as never);
+
+    expect(calls.startOutboundCall).toHaveBeenCalledWith(
+      'ws-1',
+      'agent-1',
+      'user-1',
+      expect.objectContaining({
+        compliance: { call_window: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 } },
+      }),
+    );
+  });
+
   it('uses an assigned outbound BYO telephony number for campaign calls when available', async () => {
     prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
       id: 'phone-number-1',

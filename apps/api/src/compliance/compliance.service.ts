@@ -241,7 +241,12 @@ export class ComplianceService {
     const coveredIds = new Set(covered.map((row) => row.contactId));
     const missing = contactIds.filter((id) => !coveredIds.has(id));
     if (missing.length > 0) {
+      // `consent_records_attested_live_uidx` (contact, type, live, attested) is
+      // the concurrency guard: two attestations racing for the same list both
+      // pass the read above, and the loser's insert is skipped rather than
+      // duplicated or failed.
       await this.prisma.consentRecord.createMany({
+        skipDuplicates: true,
         data: missing.map((contactId) => ({
           workspaceId,
           organizationId,

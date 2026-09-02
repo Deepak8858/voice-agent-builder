@@ -255,6 +255,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       to_number: to,
       contact_name: contactName,
       metadata,
+      ...(data.callWindow ? { compliance: { call_window: data.callWindow } } : {}),
     });
 
     this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);
