@@ -174,14 +174,22 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
    * A trunk by SID, or null when Twilio no longer has it — the customer can
    * delete a trunk we provisioned, and that has to fall back to a fresh one
    * rather than fail every re-run.
+   *
+   * Only a 404 means "gone". Swallowing every failure let a revoked token or a
+   * Twilio outage look like a deleted trunk, and the caller's next step is to
+   * adopt any trunk named VoiceForge — so a transient error could repoint the
+   * customer's own unrelated trunk at our media plane while ours still existed.
    */
   private async findTrunk(
     credentials: { accountSid: string; authToken: string },
     trunkSid: string,
   ): Promise<TwilioTrunk | null> {
-    return this.trunkingRequest<TwilioTrunk>(credentials, 'GET', `/Trunks/${trunkSid}`).catch(
-      () => null,
-    );
+    try {
+      return await this.trunkingRequest<TwilioTrunk>(credentials, 'GET', `/Trunks/${trunkSid}`);
+    } catch (err) {
+      if ((err as AppError).details?.twilio_status === 404) return null;
+      throw err;
+    }
   }
 
   /**

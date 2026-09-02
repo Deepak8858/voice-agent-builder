@@ -197,6 +197,34 @@ describe('TwilioProviderAdapter', () => {
     expect(calls.some((call) => call.includes('/Trunks?'))).toBe(true);
   });
 
+  it('fails instead of adopting a same-named trunk when the recorded lookup errors', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        const target = `${init?.method ?? 'GET'} ${String(url)}`;
+        calls.push(target);
+        // A revoked token, not a deleted trunk.
+        if (target === 'GET https://trunking.twilio.com/v1/Trunks/TK9') {
+          return new Response(JSON.stringify({ message: 'authenticate' }), { status: 401 });
+        }
+        return json({});
+      },
+    });
+
+    await expect(
+      adapter.ensureSipTrunk({
+        credentials: CREDENTIALS,
+        originationSipUri: 'sip:tenant.sip.livekit.cloud;transport=tcp',
+        existingUsername: 'vf_deadbeef',
+        existingTrunkSid: 'TK9',
+      }),
+    ).rejects.toThrow();
+
+    // The customer's trunk list is never listed, so their own VoiceForge trunk
+    // cannot be repointed at our media plane because of a transient failure.
+    expect(calls.some((call) => call.includes('/Trunks?'))).toBe(false);
+  });
+
   it('attaches the number to the trunk instead of rewriting webhooks, and tolerates a re-attach', async () => {
     const calls: string[] = [];
     const adapter = new TwilioProviderAdapter({
