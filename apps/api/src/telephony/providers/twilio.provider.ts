@@ -1,4 +1,5 @@
 import twilio from 'twilio';
+import { randomBytes } from 'node:crypto';
 import type { ProviderCredentials } from '@voiceforge/shared';
 import { AppError } from '../../common/errors';
 import type {
@@ -6,9 +7,16 @@ import type {
   PhoneNumberProviderAdapter,
   ProviderPhoneNumber,
   ProviderRoutingResult,
+  ProviderSipTrunk,
   ProviderValidationResult,
   ValidateWebhookParams,
 } from './provider.types';
+
+const TRUNKING_API = 'https://trunking.twilio.com/v1';
+const VOICE_API = 'https://api.twilio.com/2010-04-01';
+
+/** Name of the trunk this platform owns inside the customer's Twilio account. */
+const TRUNK_FRIENDLY_NAME = 'VoiceForge';
 
 interface FetchLike {
   (url: string, init?: RequestInit): Promise<Response>;
@@ -83,8 +91,20 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     livekitSipUri: string;
     fallbackWebhookUrl: string;
     statusCallbackUrl: string;
+    trunkSid?: string | null;
   }): Promise<ProviderRoutingResult> {
     const twilioCredentials = this.assertCredentials(params.credentials);
+    if (params.trunkSid && params.phoneNumber.providerNumberId) {
+      // Attaching the number to the trunk moves it off Programmable Voice, so the
+      // voice webhook stops being in the path - which is the point: that webhook
+      // could not tell the media plane which number had been called.
+      await this.attachNumberToTrunk(
+        twilioCredentials,
+        params.trunkSid,
+        params.phoneNumber.providerNumberId,
+      );
+      return { status: 'configured', providerRoutingId: params.trunkSid };
+    }
     if (!params.phoneNumber.providerNumberId) {
       return {
         status: 'manual_required',
@@ -121,8 +141,76 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     return { status: 'configured', providerRoutingId: params.phoneNumber.providerNumberId };
   }
 
-  async removeRouting(_params: { credentials: ProviderCredentials; phoneNumber: ConnectedPhoneNumber }): Promise<void> {
-    return undefined;
+  /**
+   * Returns the number to Programmable Voice by taking it off the trunk.
+   *
+   * A number left on the trunk after its config is deleted keeps sending calls
+   * to a room nothing dispatches into, so the caller hears silence instead of
+   * whatever the customer configures next.
+   */
+  async removeRouting(params: {
+    credentials: ProviderCredentials;
+    phoneNumber: ConnectedPhoneNumber;
+    trunkSid?: string | null;
+  }): Promise<void> {
+    if (!params.trunkSid || !params.phoneNumber.providerNumberId) return;
+    const credentials = this.assertCredentials(params.credentials);
+    try {
+      await this.trunkingRequest(
+        credentials,
+        'DELETE',
+        `/Trunks/${params.trunkSid}/PhoneNumbers/${params.phoneNumber.providerNumberId}`,
+      );
+    } catch (err) {
+      // 404 is the state this wants: the number is not on the trunk. Every other
+      // failure (bad token, Twilio outage) left it attached to a trunk whose
+      // routing is being deleted, so the caller has to hear about it.
+      if ((err as AppError).details?.twilio_status === 404) return;
+      throw err;
+    }
+  }
+
+  /**
+   * A trunk by SID, or null when Twilio no longer has it — the customer can
+   * delete a trunk we provisioned, and that has to fall back to a fresh one
+   * rather than fail every re-run.
+   *
+   * Only a 404 means "gone". Swallowing every failure let a revoked token or a
+   * Twilio outage look like a deleted trunk, and the caller's next step is to
+   * adopt any trunk named VoiceForge — so a transient error could repoint the
+   * customer's own unrelated trunk at our media plane while ours still existed.
+   */
+  private async findTrunk(
+    credentials: { accountSid: string; authToken: string },
+    trunkSid: string,
+  ): Promise<TwilioTrunk | null> {
+    try {
+      return await this.trunkingRequest<TwilioTrunk>(credentials, 'GET', `/Trunks/${trunkSid}`);
+    } catch (err) {
+      if ((err as AppError).details?.twilio_status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Idempotent number-to-trunk attachment. Twilio answers 409 when the number is
+   * already attached, which is the state this wants; every other failure is real.
+   */
+  private async attachNumberToTrunk(
+    credentials: { accountSid: string; authToken: string },
+    trunkSid: string,
+    phoneNumberSid: string,
+  ): Promise<void> {
+    try {
+      await this.trunkingRequest(credentials, 'POST', `/Trunks/${trunkSid}/PhoneNumbers`, {
+        PhoneNumberSid: phoneNumberSid,
+      });
+    } catch (err) {
+      const alreadyAttached =
+        err instanceof AppError &&
+        (err.details as { twilio_status?: number } | undefined)?.twilio_status === 409;
+      if (!alreadyAttached) throw err;
+    }
   }
 
   async validateWebhookSignature(params: ValidateWebhookParams): Promise<boolean> {
@@ -158,6 +246,168 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     return response.toString();
   }
 
+  /**
+   * Creates, or reuses, the Elastic SIP Trunk that carries this account's calls.
+   *
+   * Twilio Programmable Voice cannot deliver a call to our media plane: TwiML
+   * `<Dial><Sip>` dials a URI named up front, and LiveKit routes inbound calls by
+   * the number that was called, which that URI cannot carry per call. Trunk
+   * origination does carry it - Twilio puts the dialed E.164 in the request URI's
+   * user part - so the trunk is what makes inbound calling work at all. It also
+   * gives outbound a termination SIP domain, which is why the trunk is created
+   * when the account is connected rather than per number.
+   *
+   * Every step looks before it creates, so re-running against a configured
+   * account changes nothing.
+   */
+  async ensureSipTrunk(params: {
+    credentials: ProviderCredentials;
+    originationSipUri: string;
+    existingUsername?: string | null;
+    existingTrunkSid?: string | null;
+  }): Promise<ProviderSipTrunk> {
+    const credentials = this.assertCredentials(params.credentials);
+
+    // The recorded SID wins over the name: the customer owns this Twilio account
+    // and may well have their own trunk called VoiceForge, and adopting it would
+    // point their unrelated trunk at our media plane while leaving our
+    // termination credential attached to the trunk we actually provisioned.
+    let trunk: TwilioTrunk | null = params.existingTrunkSid
+      ? await this.findTrunk(credentials, params.existingTrunkSid)
+      : null;
+    if (!trunk) {
+      const trunks = await this.trunkingRequest<{ trunks?: TwilioTrunk[] }>(
+        credentials,
+        'GET',
+        '/Trunks?PageSize=50',
+      );
+      trunk = (trunks.trunks ?? []).find((item) => item.friendly_name === TRUNK_FRIENDLY_NAME) ?? null;
+    }
+    if (!trunk) {
+      trunk = await this.trunkingRequest<TwilioTrunk>(credentials, 'POST', '/Trunks', {
+        FriendlyName: TRUNK_FRIENDLY_NAME,
+        // Twilio requires a globally unique termination domain, so the label is
+        // random rather than derived from the account or the workspace.
+        DomainName: `vf-${randomBytes(6).toString('hex')}.pstn.twilio.com`,
+      });
+    }
+
+    const origination = await this.trunkingRequest<{ origination_urls?: TwilioOriginationUrl[] }>(
+      credentials,
+      'GET',
+      `/Trunks/${trunk.sid}/OriginationUrls`,
+    );
+    let originationUrl = (origination.origination_urls ?? []).find(
+      (item) => item.sip_url === params.originationSipUri,
+    );
+    if (!originationUrl) {
+      originationUrl = await this.trunkingRequest<TwilioOriginationUrl>(
+        credentials,
+        'POST',
+        `/Trunks/${trunk.sid}/OriginationUrls`,
+        {
+          FriendlyName: 'VoiceForge media plane',
+          SipUrl: params.originationSipUri,
+          Priority: '1',
+          Weight: '1',
+          Enabled: 'true',
+        },
+      );
+    }
+
+    // Termination credentials protect the trunk's SIP domain, which is a public
+    // endpoint: without them anyone who learns the domain can place calls billed
+    // to the customer. Twilio never returns a password, so one is minted only
+    // when the caller holds none.
+    let credentialListSid: string | null = null;
+    let username: string | null = params.existingUsername ?? null;
+    let password: string | null = null;
+    if (!params.existingUsername) {
+      const credentialList = await this.voiceRequest<{ sid: string }>(
+        credentials,
+        'POST',
+        `/Accounts/${credentials.accountSid}/SIP/CredentialLists.json`,
+        { FriendlyName: TRUNK_FRIENDLY_NAME },
+      );
+      credentialListSid = credentialList.sid;
+      username = `vf_${randomBytes(4).toString('hex')}`;
+      password = generateSipPassword();
+      await this.voiceRequest(
+        credentials,
+        'POST',
+        `/Accounts/${credentials.accountSid}/SIP/CredentialLists/${credentialListSid}/Credentials.json`,
+        { Username: username, Password: password },
+      );
+      await this.trunkingRequest(credentials, 'POST', `/Trunks/${trunk.sid}/CredentialLists`, {
+        CredentialListSid: credentialListSid,
+      });
+    }
+
+    return {
+      trunkSid: trunk.sid,
+      domainName: trunk.domain_name,
+      originationUrlSid: originationUrl.sid,
+      credentialListSid,
+      username,
+      password,
+    };
+  }
+
+  private async trunkingRequest<T>(
+    credentials: { accountSid: string; authToken: string },
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    form?: Record<string, string>,
+  ): Promise<T> {
+    return this.twilioRequest<T>(credentials, method, `${TRUNKING_API}${path}`, form);
+  }
+
+  private async voiceRequest<T>(
+    credentials: { accountSid: string; authToken: string },
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    form?: Record<string, string>,
+  ): Promise<T> {
+    return this.twilioRequest<T>(credentials, method, `${VOICE_API}${path}`, form);
+  }
+
+  /**
+   * The one place a Twilio REST failure becomes an AppError.
+   *
+   * Twilio's own `message` is passed through: it names the exact problem ("the
+   * auth token is unauthorized to create trunks", "domain already in use") and
+   * the customer is the only one who can fix it in their own account.
+   */
+  private async twilioRequest<T>(
+    credentials: { accountSid: string; authToken: string },
+    method: 'GET' | 'POST' | 'DELETE',
+    url: string,
+    form?: Record<string, string>,
+  ): Promise<T> {
+    const response = await this.fetchImpl(url, {
+      method,
+      headers: {
+        Authorization: this.authHeader(credentials),
+        ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+      },
+      ...(form ? { body: new URLSearchParams(form).toString() } : {}),
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as { message?: string };
+      const endpoint = `${method} ${stripHost(url)}`;
+      throw new AppError(
+        'TELEPHONY_PROVIDER_ERROR',
+        body.message
+          ? `Twilio rejected ${endpoint}: ${body.message}`
+          : `Twilio returned HTTP ${response.status} for ${endpoint}.`,
+        502,
+        { twilio_status: response.status },
+      );
+    }
+    if (method === 'DELETE') return undefined as T;
+    return (await response.json()) as T;
+  }
+
   private assertCredentials(credentials: ProviderCredentials) {
     if (credentials.provider !== 'twilio') {
       throw new AppError('PROVIDER_CREDENTIALS_INVALID', 'Expected Twilio credentials.', 400);
@@ -174,4 +424,28 @@ function header(headers: Record<string, string | string[] | undefined>, name: st
   const exact = headers[name] ?? headers[name.toLowerCase()];
   if (Array.isArray(exact)) return exact[0] ?? null;
   return exact ?? null;
+}
+
+interface TwilioTrunk {
+  sid: string;
+  friendly_name?: string;
+  domain_name: string;
+}
+
+interface TwilioOriginationUrl {
+  sid: string;
+  sip_url?: string;
+}
+
+function stripHost(url: string): string {
+  return url.replace(/^https:\/\/[^/]+/, '');
+}
+
+/**
+ * A termination password Twilio accepts: at least 12 characters with an
+ * upper-case letter, a lower-case letter and a digit.
+ */
+function generateSipPassword(): string {
+  const body = randomBytes(18).toString('base64url').replace(/[^A-Za-z0-9]/g, '');
+  return `Vf1${body}`.slice(0, 24);
 }

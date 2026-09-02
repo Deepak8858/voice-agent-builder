@@ -9,6 +9,30 @@ interface StatusBadgeProps {
 
 function statusMeta(status: string) {
   const normalized = status.toLowerCase().replace(/\s+/g, '_');
+  // Telephony statuses are the only ones a customer reads as jargon:
+  // "livekit_configured" means the number is live, and "verified" means it is
+  // one dropdown away from being live.
+  if (normalized === 'livekit_configured') {
+    return {
+      label: 'Ready',
+      icon: CheckCircle2,
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    };
+  }
+  if (normalized === 'verified') {
+    return {
+      label: 'Needs agent',
+      icon: Clock3,
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+    };
+  }
+  if (normalized === 'pending_verification') {
+    return {
+      label: 'Pending verification',
+      icon: Clock3,
+      className: 'border-slate-200 bg-slate-50 text-slate-700',
+    };
+  }
   if (['published', 'active', 'completed', 'deployed', 'ready', 'enabled', 'running'].includes(normalized)) {
     return {
       label: normalized === 'published' ? 'Active' : normalized.replace(/_/g, ' '),

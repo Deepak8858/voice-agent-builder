@@ -67,6 +67,12 @@ interface PhoneNumber {
     dispatch_rule_id: string | null;
   } | null;
   provider_connection?: { id: string; displayName: string; status: string } | null;
+  carrier_setup: {
+    inbound_sip_uri: string;
+    auth_username: string | null;
+    outbound_sip_domain: string | null;
+    ip_allowlist_hint: string;
+  } | null;
   last_synced_at: string | null;
   created_at: string;
 }
@@ -81,18 +87,6 @@ interface ConnectForm {
   vobizCustomerAuthId: string;
 }
 
-interface ManualForm {
-  provider: Provider;
-  phoneNumber: string;
-  friendlyName: string;
-  providerAccountId: string;
-  providerNumberId: string;
-  sipTrunkId: string;
-  sipTrunkDomain: string;
-  webhookSecret: string;
-  outboundEnabled: boolean;
-}
-
 const emptyConnectForm: ConnectForm = {
   provider: 'twilio',
   displayName: '',
@@ -101,18 +95,6 @@ const emptyConnectForm: ConnectForm = {
   vobizAuthId: '',
   vobizAuthToken: '',
   vobizCustomerAuthId: '',
-};
-
-const emptyManualForm: ManualForm = {
-  provider: 'vobiz',
-  phoneNumber: '',
-  friendlyName: '',
-  providerAccountId: '',
-  providerNumberId: '',
-  sipTrunkId: '',
-  sipTrunkDomain: '',
-  webhookSecret: '',
-  outboundEnabled: false,
 };
 
 interface SipForm {
@@ -128,6 +110,12 @@ const emptySipForm: SipForm = {
   sipAuthUsername: '',
   sipAuthPassword: '',
 };
+
+// Two newlines: the provider's message, then the steps it wants done by hand.
+const SECTION_BREAK = '\n\n';
+
+/** What a provider adapter reports back after a routing attempt. */
+type ProviderRouting = { status?: string; message?: string; manualInstructions?: string };
 
 const E164_PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
@@ -145,9 +133,12 @@ export default function PhoneNumbersPage() {
   const [importWebhookSecret, setImportWebhookSecret] = useState('');
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [connectForm, setConnectForm] = useState<ConnectForm>(emptyConnectForm);
-  const [manualForm, setManualForm] = useState<ManualForm>(emptyManualForm);
   const [sipForm, setSipForm] = useState<SipForm>(emptySipForm);
-  const [panel, setPanel] = useState<'connect' | 'manual' | 'sip' | null>(null);
+  const [panel, setPanel] = useState<'connect' | 'sip' | null>(null);
+  // What a provider could not configure for us, keyed by number. The API returns
+  // it once, from configure; throwing it away left Vobiz users with a number
+  // that looked ready and a trunk nobody had pointed anywhere.
+  const [manualSteps, setManualSteps] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -335,37 +326,6 @@ export default function PhoneNumbersPage() {
     return (fromProvider || sipDomainOverrides[number.provider_number_id] || '').trim();
   }
 
-  async function createManualNumber(e: React.FormEvent) {
-    e.preventDefault();
-    if (!workspaceId) return;
-    setBusy('manual');
-    setError(null);
-    try {
-      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/manual`, {
-        method: 'POST',
-        body: JSON.stringify({
-          provider: manualForm.provider,
-          phone_number: manualForm.phoneNumber,
-          friendly_name: manualForm.friendlyName || undefined,
-          provider_account_id: manualForm.providerAccountId || undefined,
-          provider_number_id: manualForm.providerNumberId || undefined,
-          sip_trunk_id: manualForm.sipTrunkId || undefined,
-          sip_trunk_domain: manualForm.sipTrunkDomain || undefined,
-          webhook_secret: manualForm.webhookSecret || undefined,
-          outbound_enabled: manualForm.outboundEnabled,
-          inbound_enabled: true,
-        }),
-      });
-      setManualForm(emptyManualForm);
-      setPanel(null);
-      await refresh();
-    } catch (err) {
-      handleApiError(err, 'Manual setup failed');
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function createSipNumber(e: React.FormEvent) {
     e.preventDefault();
     if (!workspaceId) return;
@@ -391,6 +351,24 @@ export default function PhoneNumbersPage() {
     }
   }
 
+  /**
+   * Records (or clears) the carrier steps a provider returned. Both assignment
+   * and Reconfigure can produce them, and whichever ran last is the truth.
+   */
+  function applyManualSteps(numberId: string, routing: ProviderRouting | undefined) {
+    setManualSteps((prev) => {
+      const next = { ...prev };
+      if (routing?.status === 'manual_required') {
+        next[numberId] = [routing.message, routing.manualInstructions]
+          .filter(Boolean)
+          .join(SECTION_BREAK);
+      } else {
+        delete next[numberId];
+      }
+      return next;
+    });
+  }
+
   async function updateNumberSettings(
     number: PhoneNumber,
     patch: { agentId?: string | null; inboundEnabled?: boolean; outboundEnabled?: boolean },
@@ -399,14 +377,18 @@ export default function PhoneNumbersPage() {
     setBusy(`assign-${number.id}`);
     setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${number.id}/assign-agent`, {
-        method: 'POST',
-        body: JSON.stringify({
-          agent_id: patch.agentId !== undefined ? patch.agentId : number.assigned_agent_id ?? null,
-          inbound_enabled: patch.inboundEnabled ?? number.inbound_enabled,
-          outbound_enabled: patch.outboundEnabled ?? number.outbound_enabled,
-        }),
-      });
+      const result = await call<{ data?: { provider_routing?: ProviderRouting } }>(
+        `/workspaces/${workspaceId}/telephony/phone-numbers/${number.id}/assign-agent`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            agent_id: patch.agentId !== undefined ? patch.agentId : number.assigned_agent_id ?? null,
+            inbound_enabled: patch.inboundEnabled ?? number.inbound_enabled,
+            outbound_enabled: patch.outboundEnabled ?? number.outbound_enabled,
+          }),
+        },
+      );
+      applyManualSteps(number.id, result?.data?.provider_routing);
       await refresh();
     } catch (err) {
       handleApiError(err, 'Phone number update failed');
@@ -420,10 +402,11 @@ export default function PhoneNumbersPage() {
     setBusy(`livekit-${numberId}`);
     setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/configure-livekit`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
+      const result = await call<{ data?: { provider_routing?: ProviderRouting } }>(
+        `/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/configure-livekit`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      applyManualSteps(numberId, result?.data?.provider_routing);
       await refresh();
     } catch (err) {
       handleApiError(err, 'LiveKit configuration failed');
@@ -466,20 +449,16 @@ export default function PhoneNumbersPage() {
       <PageHeader
         eyebrow="Telephony"
         title="Phone Numbers"
-        description="Connect Twilio or Vobiz numbers and route calls through LiveKit to GPT Realtime voice agents."
+        description="Import numbers from your own Twilio or Vobiz account, or bring a number from any SIP trunk. Assign an agent and the call routing configures itself."
         actions={
           <>
-            <Button onClick={() => setPanel(panel === 'sip' ? null : 'sip')} className="gap-2">
-              <Phone className="h-4 w-4" />
-              Add SIP trunk number
-            </Button>
-            <Button variant="outline" onClick={() => setPanel(panel === 'connect' ? null : 'connect')} className="gap-2">
+            <Button onClick={() => setPanel(panel === 'connect' ? null : 'connect')} className="gap-2">
               <PlugZap className="h-4 w-4" />
-              Connect Number
+              Import from your provider
             </Button>
-            <Button variant="outline" onClick={() => setPanel(panel === 'manual' ? null : 'manual')} className="gap-2">
-              <Router className="h-4 w-4" />
-              Manual SIP
+            <Button variant="outline" onClick={() => setPanel(panel === 'sip' ? null : 'sip')} className="gap-2">
+              <Phone className="h-4 w-4" />
+              Add a SIP trunk number
             </Button>
           </>
         }
@@ -554,8 +533,8 @@ export default function PhoneNumbersPage() {
 
       {panel === 'connect' && (
         <FormSection
-          title="Connect provider"
-          description="Validate provider credentials, sync owned numbers, then import the numbers this workspace should manage."
+          title="Import from your provider"
+          description="Paste your provider credentials, pick the numbers this workspace should manage, and assign an agent. For Twilio we create the Elastic SIP trunk in your own account, so inbound and outbound both work with no console steps."
         >
           <form onSubmit={createConnection} className="grid gap-4 lg:grid-cols-[180px_1fr_auto] lg:items-end">
             <div className="space-y-2">
@@ -718,77 +697,6 @@ export default function PhoneNumbersPage() {
         </FormSection>
       )}
 
-      {panel === 'manual' && (
-        <FormSection
-          title="Manual SIP number"
-          description="Add a number or trunk first, then configure LiveKit and copy the SIP host into the provider console."
-        >
-          <form onSubmit={createManualNumber} className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2">
-              <Label>Provider</Label>
-              <select
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={manualForm.provider}
-                onChange={(e) => setManualForm((prev) => ({ ...prev, provider: e.target.value as Provider }))}
-              >
-                <option value="vobiz">Vobiz / Vobiz.ai</option>
-                <option value="twilio">Twilio</option>
-              </select>
-            </div>
-            <div className="space-y-2">
-              <Label>Phone number</Label>
-              <Input
-                value={manualForm.phoneNumber}
-                onChange={(e) => setManualForm((prev) => ({ ...prev, phoneNumber: e.target.value }))}
-                placeholder="+912271264217"
-                inputMode="tel"
-                pattern="^\+[1-9]\d{6,14}$"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Friendly name</Label>
-              <Input value={manualForm.friendlyName} onChange={(e) => setManualForm((prev) => ({ ...prev, friendlyName: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Provider account</Label>
-              <Input value={manualForm.providerAccountId} onChange={(e) => setManualForm((prev) => ({ ...prev, providerAccountId: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Provider number ID</Label>
-              <Input value={manualForm.providerNumberId} onChange={(e) => setManualForm((prev) => ({ ...prev, providerNumberId: e.target.value }))} placeholder="Optional" />
-            </div>
-            <div className="space-y-2">
-              <Label>SIP trunk ID</Label>
-              <Input value={manualForm.sipTrunkId} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkId: e.target.value }))} placeholder="trunk-console-1" />
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label>Outbound SIP domain</Label>
-              <Input value={manualForm.sipTrunkDomain} onChange={(e) => setManualForm((prev) => ({ ...prev, sipTrunkDomain: e.target.value }))} placeholder="trunk-id.sip.vobiz.ai" />
-            </div>
-            <div className="space-y-2">
-              <Label>Webhook signing secret</Label>
-              <Input
-                type="password"
-                value={manualForm.webhookSecret}
-                onChange={(e) => setManualForm((prev) => ({ ...prev, webhookSecret: e.target.value }))}
-                placeholder={manualForm.provider === 'twilio' ? 'Twilio Auth Token' : 'Required for Vobiz'}
-                required={manualForm.provider === 'vobiz'}
-              />
-            </div>
-            <label className="flex items-center gap-2 pt-8 text-sm">
-              <input type="checkbox" checked={manualForm.outboundEnabled} onChange={(e) => setManualForm((prev) => ({ ...prev, outboundEnabled: e.target.checked }))} />
-              Enable outbound
-            </label>
-            <div className="md:col-span-3">
-              <Button type="submit" disabled={busy === 'manual'}>
-                {busy === 'manual' ? 'Adding...' : 'Add manual number'}
-              </Button>
-            </div>
-          </form>
-        </FormSection>
-      )}
-
       {loading ? (
         <p className="text-sm text-muted-foreground">Loading phone numbers...</p>
       ) : numbers.length > 0 ? (
@@ -867,11 +775,37 @@ export default function PhoneNumbersPage() {
                   </Button>
                 </div>
 
-                {number.provider === 'sip' && number.livekit?.sip_host && (
+                {number.status === 'pending_verification' && (
                   <p className="text-xs text-muted-foreground lg:col-span-3">
-                    Point your carrier&apos;s trunk at{' '}
-                    <span className="font-mono">sip:{number.livekit.sip_host}</span> to receive inbound calls.
+                    Import this number from its provider connection to verify it. Until then it cannot
+                    take an agent.
                   </p>
+                )}
+
+                {manualSteps[number.id] && (
+                  <div className="space-y-2 lg:col-span-3">
+                    <p className="text-xs font-medium text-amber-700">
+                      Your provider needs this done by hand
+                    </p>
+                    <Textarea readOnly className="font-mono text-xs" rows={4} value={manualSteps[number.id]} />
+                  </div>
+                )}
+
+                {number.carrier_setup && (
+                  <div className="space-y-2 lg:col-span-3">
+                    <p className="text-xs font-medium">Give your carrier this</p>
+                    <Textarea
+                      readOnly
+                      className="font-mono text-xs"
+                      rows={4}
+                      value={[
+                        `Send inbound calls to: ${number.carrier_setup.inbound_sip_uri}`,
+                        `Digest auth username: ${number.carrier_setup.auth_username ?? 'none (IP allow-list only)'}`,
+                        `We dial out through: ${number.carrier_setup.outbound_sip_domain ?? 'not set'}`,
+                        number.carrier_setup.ip_allowlist_hint,
+                      ].join('\n')}
+                    />
+                  </div>
                 )}
 
                 {number.livekit && (
@@ -894,7 +828,7 @@ export default function PhoneNumbersPage() {
         <EmptyState
           icon={<Phone className="h-7 w-7" />}
           title="No phone numbers connected"
-          description="Connect Twilio or Vobiz inventory, or add a SIP-routed number manually."
+          description="Import numbers from your Twilio or Vobiz account, or bring one from any SIP trunk."
         />
       )}
     </div>

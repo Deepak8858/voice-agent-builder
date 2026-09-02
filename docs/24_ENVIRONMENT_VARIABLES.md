@@ -111,7 +111,6 @@ Twilio has two webhook families and only one of them is env-free:
 VOICE_PROVIDER=openai-realtime
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
-TWILIO_SIP_DOMAIN=
 TWILIO_TWIML_WEBHOOK_URL=
 TWILIO_STATUS_WEBHOOK_URL=
 # Also consumed by the web app's CSP: browser test calls on the in-house

@@ -167,6 +167,12 @@ export class TelephonyService {
       metadata: { provider: dto.provider },
     });
 
+    // Provisioning runs after the row and its audit entry exist, so a Twilio
+    // outage surfaces as a 502 on a connection the user can retry (import or
+    // assign an agent runs this again) instead of throwing their credentials
+    // away.
+    await this.ensureProviderSipTrunk(connection);
+
     return this.connectionDto(connection);
   }
 
@@ -313,7 +319,10 @@ export class TelephonyService {
               provider: connection.provider,
               phoneNumberE164: number.phone_number,
               inboundEnabled: true,
-              outboundEnabled: false,
+              // A trunked Twilio number can dial out as soon as it is
+              // configured; a BYO SIP trunk cannot until the user tells us its
+              // outbound domain, so only Twilio defaults to on.
+              outboundEnabled: connection.provider === 'twilio',
               sipTrunkId:
                 typeof number.metadata?.sipTrunkId === 'string' ? number.metadata.sipTrunkId : null,
             },
@@ -527,18 +536,24 @@ export class TelephonyService {
       resourceId: number.id,
       metadata: { agent_id: dto.agent_id },
     });
-    // A generic SIP trunk has no provider console step after assignment, so
-    // assigning the agent is the moment LiveKit routing is (idempotently) set
-    // up. Other providers keep their explicit configure-livekit step.
-    if (dto.agent_id && number.provider === 'sip') {
-      await this.configureLiveKit(workspaceId, number.id, actorUserId);
+    // Assigning the agent is the last step the user takes, so it is the moment
+    // routing is (idempotently) set up — for every provider, not just BYO SIP.
+    // A separate "configure" button after assignment was a dead end nobody
+    // pressed, and the page keeps a Reconfigure action for retries.
+    if (dto.agent_id) {
+      const result = await this.configureLiveKit(workspaceId, number.id, actorUserId);
       // Re-read: configure just flipped the status and created the LiveKit
       // config, and the assign response must reflect what a refresh shows.
       const configured = await this.prisma.telephonyPhoneNumber.findFirst({
         where: { id: number.id, workspaceId },
         include: { livekitConfig: true },
       });
-      if (configured) return this.phoneNumberDto(configured);
+      // `provider_routing` rides along because a provider that could not be
+      // configured by API returns the steps the customer has to take at their
+      // carrier, and assignment is now the only place most users see them.
+      if (configured) {
+        return { ...this.phoneNumberDto(configured), provider_routing: result.provider_routing };
+      }
     }
     return this.phoneNumberDto(updated);
   }
@@ -561,6 +576,11 @@ export class TelephonyService {
     // inbound trunk covering the same number, so a stranded one blocks every
     // retry (observed live: trunk ST_cMBRdWguE3yR, 2026-09-01).
     const livekitSipHost = this.livekit.livekitSipHost;
+    // Before anything is torn down: this reaches out to Twilio, and a failure
+    // must leave the working configuration in place.
+    const providerTrunk = number.providerConnection
+      ? await this.ensureProviderSipTrunk(number.providerConnection)
+      : null;
 
     const metadata = this.objectMetadata(number.providerMetadata);
     const sipAuthUsernameEncrypted = metadata.sipAuthUsernameEncrypted ?? null;
@@ -593,14 +613,23 @@ export class TelephonyService {
       inboundTrunkId = inbound.trunkId;
 
       if (number.outboundEnabled) {
+        // Outbound goes back out through the same trunk the provider gave us:
+        // for Twilio that is the trunk's own termination domain and SIP
+        // credential, for a BYO trunk it is the domain the user typed.
         const outbound = await this.livekit.createOutboundSipTrunk({
           workspaceId,
           phoneNumberId: number.id,
           phoneNumberE164: number.phoneNumberE164,
           provider: number.provider as PhoneNumberProvider,
-          sipAddress: typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
-          ...(authUsername ? { authUsername } : {}),
-          ...(authPassword ? { authPassword } : {}),
+          sipAddress:
+            providerTrunk?.domainName ??
+            (typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null),
+          ...(providerTrunk?.username ?? authUsername
+            ? { authUsername: (providerTrunk?.username ?? authUsername) as string }
+            : {}),
+          ...(providerTrunk?.password ?? authPassword
+            ? { authPassword: (providerTrunk?.password ?? authPassword) as string }
+            : {}),
         });
         outboundTrunkId = outbound.trunkId;
       }
@@ -670,6 +699,12 @@ export class TelephonyService {
 
     let providerRouting: unknown = null;
     if (number.providerConnection) {
+      // Released only now that the replacement LiveKit resources exist: a
+      // failure above must leave the carrier still pointing at us, because the
+      // number can sit on only one trunk and re-attaching it is this method's
+      // job. Release then re-attach also covers the case where the trunk itself
+      // changed since the last run.
+      await this.removeProviderRouting(number);
       const credentials = this.encryption.decryptJson<ProviderCredentials>(
         number.providerConnection.encryptedCredentials,
       );
@@ -679,6 +714,7 @@ export class TelephonyService {
           credentials,
           phoneNumber: this.connectedNumber(number),
           livekitSipUri: `sip:${livekitSipHost}`,
+          trunkSid: providerTrunk?.trunkSid ?? null,
           fallbackWebhookUrl: this.webhookUrl(`telephony/${number.provider}/fallback/${number.id}`),
           statusCallbackUrl: this.webhookUrl(`telephony/${number.provider}/status/${number.id}`),
         });
@@ -732,10 +768,14 @@ export class TelephonyService {
   async disconnectNumber(workspaceId: string, numberId: string, actorUserId: string) {
     const number = await this.prisma.telephonyPhoneNumber.findFirst({
       where: { id: numberId, workspaceId },
-      include: { livekitConfig: true },
+      include: { livekitConfig: true, providerConnection: true },
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     await this.deleteRecordedLiveKitResources(number.livekitConfig);
+    // The number goes back to the customer's account, off our trunk: left
+    // attached, it keeps sending calls to a trunk that no longer exists and the
+    // caller hears silence.
+    await this.removeProviderRouting(number);
     // Hard delete, not a status flip: `phone_number_e164` is globally unique,
     // so a lingering "disconnected" row permanently blocked re-adding the same
     // number. Call history survives (`calls.phone_number_id` is ON DELETE SET
@@ -1000,7 +1040,13 @@ export class TelephonyService {
         return this.twilioFallback.buildBillingRefusalTwiml();
       }
     }
-    return this.twilioFallback.buildLiveKitDialTwiml(`sip:${number.livekitConfig.livekitSipHost}`);
+    // The user part matters: LiveKit matches an inbound trunk on the number
+    // being called, so `sip:<host>` alone matches nothing and the caller hears
+    // silence. (This path only runs for numbers still on Programmable Voice;
+    // a trunked number never reaches a TwiML webhook.)
+    return this.twilioFallback.buildLiveKitDialTwiml(
+      `sip:${number.phoneNumberE164}@${number.livekitConfig.livekitSipHost}`,
+    );
   }
 
   /**
@@ -1788,6 +1834,7 @@ export class TelephonyService {
     outboundEnabled: boolean;
     lastSyncedAt?: Date | null;
     createdAt: Date;
+    providerMetadata?: Prisma.JsonValue;
     assignedAgent?: { id: string; name: string } | null;
     livekitConfig?: {
       status: string;
@@ -1821,11 +1868,161 @@ export class TelephonyService {
           }
         : null,
       provider_connection: number.providerConnection ?? null,
+      carrier_setup: this.carrierSetup(number),
     };
   }
 
   private webhookUrl(path: string): string {
     return new URL(`/api/v1/${path}`, env.APP_BASE_URL ?? env.WEB_BASE_URL).toString();
+  }
+
+  /**
+   * Creates (or reuses) the SIP trunk this connection's numbers route through,
+   * and remembers it on the connection.
+   *
+   * Only Twilio implements this: a Twilio number reaches LiveKit either through
+   * Programmable Voice (an extra billed leg, inbound only, and it cannot dial
+   * out at all) or through an Elastic SIP trunk in the customer's own account.
+   * We create the trunk for them, which is what makes "paste your Account SID
+   * and pick numbers" enough. Every step of the adapter call looks before it
+   * creates, so this is safe on every connect, import and reconfigure.
+   */
+  private async ensureProviderSipTrunk(connection: {
+    id: string;
+    provider: string;
+    encryptedCredentials: unknown;
+    metadata: unknown;
+  }): Promise<{
+    trunkSid: string;
+    domainName: string;
+    username?: string;
+    password?: string;
+  } | null> {
+    // 'sip' has no adapter at all: a BYO trunk is configured by hand, by the
+    // user, at their own carrier.
+    if (connection.provider !== 'twilio' && connection.provider !== 'vobiz') return null;
+    const adapter = this.registry.adapterFor(connection.provider);
+    if (!adapter.ensureSipTrunk) return null;
+    const metadata = this.objectMetadata(connection.metadata);
+    const stored = this.objectMetadata(metadata.twilioTrunk);
+    const storedUsername = typeof stored.username === 'string' ? stored.username : null;
+    const credentials = this.encryption.decryptJson<ProviderCredentials>(
+      connection.encryptedCredentials,
+    );
+    const trunk = await adapter.ensureSipTrunk({
+      credentials,
+      // Host only: Twilio puts the dialled number in the request URI's user
+      // part itself, which is what lets LiveKit match the inbound trunk.
+      originationSipUri: `sip:${this.livekit.livekitSipHost};transport=tcp`,
+      ...(storedUsername ? { existingUsername: storedUsername } : {}),
+      ...(typeof stored.trunkSid === 'string' ? { existingTrunkSid: stored.trunkSid } : {}),
+    });
+    // A password is only returned the first time it is minted — Twilio never
+    // reads one back — so a re-run keeps the stored envelope.
+    const passwordEncrypted = trunk.password
+      ? (this.encryption.encryptJson({ value: trunk.password }) as unknown)
+      : (stored.passwordEncrypted ?? null);
+    const username = trunk.username ?? storedUsername;
+    await this.prisma.telephonyProviderConnection.update({
+      where: { id: connection.id },
+      data: {
+        metadata: {
+          ...metadata,
+          twilioTrunk: {
+            trunkSid: trunk.trunkSid,
+            domainName: trunk.domainName,
+            originationUrlSid: trunk.originationUrlSid ?? stored.originationUrlSid ?? null,
+            credentialListSid: trunk.credentialListSid ?? stored.credentialListSid ?? null,
+            username,
+            passwordEncrypted,
+          },
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+    const password =
+      trunk.password ??
+      (passwordEncrypted
+        ? this.encryption.decryptJson<{ value?: string }>(passwordEncrypted).value
+        : undefined);
+    return {
+      trunkSid: trunk.trunkSid,
+      domainName: trunk.domainName,
+      ...(username ? { username } : {}),
+      ...(password ? { password } : {}),
+    };
+  }
+
+  /**
+   * Hands a number back to its provider when we stop routing it, so the trunk
+   * association does not outlive the row that created it (a number still bound
+   * to our trunk cannot be used anywhere else).
+   */
+  private async removeProviderRouting(number: {
+    id: string;
+    provider: string;
+    phoneNumberE164: string;
+    providerNumberId: string | null;
+    sipTrunkId: string | null;
+    providerMetadata?: Prisma.JsonValue;
+    providerConnection?: { encryptedCredentials: unknown; metadata: unknown } | null;
+  }): Promise<void> {
+    if (!number.providerConnection) return;
+    if (number.provider !== 'twilio' && number.provider !== 'vobiz') return;
+    const stored = this.objectMetadata(
+      this.objectMetadata(number.providerConnection.metadata).twilioTrunk,
+    );
+    try {
+      await this.registry.adapterFor(number.provider).removeRouting({
+        credentials: this.encryption.decryptJson<ProviderCredentials>(
+          number.providerConnection.encryptedCredentials,
+        ),
+        phoneNumber: this.connectedNumber(number),
+        trunkSid: typeof stored.trunkSid === 'string' ? stored.trunkSid : null,
+      });
+    } catch (err) {
+      // The row is going away either way; a provider that refuses the release
+      // must not block the user from removing the number.
+      this.logger.warn(
+        `Could not release ${number.phoneNumberE164} at ${number.provider}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * What the customer has to give their own carrier for a BYO SIP trunk.
+   *
+   * Nobody can configure a trunk from a status badge: the carrier needs the
+   * exact URI to send INVITEs to, and it will drop LiveKit's INVITEs until its
+   * IP allow-list is opened (observed live: `sip.voicelink.co.in` answered
+   * nothing at all). Providers we automate get no card -- there is nothing for
+   * the user to do -- so this is null for them.
+   */
+  private carrierSetup(number: {
+    provider: string;
+    phoneNumberE164: string;
+    providerMetadata?: Prisma.JsonValue;
+    livekitConfig?: { livekitSipHost: string } | null;
+  }): {
+    inbound_sip_uri: string;
+    auth_username: string | null;
+    outbound_sip_domain: string | null;
+    ip_allowlist_hint: string;
+  } | null {
+    if (number.provider !== 'sip') return null;
+    const sipHost = number.livekitConfig?.livekitSipHost ?? env.LIVEKIT_SIP_HOST ?? null;
+    if (!sipHost) return null;
+    const metadata = this.objectMetadata(number.providerMetadata);
+    const usernameEnvelope = metadata.sipAuthUsernameEncrypted ?? null;
+    return {
+      inbound_sip_uri: `sip:${number.phoneNumberE164}@${sipHost};transport=tcp`,
+      auth_username: usernameEnvelope
+        ? (this.encryption.decryptJson<{ value?: string }>(usernameEnvelope).value ?? null)
+        : null,
+      outbound_sip_domain:
+        typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
+      ip_allowlist_hint:
+        "Your carrier must accept SIP from LiveKit Cloud's static IPs (LiveKit Cloud -> Settings -> Static IPs) and permit this number as caller ID. Until it does, inbound INVITEs get no answer and the caller hears silence.",
+    };
   }
 
   private objectMetadata(value: unknown): Record<string, unknown> {
