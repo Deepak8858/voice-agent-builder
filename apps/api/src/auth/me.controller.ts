@@ -3,6 +3,7 @@ import type { Request } from 'express';
 import type { SessionUser } from '@voiceforge/shared';
 import { UnauthorizedError } from '../common/errors';
 import { EmailService } from '../email/email.service';
+import { SkipRateLimit } from '../common/rate-limit.guard';
 import { SupabaseAuthService } from './supabase-auth.service';
 
 @Controller('auth')
@@ -14,7 +15,16 @@ export class MeController {
     private readonly email: EmailService,
   ) {}
 
+  // Session bootstrap, not a tenant action: every authenticated page (dashboard
+  // shell, billing banner, checkout preflight) reads this on load, so it is by
+  // far the most-called route. The global limiter runs after InternalAuthGuard
+  // has already resolved req.user, so this handler only echoes fields that are
+  // in hand — yet each call still spends a token from the per-user 100/60s
+  // budget. An active user, or a checkout that fires several requests at once,
+  // then trips the limit on the identity lookup itself and the 429 blocks
+  // checkout. Exempt the read; mutations keep their limits.
   @Get('me')
+  @SkipRateLimit()
   async me(@Req() req: Request) {
     // Delegate to SupabaseAuthService — workspace provisioning and session
     // building are already handled there. We only need to pass the auth header.
