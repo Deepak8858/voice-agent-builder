@@ -465,6 +465,46 @@ describe('AgentsService.publish', () => {
     );
   });
 
+  // 2026-09-02: a live call took a full order and the agent "saved" it to a
+  // Sheets tool that had no spreadsheet id; every append failed server-side
+  // and nobody heard about it. Publishing is where someone is watching.
+  it('refuses to publish a Sheets tool that has no spreadsheet configured', async () => {
+    const initialSpec = spec();
+    const { service, prisma, versionCreate } = makeAgentsServiceWith({
+      initialAgent: {
+        id: 'a1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        status: 'draft',
+        specJson: initialSpec,
+        activeVersionId: null,
+        versions: [],
+      },
+    });
+    prisma.integrationTool.findMany.mockResolvedValueOnce([
+      {
+        id: 'google-tool-1',
+        workspaceId: 'w1',
+        organizationId: 'org1',
+        agentId: null,
+        name: 'append_sheet_row',
+        description: 'Append a row to Google Sheets.',
+        toolType: 'google_sheets',
+        config: { operation: 'append_row', sheet_name: 'Sheet1' },
+        inputSchema: { type: 'object', properties: {}, required: ['values'] },
+        enabled: true,
+        createdBy: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ]);
+
+    await expect(service.publish('w1', 'a1', 'u1')).rejects.toThrow(
+      /no spreadsheet configured/,
+    );
+    expect(versionCreate).not.toHaveBeenCalled();
+  });
+
   it('adds enabled workspace Google tools to a persisted published version without flow nodes', async () => {
     const initialSpec = spec();
     const { service, prisma, voice, agentUpdate, versionCreate } = makeAgentsServiceWith({
@@ -499,7 +539,7 @@ describe('AgentsService.publish', () => {
         name: 'append_sheet_row',
         description: 'Append a row to Google Sheets.',
         toolType: 'google_sheets',
-        config: { operation: 'append_row', sheet_name: 'Sheet1' },
+        config: { operation: 'append_row', sheet_name: 'Sheet1', spreadsheet_id: '1AbC' },
         inputSchema: {
           type: 'object',
           properties: { values: { type: 'array', items: { type: 'string' } } },

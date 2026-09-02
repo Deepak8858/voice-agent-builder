@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentSpec } from '@voiceforge/shared';
+import type { z } from 'zod';
 import {
   buildVoiceForgeInstructions,
   firstReplyInstruction,
   parseDispatchMetadata,
   resolveRealtimeVoice,
 } from './agent-runtime';
-import { createToolInvokeClient } from './google-tools';
+import { createGoogleTools, createToolInvokeClient } from './google-tools';
 
 const spec: AgentSpec = {
   schema_version: '1.0',
@@ -77,6 +78,41 @@ describe('LiveKit Google tool invocation', () => {
     expect(bodies[0]?.idempotency_key).toMatch(/^[a-f0-9]{64}$/);
     expect(bodies[1]?.idempotency_key).toBe(bodies[0]?.idempotency_key);
     expect(bodies[2]).not.toHaveProperty('idempotency_key');
+  });
+});
+
+describe('LiveKit Sheets tool parameters', () => {
+  const sheetsSpec: AgentSpec = {
+    ...spec,
+    tools: [
+      {
+        name: 'append_sheet_row',
+        description: 'Append a row.',
+        requires_confirmation: true,
+        input_schema: { type: 'object', properties: {}, required: ['values'] },
+        permissions: ['google_sheets'],
+      },
+    ],
+  };
+
+  // The framework validates arguments before execute runs, so a schema that
+  // rejects `null` silently drops the whole tool call: the row is never sent.
+  it('accepts an empty cell and offers the model no spreadsheet choice', () => {
+    const [tool] = createGoogleTools({ spec: sheetsSpec, invoke: vi.fn() });
+    const parameters = (tool as unknown as { parameters: z.ZodObject<z.ZodRawShape> }).parameters;
+
+    expect(parameters.safeParse({ values: ['Deepak', null, 3, true] }).success).toBe(true);
+    expect(Object.keys(parameters.shape)).toEqual(['values']);
+  });
+
+  it('tells the model the destination is preconfigured', () => {
+    const instructions = buildVoiceForgeInstructions(sheetsSpec, {
+      agentId: 'agent-1',
+      direction: 'inbound',
+    });
+
+    expect(instructions).toContain('call append_sheet_row once');
+    expect(instructions).toContain('do not choose or invent a spreadsheet');
   });
 });
 

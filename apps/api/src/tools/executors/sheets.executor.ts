@@ -34,14 +34,17 @@ export class SheetsExecutor implements ToolExecutor {
       return { success: false, error: 'values (a non-empty array) is required to append a row.' };
     }
 
-    const spreadsheetId = parsed.data.spreadsheet_id ?? config.spreadsheet_id;
+    // The business configures the target on the tool. A model-supplied id is
+    // only a fallback for a tool that was never configured: a model cannot know
+    // a spreadsheet id and, invited to supply one, invents a name.
+    const spreadsheetId = config.spreadsheet_id || parsed.data.spreadsheet_id;
     if (!spreadsheetId) {
       return {
         success: false,
         error: 'No spreadsheet configured. Set spreadsheet_id on the tool or pass it as a parameter.',
       };
     }
-    const sheetName = parsed.data.sheet_name ?? config.sheet_name ?? 'Sheet1';
+    const sheetName = config.sheet_name || parsed.data.sheet_name || 'Sheet1';
 
     let accessToken: string;
     try {

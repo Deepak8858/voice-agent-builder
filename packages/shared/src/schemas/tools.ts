@@ -68,8 +68,10 @@ export const GmailSendMessageInputSchema = z.object({
 export type GmailSendMessageInput = z.infer<typeof GmailSendMessageInputSchema>;
 
 export const SheetsAppendRowInputSchema = z.object({
+  // Models emit `null` for a column the caller did not fill. That is an empty
+  // cell, not an invalid row: a live call lost its whole order to this once.
   values: z
-    .array(z.union([z.string(), z.number(), z.boolean()]))
+    .array(z.union([z.string(), z.number(), z.boolean(), z.null().transform(() => '')]))
     .min(1)
     .max(50),
   spreadsheet_id: z.string().min(1).optional(),
