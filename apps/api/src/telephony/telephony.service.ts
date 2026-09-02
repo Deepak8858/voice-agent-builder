@@ -2181,10 +2181,12 @@ export class TelephonyService {
    * What the customer has to give their own carrier for a BYO SIP trunk.
    *
    * Nobody can configure a trunk from a status badge: the carrier needs the
-   * exact URI to send INVITEs to, and it will drop LiveKit's INVITEs until its
-   * IP allow-list is opened (observed live: `sip.voicelink.co.in` answered
-   * nothing at all). Providers we automate get no card -- there is nothing for
-   * the user to do -- so this is null for them.
+   * exact URI to send INVITEs to, and we need the exact host *and port* it
+   * listens on. (2026-09-02: `sip.voicelink.co.in` "answered nothing" for
+   * months and was blamed on an IP allow-list; its SBC simply listens on 3300
+   * and drops 5060. The allow-list note stays because some carriers do enforce
+   * one.) Providers we automate get no card -- there is nothing for the user to
+   * do -- so this is null for them.
    */
   private carrierSetup(number: {
     provider: string;
@@ -2210,7 +2212,7 @@ export class TelephonyService {
       outbound_sip_domain:
         typeof metadata.sipTrunkDomain === 'string' ? metadata.sipTrunkDomain : null,
       ip_allowlist_hint:
-        "Your carrier must accept SIP from LiveKit Cloud's static IPs (LiveKit Cloud -> Settings -> Static IPs) and permit this number as caller ID. Until it does, inbound INVITEs get no answer and the caller hears silence.",
+        "Ask your carrier for the host and port its SIP server listens on and enter it as the SIP domain (host:port) if it is not 5060; a wrong port means every outbound call rings out with no answer. If the carrier restricts sources, it must accept SIP from LiveKit Cloud's static IPs (LiveKit Cloud -> Settings -> Static IPs) and permit this number as caller ID.",
     };
   }
 
@@ -2398,14 +2400,23 @@ export class TelephonyService {
     const raw = value?.trim().replace(/^sip:/, '') ?? '';
     if (!raw) return null;
     const domain = provider === 'vobiz' && !raw.includes('.') ? `${raw}.sip.vobiz.ai` : raw;
-    if (!/^[a-zA-Z0-9.-]+$/.test(domain) || !domain.includes('.')) {
+    // An optional port is part of the address, not decoration. LiveKit sends
+    // INVITEs to port 5060 unless the trunk address names another one, and it
+    // does not follow SRV records (livekit/sip#810); a carrier whose SBC listens
+    // elsewhere (VoiceLink: 3300, with 5060 firewalled) is unreachable without
+    // it. This validator used to reject the colon, so the only working value
+    // could not be typed.
+    const match = /^([a-zA-Z0-9.-]+)(?::(\d{1,5}))?$/.exec(domain);
+    const host = match?.[1] ?? '';
+    const port = match?.[2] ? Number(match[2]) : null;
+    if (!match || !host.includes('.') || (port !== null && (port < 1 || port > 65535))) {
       throw new AppError(
         'VALIDATION_ERROR',
-        'SIP domain must be a valid host, for example tenant.sip.vobiz.ai.',
+        'SIP domain must be a valid host, optionally with a port, for example tenant.sip.vobiz.ai or sip.carrier.example:3300.',
         400,
       );
     }
-    return domain.toLowerCase();
+    return port === null ? host.toLowerCase() : `${host.toLowerCase()}:${port}`;
   }
 
   private statusMap(status: string): string {

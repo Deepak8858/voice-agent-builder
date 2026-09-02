@@ -1981,6 +1981,37 @@ describe('TelephonyService', () => {
     return { service, prisma, encryption, audit, entitlements };
   }
 
+  // 2026-09-02: VoiceLink's SBC listens on 3300 and drops 5060. LiveKit dials
+  // 5060 unless the address names a port, and this validator rejected the
+  // colon, so no outbound call on that line had ever connected.
+  it('keeps the port of a SIP domain given as host:port', async () => {
+    const { service, prisma } = makeSipCreateService();
+
+    await service.createSipTrunkNumber('workspace-1', 'user-1', {
+      phone_number: '+917969007408',
+      sip_trunk_domain: 'SIP.VoiceLink.co.in:3300',
+    });
+
+    expect(prisma.telephonyPhoneNumber.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          providerMetadata: expect.objectContaining({ sipTrunkDomain: 'sip.voicelink.co.in:3300' }),
+        }),
+      }),
+    );
+  });
+
+  it('rejects a SIP domain with an impossible port', async () => {
+    const { service } = makeSipCreateService();
+
+    await expect(
+      service.createSipTrunkNumber('workspace-1', 'user-1', {
+        phone_number: '+917969007408',
+        sip_trunk_domain: 'sip.voicelink.co.in:99999',
+      }),
+    ).rejects.toMatchObject({ errorCode: 'VALIDATION_ERROR' });
+  });
+
   it('creates a verified SIP trunk number with encrypted auth and a combined quota count', async () => {
     const { service, prisma, encryption, audit, entitlements } = makeSipCreateService();
 

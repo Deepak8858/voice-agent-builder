@@ -111,6 +111,7 @@ export type ManualPhoneNumberDto = z.infer<typeof ManualPhoneNumberDtoSchema>;
 export const SipTrunkNumberDtoSchema = z
   .object({
     phone_number: E164PhoneSchema,
+    /** Carrier SIP host, optionally with the port it listens on (`sip.carrier.example:3300`). */
     sip_trunk_domain: z.string().trim().min(1).max(255),
     sip_auth_username: z.string().trim().min(1).max(120).optional(),
     sip_auth_password: z.string().min(1).max(255).optional(),

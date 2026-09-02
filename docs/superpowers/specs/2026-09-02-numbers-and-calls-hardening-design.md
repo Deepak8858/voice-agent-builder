@@ -23,7 +23,11 @@ what V2 deletes.
    which `assign-agent` rejects. Configure is a separate button after assign. `manual_required`
    instructions from `configureLiveKit` are discarded by the page. Status badges are generic.
 5. **The carrier leg is silent for VoiceLink.** LiveKit's INVITEs get no response from
-   `sip.voicelink.co.in` (IP allow-list). The UI never tells the customer what to give the carrier.
+   `sip.voicelink.co.in`. *Corrected 2026-09-02:* this was **not** an IP allow-list. The SBC
+   (OpenSIPS) listens only on port **3300** and drops 5060; LiveKit dials 5060 unless the trunk
+   address carries a port, and the import validator rejected `host:port`. Fixed by accepting
+   `host:port` and setting the trunk to `sip.voicelink.co.in:3300`. The UI never told the customer
+   what to give the carrier, nor asked for the port.
 6. Noticed UI defects: campaign cards show "No agent"; campaign "In Progress" never decrements
    after failures; an unanswered outbound ends `completed` with `outcome=null`; wizard labels are not
    bound to inputs; magic-link login bounces via `/onboarding`.
