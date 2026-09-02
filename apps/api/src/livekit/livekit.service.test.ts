@@ -182,4 +182,28 @@ describe('LiveKitService telephony operations', () => {
     ).rejects.toBeInstanceOf(AppError);
     expect(sipClient.createSipOutboundTrunk).not.toHaveBeenCalled();
   });
+
+  it('deletes the room when a refused SIP participant cannot be removed', async () => {
+    const roomClient = {
+      removeParticipant: vi.fn(async () => {
+        throw new Error('participant not found');
+      }),
+      deleteRoom: vi.fn(async () => undefined),
+    };
+    const service = new LiveKitService({ roomClient: roomClient as never });
+
+    await expect(service.hangUpParticipant('room-1', 'sip_participant_1')).resolves.toBe(true);
+    expect(roomClient.deleteRoom).toHaveBeenCalledWith('room-1');
+  });
+
+  it('reports a failed hang-up so a refusal is not mistaken for a dead leg', async () => {
+    const boom = async () => {
+      throw new Error('livekit unavailable');
+    };
+    const service = new LiveKitService({
+      roomClient: { removeParticipant: boom, deleteRoom: boom } as never,
+    });
+
+    await expect(service.hangUpParticipant('room-1', 'sip_participant_1')).resolves.toBe(false);
+  });
 });

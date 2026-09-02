@@ -136,3 +136,38 @@ export const StartTelephonyOutboundCallDtoSchema = z
   })
   .strict();
 export type StartTelephonyOutboundCallDto = z.infer<typeof StartTelephonyOutboundCallDtoSchema>;
+
+/**
+ * Inbound admission asked for by the voice runtime.
+ *
+ * Only the Twilio TwiML webhook could admit an inbound call, so a call handed
+ * straight to LiveKit over SIP (a BYO trunk, Vobiz, or a Twilio number moved
+ * onto an Elastic SIP trunk) reached the agent with no admitted call row and
+ * was dropped. The runtime asks for admission over this contract instead, so
+ * one admission path serves every provider. camelCase like the other runtime
+ * contracts (see RuntimeUsageEventSchema); tenant DTOs stay snake_case.
+ */
+export const InboundCallAdmitRequestSchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    workspaceId: z.string().uuid(),
+    phoneNumberId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    provider: PhoneNumberProviderSchema,
+    providerCallId: z.string().min(1).max(200),
+    fromNumber: z.string().min(1).max(32).nullish(),
+    toNumber: z.string().min(1).max(32).nullish(),
+    roomName: z.string().min(1).max(200).nullish(),
+    participantIdentity: z.string().min(1).max(200).nullish(),
+  })
+  .strict();
+export type InboundCallAdmitRequest = z.infer<typeof InboundCallAdmitRequestSchema>;
+
+export const InboundCallAdmitResponseSchema = z
+  .object({
+    admitted: z.boolean(),
+    callId: z.string().uuid().nullable(),
+    reason: z.string().min(1).nullable(),
+  })
+  .strict();
+export type InboundCallAdmitResponse = z.infer<typeof InboundCallAdmitResponseSchema>;
