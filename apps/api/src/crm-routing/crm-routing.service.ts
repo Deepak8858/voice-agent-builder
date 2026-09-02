@@ -45,11 +45,14 @@ export class CrmRoutingService {
     private readonly audit: AuditService,
   ) {}
 
-  async getRulesForAgent(workspaceId: string, agentId: string): Promise<RoutingRule[]> {
+  async getRulesForAgent(workspaceId: string, agentId?: string): Promise<RoutingRule[]> {
     const custom = await this.prisma.crmRoutingRule.findMany({
       where: {
         workspaceId,
-        OR: [{ agentId }, { agentId: null }],
+        // With an agent, its own rules plus the workspace-wide ones (agentId
+        // null). Without one, no agent filter at all — every rule in the
+        // workspace. An empty or missing id must never reach the `uuid` column.
+        ...(agentId ? { OR: [{ agentId }, { agentId: null }] } : {}),
         active: true,
       },
       orderBy: { priority: 'asc' },

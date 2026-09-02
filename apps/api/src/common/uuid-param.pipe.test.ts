@@ -20,4 +20,10 @@ describe('UuidParamPipe', () => {
   it('rejects a value with the wrong segment lengths', () => {
     expect(() => pipe.transform('4444-4444-4444')).toThrow(CallNotFoundError);
   });
+
+  it('passes an absent value through so an optional query param means "no filter"', () => {
+    // An optional @Query param arrives as undefined; the pipe must not turn
+    // "no id" into a 404. Present but malformed ids are still rejected above.
+    expect(pipe.transform(undefined)).toBeUndefined();
+  });
 });

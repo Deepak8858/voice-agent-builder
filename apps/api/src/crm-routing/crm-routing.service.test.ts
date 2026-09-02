@@ -42,6 +42,30 @@ describe('CrmRoutingService', () => {
       const rules = await service.getRulesForAgent('ws-1', 'agent-1');
       expect(rules).toHaveLength(0);
     });
+
+    it('filters on the agent id and workspace-wide rules when an agent is given', async () => {
+      mockPrisma.crmRoutingRule.findMany.mockResolvedValue([]);
+      await service.getRulesForAgent('ws-1', 'agent-1');
+      expect(mockPrisma.crmRoutingRule.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { workspaceId: 'ws-1', OR: [{ agentId: 'agent-1' }, { agentId: null }], active: true },
+        }),
+      );
+    });
+
+    // The reported crash: the settings page lists rules with no agent id, and
+    // an empty string used to reach the `uuid` column and throw P2023. With no
+    // agent the query carries no agent filter, so nothing malformed is sent.
+    it('omits the agent filter entirely when no agent id is given', async () => {
+      mockPrisma.crmRoutingRule.findMany.mockResolvedValue([]);
+      await service.getRulesForAgent('ws-1');
+      expect(mockPrisma.crmRoutingRule.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { workspaceId: 'ws-1', active: true } }),
+      );
+      const where = mockPrisma.crmRoutingRule.findMany.mock.calls[0][0].where;
+      expect(where).not.toHaveProperty('OR');
+      expect(where).not.toHaveProperty('agentId');
+    });
   });
 
   describe('findMatchingRules', () => {
