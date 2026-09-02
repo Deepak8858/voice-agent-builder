@@ -14,13 +14,15 @@ Cascaded mode should be: jambonz `listen` at 16 kHz L16 → ElevenLabs Scribe v2
 (`scribe_v2_realtime`, `pcm_16000`, `commit_strategy=vad`) → Azure `gpt-5.4-mini` over streaming
 chat completions with `reasoning_effort: "none"`, no `temperature`, `verbosity: "low"`,
 `max_completion_tokens` around 200 → ElevenLabs Flash v2.5 over the `stream-input` websocket at
-`pcm_16000` (or `ulaw_8000` if jambonz stays at 8 kHz), all three sockets pre-opened before the
-first audio frame arrives, and the first message played from a per-agent audio cache instead of
-being generated. Route to ElevenLabs through `api.us.elevenlabs.io` and keep runtime, jambonz and
+`pcm_16000` (or `pcm_8000` if jambonz stays at 8 kHz; jambonz `bidirectionalAudio` takes L16 PCM,
+so never ask ElevenLabs for `ulaw_8000` on this path), the two ElevenLabs websockets pre-opened
+before the first audio frame arrives, and the first message played from a per-agent audio cache
+instead of being generated. Route to ElevenLabs through `api.us.elevenlabs.io` and keep runtime, jambonz and
 the Azure resource in the eastern US.
 
-Flash v2.5 is the right TTS model: it is the only ElevenLabs model with both a stated ~75 ms
-inference figure and a half-price credit rate. Multilingual v2 costs double and is slower; Turbo
+Flash v2.5 is the right TTS model: it is the only *multilingual* ElevenLabs model with both a
+stated ~75 ms inference figure and a half-price credit rate. Flash v2 matches it on both counts but
+is English-only; v2.5 adds the 32-language set. Multilingual v2 costs double and is slower; Turbo
 v2.5 is deprecated.
 
 Use Azure Realtime (`gpt-realtime` or `gpt-realtime-mini`) for paid plans when the caller speaks a
@@ -38,18 +40,21 @@ the 20 million ElevenLabs credits and it cannot use ElevenLabs voices.
 | Text to Speech, Flash v2.5 / Turbo v2.5 | "between 0.5 and 1 credit per character"; models page: "50% lower price per character for API generations" | pricing page, models page |
 | Eleven v3 Conversational | not stated in credits; API price parity with Flash ($0.05 per 1k chars) suggests 0.5 credit per character: **unverified** | API pricing page |
 | Speech to Text (Scribe) | "Speech to Text 330 credits per minute" | pricing page |
-| Scribe v2 Realtime specifically | not stated in credits. API pricing lists Scribe v2 at $0.22 per hour and Scribe v2 Realtime at $0.39 per hour, a 1.77x ratio | API pricing page |
+| Scribe v2 Realtime specifically | not stated in credits. API pricing lists Scribe v2 at $0.22 per hour and Scribe v2 Realtime at $0.39 per hour, but dollar prices are a different schedule from subscription credits and cannot be converted into one: **unverified** | API pricing page |
 | Voice Changer and Voice Isolator | "1,000 credits per minute" | pricing page |
 | Sound Effects | "200 credits per generation"; "40 credits per second when duration is specified" | pricing page, sound effects docs |
 | Dubbing | 2,000 to 10,000 credits per minute depending on mode | pricing page |
 
-**Flag on STT billing.** STT is credit-billed but not per character. The two ElevenLabs pricing
-pages disagree about the STT-to-TTS ratio: the credits page says 330 credits per STT minute, while
-the API page prices one Scribe v2 hour ($0.22) the same as 2,200 TTS characters ($0.10 per 1k),
-which is about 37 characters per STT minute, not 330. Which schedule the owner's 20 million
-credits follow is **unverified** and must be settled by one metered test call (read the account's
-character count before and after a one-minute realtime STT session). The table below uses the
-credits-page figure because that is the schedule that governs a credit pool.
+**Flag on STT billing.** STT is credit-billed but not per character, and only the credits page
+speaks to credits at all. ElevenLabs states that credit consumption varies by plan, product, model
+and channel, so the API dollar prices above are evidence about *dollars*, not about the credit rate
+this pool is drawn against: the API page prices one Scribe v2 hour ($0.22) the same as 2,200 TTS
+characters ($0.10 per 1k), about 37 characters per STT minute rather than 330, and that gap is a
+difference between two price schedules, not a discoverable credit rate. Every capacity figure below
+therefore uses the credits-page rate of 330 credits per STT minute, and the realtime-versus-batch
+credit premium (if there is one) stays out of the planning numbers until one metered test call
+supplies it: read the account's credit balance before and after a one-minute realtime STT session
+(spike (a)).
 
 ### 2.2 Assumptions for the conversion
 
@@ -72,16 +77,16 @@ credits-page figure because that is the schedule that governs a credit pool.
 | TTS only, Multilingual v2 or Eleven v3 | 20,000,000 ÷ 1 ÷ 1,000 ÷ 0.5 | **40,000 call minutes (667 h)** |
 | TTS only, v3 Conversational (if 0.5 credit/char, unverified) | same as Flash | 80,000 call minutes |
 | STT only, Scribe at 330 credits per minute | 20,000,000 ÷ 330 | **60,606 call minutes (1,010 h)** |
-| STT only, if realtime is billed 1.77x batch (unverified) | 330 × 1.77 = 584 credits/min; 20,000,000 ÷ 584 | 34,247 call minutes (571 h) |
 | Cascaded call, Flash + Scribe | per minute: 500 × 0.5 = 250 TTS + 330 STT = 580 credits; 20,000,000 ÷ 580 | **34,483 call minutes (575 h)** |
 | Cascaded call, Multilingual v2 + Scribe | 500 + 330 = 830 credits/min; 20,000,000 ÷ 830 | 24,096 call minutes (402 h) |
-| Cascaded call, Flash + Scribe at the 1.77x realtime rate | 250 + 584 = 834; 20,000,000 ÷ 834 | 23,981 call minutes (400 h) |
+| Cascaded call, Flash + Scribe with `keyterms` on STT | 250 + (330 × 1.2) = 646 credits/min; 20,000,000 ÷ 646 | 30,960 call minutes (516 h) |
 
 Reading: with the recommended Flash + Scribe stack the credit pool covers roughly 24,000 to 35,000
-cascaded call minutes. STT is the larger consumer at the published credit rate, so anything that
-reduces STT minutes (hang up faster on voicemail, do not stream silence during long holds) saves
-more credits than TTS tuning does. If the API-page ratio turns out to apply, STT is almost free
-relative to TTS and the pool is closer to 75,000 call minutes.
+cascaded call minutes, and about 31,000 with keyterm boosting switched on. STT is the larger
+consumer at the published credit rate, so anything that reduces STT minutes (hang up faster on
+voicemail, do not stream silence during long holds) saves more credits than TTS tuning does. Plan
+against these numbers only; a realtime-STT credit premium above the 330 rate would push them down,
+and spike (a) is what settles it.
 
 ## 3. Feature menu
 
@@ -94,7 +99,7 @@ or more or an operational process.
 | --- | --- | --- | --- | --- | --- |
 | 1 | ElevenLabs voice picker with preview | Pick from the ElevenLabs library voices (10,000+ per the voices docs) with a play button; stored in `spec.voice.voice_id` | Small | Yes (replace the free-text `voice_id` field) | `voice_id` already exists in the spec and is honored by the plan's cascaded engine. Today the field is a bare string and the realtime path only accepts OpenAI voice names (`agent-runtime.ts:resolveRealtimeVoice`). |
 | 2 | Speaking speed and per-language voice actually applied | The `speaking_rate` slider and `language_configs` in the editor change the call | Small | Existing UI | `spec.voice.speaking_rate` and `allow_interruptions` are defined in the schema (`agent-spec.ts:31-47`) but the only consumer is `apps/web/components/form-mode-editor.tsx`; no runtime reads them. Map `speaking_rate` to `voice_settings.speed` (ElevenLabs range 0.7 to 1.2, so clamp). |
-| 3 | STT keyterm boosting from the agent spec | Business, product and person names are transcribed correctly | Small | No | Scribe realtime accepts `keyterms` on the websocket URL; derive from `identity.business_name`, required-field enum values and tool names. |
+| 3 | STT keyterm boosting from the agent spec | Business, product and person names are transcribed correctly | Small | No | Scribe realtime accepts `keyterms` on the websocket URL (up to 50 terms) and ElevenLabs charges a published 20% premium on realtime transcription when it is set; derive the terms from `identity.business_name`, required-field enum values and tool names. |
 | 4 | Instant Voice Clone for the customer's own brand voice | Upload under two minutes of audio, get a voice usable on calls within a minute | Small to medium | Yes (upload, consent checkbox, preview) | `POST /v1/voices/add` with `remove_background_noise=true`. IVC "available on most plans". All clones live in our one ElevenLabs workspace, so per-plan voice slot limits are a shared ceiling: **unverified** count, check before launch. |
 | 5 | Voice Design (voice from a text description) | Type "warm Indian-English female, mid 30s" and get three previews to pick from | Small to medium | Yes | `POST /v1/text-to-voice/design` returns three previews (`generated_voice_id` + base64 audio); save with `/v1/text-to-voice`. Credit cost per design: **unverified**. |
 | 6 | Word-timed transcripts | Click a word in the transcript and the recording jumps there | Small (runtime) + small (UI) | Yes | Scribe realtime `include_timestamps=true` returns `committed_transcript_with_timestamps`. Store offsets on the CallEvent; the live SSE path already carries transcript deltas. |
@@ -128,7 +133,7 @@ byte 120 ms, two jitter buffers 40 ms each, opus coding 21 ms each way, total 1,
 | STT final after endpoint | 200 | 0 (inside the model) | Scribe v2 Realtime "~150 ms" excluding network, plus one US round trip |
 | LLM time to first token | 400 | 500 (audio out, unverified) | gpt-5.4-mini with `reasoning_effort: none`; unverified until measured. Reference budget shows 650 ms for a typical LLM |
 | First TTS chunk ready (clause or sentence boundary) | 100 | 0 | ~10 tokens at 100 tokens/s (assumption) |
-| TTS time to first byte | 150 | 0 | Flash v2.5 ~75 ms model + ElevenLabs's published 100 to 150 ms TTFB for North America |
+| TTS time to first byte | 150 | 0 | ElevenLabs's published 100 to 150 ms North America TTFB, which already contains the ~75 ms Flash v2.5 model inference plus scheduling and network; the two are not additive |
 | Runtime → jambonz → carrier → callee ear, including FreeSWITCH jitter buffer | 140 | 140 | 100 assumed transit + 40 jitter buffer (reference budget) |
 | **Total** | **1,440** | **~940 to 1,240** | |
 | With speculative LLM start on partials (LLM overlaps endpointing) | **~1,050** | | see action 5 |
@@ -192,23 +197,47 @@ measurements.
    roughly 0.5 to 1.0 s, so the callee hears a voice under 250 ms after answering. Lands in the
    cascaded engine `start()` (`cascaded-engine.ts`, replacing `void agentTurn(input.firstReply)`),
    with the audio cached in Redis by the API and invalidated on publish.
-3. **Open the Scribe, Flash and Azure sockets when the API mints the stream token, not when the
-   first frame arrives.** The API knows a call is coming at webhook time (inbound) or dial time
-   (outbound). Saving: two to three TLS + websocket handshakes, 100 to 300 ms off call start.
-   Lands in the voice-runtime session manager and `elevenlabs.ts` (`openSttStream`,
-   `openTtsStream`), keyed by callId with a short TTL.
+3. **Open the Scribe and Flash websockets when the API mints the stream token, not when the first
+   frame arrives.** The API knows a call is coming at webhook time (inbound) or dial time
+   (outbound). Saving: two TLS + websocket handshakes, 100 to 200 ms off call start. Lands in the
+   voice-runtime session manager and `elevenlabs.ts` (`openSttStream`, `openTtsStream`), keyed by
+   callId with a short TTL. Two constraints:
+   - **Azure cascaded chat is not a websocket.** `POST /chat/completions` with `"stream": true`
+     returns server-sent events, so there is no session to pre-open. What helps there is a warm
+     keep-alive HTTP/2 connection to the endpoint held by the runtime's shared agent (and a reused
+     TLS session ticket), not a socket per call. Only Azure Realtime has a per-call websocket worth
+     pre-opening, and only on the speech-to-speech path.
+   - **The pre-opened TTS socket can time out before it is used.** ElevenLabs closes an idle
+     `stream-input` websocket after 20 seconds by default (`inactivity_timeout`, maximum 180). A
+     pre-open at dial time can easily sit through more than 20 seconds of ringing, so set
+     `inactivity_timeout` to cover the ring window, send the documented keepalive (a single space,
+     not an empty string, which signals end of sequence), and reconnect on close, or the
+     optimization silently restores the handshake it was meant to remove.
 4. **Own one endpointing timer.** Use Scribe `commit_strategy=vad` with
    `vad_silence_threshold_secs` around 0.35 to 0.4 and `min_silence_duration_ms` set explicitly
    (defaults are unverified), and do not add a second app-level silence wait on top; only keep a
    hard cap for the case where no commit arrives. Saving: 150 to 300 ms versus a 500 ms class
    default, and no double counting. Lands in the STT URL builder in `elevenlabs.ts` (the plan
    currently sets only `commit_strategy=vad`).
-5. **Speculative LLM start on stable partials.** When a `partial_transcript` has not changed for
-   about 200 ms, start the chat completion with it; on `committed_transcript`, keep the stream if
-   the text matches, otherwise abort and re-issue. Saving: overlaps LLM TTFT with the endpointing
-   silence, 200 to 400 ms. Lands in `cascaded-engine.ts`, whose `partial` handler is currently a
-   no-op. Azure's in-memory prompt cache makes the re-issue cheap (identical prefix over 1,024
-   tokens is cached, 128-token granularity).
+5. **Speculative LLM start on stable partials, with tools withheld.** When a
+   `partial_transcript` has not changed for about 200 ms, start the chat completion with it; on
+   `committed_transcript`, keep the stream if the text matches, otherwise abort and re-issue.
+   Saving: overlaps LLM TTFT with the endpointing silence, 200 to 400 ms. Lands in
+   `cascaded-engine.ts`, whose `partial` handler is currently a no-op. Azure's in-memory prompt
+   cache makes the re-issue cheap (identical prefix over 1,024 tokens is cached, 128-token
+   granularity).
+
+   **A speculative request must never be able to execute a tool.** Agent tools call the internal
+   tool API, and several are non-idempotent side effects taken on the customer's behalf: a Gmail
+   send, a Sheets append, a CRM write. A speculative turn is started on text the caller may not
+   have finished saying and is abandoned whenever the commit differs, so a tool reached before the
+   commit could fire with stale arguments, or fire twice across the abort and the re-issue.
+   Therefore: send speculative requests with no `tools` (or read-only ones only), treat any tool
+   intent in a speculative stream as a signal to discard the speculation and re-issue after the
+   commit with tools attached, and carry an idempotency key derived from
+   `(callId, turnIndex, toolName, argumentsHash)` on every write-side tool so a retry at any layer
+   collapses. The latency win still applies to plain spoken answers, which are the large majority
+   of turns.
 6. **Emit the first TTS chunk at the first clause boundary, not the first sentence.** Split on
    comma or about 40 characters for the first chunk, then by sentence; set
    `generation_config.chunk_length_schedule` low (for example `[50, 120, 160, 250]`, each item is
@@ -251,10 +280,16 @@ budget table above is replaced by production percentiles within a week of the fl
 
 - **ElevenLabs concurrency caps.** Published limits per plan: Flash 4 / 6 / 10 / 20 / 30 / 30
   (Free through Business), Multilingual v2 2 / 3 / 5 / 10 / 15 / 15, realtime STT 6 / 9 / 15 /
-  30 / 45 / 45, Enterprise "Elevated". A cascaded call holds one STT stream for its whole duration
-  and one TTS generation while speaking, so Business caps concurrent calls at roughly 30 to 45 with
-  no headroom. Whether the owner's 20 million credits sit on an Enterprise contract with elevated
-  limits is **unverified**; confirm before sizing campaign `max_concurrent`.
+  30 / 45 / 45, Enterprise "Elevated". The two caps do not bind the same way. A cascaded call holds
+  its STT stream open for the whole call, so the realtime-STT limit (45 on Business) is a hard
+  ceiling on concurrent calls. TTS concurrency is consumed only while audio is actually being
+  generated, and an idle open `stream-input` socket does not count against it, so the Flash figure
+  of 30 is not a 30-call ceiling: it caps how many agents may be *speaking* at once, which at a 50%
+  talk share and uncorrelated turns is reached well above 30 calls. Size admission from the STT
+  limit, the measured talk share, and what the runtime does when a TTS request is throttled (queue
+  briefly or degrade), with headroom on top. Whether the owner's 20 million credits sit on an
+  Enterprise contract with elevated limits is **unverified**; confirm before sizing campaign
+  `max_concurrent`.
 - **STT credit rate.** 330 credits per minute (credits page) versus the API page's dollar rates
   imply a 9x different STT-to-TTS ratio (Section 2.1). Settle with one metered call. Whether
   Scribe v2 Realtime is billed above batch Scribe in credits is **unverified**.
@@ -264,9 +299,14 @@ budget table above is replaced by production percentiles within a week of the fl
   us-east-1 is unmeasured. Azure Tier 1 quota is 1,000 RPM and 1,000,000 TPM GlobalStandard, ample.
 - **Azure Realtime quota and session limits.** `gpt-realtime` GlobalStandard Tier 1 is 200 RPM and
   100,000 TPM. At the documented ~10 input and ~20 output audio tokens per second, one talking call
-  is about 1,800 tokens per minute, so 100,000 TPM is roughly 55 concurrent calls before 429s;
-  `gpt-4o-realtime-preview` at 6,000 TPM is unusable at scale. Sessions end at 60 minutes, so
-  `maxDurationSeconds` must stay below that. Audio-token pricing per minute is **unverified** (the
+  is about 1,800 tokens per minute, so 100,000 TPM works out to roughly 55 concurrent calls, but
+  that is a **workload estimate, not a quota**. Azure manages Realtime audio-token throughput and
+  concurrent sessions as separate per-resource quotas, so dividing TPM establishes neither the
+  session ceiling nor the 429 threshold, and per-call token burn depends on how much the agent and
+  the caller actually talk. Read the assigned limits from the resource's quotas blade, measure
+  per-call audio tokens in spike (f), and size from the lower of the two with headroom.
+  `gpt-4o-realtime-preview` at 6,000 TPM is unusable at scale either way. Sessions end at 60
+  minutes, so `maxDurationSeconds` must stay below that. Audio-token pricing per minute is **unverified** (the
   Azure pricing page did not render figures); it is certainly higher per minute than cascaded, so
   the plan-based `pipelineMix` router stays the cost control.
 - **Voice Live versus raw Realtime.** Voice Live adds `azure_semantic_vad`, `remove_filler_words`,
@@ -280,7 +320,8 @@ budget table above is replaced by production percentiles within a week of the fl
   residency endpoint (`api.in.residency.elevenlabs.io`) and Azure `centralindia` has `gpt-realtime`
   (Standard) and Voice Live, so a Mumbai jambonz edge is a later option, not a V2 requirement.
 - **Cost blow-ups.** Multilingual v2 or v3 doubles TTS credits; post-call diarization doubles STT
-  credits; entity detection and keyterms are "additional cost" (amount unverified); speculative
+  credits; `keyterms` carries a published 20% premium on realtime transcription, which is already
+  in the Section 2.3 table; entity detection is "additional cost" (amount unverified); speculative
   LLM starts add aborted requests (cheap with prompt caching, but counted against RPM).
 - **Deprecations.** Turbo v2.5 is marked deprecated; `optimize_streaming_latency` is deprecated on
   the REST stream endpoint, so do not build on either. ElevenLabs docs pages moved during this
@@ -293,7 +334,7 @@ budget table above is replaced by production percentiles within a week of the fl
 **Spikes to run (each a throwaway script, before Phase 2 code):**
 (a) one-minute metered Scribe realtime call, read credits consumed; (b) gpt-5.4-mini TTFT with
 `reasoning_effort: none` versus default from the prod host, 20 samples; (c) Scribe VAD defaults
-and commit latency at `pcm_16000` versus `ulaw_8000`; (d) Flash TTFB at `pcm_16000` via
+and commit latency at `pcm_16000` versus `pcm_8000`; (d) Flash TTFB at `pcm_16000` via
 `api.us.elevenlabs.io` versus the default host; (e) whether a multi-context TTS websocket exists
 (the docs URL 404'd) or a spare-socket swap is needed; (f) Azure Realtime per-call token burn and
 first-audio latency over websocket from us-east-1; (g) end-to-end mouth-to-ear on a real VoiceLink
