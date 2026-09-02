@@ -1071,11 +1071,14 @@ export class TelephonyService {
       providerCallId: input.providerCallId,
     });
     if (!admitted.admitted) {
+      // Teardown comes before the bookkeeping: admission is already denied, and
+      // a database that will not take the update must not leave a refused
+      // caller connected. The write still throws to the caller if it fails.
+      const hungUp = await this.hangUpSipLeg(input);
       await this.prisma.call.update({
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
       });
-      const hungUp = await this.hangUpSipLeg(input);
       const reason = admitted.reason ?? 'billing_denied';
       return {
         admitted: false,
