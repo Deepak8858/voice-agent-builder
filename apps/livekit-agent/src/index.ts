@@ -34,6 +34,7 @@ import {
   retrievalChunkLimit,
 } from './knowledge-retrieval.js';
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
+import { createHandoffClient, createTransferTool } from './handoff.js';
 import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 import {
@@ -296,6 +297,23 @@ async function runCall(
           'but INTERNAL_API_BASE_URL / INTERNAL_API_KEY are not configured; tools disabled for this call.',
       );
     }
+  }
+
+  // Warm transfer to the agent's configured human. The tool dials through the
+  // API, so it needs the same credentials as the other tools; without them the
+  // model is not offered a transfer it could not perform.
+  if (apiBaseUrl && internalApiKey) {
+    const transferTool = createTransferTool({
+      spec,
+      metadata,
+      callId,
+      room: ctx.room,
+      dial: createHandoffClient({ apiBaseUrl, internalApiKey }),
+      // The job stays alive while the two people talk so the call keeps being
+      // metered; it ends when either of them hangs up.
+      onTransferEnded: () => ctx.shutdown('transferred'),
+    });
+    if (transferTool) tools.push(transferTool);
   }
 
   // The pipeline is a billing decision made by the API when the call was

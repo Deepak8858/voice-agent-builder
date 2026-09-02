@@ -11,6 +11,7 @@ import {
 import { AppError } from '../common/errors';
 import { env } from '../config/env';
 import type {
+  AddSipParticipantParams,
   CreateDispatchRuleParams,
   CreateInboundSipTrunkParams,
   CreateOutboundCallParams,
@@ -250,6 +251,31 @@ export class LiveKitService {
       roomName: params.roomName,
       status: 'queued',
     };
+  }
+
+  /**
+   * Dials a second SIP leg into a room that already holds a call and returns
+   * only once the far end has answered. Unlike `createOutboundCall` there is no
+   * agent to dispatch and ring time is bounded by the caller's patience, so the
+   * request blocks on the answer (`waitUntilAnswered`) and a no-answer, busy or
+   * rejected dial surfaces as a thrown error the caller turns into a reason.
+   */
+  async addSipParticipant(params: AddSipParticipantParams): Promise<void> {
+    await this.requireSipClient().createSipParticipant(
+      params.outboundTrunkId,
+      params.toNumber,
+      params.roomName,
+      {
+        fromNumber: params.fromNumber,
+        participantIdentity: params.participantIdentity,
+        participantMetadata: JSON.stringify(params.metadata ?? {}),
+        waitUntilAnswered: true,
+        ringingTimeout: params.ringingTimeoutSeconds,
+        // The RPC must outlive the ring, or the SDK aborts a dial the carrier is
+        // still completing.
+        timeout: params.ringingTimeoutSeconds + 10,
+      },
+    );
   }
 
   verifyWebhook(rawBody: string, authorization: string | undefined): Promise<unknown> {

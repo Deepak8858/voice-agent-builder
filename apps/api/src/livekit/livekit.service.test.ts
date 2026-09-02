@@ -207,3 +207,55 @@ describe('LiveKitService telephony operations', () => {
     await expect(service.hangUpParticipant('room-1', 'sip_participant_1')).resolves.toBe(false);
   });
 });
+
+describe('LiveKitService.addSipParticipant', () => {
+  it('dials the second leg into the existing room and blocks until it is answered', async () => {
+    const sipClient = {
+      createSipParticipant: vi.fn(async () => ({ participantId: 'sip-human-1' })),
+    };
+    const service = new LiveKitService({ sipClient: sipClient as never });
+
+    await service.addSipParticipant({
+      outboundTrunkId: 'trunk-out-1',
+      toNumber: '+918858901717',
+      fromNumber: '+14155551234',
+      roomName: 'call-room-1',
+      participantIdentity: 'sip-human-call-1',
+      ringingTimeoutSeconds: 25,
+      metadata: { callId: 'call-1', role: 'human_handoff' },
+    });
+
+    expect(sipClient.createSipParticipant).toHaveBeenCalledWith(
+      'trunk-out-1',
+      '+918858901717',
+      'call-room-1',
+      expect.objectContaining({
+        fromNumber: '+14155551234',
+        participantIdentity: 'sip-human-call-1',
+        waitUntilAnswered: true,
+        ringingTimeout: 25,
+        timeout: 35,
+      }),
+    );
+  });
+
+  it('propagates a rejected or unanswered dial so the caller can report a reason', async () => {
+    const sipClient = {
+      createSipParticipant: vi.fn(async () => {
+        throw new Error('sip: 486 Busy Here');
+      }),
+    };
+    const service = new LiveKitService({ sipClient: sipClient as never });
+
+    await expect(
+      service.addSipParticipant({
+        outboundTrunkId: 'trunk-out-1',
+        toNumber: '+918858901717',
+        fromNumber: '+14155551234',
+        roomName: 'call-room-1',
+        participantIdentity: 'sip-human-call-1',
+        ringingTimeoutSeconds: 25,
+      }),
+    ).rejects.toThrow('486 Busy Here');
+  });
+});

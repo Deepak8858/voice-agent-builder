@@ -2740,3 +2740,221 @@ describe('TelephonyService.disconnectNumber', () => {
     );
   });
 });
+
+function makeHandoffService(overrides?: {
+  call?: Record<string, unknown> | null;
+  dialError?: Error;
+  /** Simulate a `handoff.requested` claim already held for this call. */
+  claimHeld?: boolean;
+  /** Simulate a `handoff.connected` event already written for this call. */
+  alreadyConnected?: boolean;
+}) {
+  const call =
+    overrides?.call === undefined
+      ? {
+          id: 'call-1',
+          workspaceId: 'workspace-1',
+          organizationId: 'org-1',
+          agentId: 'agent-1',
+          livekitRoomName: 'call-room-1',
+          phoneNumber: {
+            phoneNumberE164: '+917969007408',
+            livekitConfig: { outboundTrunkId: 'trunk-out-1' },
+          },
+          agent: {
+            specJson: { handoff: { enabled: true, target_phone: '8858901717', conditions: [] } },
+            activeVersionId: null,
+          },
+        }
+      : overrides.call;
+  const prisma = {
+    call: {
+      findUnique: vi.fn(async () => call),
+      update: vi.fn(async () => ({ id: 'call-1' })),
+    },
+    callEvent: {
+      create: vi.fn(async (args: { data: { eventType: string; providerEventId?: string } }) => {
+        if (overrides?.claimHeld && args.data.providerEventId) {
+          throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+        }
+        return { id: 'event-1' };
+      }),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      findFirst: vi.fn(async () => (overrides?.alreadyConnected ? { id: 'event-connected' } : null)),
+    },
+    agentVersion: { findUnique: vi.fn(async () => null) },
+  };
+  const livekit = {
+    addSipParticipant: vi.fn(async () => {
+      if (overrides?.dialError) throw overrides.dialError;
+    }),
+  };
+  const service = new TelephonyService(
+    prisma as never,
+    livekit as never,
+    {} as never,
+    {} as never,
+    { log: vi.fn(async () => undefined) } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    makeAdmission() as never,
+  );
+  return { service, prisma, livekit };
+}
+
+const HANDOFF_REQUEST = { callId: 'call-1', agentId: 'agent-1', summary: 'Deepak needs a refill.' };
+
+/**
+ * 2026-09-02: an agent with handoff enabled and a human number configured had
+ * no way to reach that human; "transfer me to a person" got an apology. The
+ * runtime now asks here to dial the human into the caller's room.
+ */
+describe('TelephonyService.dialHandoff', () => {
+  it('dials the configured human into the room on the line the call arrived on', async () => {
+    const { service, prisma, livekit } = makeHandoffService();
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toEqual({
+      connected: true,
+      participantIdentity: 'sip-human-call-1',
+      reason: null,
+    });
+
+    expect(livekit.addSipParticipant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outboundTrunkId: 'trunk-out-1',
+        // A locally typed number is read in the country of the line.
+        toNumber: '+918858901717',
+        fromNumber: '+917969007408',
+        roomName: 'call-room-1',
+        participantIdentity: 'sip-human-call-1',
+      }),
+    );
+    expect(prisma.call.update).toHaveBeenCalledWith({
+      where: { id: 'call-1' },
+      data: { outcome: 'human_transfer_completed' },
+    });
+    const eventTypes = prisma.callEvent.create.mock.calls.map(([args]) => args.data.eventType);
+    expect(eventTypes).toEqual(['handoff.requested', 'handoff.connected']);
+  });
+
+  it('reports an unanswered dial as a reason instead of an error, and does not mark the call', async () => {
+    const { service, prisma } = makeHandoffService({ dialError: new Error('sip: 480 Temporarily Unavailable') });
+
+    const result = await service.dialHandoff(HANDOFF_REQUEST);
+
+    expect(result.connected).toBe(false);
+    expect(result.reason).toContain('480');
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    const eventTypes = prisma.callEvent.create.mock.calls.map(([args]) => args.data.eventType);
+    expect(eventTypes).toEqual(['handoff.requested', 'handoff.failed']);
+    // The claim is released so the caller can ask for a person again.
+    expect(prisma.callEvent.updateMany).toHaveBeenCalledWith({
+      where: { workspaceId: 'workspace-1', providerEventId: 'handoff:call-1' },
+      data: { providerEventId: null },
+    });
+  });
+
+  it('dials at most once per call: a retry or concurrent request while a dial is live is refused', async () => {
+    const { service, livekit, prisma } = makeHandoffService({ claimHeld: true });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toEqual({
+      connected: false,
+      participantIdentity: null,
+      reason: 'handoff_in_progress',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ providerEventId: 'handoff:call-1' }) }),
+    );
+  });
+
+  it('answers a retry of an already-connected handoff with the success it was', async () => {
+    const { service, livekit } = makeHandoffService({ claimHeld: true, alreadyConnected: true });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toEqual({
+      connected: true,
+      participantIdentity: 'sip-human-call-1',
+      reason: null,
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+
+  it('will not dial for an agent that has handoff disabled, whatever the request says', async () => {
+    const { service, livekit } = makeHandoffService({
+      call: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        livekitRoomName: 'call-room-1',
+        phoneNumber: {
+          phoneNumberE164: '+917969007408',
+          livekitConfig: { outboundTrunkId: 'trunk-out-1' },
+        },
+        agent: {
+          specJson: { handoff: { enabled: false, target_phone: '+918858901717' } },
+          activeVersionId: null,
+        },
+      },
+    });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toMatchObject({
+      connected: false,
+      reason: 'handoff_disabled',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+
+  it('refuses a call that is not bound to the requesting agent', async () => {
+    const { service, livekit } = makeHandoffService();
+
+    await expect(service.dialHandoff({ ...HANDOFF_REQUEST, agentId: 'agent-2' })).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+
+  it('cannot transfer a call with no outbound trunk, such as a browser test', async () => {
+    const { service, livekit } = makeHandoffService({
+      call: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        livekitRoomName: 'test-room-1',
+        phoneNumber: null,
+        agent: { specJson: { handoff: { enabled: true, target_phone: '+918858901717' } }, activeVersionId: null },
+      },
+    });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toMatchObject({
+      connected: false,
+      reason: 'no_outbound_trunk',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+
+  it('refuses a target that is not a dialable number', async () => {
+    const { service, livekit } = makeHandoffService({
+      call: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        livekitRoomName: 'call-room-1',
+        phoneNumber: {
+          phoneNumberE164: '+917969007408',
+          livekitConfig: { outboundTrunkId: 'trunk-out-1' },
+        },
+        agent: { specJson: { handoff: { enabled: true, target_phone: 'ask for Vinod' } }, activeVersionId: null },
+      },
+    });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toMatchObject({
+      connected: false,
+      reason: 'invalid_target',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+  });
+});

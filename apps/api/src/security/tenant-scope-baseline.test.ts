@@ -293,7 +293,11 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'outbound-campaign/outbound-campaign.service.ts:outboundCampaign.update': 1,
   'referral/referral.service.ts:workspace.findUnique': 2,
   'telephony/telephony.service.ts:call.findFirst': 2,
-  'telephony/telephony.service.ts:call.findUnique': 1,
+  // 2nd site: dialHandoff reads the call by the id the runtime supplies (no
+  // session), then refuses unless the row's agent is the path agent — the
+  // same call -> agent binding LiveKitToolsController uses. The workspace and
+  // trunk written or dialled afterwards all come from that verified row.
+  'telephony/telephony.service.ts:call.findUnique': 2,
   'telephony/telephony.service.ts:call.update': 1,
   'telephony/telephony.service.ts:call.upsert': 1,
   'telephony/telephony.service.ts:callUsage.findUnique': 1,
