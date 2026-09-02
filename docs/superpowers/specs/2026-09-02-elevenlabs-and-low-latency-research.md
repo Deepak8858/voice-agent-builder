@@ -15,9 +15,10 @@ Cascaded mode should be: jambonz `listen` at 16 kHz L16 → ElevenLabs Scribe v2
 chat completions with `reasoning_effort: "none"`, no `temperature`, `verbosity: "low"`,
 `max_completion_tokens` around 200 → ElevenLabs Flash v2.5 over the `stream-input` websocket at
 `pcm_16000` (or `pcm_8000` if jambonz stays at 8 kHz; jambonz `bidirectionalAudio` takes L16 PCM,
-so never ask ElevenLabs for `ulaw_8000` on this path), the two ElevenLabs websockets pre-opened
-before the first audio frame arrives, and the first message played from a per-agent audio cache
-instead of being generated. Route to ElevenLabs through `api.us.elevenlabs.io` and keep runtime, jambonz and
+so never ask ElevenLabs for `ulaw_8000` on this path), the Flash websocket pre-opened before the
+first audio frame arrives and Scribe opened on the answer event rather than at token mint (a
+pre-opened STT stream spends a concurrency slot a ringing call may never use), and the first
+message played from a per-agent audio cache instead of being generated. Route to ElevenLabs through `api.us.elevenlabs.io` and keep runtime, jambonz and
 the Azure resource in the eastern US.
 
 Flash v2.5 is the right TTS model: it is the only *multilingual* ElevenLabs model with both a
@@ -82,11 +83,17 @@ supplies it: read the account's credit balance before and after a one-minute rea
 | Cascaded call, Flash + Scribe with `keyterms` on STT | 250 + (330 × 1.2) = 646 credits/min; 20,000,000 ÷ 646 | 30,960 call minutes (516 h) |
 
 Reading: with the recommended Flash + Scribe stack the credit pool covers roughly 24,000 to 35,000
-cascaded call minutes, and about 31,000 with keyterm boosting switched on. STT is the larger
-consumer at the published credit rate, so anything that reduces STT minutes (hang up faster on
-voicemail, do not stream silence during long holds) saves more credits than TTS tuning does. Plan
-against these numbers only; a realtime-STT credit premium above the 330 rate would push them down,
-and spike (a) is what settles it.
+cascaded call minutes, and about 31,000 with keyterm boosting switched on.
+
+Which side dominates depends on the Flash credit rate, which is unverified. At the 0.5 credit per
+character assumption STT is larger (330 against 250 per minute), so reducing STT minutes (hang up
+faster on voicemail, do not stream silence during long holds) saves more than TTS tuning does. At
+1 credit per character TTS is larger (500 against 330) and the priority inverts. Talk share moves
+it too: the numbers above assume both sides speak for the full minute, and a call where the caller
+talks most of the time shifts cost toward STT regardless of the rate. Spike (a) meters one real
+call and settles both the rate and the share; until then treat neither side as the fixed target.
+Plan against these numbers only; a realtime-STT credit premium above the 330 rate would push them
+down.
 
 ## 3. Feature menu
 
@@ -99,7 +106,7 @@ or more or an operational process.
 | --- | --- | --- | --- | --- | --- |
 | 1 | ElevenLabs voice picker with preview | Pick from the ElevenLabs library voices (10,000+ per the voices docs) with a play button; stored in `spec.voice.voice_id` | Small | Yes (replace the free-text `voice_id` field) | `voice_id` already exists in the spec and is honored by the plan's cascaded engine. Today the field is a bare string and the realtime path only accepts OpenAI voice names (`agent-runtime.ts:resolveRealtimeVoice`). |
 | 2 | Speaking speed and per-language voice actually applied | The `speaking_rate` slider and `language_configs` in the editor change the call | Small | Existing UI | `spec.voice.speaking_rate` and `allow_interruptions` are defined in the schema (`agent-spec.ts:31-47`) but the only consumer is `apps/web/components/form-mode-editor.tsx`; no runtime reads them. Map `speaking_rate` to `voice_settings.speed` (ElevenLabs range 0.7 to 1.2, so clamp). |
-| 3 | STT keyterm boosting from the agent spec | Business, product and person names are transcribed correctly | Small | No | Scribe realtime accepts `keyterms` on the websocket URL (up to 50 terms) and ElevenLabs charges a published 20% premium on realtime transcription when it is set; derive the terms from `identity.business_name`, required-field enum values and tool names. |
+| 3 | STT keyterm boosting from the agent spec | Business, product and person names are transcribed correctly | Small | No | Scribe realtime accepts `keyterms` on the websocket URL and ElevenLabs charges a published 20% premium on realtime transcription when it is set; derive the terms from `identity.business_name`, required-field enum values and tool names. The realtime limits are **50 terms, 20 characters each**, and `agent-spec.ts` caps none of those sources, so the derivation needs the deterministic rules below or a valid spec can produce a rejected websocket request. |
 | 4 | Instant Voice Clone for the customer's own brand voice | Upload under two minutes of audio, get a voice usable on calls within a minute | Small to medium | Yes (upload, consent checkbox, preview) | `POST /v1/voices/add` with `remove_background_noise=true`. IVC "available on most plans". All clones live in our one ElevenLabs workspace, so per-plan voice slot limits are a shared ceiling: **unverified** count, check before launch. |
 | 5 | Voice Design (voice from a text description) | Type "warm Indian-English female, mid 30s" and get three previews to pick from | Small to medium | Yes | `POST /v1/text-to-voice/design` returns three previews (`generated_voice_id` + base64 audio); save with `/v1/text-to-voice`. Credit cost per design: **unverified**. |
 | 6 | Word-timed transcripts | Click a word in the transcript and the recording jumps there | Small (runtime) + small (UI) | Yes | Scribe realtime `include_timestamps=true` returns `committed_transcript_with_timestamps`. Store offsets on the CallEvent; the live SSE path already carries transcript deltas. |
@@ -111,6 +118,24 @@ or more or an operational process.
 | 12 | Professional Voice Clone | Studio-grade clone of the founder's voice | Large (process) | Yes | Requires Creator plan or above, "Voice-captcha" verification by the voice owner, slots are 3 on Scale and 10 on Business. ElevenLabs states PVCs are slower than default voices and IVCs on Flash v2.5. Not worth building until a customer pays for it. |
 | 13 | Forced alignment | Timestamps for imported transcripts | Small | No | Redundant: Scribe realtime already returns word timestamps. Skip. |
 | 14 | Voice Changer, Dubbing | Change a recording's voice; translate a recording | n/a | n/a | Voice Changer is file-based (5-minute max, no realtime path documented) and Dubbing is for content. Neither fits a calling product. Skip. |
+
+### Deterministic `keyterms` derivation (feature 3)
+
+Scribe realtime caps `keyterms` at 50 terms of at most 20 characters each, and `agent-spec.ts`
+bounds none of the sources the terms come from, so a valid agent spec can otherwise build a
+request the API rejects. The derivation is fixed rather than best-effort:
+
+1. Collect in a fixed order: `identity.business_name`, then required-field `enum_values` in field
+   order, then tool names in spec order. The same spec must always yield the same list.
+2. Trim each term, drop empties, and deduplicate case-insensitively keeping the first occurrence,
+   so a business name repeated as an enum value does not spend two slots.
+3. Drop any term longer than 20 characters rather than truncating it — a truncated brand name
+   biases the transcript toward a string the caller never says. Log the dropped terms once per
+   agent version so the customer can shorten them.
+4. Take the first 50 remaining terms. Excess terms are dropped, not rotated between calls: a
+   keyterm set that varies call to call makes an agent's transcripts non-reproducible.
+5. Validate the final array against both limits at spec publish time, not at dial time, so a spec
+   that cannot produce a valid request is rejected while someone is watching.
 
 ## 4. Latency budget
 
@@ -213,6 +238,23 @@ measurements.
      `inactivity_timeout` to cover the ring window, send the documented keepalive (a single space,
      not an empty string, which signals end of sequence), and reconnect on close, or the
      optimization silently restores the handshake it was meant to remove.
+   - **A pre-opened STT stream spends concurrency before the call is admitted.** The realtime-STT
+     concurrent-stream limit is the hard ceiling on simultaneous calls (§4), and an outbound dial
+     that rings out, is declined, or is canceled never carries audio — so opening Scribe at token
+     mint time lets calls that never connect hold slots away from calls that did. Open Scribe on
+     the answer event, or count the pre-open against the same admission budget and close the
+     socket on every terminal call state (`no-answer`, `busy`, `failed`, `canceled`, `completed`)
+     rather than waiting for the idle timeout. The TTS socket is safe to pre-open early because
+     TTS concurrency is consumed only while audio is generating.
+   - **One `stream-input` socket is one voice.** `voice_id` is in the connection URL and cannot be
+     changed afterwards, so a single pre-opened socket cannot serve the per-language voices that
+     feature 7 selects, and a barge-in that has to abandon the current generation cannot simply
+     reuse it. Either pre-open one socket per voice the agent version can select (bounded by
+     `language_configs`, not by the voice library) plus one spare for the interrupted turn, or use
+     the multi-context websocket API, which carries up to five contexts per connection and lets a
+     barge-in close one context and open another without a new handshake. The multi-context route
+     is the better fit for barge-in and is what feature 7 needs; spike (e) should measure
+     it rather than the single-voice socket.
 4. **Own one endpointing timer.** Use Scribe `commit_strategy=vad` with
    `vad_silence_threshold_secs` around 0.35 to 0.4 and `min_silence_duration_ms` set explicitly
    (defaults are unverified), and do not add a second app-level silence wait on top; only keep a
@@ -335,10 +377,12 @@ budget table above is replaced by production percentiles within a week of the fl
 (a) one-minute metered Scribe realtime call, read credits consumed; (b) gpt-5.4-mini TTFT with
 `reasoning_effort: none` versus default from the prod host, 20 samples; (c) Scribe VAD defaults
 and commit latency at `pcm_16000` versus `pcm_8000`; (d) Flash TTFB at `pcm_16000` via
-`api.us.elevenlabs.io` versus the default host; (e) whether a multi-context TTS websocket exists
-(the docs URL 404'd) or a spare-socket swap is needed; (f) Azure Realtime per-call token burn and
-first-audio latency over websocket from us-east-1; (g) end-to-end mouth-to-ear on a real VoiceLink
-call with a loopback echo app to fix the transport rows of the budget.
+`api.us.elevenlabs.io` versus the default host; (e) multi-context TTS websocket: context
+open and close latency on a barge-in and on a voice switch, measured against a spare-socket
+swap as the fallback (the API is documented at five contexts per connection; the docs URL
+first tried here 404'd); (f) Azure Realtime per-call token burn and first-audio latency over
+websocket from us-east-1; (g) end-to-end mouth-to-ear on a real VoiceLink call with a
+loopback echo app to fix the transport rows of the budget.
 
 ## 7. Sources
 
@@ -353,6 +397,7 @@ ElevenLabs
 - Realtime STT cookbook (`scribe_v2_realtime`, partial vs committed): https://elevenlabs.io/docs/cookbooks/speech-to-text/streaming
 - Scribe v2 Realtime announcement (under 150 ms, 90 languages, VAD, manual commit): https://elevenlabs.io/blog/introducing-scribe-v2-realtime
 - TTS websocket `stream-input` reference (output formats incl. pcm_8000/ulaw_8000/pcm_16000/pcm_24000, `chunk_length_schedule` default `[120,160,250,290]`, `voice_settings.speed` 0.7 to 1.2, alignment, regional hosts): https://elevenlabs.io/docs/api-reference/text-to-speech/v-1-text-to-speech-voice-id-stream-input
+- Multi-context TTS websocket guide (independent contexts on one connection, five per connection, close-and-open on interruption): https://elevenlabs.io/docs/eleven-api/guides/how-to/websockets/multi-context-web-socket
 - TTS stream REST reference (`optimize_streaming_latency` deprecated, output format tiers): https://elevenlabs.io/docs/api-reference/text-to-speech/stream
 - Latency best practices (Flash ~75 ms, regional TTFB 100 to 150 ms, `api.us.elevenlabs.io`, voice type ordering): https://elevenlabs.io/docs/best-practices/latency-optimization
 - Voices (IVC under two minutes, PVC Creator plan and voice-captcha, Voice Design three previews): https://elevenlabs.io/docs/overview/capabilities/voices
