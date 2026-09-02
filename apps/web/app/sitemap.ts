@@ -27,6 +27,12 @@ const publicRoutes = [
   { path: '/resources/test-ai-voice-agent', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/resources/why-voice-agents-fail', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/resources/ai-call-consent', changeFrequency: 'monthly', priority: 0.8 },
+  { path: '/resources/sell-ai-receptionists', changeFrequency: 'monthly', priority: 0.8 },
+  {
+    path: '/resources/vapi-vs-retell-vs-openai-realtime',
+    changeFrequency: 'monthly',
+    priority: 0.8,
+  },
   {
     path: '/resources/white-label-ai-voice-agents',
     changeFrequency: 'monthly',

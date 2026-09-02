@@ -94,5 +94,7 @@ Retell comparison: https://incfrog.ai/compare/retell-alternative
 Testing guide: https://incfrog.ai/resources/test-ai-voice-agent
 Failure-modes guide: https://incfrog.ai/resources/why-voice-agents-fail
 Consent guide: https://incfrog.ai/resources/ai-call-consent
+Agency sales playbook: https://incfrog.ai/resources/sell-ai-receptionists
+Runtime comparison: https://incfrog.ai/resources/vapi-vs-retell-vs-openai-realtime
 White-label guide: https://incfrog.ai/resources/white-label-ai-voice-agents
 Support: https://incfrog.ai/support
