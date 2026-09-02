@@ -7,6 +7,7 @@ import { ForbiddenError } from '../common/errors';
 import { RoleGuard } from '../common/role.guard';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
+import { UuidParamPipe } from '../common/uuid-param.pipe';
 import { CrmRoutingController } from './crm-routing.controller';
 import { CreateCrmRoutingRuleDtoSchema } from './crm-routing.schemas';
 
@@ -73,6 +74,29 @@ describe('CrmRoutingController authorization', () => {
     await controller.createRule('ws-1', body, { id: 'user-1' } as never);
 
     expect(routing.createRule).toHaveBeenCalledWith('ws-1', body, 'user-1');
+  });
+
+  // The settings page lists rules with no agent id. The handler must forward
+  // that absence untouched so the service omits the agent filter, instead of
+  // defaulting to an empty string that crashes the `uuid` column with P2023.
+  it('forwards an absent agent id to the service unchanged', async () => {
+    const routing = { getRulesForAgent: vi.fn(async () => []) };
+    const controller = new CrmRoutingController(routing as never);
+
+    const result = await controller.listRules('ws-1', undefined);
+
+    expect(routing.getRulesForAgent).toHaveBeenCalledWith('ws-1', undefined);
+    expect(result).toEqual({ items: [] });
+  });
+
+  // Pins the boundary guard: a malformed agent_id is rejected before Prisma,
+  // the same defense the sibling path-param routes use.
+  it('guards the agent_id query param with a UuidParamPipe', () => {
+    const args: Record<string, { pipes?: unknown[] }> =
+      Reflect.getMetadata(ROUTE_ARGS_METADATA, CrmRoutingController, 'listRules') ?? {};
+    const pipes = Object.values(args).flatMap((arg) => arg.pipes ?? []);
+
+    expect(pipes.some((pipe) => pipe instanceof UuidParamPipe)).toBe(true);
   });
 
   it.each(['viewer', 'editor'] as const)('denies %s', async (role) => {
