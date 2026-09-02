@@ -270,6 +270,27 @@ describe('runtime routes rely on the @InternalOnly() exemption', () => {
   }
 });
 
+/**
+ * The identity read is the route the checkout preflight and every dashboard
+ * page hit, so it must stay exempt or the limiter 429s the session lookup and
+ * blocks checkout. The paired send-email POST must NOT be skipped.
+ */
+describe('the /auth/me identity read is exempt from the limiter', () => {
+  const source = readFileSync(
+    path.resolve(__dirname, '../auth/me.controller.ts'),
+    'utf8',
+  );
+
+  it("puts @SkipRateLimit() on the @Get('me') handler", () => {
+    expect(source).toMatch(/@Get\('me'\)\s*\n\s*@SkipRateLimit\(\)/);
+  });
+
+  it('does not skip the welcome-email POST', () => {
+    const welcomeEmail = source.slice(source.indexOf("@Post('me/welcome-email')"));
+    expect(welcomeEmail).not.toContain('@SkipRateLimit()');
+  });
+});
+
 describe('SKIP_RATE_LIMIT_KEY', () => {
   it('is exported as a symbol', () => {
     expect(typeof SKIP_RATE_LIMIT_KEY).toBe('symbol');
