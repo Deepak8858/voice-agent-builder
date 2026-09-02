@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { createBrowserSupabaseClient } from '@/lib/supabase/client';
 import { useApi } from '@/lib/use-api';
-import { toast } from 'sonner';
 import { User, ClipboardList } from 'lucide-react';
 
 /**
@@ -43,6 +42,8 @@ export function SettingsPanel() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
+  const [meError, setMeError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -85,17 +86,18 @@ export function SettingsPanel() {
     call<MeResponse>('/auth/me')
       .then(setMe)
       .catch((err: unknown) =>
-        toast.error(err instanceof Error ? err.message : 'Your account details could not be loaded.'),
+        setMeError(err instanceof Error ? err.message : 'Your account details could not be loaded.'),
       );
   }, [call]);
 
   useEffect(() => {
     if (activeTab === 'audit' && currentWorkspaceId && canReadAuditLog) {
       setLoading(true);
+      setAuditError(null);
       call<{ items: AuditLog[] }>(`/workspaces/${currentWorkspaceId}/audit-logs`)
         .then((res) => setAuditLogs(res.items))
         .catch((err: unknown) =>
-          toast.error(err instanceof Error ? err.message : 'The audit log could not be loaded.'),
+          setAuditError(err instanceof Error ? err.message : 'The audit log could not be loaded.'),
         )
         .finally(() => setLoading(false));
     }
@@ -122,6 +124,7 @@ export function SettingsPanel() {
             <CardTitle>Account Information</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
+            {meError ? <p className="text-sm text-destructive">{meError}</p> : null}
             <div className="flex items-center justify-between py-2 border-b border-border">
               <span className="text-sm text-muted-foreground">User ID</span>
               <span className="text-sm font-mono text-foreground">{me?.id ?? '—'}</span>
@@ -175,6 +178,10 @@ export function SettingsPanel() {
       <TabsContent value="audit" className="mt-6">
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading audit logs…</p>
+        ) : auditError ? (
+          <Card className="py-12 text-center">
+            <CardDescription className="text-destructive">{auditError}</CardDescription>
+          </Card>
         ) : auditLogs.length === 0 ? (
           <Card className="py-12 text-center">
             <CardDescription className="text-muted-foreground">No audit logs found.</CardDescription>

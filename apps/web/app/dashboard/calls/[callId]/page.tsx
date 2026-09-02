@@ -145,13 +145,14 @@ export default async function CallDetailPage({ params }: PageProps) {
                 <CardDescription>Audio stored by the telephony provider for this call.</CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
-                {/* ph-no-capture: the audio is customer speech. */}
-                <audio controls preload="none" src={detail.recording_url} className="ph-no-capture w-full">
-                  <track kind="captions" />
-                </audio>
+                {/* ph-no-capture: the audio is customer speech. The transcript below is
+                    the caption track; there is no timed WebVTT for a provider recording. */}
+                <audio controls preload="none" src={detail.recording_url} className="ph-no-capture w-full" />
+                {/* The URL is provider-hosted, so `download` would be ignored cross-origin
+                    and the button would only appear to do nothing. */}
                 <Button asChild variant="outline" size="sm" className="w-fit gap-2">
-                  <a href={detail.recording_url} download>
-                    Download audio
+                  <a href={detail.recording_url} target="_blank" rel="noopener noreferrer">
+                    Open recording
                   </a>
                 </Button>
               </CardContent>

@@ -131,7 +131,10 @@ export default function CrmSettingsPage() {
     if (!workspaceId || !ruleKeyword.trim() || !ruleProvider) return;
     setSavingRule(true);
     try {
-      await call(`/workspaces/${workspaceId}/crm-routing/rules`, {
+      // The POST returns the created row, so the list is updated from it: a
+      // re-fetch that failed after a successful create would report "not saved"
+      // for a rule that exists, and the retry would create it twice.
+      const created = await call<RoutingRule>(`/workspaces/${workspaceId}/crm-routing/rules`, {
         method: 'POST',
         body: JSON.stringify({
           keyword: ruleKeyword.trim(),
@@ -140,8 +143,7 @@ export default function CrmSettingsPage() {
         }),
       });
       setRuleKeyword('');
-      const res = await call<{ items: RoutingRule[] }>(`/workspaces/${workspaceId}/crm-routing/rules`);
-      setRules(res.items ?? []);
+      setRules((prev) => [...prev, created]);
       toast.success('Routing rule added.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'The rule could not be saved.');

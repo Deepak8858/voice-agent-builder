@@ -43,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function renderToggle() {
@@ -99,6 +100,25 @@ describe('dark mode', () => {
     setSystemDark(true);
     renderToggle();
 
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+  });
+
+  // Private-mode Safari throws on every localStorage call. The choice cannot
+  // outlive the page there, but it must at least apply to the page it was made on.
+  it('still switches the current page when localStorage is unavailable', () => {
+    const denied = () => {
+      throw new DOMException('denied', 'SecurityError');
+    };
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(denied);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(denied);
+    setSystemDark(true);
+    renderToggle();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+
+    act(() => screen.getByRole('button').click());
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+
+    act(() => screen.getByRole('button').click());
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 });

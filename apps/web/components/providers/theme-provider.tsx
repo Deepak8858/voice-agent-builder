@@ -19,6 +19,9 @@ const DARK_QUERY = '(prefers-color-scheme: dark)';
  */
 const listeners = new Set<() => void>();
 
+/** The choice made on this page when `localStorage` is unavailable (private-mode Safari). */
+let volatilePreference: ThemePreference | null = null;
+
 function emit() {
   for (const listener of listeners) listener();
 }
@@ -37,8 +40,7 @@ function getPreference(): ThemePreference {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
     return stored === 'light' || stored === 'dark' ? stored : 'system';
   } catch {
-    // Private-mode Safari throws on localStorage access.
-    return 'system';
+    return volatilePreference ?? 'system';
   }
 }
 
@@ -76,8 +78,10 @@ export function useTheme() {
   const setPreference = useCallback((next: ThemePreference) => {
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, next);
+      volatilePreference = null;
     } catch {
-      // Nothing to persist to; the emit below still switches the current page.
+      // Nothing to persist to; the snapshot below still switches the current page.
+      volatilePreference = next;
     }
     emit();
   }, []);

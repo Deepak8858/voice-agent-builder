@@ -69,6 +69,7 @@ export default function CampaignsPage() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [hasNumber, setHasNumber] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [step, setStep] = useState<'list' | 'upload' | 'preview' | 'schedule' | 'compliance'>('list');
   const [formName, setFormName] = useState('');
   const [formAgent, setFormAgent] = useState('');
@@ -85,7 +86,7 @@ export default function CampaignsPage() {
       .then((me) => setWorkspaceId(me.active_workspace_id))
       .catch((err: unknown) => {
         setLoading(false);
-        toast.error(err instanceof Error ? err.message : 'Could not load your workspace.');
+        setLoadError(err instanceof Error ? err.message : 'Could not load your workspace.');
       });
   }, [call]);
 
@@ -108,7 +109,7 @@ export default function CampaignsPage() {
         );
       })
       .catch((err: unknown) =>
-        toast.error(err instanceof Error ? err.message : 'Campaigns could not be loaded.'),
+        setLoadError(err instanceof Error ? err.message : 'Campaigns could not be loaded.'),
       )
       .finally(() => setLoading(false));
   }, [workspaceId, call]);
@@ -253,7 +254,15 @@ export default function CampaignsPage() {
           </div>
         </PageHeader>
 
-        {!hasNumber ? (
+        {loadError ? (
+          // Not the empty state: an empty list here would read as "no campaigns"
+          // and the number gate below would read as "no number".
+          <EmptyState
+            icon={<AlertCircle className="h-7 w-7" />}
+            title="Campaigns could not be loaded"
+            description={loadError}
+          />
+        ) : !hasNumber ? (
           <EmptyState
             icon={<Phone className="h-7 w-7" />}
             title="Add a phone number first"

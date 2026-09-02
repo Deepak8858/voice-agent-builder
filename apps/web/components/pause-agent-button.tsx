@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useMutation } from '@tanstack/react-query';
+import { useIsMutating, useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import type { AgentDetail } from '@voiceforge/shared';
 import { Button } from '@/components/ui/button';
@@ -23,7 +23,14 @@ export function PauseAgentButton({ workspaceId, agentId }: PauseAgentButtonProps
   const router = useRouter();
   const { call } = useApi();
 
+  // The page renders this button twice (header and publish card). The key makes
+  // the pending state shared, so the second copy cannot post a duplicate pause,
+  // and a duplicate audit row, while the first is in flight.
+  const mutationKey = ['pause-agent', workspaceId, agentId];
+  const pending = useIsMutating({ mutationKey }) > 0;
+
   const pause = useMutation({
+    mutationKey,
     mutationFn: () =>
       call<AgentDetail>(`/workspaces/${workspaceId}/agents/${agentId}/pause`, {
         method: 'POST',
@@ -38,12 +45,14 @@ export function PauseAgentButton({ workspaceId, agentId }: PauseAgentButtonProps
   return (
     <Button
       variant="outline"
-      onClick={() => pause.mutate()}
-      disabled={pause.isPending}
+      onClick={() => {
+        if (!pending) pause.mutate();
+      }}
+      disabled={pending}
       className="gap-2"
     >
       <PauseCircle className="h-4 w-4" />
-      {pause.isPending ? 'Pausing...' : 'Pause'}
+      {pending ? 'Pausing...' : 'Pause'}
     </Button>
   );
 }
