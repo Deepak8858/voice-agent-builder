@@ -1131,8 +1131,9 @@ describe('BillingService', () => {
         callUsages: [
           { connectedAt, billableSeconds: 540 },
           { connectedAt, billableSeconds: 60 },
-          // Rang out: never connected, never billed, not a call the customer made.
-          { connectedAt: null, billableSeconds: 0 },
+          // Never connected: a minute boundary can increment a row before the
+          // connected event stamps it, so its seconds must not count either.
+          { connectedAt: null, billableSeconds: 60 },
         ],
         agentCount: 2,
         integrationToolCount: 3,

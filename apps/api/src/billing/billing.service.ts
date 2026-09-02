@@ -583,10 +583,13 @@ export class BillingService {
       this.prisma.integrationTool.count({ where: { workspaceId } }),
       this.getSubscription(ws.organizationId),
     ]);
-    // A call counts once it connected; billable seconds are already rounded up
-    // to the minute per call by the ledger, so the sum divides exactly.
-    const calls = rows.filter((row) => row.connectedAt !== null).length;
-    const minutes = Math.ceil(rows.reduce((sum, row) => sum + row.billableSeconds, 0) / 60);
+    // A call counts once it connected, and only its seconds count: a minute
+    // boundary can land on a row before the connected event stamps it, so the
+    // two figures come from the same rows. Billable seconds are already rounded
+    // up to the minute per call by the ledger, so the sum divides exactly.
+    const connected = rows.filter((row) => row.connectedAt !== null);
+    const calls = connected.length;
+    const minutes = Math.ceil(connected.reduce((sum, row) => sum + row.billableSeconds, 0) / 60);
 
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
     const limits = SHARED_PLAN_LIMITS[plan];
