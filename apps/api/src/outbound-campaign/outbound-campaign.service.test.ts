@@ -32,6 +32,9 @@ const mockQueue = {
 const mockAudit = {
   log: vi.fn(),
 };
+const mockCompliance = {
+  attestConsent: vi.fn(async () => ({ contacts: 1, consents_created: 1 })),
+};
 
 describe('OutboundCampaignService', () => {
   let service: OutboundCampaignService;
@@ -45,7 +48,12 @@ describe('OutboundCampaignService', () => {
     mockPrisma.telephonyPhoneNumber.findFirst.mockResolvedValue({ id: 'num-1' });
     // No calls placed yet unless a test says otherwise.
     mockPrisma.call.groupBy.mockResolvedValue([]);
-    service = new OutboundCampaignService(mockPrisma as any, mockQueue as any, mockAudit as any);
+    service = new OutboundCampaignService(
+      mockPrisma as any,
+      mockQueue as any,
+      mockAudit as any,
+      mockCompliance as any,
+    );
   });
 
   describe('list', () => {
@@ -121,6 +129,54 @@ describe('OutboundCampaignService', () => {
           contact_count: 1,
         },
       });
+    });
+
+    // 2026-09-02: a list of 100 numbers could not be consented one by one, so
+    // campaigns for agents that require consent failed per contact. The operator
+    // attests once; the records are written for the whole list before the
+    // campaign exists, and the block is kept on the row.
+    it('writes consent for every contact from one attestation and keeps the compliance block', async () => {
+      const contacts = [{ phone: '+15551234567', full_name: 'John Doe' }, { phone: '+15557654321' }];
+      const compliance = {
+        consent: { consent_type: 'outbound_transactional' as const, source_description: 'Signed order forms' },
+        call_window: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 },
+      };
+      mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
+
+      await service.create('ws-1', 'user-1', {
+        agent_id: 'agent-1',
+        purpose: 'order_confirmation',
+        name: 'Orders',
+        contacts,
+        compliance,
+      });
+
+      expect(mockCompliance.attestConsent).toHaveBeenCalledWith(
+        'ws-1',
+        'user-1',
+        contacts,
+        compliance.consent,
+        { campaign_name: 'Orders' },
+      );
+      expect(mockPrisma.outboundCampaign.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ compliance }),
+      });
+      expect(mockCompliance.attestConsent.mock.invocationCallOrder[0]).toBeLessThan(
+        mockPrisma.outboundCampaign.create.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('does not attest anything when the campaign carries no consent block', async () => {
+      mockPrisma.outboundCampaign.create.mockResolvedValue({ id: 'camp-1', status: 'draft' });
+
+      await service.create('ws-1', 'user-1', {
+        agent_id: 'agent-1',
+        purpose: 'appointment_reminder',
+        name: 'Recall',
+        contacts: [{ phone: '+15551234567' }],
+      });
+
+      expect(mockCompliance.attestConsent).not.toHaveBeenCalled();
     });
 
     it('applies custom schedule', async () => {
@@ -257,6 +313,30 @@ describe('OutboundCampaignService', () => {
 
     // F-021: restarting a paused campaign re-enqueued every contact, so everyone
     // already called got called again.
+    it('hands the campaign calling window to every dispatched call', async () => {
+      const campaign = {
+        id: 'camp-1',
+        agentId: 'agent-1',
+        workspaceId: 'ws-1',
+        purpose: 'order_confirmation',
+        contacts: [{ phone: '+15551111111' }],
+        schedule: { max_calls_per_hour: 10, max_concurrent: 3 },
+        compliance: { call_window: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 } },
+      };
+
+      await service.dispatchContact(campaign, 0, 'user-1', 0, 1);
+
+      expect(mockQueue.enqueue).toHaveBeenCalledWith(
+        'outbound_call',
+        'call',
+        expect.objectContaining({
+          to: '+15551111111',
+          callWindow: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 },
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('resumes a paused campaign at the dispatch cursor instead of replaying the list', async () => {
       mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
         id: 'camp-1',

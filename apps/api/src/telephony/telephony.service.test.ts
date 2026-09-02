@@ -553,6 +553,7 @@ describe('TelephonyService', () => {
         contact_id: null,
       })),
       attachCheckToCall: vi.fn(async () => undefined),
+      attestConsent: vi.fn(async () => ({ contacts: 1, consents_created: 1 })),
     };
     const service = new TelephonyService(
       prisma as never,
@@ -573,6 +574,34 @@ describe('TelephonyService', () => {
         metadata: { purpose: 'appointment_reminder' },
       }),
     ).rejects.toBeInstanceOf(ComplianceBlockedError);
+
+    // A single dial can carry the campaign-style attestation: it is recorded
+    // before the check runs and the dial's own window reaches the check.
+    await expect(
+      service.startOutboundCall('workspace-1', 'user-1', {
+        phone_number_id: 'number-1',
+        to_number: '+14155559876',
+        contact_name: 'Alice',
+        metadata: { purpose: 'appointment_reminder' },
+        compliance: {
+          consent: { consent_type: 'outbound_transactional', source_description: 'Asked on the phone' },
+          call_window: { timezone: 'UTC', start_hour: 8, end_hour: 20 },
+        },
+      }),
+    ).rejects.toBeInstanceOf(ComplianceBlockedError);
+    expect(compliance.attestConsent).toHaveBeenCalledWith(
+      'workspace-1',
+      'user-1',
+      [{ phone: '+14155559876', full_name: 'Alice' }],
+      { consent_type: 'outbound_transactional', source_description: 'Asked on the phone' },
+      { call_to: '+14155559876' },
+    );
+    expect(compliance.check).toHaveBeenLastCalledWith(
+      expect.objectContaining({ callWindow: { timezone: 'UTC', start_hour: 8, end_hour: 20 } }),
+    );
+    expect(compliance.attestConsent.mock.invocationCallOrder[0]).toBeLessThan(
+      compliance.check.mock.invocationCallOrder[compliance.check.mock.calls.length - 1],
+    );
 
     expect(compliance.check).toHaveBeenCalledWith(
       expect.objectContaining({

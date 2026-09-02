@@ -9,6 +9,7 @@ import {
   type ComplianceCheckResult,
   type ComplianceDirection,
   type ComplianceReason,
+  type ConsentAttestation,
   type ComplianceStatus,
   type ContactConsent,
   type ContactDetail,
@@ -37,6 +38,8 @@ interface CheckArgs {
   contactId?: string | null;
   callId?: string | null;
   purpose?: string | null;
+  /** A campaign's own calling window; overrides the agent spec's when given. */
+  callWindow?: { timezone: string; start_hour: number; end_hour: number } | null;
 }
 
 @Injectable()
@@ -183,6 +186,93 @@ export class ComplianceService {
   }
 
   // -- consent ----------------------------------------------------------
+
+  /**
+   * Records, in bulk, that the operator attests consent for a list of numbers.
+   *
+   * A campaign of a hundred contacts cannot be consented one number at a time,
+   * so the attestation is made once and this writes what the per-call check
+   * needs: a contact row per number and one live consent record of the given
+   * type per contact that lacks one. Idempotent: contacts already present are
+   * kept, contacts already covered get no second record. DNC and opt-out are
+   * not touched here; they still block each number on its own.
+   */
+  async attestConsent(
+    workspaceId: string,
+    actorUserId: string,
+    contacts: Array<{ phone: string; full_name?: string | null; email?: string | null }>,
+    attestation: ConsentAttestation,
+    context: Record<string, string> = {},
+  ): Promise<{ contacts: number; consents_created: number }> {
+    const organizationId = await this.prisma.organizationIdFor(workspaceId);
+    const byPhone = new Map<string, { full_name?: string | null; email?: string | null }>();
+    for (const contact of contacts) {
+      const phone = normalizePhone(contact.phone);
+      if (phone && !byPhone.has(phone)) byPhone.set(phone, contact);
+    }
+    const phones = [...byPhone.keys()];
+    if (phones.length === 0) return { contacts: 0, consents_created: 0 };
+
+    await this.prisma.contact.createMany({
+      data: phones.map((phone) => ({
+        workspaceId,
+        organizationId,
+        phone,
+        fullName: byPhone.get(phone)?.full_name ?? null,
+        email: byPhone.get(phone)?.email ?? null,
+      })),
+      skipDuplicates: true,
+    });
+    const rows = await this.prisma.contact.findMany({
+      where: { workspaceId, phone: { in: phones } },
+      select: { id: true },
+    });
+    const contactIds = rows.map((row) => row.id);
+    const covered = await this.prisma.consentRecord.findMany({
+      where: {
+        workspaceId,
+        contactId: { in: contactIds },
+        consentType: attestation.consent_type,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { contactId: true },
+    });
+    const coveredIds = new Set(covered.map((row) => row.contactId));
+    const missing = contactIds.filter((id) => !coveredIds.has(id));
+    if (missing.length > 0) {
+      await this.prisma.consentRecord.createMany({
+        data: missing.map((contactId) => ({
+          workspaceId,
+          organizationId,
+          contactId,
+          consentType: attestation.consent_type,
+          source: 'attested',
+          metadata: {
+            attested_by: actorUserId,
+            source_description: attestation.source_description,
+            ...context,
+          } as Prisma.InputJsonValue,
+        })),
+      });
+    }
+
+    await this.audit.log({
+      workspaceId,
+      actorUserId,
+      action: 'consent.attest',
+      resourceType: 'consent_attestation',
+      resourceId: context.campaign_name ?? workspaceId,
+      metadata: {
+        consent_type: attestation.consent_type,
+        source_description: attestation.source_description,
+        contacts: contactIds.length,
+        consents_created: missing.length,
+        ...context,
+      },
+    });
+    return { contacts: contactIds.length, consents_created: missing.length };
+  }
 
   async grantConsent(
     workspaceId: string,
@@ -471,8 +561,9 @@ export class ComplianceService {
         }
       }
 
-      // 7. Allowed call window (server clock, agent timezone).
-      const window = spec?.compliance?.allowed_call_window;
+      // 7. Allowed call window (server clock, agent timezone). A campaign's
+      // own window wins over the spec's: it is set for the list being dialed.
+      const window = args.callWindow ?? spec?.compliance?.allowed_call_window;
       if (window) {
         const hour = currentHourInTimezone(new Date(), window.timezone);
         if (hour !== null) {

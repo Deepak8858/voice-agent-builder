@@ -84,6 +84,16 @@ export default function CampaignsPage() {
   const [schedule, setSchedule] = useState({ max_calls_per_hour: 10, max_concurrent: 3 });
   const [consentChecked, setConsentChecked] = useState(false);
   const [dncChecked, setDncChecked] = useState(false);
+  const [consentType, setConsentType] = useState<'outbound_transactional' | 'outbound_marketing'>(
+    'outbound_transactional',
+  );
+  const [consentSource, setConsentSource] = useState('');
+  const [windowEnabled, setWindowEnabled] = useState(false);
+  const [callWindow, setCallWindow] = useState({
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    start_hour: 9,
+    end_hour: 20,
+  });
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
@@ -171,6 +181,12 @@ export default function CampaignsPage() {
           purpose: formPurpose,
           contacts,
           schedule,
+          // One attestation for the whole list; the API writes the consent
+          // record for every contact. The window applies to every dial.
+          compliance: {
+            consent: { consent_type: consentType, source_description: consentSource.trim() },
+            ...(windowEnabled ? { call_window: callWindow } : {}),
+          },
         }),
       });
       await call(`/workspaces/${workspaceId}/campaigns/${campaign.id}/start`, {
@@ -195,6 +211,16 @@ export default function CampaignsPage() {
       router.push('/dashboard/settings/phone-numbers');
       return;
     }
+    // A compliance refusal names its reasons; an opaque 422 sent people
+    // guessing between consent, DNC, purpose and calling hours.
+    if ((err as { code?: string })?.code === 'COMPLIANCE_BLOCKED') {
+      const reasons = (err as { details?: { reasons?: Array<{ message?: string }> } }).details
+        ?.reasons
+        ?.map((r) => r.message)
+        .filter(Boolean);
+      toast.error(reasons?.length ? reasons.join(' ') : 'Compliance blocked this campaign.');
+      return;
+    }
     toast.error(err instanceof Error ? err.message : 'The campaign action failed.');
   }
 
@@ -206,6 +232,8 @@ export default function CampaignsPage() {
     setSchedule({ max_calls_per_hour: 10, max_concurrent: 3 });
     setConsentChecked(false);
     setDncChecked(false);
+    setConsentSource('');
+    setWindowEnabled(false);
     if (fileRef.current) fileRef.current.value = '';
   }
 
@@ -634,8 +662,92 @@ export default function CampaignsPage() {
             </div>
           </FormSection>
 
-          <FormSection title="Compliance checklist">
+          <FormSection title="Compliance">
             <div className="flex flex-col gap-3">
+              <p className="text-sm text-muted-foreground">
+                Set once for all {contacts.length} contacts. Your attestation records consent for every
+                number in this list; numbers on your Do-Not-Call list or who opted out are still skipped
+                one by one.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="campaign-consent-type">Consent type</Label>
+                  <select
+                    id="campaign-consent-type"
+                    className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={consentType}
+                    onChange={(e) =>
+                      setConsentType(e.target.value as 'outbound_transactional' | 'outbound_marketing')
+                    }
+                  >
+                    <option value="outbound_transactional">Transactional (orders, appointments, follow-ups)</option>
+                    <option value="outbound_marketing">Marketing (offers, promotions)</option>
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="campaign-consent-source">How consent was obtained</Label>
+                  <Input
+                    id="campaign-consent-source"
+                    className="mt-1"
+                    value={consentSource}
+                    onChange={(e) => setConsentSource(e.target.value)}
+                    placeholder="Signed order forms, Aug 2026"
+                    maxLength={200}
+                    required
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={windowEnabled}
+                  onChange={(e) => setWindowEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-input"
+                />
+                Only call between certain hours
+              </label>
+              {windowEnabled && (
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <Label htmlFor="campaign-window-tz">Timezone</Label>
+                    <Input
+                      id="campaign-window-tz"
+                      className="mt-1"
+                      value={callWindow.timezone}
+                      onChange={(e) => setCallWindow((w) => ({ ...w, timezone: e.target.value }))}
+                      placeholder="Asia/Kolkata"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="campaign-window-start">From (hour)</Label>
+                    <Input
+                      id="campaign-window-start"
+                      className="mt-1"
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={callWindow.start_hour}
+                      onChange={(e) =>
+                        setCallWindow((w) => ({ ...w, start_hour: Math.min(23, Math.max(0, parseInt(e.target.value) || 0)) }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="campaign-window-end">Until (hour)</Label>
+                    <Input
+                      id="campaign-window-end"
+                      className="mt-1"
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={callWindow.end_hour}
+                      onChange={(e) =>
+                        setCallWindow((w) => ({ ...w, end_hour: Math.min(23, Math.max(0, parseInt(e.target.value) || 0)) }))
+                      }
+                    />
+                  </div>
+                </div>
+              )}
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
                   type="checkbox"
@@ -644,7 +756,7 @@ export default function CampaignsPage() {
                   className="h-4 w-4 rounded border-input"
                   required
                 />
-                I confirm that consent records exist for all contacts (e.g., prior opt-in, TCPA compliance).
+                I attest that every contact in this list gave the consent selected above.
               </label>
               <label className="flex items-center gap-2 text-sm cursor-pointer">
                 <input
@@ -663,7 +775,17 @@ export default function CampaignsPage() {
           </FormSection>
 
           <div className="flex gap-3">
-            <Button type="submit" disabled={creating || !formName || !formAgent || !consentChecked || !dncChecked}>
+            <Button
+              type="submit"
+              disabled={
+                creating ||
+                !formName ||
+                !formAgent ||
+                !consentChecked ||
+                !dncChecked ||
+                consentSource.trim().length < 3
+              }
+            >
               {creating ? 'Creating & Starting...' : `Launch Campaign (${contacts.length} contacts)`}
             </Button>
             <Button

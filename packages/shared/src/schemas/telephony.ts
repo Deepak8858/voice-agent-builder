@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { OutboundComplianceSchema } from './compliance';
 
 const E164PhoneSchema = z
   .string()
@@ -133,6 +134,8 @@ export const StartTelephonyOutboundCallDtoSchema = z
     to_number: E164PhoneSchema,
     contact_name: z.string().max(120).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    /** Consent attestation / call window for this one dial; see OutboundComplianceSchema. */
+    compliance: OutboundComplianceSchema.optional(),
   })
   .strict();
 export type StartTelephonyOutboundCallDto = z.infer<typeof StartTelephonyOutboundCallDtoSchema>;

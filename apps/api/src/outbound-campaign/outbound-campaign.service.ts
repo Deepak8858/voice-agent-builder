@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { OutboundCampaignScheduleSchema } from '@voiceforge/shared';
+import { CallWindowSchema, OutboundCampaignScheduleSchema } from '@voiceforge/shared';
+import type { CallWindow, OutboundCompliance } from '@voiceforge/shared';
+import { ComplianceService } from '../compliance/compliance.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueService } from '../queue/queue.service';
 import { AgentNotFoundError, AppError } from '../common/errors';
@@ -65,6 +67,8 @@ export interface DispatchableCampaign {
   purpose: string;
   contacts: Prisma.JsonValue;
   schedule: Prisma.JsonValue;
+  /** OutboundComplianceSchema as stored; null for campaigns created before it existed. */
+  compliance?: Prisma.JsonValue | null;
 }
 
 @Injectable()
@@ -75,6 +79,7 @@ export class OutboundCampaignService {
     private readonly prisma: PrismaService,
     private readonly queue: QueueService,
     private readonly audit: AuditService,
+    private readonly compliance: ComplianceService,
   ) {}
 
   async list(workspaceId: string) {
@@ -104,6 +109,7 @@ export class OutboundCampaignService {
       contacts: CampaignContact[];
       schedule?: Record<string, unknown>;
       purpose: string;
+      compliance?: OutboundCompliance;
     },
   ) {
     const agent = await this.prisma.agent.findFirst({
@@ -114,6 +120,16 @@ export class OutboundCampaignService {
     this.assertAgentPublished(agent.status, 'creating');
     await this.assertPhoneNumberAvailable(workspaceId, dto.agent_id, 'create');
 
+    // One attestation covers the whole list: the consent records the per-call
+    // check looks for are written here, before the campaign exists, so a
+    // failure is a create error the operator sees rather than a hundred
+    // per-contact "missing consent" failures later.
+    if (dto.compliance?.consent) {
+      await this.compliance.attestConsent(workspaceId, actorUserId, dto.contacts, dto.compliance.consent, {
+        campaign_name: dto.name,
+      });
+    }
+
     const campaign = await this.prisma.outboundCampaign.create({
       data: {
         workspaceId,
@@ -122,6 +138,7 @@ export class OutboundCampaignService {
         purpose: dto.purpose,
         contacts: dto.contacts as unknown as Prisma.InputJsonValue,
         schedule: (dto.schedule ?? { max_calls_per_hour: 10, max_concurrent: 3 }) as Prisma.InputJsonValue,
+        ...(dto.compliance ? { compliance: dto.compliance as Prisma.InputJsonValue } : {}),
         status: 'draft',
       },
     });
@@ -138,6 +155,13 @@ export class OutboundCampaignService {
       },
     });
     return campaign;
+  }
+
+  /** The campaign's own calling window, if the operator set one. */
+  private readCallWindow(compliance: Prisma.JsonValue | null | undefined): CallWindow | undefined {
+    if (!compliance || typeof compliance !== 'object' || Array.isArray(compliance)) return undefined;
+    const parsed = CallWindowSchema.safeParse((compliance as { call_window?: unknown }).call_window);
+    return parsed.success ? parsed.data : undefined;
   }
 
   /**
@@ -275,6 +299,7 @@ export class OutboundCampaignService {
   ): Promise<boolean> {
     const contact = this.readContacts(campaign.contacts)[contactIndex];
     if (!contact) return false;
+    const callWindow = this.readCallWindow(campaign.compliance);
 
     await this.queue.enqueue(
       OUTBOUND_CAMPAIGN_QUEUE,
@@ -284,6 +309,7 @@ export class OutboundCampaignService {
         agentId: campaign.agentId,
         workspaceId: campaign.workspaceId,
         purpose: campaign.purpose,
+        ...(callWindow ? { callWindow } : {}),
         actorUserId,
         to: contact.phone,
         contactName: contact.full_name,

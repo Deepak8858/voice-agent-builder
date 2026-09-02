@@ -356,3 +356,111 @@ describe('ComplianceService.processTranscriptOptOut', () => {
     expect(state.dnc.size).toBe(0);
   });
 });
+
+/**
+ * 2026-09-02: consent could only be proven by a record per number, which nobody
+ * creates for a hundred-contact list, so campaigns for agents that require
+ * consent failed on every contact. One attestation now writes the records the
+ * per-call check looks for.
+ */
+describe('ComplianceService.attestConsent', () => {
+  function makeAttestPrisma(existing: { contacts: Array<{ id: string; phone: string }>; covered: string[] }) {
+    return {
+      organizationIdFor: vi.fn(async () => 'org-1'),
+      contact: {
+        createMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => existing.contacts.map((c) => ({ id: c.id }))),
+      },
+      consentRecord: {
+        findMany: vi.fn(async () => existing.covered.map((contactId) => ({ contactId }))),
+        createMany: vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length })),
+      },
+    };
+  }
+
+  it('creates missing contacts and one consent record per contact not already covered', async () => {
+    const prisma = makeAttestPrisma({
+      contacts: [
+        { id: 'c1', phone: '+917607185834' },
+        { id: 'c2', phone: '+919454348234' },
+      ],
+      covered: ['c1'],
+    });
+    const svc = new ComplianceService(prisma as never, audit as never);
+
+    const result = await svc.attestConsent(
+      'ws-1',
+      'user-1',
+      [
+        { phone: '+917607185834', full_name: 'Deepak' },
+        // A duplicate and a locally written number normalise to the same E.164 row.
+        { phone: '+919454348234' },
+        { phone: '+91 94543 48234' },
+      ],
+      { consent_type: 'outbound_transactional', source_description: 'Signed order forms' },
+      { campaign_name: 'Orders' },
+    );
+
+    expect(result).toEqual({ contacts: 2, consents_created: 1 });
+    expect(prisma.contact.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ workspaceId: 'ws-1', phone: '+917607185834', fullName: 'Deepak' }),
+        expect.objectContaining({ workspaceId: 'ws-1', phone: '+919454348234', fullName: null }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(prisma.consentRecord.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          workspaceId: 'ws-1',
+          contactId: 'c2',
+          consentType: 'outbound_transactional',
+          source: 'attested',
+          metadata: {
+            attested_by: 'user-1',
+            source_description: 'Signed order forms',
+            campaign_name: 'Orders',
+          },
+        }),
+      ],
+    });
+  });
+
+  it('writes nothing for a list with no dialable number', async () => {
+    const prisma = makeAttestPrisma({ contacts: [], covered: [] });
+    const svc = new ComplianceService(prisma as never, audit as never);
+
+    await expect(
+      svc.attestConsent('ws-1', 'user-1', [{ phone: 'not a number' }], {
+        consent_type: 'outbound_marketing',
+        source_description: 'Web form',
+      }),
+    ).resolves.toEqual({ contacts: 0, consents_created: 0 });
+    expect(prisma.contact.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('ComplianceService.check call window override', () => {
+  it("applies the campaign's own window instead of the spec's", async () => {
+    const phone = '+917607185834';
+    const state = defaultState();
+    state.contactByPhone.set(phone, { id: 'c9', optOut: false });
+    state.contactById.set('c9', { id: 'c9', optOut: false });
+    state.consentByContact.set('c9', [
+      { consentType: 'outbound_transactional', revokedAt: null, expiresAt: null },
+    ]);
+    const svc = makeService(state);
+
+    const result = await svc.check({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      direction: 'outbound',
+      toNumber: phone,
+      purpose: 'order_confirmation',
+      // 99 is unreachable so the override always fails closed.
+      callWindow: { timezone: 'UTC', start_hour: 99, end_hour: 99 },
+    });
+
+    expect(result.reasons.map((r) => r.code)).toContain('outside_call_window');
+  });
+});

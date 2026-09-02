@@ -1349,6 +1349,8 @@ model OutboundCampaign {
   purpose     String   @default("requested_follow_up")
   contacts    Json     @default("[]")
   schedule    Json     @default("{\"max_calls_per_hour\": 10, \"max_concurrent\": 3}")
+  /// OutboundComplianceSchema: the operator's consent attestation and call window.
+  compliance  Json?
   status      String   @default("draft") // draft | running | paused | completed | failed
   // Index of the next contact to dial. The dispatcher enqueues one contact at a
   // time and advances this, so restarting a paused campaign resumes here instead

@@ -22,6 +22,10 @@ export const ConsentSourceSchema = z.enum([
   'verbal',
   'api',
   'other',
+  // The operator attested, once for a whole campaign or a single dial, that
+  // consent exists; the record's metadata carries who said so and how it was
+  // obtained.
+  'attested',
 ]);
 export type ConsentSource = z.infer<typeof ConsentSourceSchema>;
 
@@ -198,3 +202,40 @@ export const BLOCKED_OUTBOUND_PURPOSES = [
   'legal_advice',
 ] as const;
 export type BlockedOutboundPurpose = (typeof BLOCKED_OUTBOUND_PURPOSES)[number];
+
+/**
+ * Compliance the operator sets on a campaign or an ad-hoc dial.
+ *
+ * Consent used to be provable only by a consent record per number, which
+ * nobody creates for a 100-contact list. The attestation is made once and the
+ * platform writes the records for every contact; DNC and opt-out still block
+ * each number on its own. The call window overrides the agent spec's for this
+ * campaign only.
+ */
+export const OutboundConsentTypeSchema = z.enum(['outbound_marketing', 'outbound_transactional']);
+
+export const ConsentAttestationSchema = z
+  .object({
+    consent_type: OutboundConsentTypeSchema,
+    /** How consent was obtained, in the operator's words ("signed order forms, Aug 2026"). */
+    source_description: z.string().trim().min(3).max(200),
+  })
+  .strict();
+export type ConsentAttestation = z.infer<typeof ConsentAttestationSchema>;
+
+export const CallWindowSchema = z
+  .object({
+    timezone: z.string().trim().min(1).max(64),
+    start_hour: z.number().int().min(0).max(23),
+    end_hour: z.number().int().min(0).max(23),
+  })
+  .strict();
+export type CallWindow = z.infer<typeof CallWindowSchema>;
+
+export const OutboundComplianceSchema = z
+  .object({
+    consent: ConsentAttestationSchema.optional(),
+    call_window: CallWindowSchema.optional(),
+  })
+  .strict();
+export type OutboundCompliance = z.infer<typeof OutboundComplianceSchema>;
