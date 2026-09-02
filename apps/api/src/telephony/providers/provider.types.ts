@@ -4,6 +4,8 @@ export interface ProviderValidationResult {
   valid: boolean;
   providerAccountId?: string | null;
   message?: string;
+  /** Twilio: `Trial` accounts can only call verified caller IDs. */
+  accountType?: string | null;
 }
 
 export interface ProviderPhoneNumber {

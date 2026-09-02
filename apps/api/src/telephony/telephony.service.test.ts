@@ -31,7 +31,12 @@ function makeAdmission() {
  * updating the attribute once the participant is gone, which is exactly the
  * shape that used to be filed as a plain `completed`.
  */
-function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null) {
+function makeLiveKitTerminalPrisma(
+  status: string,
+  outcome: string | null = null,
+  /** The ledger row's connected_at; `'none'` = no usage row at all (legacy call). */
+  connectedAt: Date | null | 'none' = 'none',
+) {
   return {
     telephonyPhoneNumber: {
       findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
@@ -42,6 +47,9 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
         ...data,
       })),
     },
+    callUsage: {
+      findUnique: vi.fn(async () => (connectedAt === 'none' ? null : { connectedAt })),
+    },
     call: {
       findFirst: vi.fn(async () => ({
         id: 'call-1',
@@ -51,6 +59,7 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
         outcome,
         startedAt: new Date('2026-09-02T10:00:00.000Z'),
         endedAt: null,
+        metadata: { purpose: 'order_confirmation' },
       })),
       update: vi.fn(
         async ({ data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => ({
@@ -71,6 +80,7 @@ function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null
 function makeLiveKitTerminalService(
   prisma: ReturnType<typeof makeLiveKitTerminalPrisma>,
   disconnectReason: string,
+  event: Record<string, unknown> = {},
 ) {
   const livekit = {
     verifyWebhook: vi.fn(async () => ({
@@ -82,6 +92,7 @@ function makeLiveKitTerminalService(
         metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
         disconnectReason,
       },
+      ...event,
     })),
   };
   return new TelephonyService(
@@ -1473,7 +1484,11 @@ describe('TelephonyService', () => {
   });
 
   it('still records a call that had connected as completed', async () => {
-    const prisma = makeLiveKitTerminalPrisma('in_progress');
+    const prisma = makeLiveKitTerminalPrisma(
+      'in_progress',
+      null,
+      new Date('2026-09-02T10:00:05.000Z'),
+    );
     const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED');
 
     await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
@@ -1481,6 +1496,79 @@ describe('TelephonyService', () => {
     const data = prisma.call.update.mock.calls[0][0].data as Record<string, unknown>;
     expect(data.status).toBe('completed');
     expect(data.outcome).toBeUndefined();
+  });
+
+  /**
+   * Prod 2026-09-02, call 37750155: the Twilio trial account refused the dial,
+   * but the agent had already joined the room, which moved the call to
+   * `in_progress`; when the room closed it was filed as `completed` with no
+   * outcome. Whether anyone was ever on the line is the ledger's connected_at.
+   */
+  it('files a call that never connected as failed even after the agent joined the room', async () => {
+    const prisma = makeLiveKitTerminalPrisma('in_progress', null, null);
+    const service = makeLiveKitTerminalService(prisma, '', {
+      event: 'room_finished',
+      participant: undefined,
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-9"}', 'Bearer token');
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'failed', outcome: 'no_answer' }),
+      }),
+    );
+  });
+
+  it('keeps the carrier leg disconnect reason on the call for the call detail page', async () => {
+    const prisma = makeLiveKitTerminalPrisma('ringing', null, null);
+    const service = makeLiveKitTerminalService(prisma, 'USER_REJECTED', {
+      participant: {
+        sid: 'PA_123',
+        metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
+        disconnectReason: 'USER_REJECTED',
+        attributes: { 'sip.callID': 'SCL_1', 'sip.callStatus': 'dialing' },
+      },
+    });
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token');
+
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'failed',
+          outcome: 'declined',
+          metadata: {
+            purpose: 'order_confirmation',
+            sip_disconnect_reason: 'USER_REJECTED',
+            sip_last_status: 'dialing',
+          },
+        }),
+      }),
+    );
+  });
+
+  /**
+   * Prod, three days to 2026-09-02: 277 livekit.* call_events for 93 distinct
+   * LiveKit event ids. The unique (provider, event_id) index refused the
+   * copies, the refusal was swallowed, and processing ran on every copy.
+   */
+  it('does not act on a LiveKit event it has already recorded', async () => {
+    const prisma = makeLiveKitTerminalPrisma('ringing', null, null);
+    prisma.telephonyWebhookEvent.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+    const service = makeLiveKitTerminalService(prisma, 'USER_UNAVAILABLE');
+
+    await expect(service.handleLiveKitWebhook('{"id":"lk-event-2"}', 'Bearer token')).resolves.toEqual(
+      { processed: false, event: 'participant_left', duplicate: true },
+    );
+
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).not.toHaveBeenCalled();
   });
 
   it('awaits the asynchronous LiveKit webhook verification before reading the event', async () => {

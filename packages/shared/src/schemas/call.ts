@@ -105,6 +105,13 @@ export type CallEvaluation = z.infer<typeof CallEvaluationSchema>;
 export const CallDetailSchema = CallSummarySchema.extend({
   transcript_text: z.string().nullable(),
   recording_url: z.string().nullable(),
+  /**
+   * Why the carrier leg ended, as LiveKit reported it (USER_REJECTED, ...),
+   * for a call that never connected. An unanswered dial that was in fact
+   * refused by the carrier (a Twilio trial calling an unverified number) is
+   * otherwise indistinguishable from a phone nobody picked up.
+   */
+  carrier_reason: z.string().nullable().optional(),
   turns: z.array(CallTurnSchema),
   agent_name: z.string().nullable(),
   evaluation: CallEvaluationSchema.nullable(),

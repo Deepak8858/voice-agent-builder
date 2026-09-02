@@ -699,10 +699,18 @@ export class CallsService {
 
     const evaluation = await this.evaluations.getForCall(workspaceId, call.id);
 
+    const callMetadata =
+      call.metadata && typeof call.metadata === 'object' && !Array.isArray(call.metadata)
+        ? (call.metadata as Record<string, unknown>)
+        : {};
     return {
       ...this.toSummary(call),
       transcript_text: call.transcriptText,
       recording_url: call.recordingUrl,
+      carrier_reason:
+        typeof callMetadata.sip_disconnect_reason === 'string'
+          ? callMetadata.sip_disconnect_reason
+          : null,
       turns,
       agent_name: call.agent?.name ?? null,
       evaluation,

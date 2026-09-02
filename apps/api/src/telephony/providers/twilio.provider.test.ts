@@ -23,6 +23,21 @@ describe('TwilioProviderAdapter', () => {
     expect(twiml).toContain('<Hangup/>');
   });
 
+  // 2026-09-02: every dial from a trial account to an unverified number was
+  // refused before it rang and the dashboard could only say "no answer".
+  it('reports the Twilio account type so a trial account can be flagged', async () => {
+    const adapter = new TwilioProviderAdapter({
+      fetch: async () =>
+        new Response(JSON.stringify({ sid: 'AC123', type: 'Trial', status: 'active' }), {
+          status: 200,
+        }),
+    });
+
+    await expect(
+      adapter.validateCredentials({ provider: 'twilio', accountSid: 'AC123', authToken: 'tok' }),
+    ).resolves.toEqual({ valid: true, providerAccountId: 'AC123', accountType: 'Trial' });
+  });
+
   it('updates Twilio number routing with voice, fallback, and status webhooks', async () => {
     let requestBody = '';
     const adapter = new TwilioProviderAdapter({

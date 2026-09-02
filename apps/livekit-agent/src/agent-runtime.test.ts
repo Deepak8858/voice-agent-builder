@@ -205,6 +205,19 @@ describe('LiveKit handoff instructions', () => {
     expect(instructions).toContain('caller_requests_human');
   });
 
+  // 2026-09-02: asked "what is your number?", the agent had nothing to read out
+  // because the handoff target never reached its instructions.
+  it('gives the model the handoff number to read out when the caller asks for it', () => {
+    for (const direction of ['inbound', 'browser_test'] as const) {
+      const instructions = buildVoiceForgeInstructions(handoffSpec, {
+        agentId: 'agent-1',
+        direction,
+        pipeline: 'realtime',
+      });
+      expect(instructions).toContain('give them 8858901717, reading it slowly, digit by digit');
+    }
+  });
+
   it('offers a message instead when there is nobody to dial or no line to dial on', () => {
     const noTarget = buildVoiceForgeInstructions(
       { ...handoffSpec, handoff: { enabled: true, conditions: [] } },

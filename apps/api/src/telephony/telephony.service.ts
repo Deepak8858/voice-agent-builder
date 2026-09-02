@@ -183,6 +183,7 @@ export class TelephonyService {
         ) as unknown as Prisma.InputJsonValue,
         status: 'connected',
         lastVerifiedAt: new Date(),
+        ...(validation.accountType ? { metadata: { account_type: validation.accountType } } : {}),
       },
     });
 
@@ -220,7 +221,11 @@ export class TelephonyService {
 
     await this.prisma.telephonyProviderConnection.update({
       where: { id: connection.id },
-      data: { lastSyncAt: new Date(), status: 'connected' },
+      data: {
+        lastSyncAt: new Date(),
+        status: 'connected',
+        ...(await this.accountTypeMetadata(connection)),
+      },
     });
     await this.audit.log({
       workspaceId,
@@ -1559,7 +1564,7 @@ export class TelephonyService {
     const eventType = String(parsed.event ?? parsed.type ?? 'livekit.unknown');
     const eventId = String(parsed.id ?? `${eventType}:${parsed.createdAt ?? Date.now()}`);
     const context = await this.liveKitWebhookContext(parsed);
-    await this.recordWebhookEvent(
+    const recorded = await this.recordWebhookEvent(
       'livekit',
       eventId,
       eventType,
@@ -1568,6 +1573,12 @@ export class TelephonyService {
       true,
       context.call?.id ?? null,
     );
+    // LiveKit redelivers every event about three times. The unique
+    // (provider, event_id) index already refuses the copies; acting on them
+    // anyway tripled call_events and raced the status writes.
+    if (recorded === 'duplicate') {
+      return { processed: false, event: eventType, duplicate: true };
+    }
     if (context.call) {
       await this.updateCallFromLiveKitWebhook(
         context.call,
@@ -1863,8 +1874,8 @@ export class TelephonyService {
     payload: Record<string, unknown>,
     signatureValid: boolean,
     callId: string | null = null,
-  ) {
-    if (!eventId) return null;
+  ): Promise<'recorded' | 'duplicate' | 'skipped'> {
+    if (!eventId) return 'skipped';
     const phoneNumber = phoneNumberId
       ? await this.prisma.telephonyPhoneNumber.findUnique({
           where: { id: phoneNumberId },
@@ -1872,7 +1883,7 @@ export class TelephonyService {
         })
       : null;
     try {
-      return await this.prisma.telephonyWebhookEvent.create({
+      await this.prisma.telephonyWebhookEvent.create({
         data: {
           provider,
           eventId,
@@ -1886,8 +1897,11 @@ export class TelephonyService {
           processedAt: new Date(),
         },
       });
-    } catch {
-      return null;
+      return 'recorded';
+    } catch (err) {
+      // Recording is bookkeeping; a failure to write it must not drop the
+      // event. Only a duplicate is a signal the caller acts on.
+      return isUniqueConstraintViolation(err) ? 'duplicate' : 'skipped';
     }
   }
 
@@ -1909,6 +1923,36 @@ export class TelephonyService {
   }
 
   /** The numbers (or, for a DID-less Vobiz account, trunks) this connection's own credentials can see. */
+  /**
+   * Re-reads the provider account type on sync so connections made before the
+   * flag existed pick it up. A Twilio trial account can only call numbers
+   * verified in the Twilio console; every other dial is refused before it
+   * rings, and nothing in the call itself says why.
+   */
+  private async accountTypeMetadata(connection: {
+    provider: string;
+    encryptedCredentials: unknown;
+    metadata: Prisma.JsonValue | null;
+  }): Promise<{ metadata?: Prisma.InputJsonValue }> {
+    try {
+      const credentials = this.encryption.decryptJson<ProviderCredentials>(
+        connection.encryptedCredentials,
+      );
+      const validation = await this.registry
+        .adapterFor(connection.provider as never)
+        .validateCredentials(credentials);
+      if (!validation.valid || !validation.accountType) return {};
+      return {
+        metadata: {
+          ...this.objectMetadata(connection.metadata),
+          account_type: validation.accountType,
+        } as Prisma.InputJsonValue,
+      };
+    } catch {
+      return {};
+    }
+  }
+
   private async providerInventory(connection: {
     provider: string;
     encryptedCredentials: unknown;
@@ -1998,11 +2042,14 @@ export class TelephonyService {
     lastVerifiedAt: Date | null;
     lastSyncAt: Date | null;
     createdAt: Date;
+    metadata?: Prisma.JsonValue | null;
   }) {
     return {
       id: connection.id,
       provider: connection.provider,
       display_name: connection.displayName,
+      /** Twilio reports `Trial` or `Full`; other providers have no equivalent. */
+      account_type: stringValue(this.objectMetadata(connection.metadata).account_type),
       provider_account_id: this.encryption.mask(connection.providerAccountId),
       status: connection.status,
       last_verified_at: connection.lastVerifiedAt?.toISOString() ?? null,
@@ -2229,6 +2276,7 @@ export class TelephonyService {
       outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
+      metadata: Prisma.JsonValue | null;
     } | null;
     phoneNumberId: string | null;
     participantId: string | null;
@@ -2260,6 +2308,7 @@ export class TelephonyService {
               outcome: true,
               startedAt: true,
               endedAt: true,
+              metadata: true,
             },
           })
         : null;
@@ -2276,13 +2325,38 @@ export class TelephonyService {
       outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
+      metadata: Prisma.JsonValue | null;
     },
     eventType: string,
     payload: Record<string, unknown>,
     participantId: string | null,
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
-    const unanswered = normalizedStatus.terminal ? this.unansweredOutcome(call, payload) : null;
+    // Whether anyone was ever on the line is the ledger's `connected_at`, which
+    // the runtime stamps when the far end answers. The status column is not
+    // that truth: the agent joining the room moved a still-dialing call to
+    // `in_progress`, and a dial the carrier refused was then filed as
+    // `completed` when the room closed.
+    const usage = normalizedStatus.terminal
+      ? await this.prisma.callUsage.findUnique({
+          where: { callId: call.id },
+          select: { connectedAt: true },
+        })
+      : null;
+    const neverConnected = usage !== null && usage.connectedAt === null;
+    const unanswered = normalizedStatus.terminal
+      ? this.unansweredOutcome(call, payload, neverConnected)
+      : null;
+    // The SIP leg's disconnect reason is the only carrier signal LiveKit gives
+    // us; keep it on the call so "no answer" can be told apart from "refused".
+    const sipLeg = this.sipLegDisconnect(payload);
+    const metadata = sipLeg
+      ? ({
+          ...this.objectMetadata(call.metadata),
+          sip_disconnect_reason: sipLeg.reason,
+          ...(sipLeg.status ? { sip_last_status: sipLeg.status } : {}),
+        } as Prisma.InputJsonValue)
+      : null;
     // Terminal events arrive more than once (participant_left, then
     // room_finished, plus LiveKit's own redelivery). A call already settled as
     // failed must not be promoted to completed by the second one, or the
@@ -2300,6 +2374,7 @@ export class TelephonyService {
           data: {
             status: unanswered ? 'failed' : normalizedStatus.status,
             ...(unanswered ? { outcome: unanswered } : {}),
+            ...(metadata ? { metadata } : {}),
             ...(participantId ? { livekitParticipantId: participantId } : {}),
             ...(endedAt ? { endedAt } : {}),
             ...(endedAt && call.startedAt
@@ -2317,6 +2392,9 @@ export class TelephonyService {
           throw err;
         }
       }
+    } else if (metadata) {
+      // The call is already settled; the carrier reason is still worth keeping.
+      await this.prisma.call.update({ where: { id: call.id }, data: { metadata } });
     }
     await this.prisma.callEvent.create({
       data: {
@@ -2327,6 +2405,18 @@ export class TelephonyService {
         payload: payload as Prisma.InputJsonValue,
       },
     });
+  }
+
+  /** The disconnect reason of a SIP leg's `participant_left`, or null for any other event. */
+  private sipLegDisconnect(
+    payload: Record<string, unknown>,
+  ): { reason: string; status: string | null } | null {
+    const participant = this.objectMetadata(payload.participant);
+    const attributes = this.objectMetadata(participant.attributes);
+    if (!('sip.callID' in attributes)) return null;
+    const reason = stringValue(participant.disconnectReason);
+    if (!reason) return null;
+    return { reason, status: stringValue(attributes['sip.callStatus']) };
   }
 
   /**
@@ -2343,9 +2433,10 @@ export class TelephonyService {
   private unansweredOutcome(
     call: { status: string; outcome: string | null },
     payload: Record<string, unknown>,
+    neverConnected: boolean,
   ): string | null {
     if (call.outcome) return null;
-    if (call.status !== 'queued' && call.status !== 'ringing') return null;
+    if (!neverConnected && call.status !== 'queued' && call.status !== 'ringing') return null;
     const participant = this.objectMetadata(payload.participant);
     const reason = stringValue(participant.disconnectReason)?.toUpperCase() ?? '';
     if (reason === 'USER_REJECTED') return 'declined';
@@ -2365,7 +2456,14 @@ export class TelephonyService {
     const participant = this.objectMetadata(payload.participant);
     const attributes = this.objectMetadata(participant.attributes);
     const sipStatus = stringValue(attributes['sip.callStatus'])?.toLowerCase();
-    const rawStatus = sipStatus ?? eventType.toLowerCase();
+    const event = eventType.toLowerCase();
+    // A leg that has left is gone whatever its last attribute said. LiveKit
+    // stops updating `sip.callStatus` once the participant disconnects, so a
+    // refused dial leaves as `participant_left` still marked `dialing`; letting
+    // the attribute win filed that as a non-terminal `queued` and the carrier's
+    // disconnect reason was never read.
+    const rawStatus =
+      event === 'participant_left' || event === 'room_finished' ? event : (sipStatus ?? event);
     const map: Record<string, { status: string; terminal: boolean }> = {
       dialing: { status: 'queued', terminal: false },
       ringing: { status: 'ringing', terminal: false },

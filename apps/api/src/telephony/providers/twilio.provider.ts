@@ -48,8 +48,12 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     if (!response.ok) {
       return { valid: false, message: `Twilio credentials failed with HTTP ${response.status}` };
     }
-    const data = (await response.json().catch(() => ({}))) as { sid?: string };
-    return { valid: true, providerAccountId: data.sid ?? twilioCredentials.accountSid };
+    const data = (await response.json().catch(() => ({}))) as { sid?: string; type?: string };
+    return {
+      valid: true,
+      providerAccountId: data.sid ?? twilioCredentials.accountSid,
+      accountType: data.type ?? null,
+    };
   }
 
   async listPhoneNumbers(credentials: ProviderCredentials): Promise<ProviderPhoneNumber[]> {
