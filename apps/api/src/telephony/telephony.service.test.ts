@@ -31,7 +31,7 @@ function makeAdmission() {
  * updating the attribute once the participant is gone, which is exactly the
  * shape that used to be filed as a plain `completed`.
  */
-function makeLiveKitTerminalPrisma(status: string) {
+function makeLiveKitTerminalPrisma(status: string, outcome: string | null = null) {
   return {
     telephonyPhoneNumber: {
       findUnique: vi.fn(async () => ({ id: 'number-1', workspaceId: 'workspace-1' })),
@@ -48,7 +48,7 @@ function makeLiveKitTerminalPrisma(status: string) {
         workspaceId: 'workspace-1',
         organizationId: 'org-1',
         status,
-        outcome: null,
+        outcome,
         startedAt: new Date('2026-09-02T10:00:00.000Z'),
         endedAt: null,
       })),
@@ -1406,6 +1406,8 @@ describe('TelephonyService', () => {
   it.each([
     ['USER_UNAVAILABLE', 'no_answer'],
     ['USER_REJECTED', 'declined'],
+    // A trunk failure is the carrier failing the dial, not a callee ignoring it.
+    ['SIP_TRUNK_FAILURE', 'provider_dispatch_failed'],
   ])('records a call that ended while still %s as failed / %s', async (reason, outcome) => {
     const prisma = makeLiveKitTerminalPrisma('ringing');
     const service = makeLiveKitTerminalService(prisma, reason);
@@ -1418,6 +1420,23 @@ describe('TelephonyService', () => {
         data: expect.objectContaining({ status: 'failed', outcome }),
       }),
     );
+  });
+
+  /**
+   * LiveKit sends participant_left and room_finished for the same hang-up, and
+   * redelivers on a failed ack. The second one used to overwrite the failure with
+   * `completed`, leaving a call that is failed by outcome and successful by
+   * status - which campaign statistics then counted as a success.
+   */
+  it('leaves an already failed call failed when a second terminal event arrives', async () => {
+    const prisma = makeLiveKitTerminalPrisma('failed', 'no_answer');
+    const service = makeLiveKitTerminalService(prisma, 'USER_UNAVAILABLE');
+
+    await service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token');
+
+    const data = prisma.call.update.mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.status).toBe('failed');
+    expect(data.outcome).toBeUndefined();
   });
 
   it('still records a call that had connected as completed', async () => {

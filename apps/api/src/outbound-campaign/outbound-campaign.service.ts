@@ -17,6 +17,16 @@ export interface CampaignContact {
 export const HOUR_MS = 60 * 60 * 1000;
 
 /** Call statuses that mean the call has not finished yet. */
+/**
+ * Attempt keys of contacts that failed before any call row existed. One entry
+ * per contact, so a retried job cannot count the same contact twice.
+ */
+function readDispatchFailures(stats: Record<string, unknown>): string[] {
+  const raw = stats.dispatch_failures;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is string => typeof value === 'string');
+}
+
 export const LIVE_CALL_STATUSES = ['queued', 'ringing', 'in_progress'];
 
 /** Progress of a campaign, derived per read from its calls. */
@@ -383,7 +393,7 @@ export class OutboundCampaignService {
   ): Promise<CampaignStats> {
     const stats = (persisted ?? {}) as Record<string, unknown>;
     const total = typeof stats.total === 'number' ? stats.total : 0;
-    const dispatchFailed = typeof stats.dispatch_failed === 'number' ? stats.dispatch_failed : 0;
+    const dispatchFailed = readDispatchFailures(stats).length;
 
     // ponytail: campaign_id lives in the call's metadata JSON, so this is an
     // unindexed path filter behind the workspace index. Add a `campaign_id`
@@ -411,21 +421,32 @@ export class OutboundCampaignService {
   }
 
   /**
-   * Counts a contact that never became a call. Anything that did produce a call
-   * row is counted from that row by `computeStats`, so incrementing here too
+   * Records a contact that never became a call. Anything that did produce a call
+   * row is counted from that row by `computeStats`, so counting it here too
    * would count the same failure twice.
+   *
+   * The failures are held as a set of attempt keys rather than a counter,
+   * because the job that reports one can be retried: BullMQ re-runs the whole
+   * job when a later step throws, and a counter would climb once per retry.
+   *
+   * ponytail: read-modify-write on the campaign's `stats` JSON. Safe because one
+   * campaign dispatches one contact at a time; needs a row lock (or its own
+   * table) if dispatch ever fans out within a campaign.
    */
-  async recordDispatchFailure(campaignId: string): Promise<void> {
+  async recordDispatchFailure(campaignId: string, attemptKey: string): Promise<void> {
     const campaign = await this.prisma.outboundCampaign.findUnique({
       where: { id: campaignId },
       select: { stats: true },
     });
     if (!campaign) return;
     const stats = (campaign.stats ?? {}) as Record<string, unknown>;
-    const current = typeof stats.dispatch_failed === 'number' ? stats.dispatch_failed : 0;
+    const failures = readDispatchFailures(stats);
+    if (failures.includes(attemptKey)) return;
     await this.prisma.outboundCampaign.update({
       where: { id: campaignId },
-      data: { stats: { ...stats, dispatch_failed: current + 1 } as Prisma.InputJsonValue },
+      data: {
+        stats: { ...stats, dispatch_failures: [...failures, attemptKey] } as Prisma.InputJsonValue,
+      },
     });
   }
 }

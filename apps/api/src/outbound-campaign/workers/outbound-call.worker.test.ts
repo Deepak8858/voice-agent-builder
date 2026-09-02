@@ -376,7 +376,7 @@ describe('OutboundCallWorker', () => {
     // A permanent block is a failed dial, and the chain moves on. The compliance
     // engine refuses before any call row exists, so this is the one failure the
     // campaign has to count for itself.
-    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1');
+    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1', 'contact:0');
     expect(campaigns.advanceCursor).toHaveBeenCalledWith('camp-1', 'ws-1', 1);
   });
 
@@ -394,7 +394,9 @@ describe('OutboundCallWorker', () => {
 
     await expect(makeWorker().processor(job)).resolves.toBeUndefined();
 
-    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1');
+    // No contact index on this job (a pre-chaining job still in the queue), so
+    // the attempt is keyed by the number it was dialling.
+    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1', 'to:+15551111111');
     expect(prisma.outboundCampaign.updateMany).not.toHaveBeenCalled();
   });
 
@@ -410,10 +412,69 @@ describe('OutboundCallWorker', () => {
     expect(prisma.call.count).toHaveBeenCalledWith({
       where: {
         workspaceId: 'ws-1',
-        toNumber: '+15551111111',
-        metadata: { path: ['campaign_id'], equals: 'camp-1' },
+        AND: [
+          { metadata: { path: ['campaign_id'], equals: 'camp-1' } },
+          { toNumber: '+15551111111' },
+        ],
       },
     });
     expect(campaigns.recordDispatchFailure).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A contact list may hold the same number twice. Matching the "did this become
+   * a call" lookup on the number would let the first contact's call row hide the
+   * second contact's failure, so the lookup is keyed by the contact's position.
+   */
+  it('counts a failure for a repeated number that a sibling contact already dialled', async () => {
+    calls.startOutboundCall.mockRejectedValue(new Error('provider timeout'));
+    // A row exists for this number (contact 0), but none for contact 1.
+    prisma.call.count.mockResolvedValue(0);
+
+    await makeWorker().processor({
+      data: { ...(job as any).data, contactIndex: 1, dispatchToken: 7 },
+    } as never);
+
+    expect(prisma.call.count).toHaveBeenCalledWith({
+      where: {
+        workspaceId: 'ws-1',
+        AND: [
+          { metadata: { path: ['campaign_id'], equals: 'camp-1' } },
+          { metadata: { path: ['contact_index'], equals: 1 } },
+        ],
+      },
+    });
+    expect(campaigns.recordDispatchFailure).toHaveBeenCalledWith('camp-1', 'contact:1');
+  });
+
+  /**
+   * `custom_data` comes from the customer's CSV. A column called `campaign_id`
+   * would otherwise reassign the call to another campaign: it would vanish from
+   * this campaign's statistics, and the dispatch-failure lookup would never find
+   * it either.
+   */
+  it('keeps campaign_id and purpose out of reach of a contact custom field', async () => {
+    await makeWorker().processor({
+      data: {
+        ...(job as any).data,
+        contactIndex: 3,
+        purpose: 'appointment_reminder',
+        customData: { campaign_id: 'someone-elses', purpose: 'marketing', source: 'csv' },
+      },
+    } as never);
+
+    expect(calls.startOutboundCall).toHaveBeenCalledWith(
+      'ws-1',
+      'agent-1',
+      'user-1',
+      expect.objectContaining({
+        metadata: {
+          source: 'csv',
+          campaign_id: 'camp-1',
+          contact_index: 3,
+          purpose: 'appointment_reminder',
+        },
+      }),
+    );
   });
 });

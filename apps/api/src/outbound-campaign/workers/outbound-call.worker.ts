@@ -157,7 +157,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       // happened, so the chain stops here: enqueueing the next contact would
       // restart dispatch, and advancing the cursor past `index` would make the
       // resume in `start()` skip that contact forever.
-      if (await this.handleDispatchFailure(campaignId, workspaceId, to, err)) return;
+      if (await this.handleDispatchFailure(campaignId, workspaceId, to, err, index)) return;
     }
 
     if (index === undefined) return;
@@ -227,8 +227,12 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
   private async dial(data: OutboundCallJob): Promise<void> {
     const { campaignId, agentId, workspaceId, actorUserId, to, contactName, customData } = data;
     const metadata = {
-      campaign_id: campaignId,
+      // Contact data first: everything below identifies the call to the campaign
+      // and to compliance, and a contact's own `custom_data` must not be able to
+      // move its call into another campaign or relabel why it was placed.
       ...customData,
+      campaign_id: campaignId,
+      ...(data.contactIndex === undefined ? {} : { contact_index: data.contactIndex }),
       purpose: data.purpose ?? 'requested_follow_up',
     };
     const assignedByoNumber = await this.findAssignedByoOutboundNumber(workspaceId, agentId);
@@ -291,6 +295,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     workspaceId: string,
     to: string,
     err: unknown,
+    contactIndex: number | undefined,
   ): Promise<boolean> {
     const reason = this.admissionReason(err);
     const message = (err as Error).message;
@@ -317,14 +322,29 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
     // unpublished agent or a plan gate throws before any row exists, so nothing
     // else would ever record it; every other failure already left a `failed`
     // call row, which the campaign's stats count directly.
+    //
+    // Matched on the contact's position, not its number: a list may hold the
+    // same number twice, and matching on the number would let the first
+    // contact's call row hide the second contact's failure.
     const dialled = await this.prisma.call.count({
       where: {
         workspaceId,
-        toNumber: to,
-        metadata: { path: ['campaign_id'], equals: campaignId },
+        AND: [
+          { metadata: { path: ['campaign_id'], equals: campaignId } },
+          contactIndex === undefined
+            ? { toNumber: to }
+            : { metadata: { path: ['contact_index'], equals: contactIndex } },
+        ],
       },
     });
-    if (dialled === 0) await this.campaigns.recordDispatchFailure(campaignId);
+    // The key is the contact, so a retry of this job reports the same failure
+    // rather than a second one.
+    if (dialled === 0) {
+      await this.campaigns.recordDispatchFailure(
+        campaignId,
+        contactIndex === undefined ? `to:${to}` : `contact:${contactIndex}`,
+      );
+    }
     return false;
   }
 

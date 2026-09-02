@@ -1897,11 +1897,16 @@ export class TelephonyService {
   ): Promise<void> {
     const normalizedStatus = this.liveKitStatus(eventType, payload);
     const unanswered = normalizedStatus.terminal ? this.unansweredOutcome(call, payload) : null;
+    // Terminal events arrive more than once (participant_left, then
+    // room_finished, plus LiveKit's own redelivery). A call already settled as
+    // failed must not be promoted to completed by the second one, or the
+    // campaign counts a call nobody answered as a success.
+    const settled = call.status === 'failed' || call.status === 'cancelled';
     const endedAt = normalizedStatus.terminal && !call.endedAt ? new Date() : null;
     await this.prisma.call.update({
       where: { id: call.id },
       data: {
-        status: unanswered ? 'failed' : normalizedStatus.status,
+        status: unanswered ? 'failed' : settled ? call.status : normalizedStatus.status,
         ...(unanswered ? { outcome: unanswered } : {}),
         ...(participantId ? { livekitParticipantId: participantId } : {}),
         ...(endedAt ? { endedAt } : {}),
@@ -1947,6 +1952,11 @@ export class TelephonyService {
     const reason = stringValue(participant.disconnectReason)?.toUpperCase() ?? '';
     if (reason === 'USER_REJECTED') return 'declined';
     if (reason === 'DUPLICATE_IDENTITY' || reason === 'JOIN_FAILURE') return 'agent_connect_failed';
+    // A trunk failure is the carrier refusing or failing the dial (SIP 5xx, a
+    // rate limit, DNS). Nobody's phone rang, so it is not an unanswered call and
+    // it is not the agent's fault: it is the same class as the dispatch errors
+    // recorded elsewhere as `provider_dispatch_failed`.
+    if (reason === 'SIP_TRUNK_FAILURE') return 'provider_dispatch_failed';
     return 'no_answer';
   }
 

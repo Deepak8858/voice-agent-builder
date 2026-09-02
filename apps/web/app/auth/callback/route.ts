@@ -79,6 +79,8 @@ export async function GET(req: NextRequest) {
   // For new OAuth signups, app_metadata.app_user_id is not set by default.
   // Look up the public.users row and update server-controlled metadata.
   let appUserId = user.app_metadata?.app_user_id as string | undefined;
+  /** Set when server-controlled claims were written and the token has to catch up. */
+  let claimsChanged = false;
   if (!appUserId) {
     const { data: appUser } = await supabase
       .from('users')
@@ -88,9 +90,13 @@ export async function GET(req: NextRequest) {
 
     if (appUser) {
       appUserId = appUser.id;
-      await adminClient.auth.admin.updateUserById(user.id, {
+      const { error } = await adminClient.auth.admin.updateUserById(user.id, {
         app_metadata: { ...user.app_metadata, app_user_id: appUser.id },
       });
+      if (error) {
+        return sessionErrorRedirect(req, error.message);
+      }
+      claimsChanged = true;
     }
   }
 
@@ -103,8 +109,11 @@ export async function GET(req: NextRequest) {
   if (!activeOrgId && appUserId) {
     const { data: memberships } = await supabase
       .from('memberships')
-      .select('role, workspaces!inner(organization_id)')
+      .select('role, created_at, workspaces!inner(organization_id)')
       .eq('user_id', appUserId)
+      // Oldest first, so a user in several organizations lands in the same one
+      // every time instead of wherever the query planner happened to look.
+      .order('created_at', { ascending: true })
       .limit(1);
 
     const membership = memberships?.[0];
@@ -118,8 +127,7 @@ export async function GET(req: NextRequest) {
     const organizationId = (Array.isArray(joined) ? joined[0] : joined)?.organization_id;
 
     if (membership && organizationId) {
-      activeOrgId = organizationId;
-      await adminClient.auth.admin.updateUserById(user.id, {
+      const { error } = await adminClient.auth.admin.updateUserById(user.id, {
         app_metadata: {
           ...user.app_metadata,
           ...(appUserId ? { app_user_id: appUserId } : {}),
@@ -127,7 +135,22 @@ export async function GET(req: NextRequest) {
           active_org_role: membership.role,
         },
       });
+      // Sending them on without the claim would hand the dashboard a session
+      // that row-level security reads as belonging to no organization, and
+      // /onboarding would offer to create the workspace they already have.
+      if (error) {
+        return sessionErrorRedirect(req, error.message);
+      }
+      activeOrgId = organizationId;
+      claimsChanged = true;
     }
+  }
+
+  // The session cookie was minted before those metadata writes, and row-level
+  // security reads `active_org_id` from the token, not from the user row. Without
+  // this the first page load after sign-in still carries the empty claim.
+  if (claimsChanged) {
+    await supabase.auth.refreshSession();
   }
 
   if (!activeOrgId) {

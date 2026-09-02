@@ -469,7 +469,7 @@ describe('OutboundCampaignService', () => {
     it('adds contacts that never produced a call to the failure count', async () => {
       mockPrisma.outboundCampaign.findFirst.mockResolvedValue({
         id: 'camp-1',
-        stats: { total: 3, dispatch_failed: 2 },
+        stats: { total: 3, dispatch_failures: ['contact:0', 'contact:2'] },
       });
       mockPrisma.call.groupBy.mockResolvedValue([{ status: 'completed', _count: { _all: 1 } }]);
 
@@ -484,23 +484,38 @@ describe('OutboundCampaignService', () => {
   });
 
   describe('recordDispatchFailure', () => {
-    it('counts a contact that never became a call without touching the rest', async () => {
+    it('records a contact that never became a call without touching the rest', async () => {
       mockPrisma.outboundCampaign.findUnique.mockResolvedValue({
-        stats: { total: 3, dispatch_failed: 1 },
+        stats: { total: 3, dispatch_failures: ['contact:0'] },
       });
 
-      await service.recordDispatchFailure('camp-1');
+      await service.recordDispatchFailure('camp-1', 'contact:1');
 
       expect(mockPrisma.outboundCampaign.update).toHaveBeenCalledWith({
         where: { id: 'camp-1' },
-        data: { stats: { total: 3, dispatch_failed: 2 } },
+        data: { stats: { total: 3, dispatch_failures: ['contact:0', 'contact:1'] } },
       });
+    });
+
+    /**
+     * BullMQ re-runs the whole job when a later step throws, so the same contact
+     * can report the same failure twice. A counter climbed once per retry; a set
+     * of attempt keys cannot.
+     */
+    it('is idempotent for a contact it has already recorded', async () => {
+      mockPrisma.outboundCampaign.findUnique.mockResolvedValue({
+        stats: { total: 3, dispatch_failures: ['contact:1'] },
+      });
+
+      await service.recordDispatchFailure('camp-1', 'contact:1');
+
+      expect(mockPrisma.outboundCampaign.update).not.toHaveBeenCalled();
     });
 
     it('does nothing for a campaign that no longer exists', async () => {
       mockPrisma.outboundCampaign.findUnique.mockResolvedValue(null);
 
-      await service.recordDispatchFailure('camp-gone');
+      await service.recordDispatchFailure('camp-gone', 'contact:0');
 
       expect(mockPrisma.outboundCampaign.update).not.toHaveBeenCalled();
     });
