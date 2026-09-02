@@ -35,6 +35,7 @@ import {
 } from './knowledge-retrieval.js';
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
 import { createHandoffClient, createTransferTool } from './handoff.js';
+import { createCallerDetailsClient, createCallerDetailsTool } from './caller-details.js';
 import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
 import {
@@ -316,6 +317,27 @@ async function runCall(
     if (transferTool) tools.push(transferTool);
   }
 
+  // The agent's automatic Google Sheet (created at publish). Only offered when
+  // the sheet exists, so the model is never told to save into nothing.
+  let callerDetailsTool: llm.ToolContextEntry | null = null;
+  if (apiBaseUrl && internalApiKey) {
+    const sheet = await prisma.agentGoogleResource.findFirst({
+      where: { agentId: metadata.agentId, status: 'ready' },
+      select: { columns: true },
+    });
+    const columns = Array.isArray(sheet?.columns)
+      ? (sheet.columns as Array<{ key?: unknown }>).map((c) => String(c.key ?? '')).filter(Boolean)
+      : [];
+    callerDetailsTool = createCallerDetailsTool({
+      spec,
+      agentId: metadata.agentId,
+      callId,
+      sheetColumns: columns,
+      save: createCallerDetailsClient({ apiBaseUrl, internalApiKey }),
+    });
+    if (callerDetailsTool) tools.push(callerDetailsTool);
+  }
+
   // The pipeline is a billing decision made by the API when the call was
   // created (free plans and half of starter calls run in-house), so it is read
   // from dispatch metadata rather than re-derived here.
@@ -329,7 +351,10 @@ async function runCall(
 
   const startSession = async (): Promise<void> => {
     await session.start({
-      agent: new VoiceForgeAgent(buildVoiceForgeInstructions(spec, metadata), tools),
+      agent: new VoiceForgeAgent(
+        buildVoiceForgeInstructions(spec, metadata, { callerDetailsTool: callerDetailsTool !== null }),
+        tools,
+      ),
       room: ctx.room,
     });
     await session.generateReply({

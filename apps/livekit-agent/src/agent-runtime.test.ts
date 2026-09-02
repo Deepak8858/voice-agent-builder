@@ -188,6 +188,23 @@ describe('LiveKit agent runtime helpers', () => {
   });
 });
 
+describe('LiveKit caller-details instructions', () => {
+  it('tells the model to save fields as they arrive only when the sheet tool is present', () => {
+    const withTool = buildVoiceForgeInstructions(
+      spec,
+      { agentId: 'agent-1', direction: 'inbound', pipeline: 'realtime' },
+      { callerDetailsTool: true },
+    );
+    const without = buildVoiceForgeInstructions(spec, {
+      agentId: 'agent-1',
+      direction: 'inbound',
+      pipeline: 'realtime',
+    });
+    expect(withTool).toContain('call save_caller_details');
+    expect(without).not.toContain('save_caller_details');
+  });
+});
+
 describe('LiveKit handoff instructions', () => {
   const handoffSpec: AgentSpec = {
     ...spec,

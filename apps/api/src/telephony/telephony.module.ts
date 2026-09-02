@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AgentSheetsModule } from '../agent-sheets/agent-sheets.module';
 import { AuditModule } from '../audit/audit.module';
 import { BillingModule } from '../billing/billing.module';
 import { ComplianceModule } from '../compliance/compliance.module';
@@ -14,7 +15,16 @@ import { TwilioProviderAdapter } from './providers/twilio.provider';
 
 @Module({
   // VoiceModule is global, so PipelineRouterService resolves without importing it.
-  imports: [PrismaModule, AuditModule, BillingModule, ComplianceModule, LiveKitModule, SecurityModule],
+  imports: [
+    PrismaModule,
+    AuditModule,
+    BillingModule,
+    ComplianceModule,
+    LiveKitModule,
+    SecurityModule,
+    // Fills the Outcome cell of a call's Google Sheet row when the call ends.
+    AgentSheetsModule,
+  ],
   controllers: [TelephonyController, TelephonyInternalController, TelephonyWebhookController],
   providers: [TelephonyService, ProviderRegistry, TwilioProviderAdapter],
   exports: [TelephonyService],

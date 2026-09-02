@@ -25,6 +25,8 @@ import { CrmRoutingModule } from '../crm-routing/crm-routing.module';
 import { CallsModule } from '../calls/calls.module';
 import { TelephonyModule } from '../telephony/telephony.module';
 import { ComplianceModule } from '../compliance/compliance.module';
+import { AgentSheetsModule } from '../agent-sheets/agent-sheets.module';
+import { AgentSheetSyncWorker } from './agent-sheet-sync.worker';
 
 @Module({
   imports: [
@@ -44,8 +46,10 @@ import { ComplianceModule } from '../compliance/compliance.module';
     // imports are [EmailModule, KnowledgeModule, PhoneNumbersModule], none of
     // which imports WorkersModule.
     ComplianceModule,
+    AgentSheetsModule,
   ],
   providers: [
+    AgentSheetSyncWorker,
     AgentGenWorker,
     EvaluationWorker,
     AnalyticsWorker,

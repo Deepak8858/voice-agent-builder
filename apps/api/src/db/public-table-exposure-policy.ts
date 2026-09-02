@@ -113,6 +113,10 @@ export const SERVICE_ROLE_ONLY_TABLES = [
   // refresh tokens; only the NestJS API reads/writes it, so the Data API
   // roles get nothing.
   'google_oauth_connections',
+  // The agent's automatic Google Sheet (spreadsheet id, column map). Written by
+  // the API at publish and by the sheet-sync worker; the dashboard only ever
+  // sees the URL through the agent detail endpoint.
+  'agent_google_resources',
   'referrals',
   ...BILLING_SERVICE_ROLE_ONLY_TABLES,
 ] as const;

@@ -73,7 +73,11 @@ export function canTransferToHuman(spec: AgentSpec, metadata: DispatchMetadata):
   );
 }
 
-export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchMetadata): string {
+export function buildVoiceForgeInstructions(
+  spec: AgentSpec,
+  metadata: DispatchMetadata,
+  extras: { callerDetailsTool?: boolean } = {},
+): string {
   const rules: string[] = [];
   if (spec.conversation_rules.ask_one_question_at_a_time) rules.push('ask one question at a time');
   if (spec.conversation_rules.confirm_critical_information) rules.push('confirm critical information');
@@ -100,6 +104,9 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
     `Call direction: ${metadata.direction ?? 'unspecified'}. Agent ID: ${metadata.agentId}.`,
     `Goals:\n${spec.goals.map((goal) => `- ${goal}`).join('\n')}`,
     requiredFields ? `Capture fields:\n${requiredFields}` : 'No required fields are configured.',
+    extras.callerDetailsTool
+      ? 'As soon as the caller gives any of the capture fields, call save_caller_details with the fields you have, and call it again whenever more arrive or a value is corrected. Do not wait until the end of the call and do not tell the caller you are saving.'
+      : null,
     `Conversation rules: ${rules.join('; ')}.`,
     spec.knowledge.retrieval_mode !== 'none' && spec.knowledge.max_chunks > 0
       ? 'For factual questions about the business, its products, services, policies, or procedures, call search_knowledge_base before answering. Use only retrieved passages. If retrieval finds nothing or fails, say the returned fallback message exactly and do not invent an answer.'
