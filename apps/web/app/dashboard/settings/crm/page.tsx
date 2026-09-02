@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { toast } from 'sonner';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,7 +15,7 @@ import {
   getConnectionPresets,
   type ConnectionProviderId,
 } from '@/lib/integration-presets';
-import { Database, Plus, Trash2, TestTube, CheckCircle, ExternalLink } from 'lucide-react';
+import { Database, Plus, Trash2, TestTube, CheckCircle, ExternalLink, Route } from 'lucide-react';
 
 const CRM_PROVIDERS = getConnectionPresets().filter((preset) => preset.category === 'crm');
 
@@ -27,6 +28,20 @@ interface CrmCredential {
 }
 
 interface SessionUser { active_workspace_id: string; }
+
+interface RoutingRule {
+  id: string;
+  keyword: string;
+  provider: string;
+  action: 'primary' | 'secondary';
+  priority: number;
+  active: boolean;
+}
+
+const RULE_ACTIONS = [
+  { value: 'primary', label: 'Primary — create the contact here' },
+  { value: 'secondary', label: 'Secondary — mirror the contact here' },
+] as const;
 
 export default function CrmSettingsPage() {
   const { call } = useApi();
@@ -42,11 +57,19 @@ export default function CrmSettingsPage() {
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [rules, setRules] = useState<RoutingRule[]>([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [ruleKeyword, setRuleKeyword] = useState('');
+  const [ruleProvider, setRuleProvider] = useState('');
+  const [ruleAction, setRuleAction] = useState<'primary' | 'secondary'>('primary');
+  const [savingRule, setSavingRule] = useState(false);
 
   useEffect(() => {
     call<SessionUser>('/auth/me')
       .then((me) => setWorkspaceId(me.active_workspace_id))
-      .catch(console.error);
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : 'Could not load your workspace.'),
+      );
   }, [call]);
 
   useEffect(() => {
@@ -54,8 +77,24 @@ export default function CrmSettingsPage() {
     setLoading(true);
     call<{ items: CrmCredential[] }>(`/workspaces/${workspaceId}/crm-credentials`)
       .then((res) => setCredentials(res.items ?? []))
-      .catch(console.error)
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : 'CRM connections could not be loaded.'),
+      )
       .finally(() => setLoading(false));
+  }, [workspaceId, call]);
+
+  // Routing rules were only reachable through a link to /settings/crm/rules,
+  // a route that does not exist — the GET and POST below are the endpoints that
+  // link was meant to reach.
+  useEffect(() => {
+    if (!workspaceId) return;
+    setRulesLoading(true);
+    call<{ items: RoutingRule[] }>(`/workspaces/${workspaceId}/crm-routing/rules`)
+      .then((res) => setRules(res.items ?? []))
+      .catch((err: unknown) =>
+        toast.error(err instanceof Error ? err.message : 'Routing rules could not be loaded.'),
+      )
+      .finally(() => setRulesLoading(false));
   }, [workspaceId, call]);
 
   async function handleSave(e: React.FormEvent) {
@@ -84,6 +123,32 @@ export default function CrmSettingsPage() {
       setErrorMessage(err instanceof Error ? err.message : 'Connection could not be saved.');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleAddRule(e: React.FormEvent) {
+    e.preventDefault();
+    if (!workspaceId || !ruleKeyword.trim() || !ruleProvider) return;
+    setSavingRule(true);
+    try {
+      // The POST returns the created row, so the list is updated from it: a
+      // re-fetch that failed after a successful create would report "not saved"
+      // for a rule that exists, and the retry would create it twice.
+      const created = await call<RoutingRule>(`/workspaces/${workspaceId}/crm-routing/rules`, {
+        method: 'POST',
+        body: JSON.stringify({
+          keyword: ruleKeyword.trim(),
+          provider: ruleProvider,
+          action: ruleAction,
+        }),
+      });
+      setRuleKeyword('');
+      setRules((prev) => [...prev, created]);
+      toast.success('Routing rule added.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'The rule could not be saved.');
+    } finally {
+      setSavingRule(false);
     }
   }
 
@@ -291,10 +356,93 @@ export default function CrmSettingsPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="rules">
-          <p className="text-sm text-muted-foreground">
-            <a href="/dashboard/settings/crm/rules" className="underline">Open Routing Rules</a> to manage keyword-based CRM routing.
-          </p>
+        <TabsContent value="rules" className="flex flex-col gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Route className="h-4 w-4 text-primary" />
+                Keyword routing
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <p className="text-sm text-muted-foreground">
+                When a call transcript contains the keyword, the contact is written to the
+                matching CRM. A primary rule owns the contact; secondary rules receive a copy.
+              </p>
+
+              {rulesLoading ? (
+                <p className="text-sm text-muted-foreground">Loading rules...</p>
+              ) : rules.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No routing rules yet. Calls are logged without CRM fan-out.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {rules.map((rule) => (
+                    <li
+                      key={rule.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+                    >
+                      <span className="font-medium text-foreground">{rule.keyword}</span>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="capitalize">
+                          {getConnectionPreset(rule.provider as ConnectionProviderId)?.name ?? rule.provider}
+                        </Badge>
+                        <Badge variant="outline" className="capitalize">{rule.action}</Badge>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <form onSubmit={handleAddRule} className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+                <div>
+                  <Label htmlFor="rule-keyword">Keyword</Label>
+                  <Input
+                    id="rule-keyword"
+                    className="mt-1"
+                    value={ruleKeyword}
+                    onChange={(e) => setRuleKeyword(e.target.value)}
+                    placeholder="dental"
+                    maxLength={100}
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="rule-provider">CRM</Label>
+                  <select
+                    id="rule-provider"
+                    className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={ruleProvider}
+                    onChange={(e) => setRuleProvider(e.target.value)}
+                    required
+                  >
+                    <option value="">Select a CRM</option>
+                    {CRM_PROVIDERS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <Label htmlFor="rule-action">Action</Label>
+                  <select
+                    id="rule-action"
+                    className="mt-1 flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    value={ruleAction}
+                    onChange={(e) => setRuleAction(e.target.value as 'primary' | 'secondary')}
+                  >
+                    {RULE_ACTIONS.map((a) => (
+                      <option key={a.value} value={a.value}>{a.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <Button type="submit" disabled={savingRule} className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  {savingRule ? 'Adding...' : 'Add rule'}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

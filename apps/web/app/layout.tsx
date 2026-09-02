@@ -2,9 +2,10 @@ import type { Metadata } from 'next';
 import { headers } from 'next/headers';
 import Script from 'next/script';
 import { DM_Sans, DM_Serif_Display, IBM_Plex_Mono } from 'next/font/google';
-import { Toaster } from 'sonner';
 import { ClientChrome } from '@/components/layout/client-chrome';
 import { QueryProvider } from '@/components/providers/query-provider';
+import { ThemeProvider } from '@/components/providers/theme-provider';
+import { AppToaster } from '@/components/providers/app-toaster';
 import { siteUrl } from '@/lib/site-url';
 import { JsonLd } from '@/lib/seo';
 import { organizationJsonLd, webSiteJsonLd } from './site-structured-data';
@@ -76,19 +77,35 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // opts every route into dynamic rendering, which lets Next.js pick the
   // nonce up from the Content-Security-Policy request header and stamp it
   // onto its inline scripts.
-  await headers();
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
   return (
     <html
       lang="en"
       className={`${dmSans.variable} ${dmSerif.variable} ${ibmPlexMono.variable} h-full antialiased`}
+      // The theme script below adds `.dark` before React hydrates, so the
+      // server's class list is expected to differ from the client's.
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col overflow-x-hidden bg-background text-foreground">
+        {/* Applies the saved theme before the browser paints. Doing it in an
+            effect would run after the light palette is already on screen, which
+            is the white flash every class-based dark mode has to avoid. Inline
+            and nonce'd rather than a module so it blocks paint; the key must
+            match THEME_STORAGE_KEY in the theme provider. */}
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var p=localStorage.getItem('voiceforge-theme');var d=p==='dark'||(p!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light'}catch(e){}})();`,
+          }}
+        />
         <JsonLd data={[organizationJsonLd(), webSiteJsonLd()]} />
-        <ClientChrome />
-        <QueryProvider>
-          <main className="flex flex-1 flex-col">{children}</main>
-        </QueryProvider>
-        <Toaster richColors position="top-right" />
+        <ThemeProvider>
+          <ClientChrome />
+          <QueryProvider>
+            <main className="flex flex-1 flex-col">{children}</main>
+          </QueryProvider>
+          <AppToaster />
+        </ThemeProvider>
         {/* Google Analytics. The measurement id is public by design. Rendered
             only in production so local and CI sessions never pollute the
             property; next/script injects both tags after hydration, which the

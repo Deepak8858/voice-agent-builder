@@ -14,6 +14,7 @@ import {
   SheetTrigger,
 } from '@/components/ui/sheet';
 import { Logo } from '@/components/logo';
+import { ThemeToggle } from '@/components/theme-toggle';
 import {
   LayoutDashboard,
   Bot,
@@ -33,6 +34,8 @@ import {
   Plus,
   Sparkles,
   CalendarCheck,
+  Database,
+  Timer,
 } from 'lucide-react';
 
 const navSections = [
@@ -54,6 +57,7 @@ const navSections = [
       { href: '/dashboard/knowledge', label: 'Knowledge Base', icon: BookOpen },
       { href: '/dashboard/integrations', label: 'Integrations', icon: Plug },
       { href: '/dashboard/settings/google', label: 'Google Workspace', icon: CalendarCheck },
+      { href: '/dashboard/settings/crm', label: 'CRM Routing', icon: Database },
       { href: '/dashboard/analytics', label: 'Analytics', icon: BarChart3 },
     ],
   },
@@ -64,6 +68,7 @@ const navSections = [
       { href: '/dashboard/compliance', label: 'Compliance', icon: ShieldCheck },
       { href: '/dashboard/white-label', label: 'White label', icon: Palette },
       { href: '/dashboard/billing', label: 'Billing', icon: CreditCard },
+      { href: '/dashboard/settings/retention', label: 'Data Retention', icon: Timer },
       { href: '/dashboard/docs', label: 'Docs', icon: LifeBuoy },
       { href: '/dashboard/settings', label: 'Settings', icon: Settings },
     ],
@@ -75,7 +80,10 @@ export function AppSidebar() {
     <>
       <MobileDashboardNav />
       <aside className="hidden w-72 shrink-0 border-r border-sidebar-border/80 bg-sidebar/95 px-4 py-5 shadow-sm shadow-stone-950/5 md:flex md:min-h-dvh md:flex-col md:gap-6">
-        <SidebarBrand />
+        <div className="flex items-start justify-between gap-2">
+          <SidebarBrand />
+          <ThemeToggle className="mt-1" />
+        </div>
         <NavSections />
         <div className="mt-auto rounded-2xl border border-sidebar-border bg-gradient-to-br from-primary/10 via-sidebar to-sky-500/10 p-4">
           <p className="text-sm font-semibold text-sidebar-foreground">Ready to test?</p>
@@ -107,6 +115,7 @@ function MobileDashboardNav() {
             Agent
           </Link>
         </Button>
+        <ThemeToggle />
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="outline" size="icon" aria-label="Open dashboard navigation">

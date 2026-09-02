@@ -42,6 +42,8 @@ export function SettingsPanel() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(false);
+  const [meError, setMeError] = useState<string | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -81,15 +83,22 @@ export function SettingsPanel() {
     me?.active_workspace_role === 'owner' || me?.active_workspace_role === 'admin';
 
   useEffect(() => {
-    call<MeResponse>('/auth/me').then(setMe).catch(console.error);
+    call<MeResponse>('/auth/me')
+      .then(setMe)
+      .catch((err: unknown) =>
+        setMeError(err instanceof Error ? err.message : 'Your account details could not be loaded.'),
+      );
   }, [call]);
 
   useEffect(() => {
     if (activeTab === 'audit' && currentWorkspaceId && canReadAuditLog) {
       setLoading(true);
+      setAuditError(null);
       call<{ items: AuditLog[] }>(`/workspaces/${currentWorkspaceId}/audit-logs`)
         .then((res) => setAuditLogs(res.items))
-        .catch(console.error)
+        .catch((err: unknown) =>
+          setAuditError(err instanceof Error ? err.message : 'The audit log could not be loaded.'),
+        )
         .finally(() => setLoading(false));
     }
   }, [activeTab, currentWorkspaceId, canReadAuditLog, call]);
@@ -115,6 +124,7 @@ export function SettingsPanel() {
             <CardTitle>Account Information</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
+            {meError ? <p className="text-sm text-destructive">{meError}</p> : null}
             <div className="flex items-center justify-between py-2 border-b border-border">
               <span className="text-sm text-muted-foreground">User ID</span>
               <span className="text-sm font-mono text-foreground">{me?.id ?? '—'}</span>
@@ -168,6 +178,10 @@ export function SettingsPanel() {
       <TabsContent value="audit" className="mt-6">
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading audit logs…</p>
+        ) : auditError ? (
+          <Card className="py-12 text-center">
+            <CardDescription className="text-destructive">{auditError}</CardDescription>
+          </Card>
         ) : auditLogs.length === 0 ? (
           <Card className="py-12 text-center">
             <CardDescription className="text-muted-foreground">No audit logs found.</CardDescription>
