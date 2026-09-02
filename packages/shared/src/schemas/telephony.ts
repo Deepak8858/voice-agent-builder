@@ -195,3 +195,28 @@ export const HandoffDialResponseSchema = z
   })
   .strict();
 export type HandoffDialResponse = z.infer<typeof HandoffDialResponseSchema>;
+
+/**
+ * Runtime -> API: what the caller has said so far, for the agent's automatic
+ * Google Sheet. Keys are the agent's `required_fields`; unknown keys are
+ * ignored server-side. The API answers before the sheet is written.
+ */
+export const CallerDetailsRequestSchema = z
+  .object({
+    callId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    fields: z.record(
+      z.string().min(1).max(64),
+      z.union([z.string().max(2000), z.number(), z.boolean(), z.null()]),
+    ),
+  })
+  .strict();
+export type CallerDetailsRequest = z.infer<typeof CallerDetailsRequestSchema>;
+
+export const CallerDetailsResponseSchema = z
+  .object({
+    saved: z.boolean(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+export type CallerDetailsResponse = z.infer<typeof CallerDetailsResponseSchema>;

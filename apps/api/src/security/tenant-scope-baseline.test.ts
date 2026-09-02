@@ -182,6 +182,9 @@ const REVIEWED_BASELINE: readonly string[] = [
   // tenancy, like webhook ingress above.
   'tools/livekit-tools.controller.ts:call.findUnique',
   'voice/livekit-knowledge.controller.ts:call.findUnique',
+  // Same shape for the caller-details route: the runtime sends the call id, the
+  // handler refuses unless call.agentId matches before anything is written.
+  'agent-sheets/agent-sheet.service.ts:call.findUnique',
 
   // -- User-scoped or workspace-root queries ------------------------------
   // Keyed on the authenticated user id, or on the Workspace/Organization row
@@ -310,6 +313,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'templates/templates.service.ts:agentTemplate.findMany': 1,
   'templates/templates.service.ts:agentTemplate.findUnique': 1,
   'tools/livekit-tools.controller.ts:call.findUnique': 1,
+  'agent-sheets/agent-sheet.service.ts:call.findUnique': 1,
   'tools/tools.service.ts:toolInvocation.update': 3,
   'twilio-adapter/twilio-webhook.controller.ts:call.findUnique': 2,
   'twilio-adapter/twilio-webhook.controller.ts:call.update': 2,

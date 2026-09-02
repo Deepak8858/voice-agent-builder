@@ -88,6 +88,16 @@ export default async function AgentBuilderPage({ params }: PageProps) {
       >
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={agent.status} />
+          {agent.google_sheet_url ? (
+            <a
+              href={agent.google_sheet_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full border border-border bg-background/70 px-3 py-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
+            >
+              Google Sheet
+            </a>
+          ) : null}
           <span className="rounded-full border border-border bg-background/70 px-3 py-1 text-xs font-medium capitalize text-muted-foreground">
             {agent.industry}
           </span>

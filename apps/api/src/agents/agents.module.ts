@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AgentSheetsModule } from '../agent-sheets/agent-sheets.module';
 import { WorkspaceGuard } from '../common/workspace.guard';
 import { GenerationRateLimitGuard } from '../common/generation-rate-limit.guard';
 import { KnowledgeModule } from '../knowledge/knowledge.module';

@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { AgentSheetService } from '../agent-sheets/agent-sheet.service';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type {
@@ -97,6 +98,7 @@ export class TelephonyService {
     private readonly admission: CallAdmissionService,
     private readonly pipelineRouter?: PipelineRouterService,
     private readonly entitlements?: EntitlementService,
+    @Optional() private readonly agentSheets?: AgentSheetService,
   ) {}
 
   /**
@@ -1575,6 +1577,14 @@ export class TelephonyService {
         parsed,
         context.participantId,
       );
+      if (eventType === 'participant_left' || eventType === 'room_finished') {
+        // The call's Google Sheet row gets its Outcome cell once the call is over.
+        await this.agentSheets?.syncIfTracked(context.call).catch((err: unknown) => {
+          this.logger.warn(
+            `Sheet sync for call ${context.call?.id} could not be queued: ${(err as Error).message}`,
+          );
+        });
+      }
     }
     return { processed: true, event: eventType };
   }

@@ -77,6 +77,8 @@ export type AgentVersionSummary = z.infer<typeof AgentVersionSummarySchema>;
 export const AgentDetailSchema = AgentSummarySchema.extend({
   versions: z.array(AgentVersionSummarySchema),
   active_spec: AgentSpecSchema.nullable(),
+  /** The agent's automatic Google Sheet, created at publish when Google is connected. */
+  google_sheet_url: z.string().nullable().optional(),
 });
 export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 

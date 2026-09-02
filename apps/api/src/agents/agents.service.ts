@@ -1,5 +1,6 @@
 import { HttpStatus, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { AgentSheetService } from '../agent-sheets/agent-sheet.service';
 import type {
   AgentDetail,
   AgentTool,
@@ -73,6 +74,7 @@ export class AgentsService {
     @Optional() private readonly voiceRegistry?: VoiceProviderRegistry,
     @Optional() private readonly posthog?: PostHogService,
     @Optional() private readonly responseCache?: ResponseCacheService,
+    @Optional() private readonly agentSheets?: AgentSheetService,
   ) {}
 
   async generate(workspaceId: string, dto: GenerateAgentDto): Promise<GenerateAgentResult> {
@@ -139,13 +141,17 @@ export class AgentsService {
   async get(workspaceId: string, agentId: string): Promise<AgentDetail> {
     const agent = await this.prisma.agent.findFirst({
       where: { id: agentId, workspaceId },
-      include: { versions: { orderBy: { versionNumber: 'desc' } } },
+      include: {
+        versions: { orderBy: { versionNumber: 'desc' } },
+        googleResource: { select: { spreadsheetUrl: true, status: true } },
+      },
     });
     if (!agent) throw new AgentNotFoundError(agentId);
     const activeVersion = agent.versions.find((v) => v.id === agent.activeVersionId) ?? null;
     const activeSpec = agent.specJson ?? activeVersion?.specJson ?? null;
     return {
       ...this.toSummary(agent),
+      google_sheet_url: agent.googleResource?.spreadsheetUrl ?? null,
       versions: agent.versions.map((v) => ({
         id: v.id,
         agent_id: v.agentId,
@@ -438,6 +444,13 @@ export class AgentsService {
     }
 
     await this.cacheInvalidator.invalidateAgentList(workspaceId);
+
+    // The agent's Google Sheet: created on first publish, headers extended on
+    // later ones. Never blocks a publish (failures are recorded on the resource).
+    await this.agentSheets?.ensureForPublish(
+      { id: agentId, workspaceId, organizationId: ws.organizationId, name: agent.name },
+      parsed.data,
+    );
 
     this.posthog?.capture(
       {
