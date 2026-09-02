@@ -89,9 +89,10 @@ Which side dominates depends on the Flash credit rate, which is unverified. At t
 character assumption STT is larger (330 against 250 per minute), so reducing STT minutes (hang up
 faster on voicemail, do not stream silence during long holds) saves more than TTS tuning does. At
 1 credit per character TTS is larger (500 against 330) and the priority inverts. Talk share moves
-it too: the numbers above assume both sides speak for the full minute, and a call where the caller
-talks most of the time shifts cost toward STT regardless of the rate. Spike (a) meters one real
-call and settles both the rate and the share; until then treat neither side as the fixed target.
+it too: the numbers above assume the agent speaks for 50% of each call minute while STT stays open
+for the full minute, so a call where the caller talks most of the time shifts the relative cost
+toward STT. Spike (a) meters one real call and settles both the rate and the share; until then
+treat neither side as the fixed target.
 Plan against these numbers only; a realtime-STT credit premium above the 330 rate would push them
 down.
 
@@ -222,11 +223,14 @@ measurements.
    roughly 0.5 to 1.0 s, so the callee hears a voice under 250 ms after answering. Lands in the
    cascaded engine `start()` (`cascaded-engine.ts`, replacing `void agentTurn(input.firstReply)`),
    with the audio cached in Redis by the API and invalidated on publish.
-3. **Open the Scribe and Flash websockets when the API mints the stream token, not when the first
-   frame arrives.** The API knows a call is coming at webhook time (inbound) or dial time
-   (outbound). Saving: two TLS + websocket handshakes, 100 to 200 ms off call start. Lands in the
-   voice-runtime session manager and `elevenlabs.ts` (`openSttStream`, `openTtsStream`), keyed by
-   callId with a short TTL. Two constraints:
+3. **Pre-open the Flash websocket when the API mints the stream token; open Scribe on the answer
+   event, not when the first frame arrives.** The API knows a call is coming at webhook time
+   (inbound) or dial time (outbound). Saving: the Flash TLS + websocket handshake, 50 to 100 ms
+   off call start. Scribe's handshake is not removed, only moved: it runs while the cached
+   greeting from action 2 is playing, so it costs nothing audible unless the caller interrupts the
+   greeting, and spike (g) measures whether it fits. Lands in the voice-runtime session manager
+   and `elevenlabs.ts` (`openSttStream`, `openTtsStream`), keyed by callId with a short TTL. Four
+   constraints:
    - **Azure cascaded chat is not a websocket.** `POST /chat/completions` with `"stream": true`
      returns server-sent events, so there is no session to pre-open. What helps there is a warm
      keep-alive HTTP/2 connection to the endpoint held by the runtime's shared agent (and a reused
@@ -241,20 +245,25 @@ measurements.
    - **A pre-opened STT stream spends concurrency before the call is admitted.** The realtime-STT
      concurrent-stream limit is the hard ceiling on simultaneous calls (§4), and an outbound dial
      that rings out, is declined, or is canceled never carries audio — so opening Scribe at token
-     mint time lets calls that never connect hold slots away from calls that did. Open Scribe on
-     the answer event, or count the pre-open against the same admission budget and close the
-     socket on every terminal call state (`no-answer`, `busy`, `failed`, `canceled`, `completed`)
-     rather than waiting for the idle timeout. The TTS socket is safe to pre-open early because
-     TTS concurrency is consumed only while audio is generating.
-   - **One `stream-input` socket is one voice.** `voice_id` is in the connection URL and cannot be
-     changed afterwards, so a single pre-opened socket cannot serve the per-language voices that
-     feature 7 selects, and a barge-in that has to abandon the current generation cannot simply
-     reuse it. Either pre-open one socket per voice the agent version can select (bounded by
-     `language_configs`, not by the voice library) plus one spare for the interrupted turn, or use
-     the multi-context websocket API, which carries up to five contexts per connection and lets a
-     barge-in close one context and open another without a new handshake. The multi-context route
-     is the better fit for barge-in and is what feature 7 needs; spike (e) should measure
-     it rather than the single-voice socket.
+     mint time lets calls that never connect hold slots away from calls that did. Hence the
+     heading: Scribe opens on the answer event. If a Scribe pre-open is ever wanted, count it
+     against the same admission budget and close the socket on every terminal call state
+     (`no-answer`, `busy`, `failed`, `canceled`, `completed`) rather than waiting for the idle
+     timeout. The TTS socket is safe to pre-open early because TTS concurrency is consumed only
+     while audio is generating.
+   - **One TTS socket is one voice, on both websocket APIs.** `voice_id` is in the connection URL
+     of `stream-input` and of `multi-stream-input` alike and cannot be changed afterward, so no
+     pre-opened socket can serve the per-language voices that feature 7 selects. The two needs
+     are separate:
+     - *Barge-in* is what the multi-context API solves. It carries up to five contexts per
+       connection, so an interrupted turn closes its context and the next turn opens a new one
+       on the same socket, with no new handshake. This is the route action 7 takes and what spike
+       (e) measures.
+     - *Voice switching* is not solved by contexts. Pre-open one socket per voice the agent
+       version can select, bounded by `language_configs` rather than by the voice library, and
+       switch sockets on a detected language change. The Text-to-Dialogue multi-context API does
+       take a per-input `voice_id`, but only on the Eleven v3 dialogue models, which are a
+       different model with different cost and latency assumptions and are not evaluated here.
 4. **Own one endpointing timer.** Use Scribe `commit_strategy=vad` with
    `vad_silence_threshold_secs` around 0.35 to 0.4 and `min_silence_duration_ms` set explicitly
    (defaults are unverified), and do not add a second app-level silence wait on top; only keep a
@@ -287,8 +296,10 @@ measurements.
    of token streaming before audio starts. Lands in `splitSentences` (`cascaded-engine.ts`) and the
    init message in `openTtsStream`.
 7. **Do not reconnect TTS on barge-in; kill audio at jambonz first.** Send `{"type":"killAudio"}`
-   on the jambonz socket the instant speech starts (jambonz flushes queued audio), then switch to a
-   pre-opened spare TTS socket instead of `tts.close(); tts = await openTts()` as in the plan.
+   on the jambonz socket the instant speech starts (jambonz flushes queued audio), then close the
+   interrupted context and open a fresh one on the multi-context TTS socket instead of
+   `tts.close(); tts = await openTts()` as in the plan (with single-voice sockets, the equivalent
+   is a pre-opened spare).
    Also require about 250 ms of speech or a two-word partial before treating it as an interruption,
    so "mm-hm" does not cut the agent off. Saving: 100 to 200 ms after each interruption and fewer
    false stops. Lands in `bargeIn()` (`cascaded-engine.ts`) and the jambonz transport's
