@@ -631,7 +631,7 @@ export default function PhoneNumbersPage() {
               <div className="grid grid-cols-[44px_minmax(180px,1fr)_minmax(180px,1fr)_140px_120px] border-b border-border bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
                 <span />
                 <span>Number</span>
-                <span>SIP domain</span>
+                <span>SIP domain (host or host:port)</span>
                 <span>Provider ID</span>
                 <span>Voice</span>
               </div>
