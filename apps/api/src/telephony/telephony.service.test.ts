@@ -2744,6 +2744,8 @@ describe('TelephonyService.disconnectNumber', () => {
 function makeHandoffService(overrides?: {
   call?: Record<string, unknown> | null;
   dialError?: Error;
+  /** Simulate a `handoff.requested` claim already held for this call. */
+  claimHeld?: boolean;
 }) {
   const call =
     overrides?.call === undefined
@@ -2769,7 +2771,13 @@ function makeHandoffService(overrides?: {
       update: vi.fn(async () => ({ id: 'call-1' })),
     },
     callEvent: {
-      create: vi.fn(async (_args: { data: { eventType: string } }) => ({ id: 'event-1' })),
+      create: vi.fn(async (args: { data: { eventType: string; providerEventId?: string } }) => {
+        if (overrides?.claimHeld && args.data.providerEventId) {
+          throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+        }
+        return { id: 'event-1' };
+      }),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     agentVersion: { findUnique: vi.fn(async () => null) },
   };
@@ -2837,6 +2845,51 @@ describe('TelephonyService.dialHandoff', () => {
     expect(prisma.call.update).not.toHaveBeenCalled();
     const eventTypes = prisma.callEvent.create.mock.calls.map(([args]) => args.data.eventType);
     expect(eventTypes).toEqual(['handoff.requested', 'handoff.failed']);
+    // The claim is released so the caller can ask for a person again.
+    expect(prisma.callEvent.updateMany).toHaveBeenCalledWith({
+      where: { workspaceId: 'workspace-1', providerEventId: 'handoff:call-1' },
+      data: { providerEventId: null },
+    });
+  });
+
+  it('dials at most once per call: a retry or concurrent request while a dial is live is refused', async () => {
+    const { service, livekit, prisma } = makeHandoffService({ claimHeld: true });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toEqual({
+      connected: false,
+      participantIdentity: null,
+      reason: 'handoff_in_progress',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
+    expect(prisma.callEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ providerEventId: 'handoff:call-1' }) }),
+    );
+  });
+
+  it('will not dial for an agent that has handoff disabled, whatever the request says', async () => {
+    const { service, livekit } = makeHandoffService({
+      call: {
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        livekitRoomName: 'call-room-1',
+        phoneNumber: {
+          phoneNumberE164: '+917969007408',
+          livekitConfig: { outboundTrunkId: 'trunk-out-1' },
+        },
+        agent: {
+          specJson: { handoff: { enabled: false, target_phone: '+918858901717' } },
+          activeVersionId: null,
+        },
+      },
+    });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toMatchObject({
+      connected: false,
+      reason: 'handoff_disabled',
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
   });
 
   it('refuses a call that is not bound to the requesting agent', async () => {

@@ -59,9 +59,15 @@ const BILLING_UPGRADE_PATH = '/dashboard/billing';
  */
 const HANDOFF_RING_SECONDS = 25;
 
-/** Only the handoff target is needed here; the runtime already holds the rest. */
-const HandoffTargetSchema = z.object({
-  handoff: z.object({ target_phone: z.string().optional() }).partial().optional(),
+/**
+ * Only the handoff block is needed here; the runtime already holds the rest.
+ * `enabled` defaults the way AgentSpecSchema does, so a stored spec that
+ * predates the flag reads the same on both sides.
+ */
+const HandoffConfigSchema = z.object({
+  handoff: z
+    .object({ enabled: z.boolean().default(true), target_phone: z.string().optional() })
+    .optional(),
 });
 
 /** Prisma reports a unique-index rejection as `P2002`. */
@@ -1220,19 +1226,39 @@ export class TelephonyService {
       // Browser tests and numbers without an outbound trunk have no leg to add.
       return fail('no_outbound_trunk');
     }
-    const target = await this.handoffTarget(call.agent, call.phoneNumber.phoneNumberE164);
+    const handoff = await this.handoffConfig(call.agent);
+    // The runtime only offers the tool when handoff is on, but the runtime is
+    // not the trust boundary: an agent that disabled handoff must not be
+    // dialled for, whatever the request says.
+    if (!handoff.enabled) return fail('handoff_disabled');
+    const target = handoff.target_phone
+      ? normalizePhone(handoff.target_phone, this.lineCountry(call.phoneNumber.phoneNumberE164))
+      : null;
     if (!target) return fail('invalid_target');
 
+    // One dial per call at a time. The requested event doubles as the claim:
+    // its provider event id is unique, so a retry of a request whose response
+    // was lost, or a second concurrent request, cannot start a second SIP leg
+    // while one is ringing or connected. A failed dial releases the claim so
+    // the caller can ask again.
     const participantIdentity = `sip-human-${call.id}`;
-    await this.prisma.callEvent.create({
-      data: {
-        callId: call.id,
-        workspaceId: call.workspaceId,
-        organizationId: call.organizationId,
-        eventType: 'handoff.requested',
-        payload: { target, summary: input.summary ?? null } as Prisma.InputJsonValue,
-      },
-    });
+    const claim = `handoff:${call.id}`;
+    try {
+      await this.prisma.callEvent.create({
+        data: {
+          providerEventId: claim,
+          callId: call.id,
+          workspaceId: call.workspaceId,
+          organizationId: call.organizationId,
+          eventType: 'handoff.requested',
+          payload: { target, summary: input.summary ?? null } as Prisma.InputJsonValue,
+        },
+      });
+    } catch (err) {
+      if (!isUniqueConstraintViolation(err)) throw err;
+      this.logger.warn(`Handoff for call ${call.id} already in progress; not dialling again.`);
+      return { connected: false, participantIdentity: null, reason: 'handoff_in_progress' };
+    }
     try {
       await this.livekit.addSipParticipant({
         outboundTrunkId: trunkId,
@@ -1244,6 +1270,10 @@ export class TelephonyService {
         metadata: { callId: call.id, role: 'human_handoff' },
       });
     } catch (err) {
+      await this.prisma.callEvent.updateMany({
+        where: { workspaceId: call.workspaceId, providerEventId: claim },
+        data: { providerEventId: null },
+      });
       return fail(`dial_failed: ${(err as Error).message}`.slice(0, 200));
     }
 
@@ -1263,18 +1293,11 @@ export class TelephonyService {
     return { connected: true, participantIdentity, reason: null };
   }
 
-  /**
-   * The agent's handoff number in E.164, or null when none is usable.
-   *
-   * Operators type the number the way they dial it locally, so a number with
-   * no country code is read in the country of the line the call is on.
-   * ponytail: that guess is wrong for a line in one country and a human in
-   * another; store E.164 in the spec (the UI can normalise on save) if it bites.
-   */
-  private async handoffTarget(
-    agent: { specJson: Prisma.JsonValue | null; activeVersionId: string | null },
-    lineNumberE164: string,
-  ): Promise<string | null> {
+  /** The agent's handoff block, read the way the runtime reads its spec. */
+  private async handoffConfig(agent: {
+    specJson: Prisma.JsonValue | null;
+    activeVersionId: string | null;
+  }): Promise<{ enabled: boolean; target_phone: string | undefined }> {
     let specJson: Prisma.JsonValue | null = agent.specJson;
     if (!specJson && agent.activeVersionId) {
       const version = await this.prisma.agentVersion.findUnique({
@@ -1283,16 +1306,23 @@ export class TelephonyService {
       });
       specJson = version?.specJson ?? null;
     }
-    const parsed = HandoffTargetSchema.safeParse(specJson);
-    const raw = parsed.success ? parsed.data.handoff?.target_phone?.trim() : undefined;
-    if (!raw) return null;
-    let country: string | undefined;
+    const parsed = HandoffConfigSchema.safeParse(specJson);
+    const handoff = parsed.success ? parsed.data.handoff : undefined;
+    return { enabled: handoff?.enabled ?? false, target_phone: handoff?.target_phone?.trim() };
+  }
+
+  /**
+   * Operators type the handoff number the way they dial it locally, so a
+   * number with no country code is read in the country of the line the call
+   * is on. ponytail: wrong for a line in one country and a human in another;
+   * store E.164 in the spec (the UI can normalise on save) if it bites.
+   */
+  private lineCountry(lineNumberE164: string): string | undefined {
     try {
-      country = parsePhoneNumber(lineNumberE164).country;
+      return parsePhoneNumber(lineNumberE164).country;
     } catch {
-      country = undefined;
+      return undefined;
     }
-    return normalizePhone(raw, country);
   }
 
   private async hangUpSipLeg(input: InboundCallAdmitRequest): Promise<boolean> {

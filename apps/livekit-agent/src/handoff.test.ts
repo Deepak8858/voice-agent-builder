@@ -137,6 +137,11 @@ describe('transfer_to_human tool', () => {
       }),
     );
     expect(session.playout).toHaveBeenCalledTimes(1);
+    // A hang-up during the introduction must not be missed: the listener is in
+    // place before the agent starts speaking.
+    expect(room.on.mock.invocationCallOrder[0]).toBeLessThan(
+      session.generateReply.mock.invocationCallOrder[0],
+    );
     // Then the agent steps out but the job stays up for metering.
     expect(session.output.setAudioEnabled).toHaveBeenCalledWith(false);
     expect(result).toMatchObject({ transferred: true });
@@ -171,6 +176,22 @@ describe('transfer_to_human tool', () => {
       instruction: expect.stringContaining('take a message'),
     });
     expect(onTransferEnded).not.toHaveBeenCalled();
+  });
+
+  it('still steps out and keeps listening for hang-ups if the introduction fails to play', async () => {
+    const dial = vi.fn(async () => ({
+      connected: true,
+      participantIdentity: 'sip-human-call-1',
+      reason: null,
+    }));
+    const { run, session, room, onTransferEnded } = makeTool({ dial });
+    session.playout.mockRejectedValueOnce(new Error('speech interrupted'));
+
+    await expect(run()).resolves.toMatchObject({ transferred: true });
+
+    expect(session.output.setAudioEnabled).toHaveBeenCalledWith(false);
+    room.leave(ParticipantKind.SIP);
+    expect(onTransferEnded).toHaveBeenCalledTimes(1);
   });
 
   it('treats a dial that throws the same as one that was not answered', async () => {

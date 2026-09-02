@@ -130,25 +130,32 @@ export function createTransferTool(config: {
         };
       }
 
-      // The warm part: a different speech handle from the one running this
-      // tool, so awaiting its playout is safe. Interruptions are off so the
-      // introduction is not cut short by either person saying hello.
-      await session
-        .generateReply({
-          instructions: `A human colleague has just joined this call and can hear you. In one or two sentences greet them, tell them who is calling and what they need: ${summary}. Then say you are leaving them to talk. Do not ask a question.`,
-          allowInterruptions: false,
-        })
-        .waitForPlayout();
-
-      // Step out without leaving: the two people keep talking in the room while
-      // this job stays up to meter the call. Either of them hanging up ends it.
-      session.output.setAudioEnabled(false);
+      // From here the call belongs to the two people: either of them hanging up
+      // ends it, including during the introduction, so listen before speaking.
       const onLeft = (participant: Participant): void => {
         if (participant.kind !== ParticipantKind.SIP) return;
         config.room.off(RoomEvent.ParticipantDisconnected, onLeft);
         config.onTransferEnded();
       };
       config.room.on(RoomEvent.ParticipantDisconnected, onLeft);
+
+      // The warm part: a different speech handle from the one running this
+      // tool, so awaiting its playout is safe. Interruptions are off so the
+      // introduction is not cut short by either person saying hello.
+      try {
+        await session
+          .generateReply({
+            instructions: `A human colleague has just joined this call and can hear you. In one or two sentences greet them, tell them who is calling and what they need: ${summary}. Then say you are leaving them to talk. Do not ask a question.`,
+            allowInterruptions: false,
+          })
+          .waitForPlayout();
+      } catch (err) {
+        console.warn(`[handoff] introduction did not play out: ${(err as Error).message}`);
+      } finally {
+        // Step out without leaving: the two people keep talking in the room
+        // while this job stays up to meter the call.
+        session.output.setAudioEnabled(false);
+      }
 
       return { transferred: true, instruction: 'The transfer is complete. Say nothing further.' };
     },
