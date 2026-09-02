@@ -2746,6 +2746,8 @@ function makeHandoffService(overrides?: {
   dialError?: Error;
   /** Simulate a `handoff.requested` claim already held for this call. */
   claimHeld?: boolean;
+  /** Simulate a `handoff.connected` event already written for this call. */
+  alreadyConnected?: boolean;
 }) {
   const call =
     overrides?.call === undefined
@@ -2778,6 +2780,7 @@ function makeHandoffService(overrides?: {
         return { id: 'event-1' };
       }),
       updateMany: vi.fn(async () => ({ count: 1 })),
+      findFirst: vi.fn(async () => (overrides?.alreadyConnected ? { id: 'event-connected' } : null)),
     },
     agentVersion: { findUnique: vi.fn(async () => null) },
   };
@@ -2864,6 +2867,17 @@ describe('TelephonyService.dialHandoff', () => {
     expect(prisma.callEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ providerEventId: 'handoff:call-1' }) }),
     );
+  });
+
+  it('answers a retry of an already-connected handoff with the success it was', async () => {
+    const { service, livekit } = makeHandoffService({ claimHeld: true, alreadyConnected: true });
+
+    await expect(service.dialHandoff(HANDOFF_REQUEST)).resolves.toEqual({
+      connected: true,
+      participantIdentity: 'sip-human-call-1',
+      reason: null,
+    });
+    expect(livekit.addSipParticipant).not.toHaveBeenCalled();
   });
 
   it('will not dial for an agent that has handoff disabled, whatever the request says', async () => {

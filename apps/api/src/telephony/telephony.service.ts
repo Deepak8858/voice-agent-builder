@@ -1256,6 +1256,15 @@ export class TelephonyService {
       });
     } catch (err) {
       if (!isUniqueConstraintViolation(err)) throw err;
+      // A duplicate claim is either a dial still ringing or a dial that already
+      // connected whose response was lost. The second must read as the success
+      // it was: reporting it as a failure would hand the caller back to the
+      // agent while the human is on the line.
+      const connected = await this.prisma.callEvent.findFirst({
+        where: { workspaceId: call.workspaceId, callId: call.id, eventType: 'handoff.connected' },
+        select: { id: true },
+      });
+      if (connected) return { connected: true, participantIdentity, reason: null };
       this.logger.warn(`Handoff for call ${call.id} already in progress; not dialling again.`);
       return { connected: false, participantIdentity: null, reason: 'handoff_in_progress' };
     }

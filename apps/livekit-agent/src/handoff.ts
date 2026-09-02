@@ -118,6 +118,17 @@ export function createTransferTool(config: {
       } catch (err) {
         result = { connected: false, participantIdentity: null, reason: (err as Error).message };
       }
+
+      // From the moment the human is on the line the call belongs to the two
+      // people: either of them hanging up ends it, including while hold music
+      // is still winding down or the introduction is playing. Listen first.
+      const onLeft = (participant: Participant): void => {
+        if (participant.kind !== ParticipantKind.SIP) return;
+        config.room.off(RoomEvent.ParticipantDisconnected, onLeft);
+        config.onTransferEnded();
+      };
+      if (result.connected) config.room.on(RoomEvent.ParticipantDisconnected, onLeft);
+
       await stopHold().catch(() => undefined);
 
       if (!result.connected) {
@@ -129,15 +140,6 @@ export function createTransferTool(config: {
             'Nobody could be reached. Apologise briefly, offer to take a message or arrange a call back, and continue helping the caller.',
         };
       }
-
-      // From here the call belongs to the two people: either of them hanging up
-      // ends it, including during the introduction, so listen before speaking.
-      const onLeft = (participant: Participant): void => {
-        if (participant.kind !== ParticipantKind.SIP) return;
-        config.room.off(RoomEvent.ParticipantDisconnected, onLeft);
-        config.onTransferEnded();
-      };
-      config.room.on(RoomEvent.ParticipantDisconnected, onLeft);
 
       // The warm part: a different speech handle from the one running this
       // tool, so awaiting its playout is safe. Interruptions are off so the

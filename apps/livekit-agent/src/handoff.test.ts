@@ -57,9 +57,13 @@ function makeSession() {
   };
 }
 
-function makeTool(options: { dial: HandoffDialer; room?: ReturnType<typeof makeRoom> }) {
+function makeTool(options: {
+  dial: HandoffDialer;
+  room?: ReturnType<typeof makeRoom>;
+  stopHold?: () => Promise<void>;
+}) {
   const room = options.room ?? makeRoom();
-  const stopHold = vi.fn(async () => undefined);
+  const stopHold = vi.fn(options.stopHold ?? (async () => undefined));
   const holdMusic = vi.fn(async () => stopHold);
   const onTransferEnded = vi.fn();
   const tool = createTransferTool({
@@ -176,6 +180,24 @@ describe('transfer_to_human tool', () => {
       instruction: expect.stringContaining('take a message'),
     });
     expect(onTransferEnded).not.toHaveBeenCalled();
+  });
+
+  it('does not miss a hang-up that lands while hold music is still winding down', async () => {
+    const dial = vi.fn(async () => ({
+      connected: true,
+      participantIdentity: 'sip-human-call-1',
+      reason: null,
+    }));
+    const room = makeRoom();
+    // player.close() is slow and the caller hangs up in the middle of it.
+    const stopHold = async () => {
+      room.leave(ParticipantKind.SIP);
+    };
+    const { run, onTransferEnded } = makeTool({ dial, room, stopHold });
+
+    await run();
+
+    expect(onTransferEnded).toHaveBeenCalledTimes(1);
   });
 
   it('still steps out and keeps listening for hang-ups if the introduction fails to play', async () => {
