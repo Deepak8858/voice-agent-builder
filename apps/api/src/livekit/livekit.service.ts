@@ -26,7 +26,7 @@ interface LiveKitClients {
     SipClient,
     'createSipInboundTrunk' | 'createSipOutboundTrunk' | 'createSipDispatchRule' | 'createSipParticipant' | 'deleteSipTrunk' | 'deleteSipDispatchRule'
   >;
-  roomClient?: Pick<RoomServiceClient, 'createRoom'>;
+  roomClient?: Pick<RoomServiceClient, 'createRoom' | 'removeParticipant'>;
   agentDispatchClient?: Pick<AgentDispatchClient, 'createDispatch'>;
 }
 
@@ -65,6 +65,26 @@ export class LiveKitService {
       });
     }
     return { roomName: params.roomName };
+  }
+
+  /**
+   * Hangs up one participant's leg.
+   *
+   * Removing a SIP participant makes LiveKit send BYE to the carrier, which is
+   * the only way to refuse an inbound call that has already been answered into
+   * a room (the Twilio TwiML path can just return refusal TwiML; a call that
+   * arrived straight over SIP cannot). Best-effort: the caller has already
+   * decided the call is over, so a failure here is logged, not thrown.
+   */
+  async hangUpParticipant(roomName: string, identity: string): Promise<void> {
+    if (!this.roomClient) return;
+    try {
+      await this.roomClient.removeParticipant(roomName, identity);
+    } catch (err) {
+      this.logger.warn(
+        `Could not remove participant ${identity} from room ${roomName}: ${(err as Error).message}`,
+      );
+    }
   }
 
   async createAccessToken(params: {

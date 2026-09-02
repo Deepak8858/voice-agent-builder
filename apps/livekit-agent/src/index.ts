@@ -36,6 +36,11 @@ import {
 import { createGoogleTools, createToolInvokeClient } from './google-tools.js';
 import { CallMeter, createRuntimeUsageClient, runWithMeteredCall } from './runtime-usage.js';
 import { resolveCallAttribution } from './call-attribution.js';
+import {
+  InboundCallRefusedError,
+  createInboundAdmitClient,
+  type InboundAdmitter,
+} from './inbound-admit.js';
 
 const prisma = new PrismaClient();
 
@@ -73,6 +78,24 @@ function createCallMeter(ctx: JobContext, metadata: DispatchMetadata): CallMeter
       await ctx.room.disconnect().catch(() => undefined);
       ctx.shutdown(`billing:${reason}`);
     },
+  });
+}
+
+/**
+ * Builds the admitter for an inbound leg that no provider webhook admitted.
+ *
+ * Returns `null` when the internal credentials are absent: attribution then
+ * fails closed on an unadmitted call instead of running one for free, and the
+ * message names the missing configuration.
+ */
+function createInboundAdmitter(ctx: JobContext): InboundAdmitter | null {
+  const apiBaseUrl = process.env.INTERNAL_API_BASE_URL;
+  const internalApiKey = process.env.INTERNAL_API_KEY;
+  if (!apiBaseUrl || !internalApiKey) return null;
+  return createInboundAdmitClient({
+    apiBaseUrl,
+    internalApiKey,
+    roomName: ctx.room.name ?? null,
   });
 }
 
@@ -187,7 +210,25 @@ export default defineAgent({
     const dispatchMetadata = parseDispatchMetadata(ctx.job.metadata);
     await ctx.connect();
     const participant = dispatchMetadata.callId ? null : await ctx.waitForParticipant();
-    const metadata = await resolveCallAttribution(dispatchMetadata, participant, prisma.call);
+    let metadata: DispatchMetadata;
+    try {
+      metadata = await resolveCallAttribution(
+        dispatchMetadata,
+        participant,
+        prisma.call,
+        createInboundAdmitter(ctx) ?? undefined,
+      );
+    } catch (err) {
+      // A refused call is not a runtime fault: the API has already hung up the
+      // carrier leg and there is no call row to meter, so the job ends quietly
+      // instead of retrying or reporting a failure against a call it never ran.
+      if (err instanceof InboundCallRefusedError) {
+        console.warn(err.message);
+        ctx.shutdown('admission_denied');
+        return;
+      }
+      throw err;
+    }
     const meter = createCallMeter(ctx, metadata);
     try {
       await runCall(ctx, metadata, meter, ctx.proc.userData[VAD_USERDATA_KEY] as VAD | undefined);

@@ -2341,3 +2341,171 @@ describe('TelephonyService', () => {
     expect(prisma.liveKitTelephonyConfig.upsert).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * A SIP-delivered inbound leg: LiveKit already has the caller in a room and the
+ * agent is asking whether the call is paid for. No provider webhook was
+ * involved, so nothing has admitted it yet.
+ */
+function makeSipInboundService(overrides?: {
+  admitted?: boolean;
+  number?: Record<string, unknown> | null;
+}) {
+  const prisma = {
+    telephonyPhoneNumber: {
+      findUnique: vi.fn(async () =>
+        overrides?.number === undefined
+          ? {
+              id: 'number-1',
+              workspaceId: 'workspace-1',
+              organizationId: 'org-1',
+              assignedAgentId: 'agent-1',
+              provider: 'sip',
+              phoneNumberE164: '+917969007408',
+            }
+          : overrides.number,
+      ),
+    },
+    call: {
+      upsert: vi.fn(async () => ({
+        id: 'call-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        agentId: 'agent-1',
+        phoneNumberId: 'number-1',
+      })),
+      update: vi.fn(async () => ({ id: 'call-1' })),
+    },
+    callUsage: {
+      findUnique: vi.fn(async () => null),
+    },
+  };
+  const admitted = overrides?.admitted ?? true;
+  const admission = {
+    ...makeAdmission(),
+    admitCall: vi.fn(async () =>
+      admitted
+        ? {
+            admitted: true as const,
+            leaseToken: 'lease-1',
+            leaseExpiresAt: new Date('2026-06-07T10:01:00.000Z').toISOString(),
+            reservedSeconds: 60,
+          }
+        : { admitted: false as const, reason: 'credit_insufficient' as const, message: 'No credit.' },
+    ),
+  };
+  const livekit = { hangUpParticipant: vi.fn(async () => undefined) };
+  const service = new TelephonyService(
+    prisma as never,
+    livekit as never,
+    {} as never,
+    {} as never,
+    { log: vi.fn(async () => undefined) } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    admission as never,
+  );
+  return { service, prisma, admission, livekit };
+}
+
+const SIP_ADMIT_REQUEST = {
+  organizationId: 'org-1',
+  workspaceId: 'workspace-1',
+  phoneNumberId: 'number-1',
+  agentId: 'agent-1',
+  provider: 'sip' as const,
+  providerCallId: 'lk-call-99',
+  fromNumber: '+919000000001',
+  toNumber: '+917969007408',
+  roomName: 'call-room-1',
+  participantIdentity: 'sip_participant_1',
+};
+
+describe('TelephonyService.admitSipInboundCall', () => {
+  it('admits an inbound call that reached LiveKit without a provider webhook', async () => {
+    const { service, prisma, admission } = makeSipInboundService();
+
+    await expect(service.admitSipInboundCall(SIP_ADMIT_REQUEST)).resolves.toEqual({
+      admitted: true,
+      callId: 'call-1',
+      reason: null,
+    });
+
+    expect(prisma.call.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { provider_providerCallId: { provider: 'sip', providerCallId: 'lk-call-99' } },
+        update: {},
+      }),
+    );
+    expect(admission.admitCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: 'org-1',
+        workspaceId: 'workspace-1',
+        callId: 'call-1',
+        direction: 'inbound',
+        provider: 'livekit',
+        providerCallId: 'lk-call-99',
+      }),
+    );
+  });
+
+  it('hangs up the carrier leg when billing refuses the call', async () => {
+    const { service, prisma, livekit } = makeSipInboundService({ admitted: false });
+
+    await expect(service.admitSipInboundCall(SIP_ADMIT_REQUEST)).resolves.toEqual({
+      admitted: false,
+      callId: 'call-1',
+      reason: 'credit_insufficient',
+    });
+
+    // Refusal on this path has to be enforced: unlike the TwiML path there is no
+    // response body that can hang up, so the SIP participant is removed.
+    expect(livekit.hangUpParticipant).toHaveBeenCalledWith('call-room-1', 'sip_participant_1');
+    expect(prisma.call.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'call-1' },
+        data: expect.objectContaining({ status: 'failed', outcome: 'billing_denied' }),
+      }),
+    );
+  });
+
+  it('refuses without billing anything when the number is no longer assigned to that agent', async () => {
+    const { service, prisma, admission } = makeSipInboundService({
+      number: {
+        id: 'number-1',
+        workspaceId: 'workspace-1',
+        organizationId: 'org-1',
+        assignedAgentId: 'agent-2',
+        provider: 'sip',
+        phoneNumberE164: '+917969007408',
+      },
+    });
+
+    await expect(service.admitSipInboundCall(SIP_ADMIT_REQUEST)).resolves.toEqual({
+      admitted: false,
+      callId: null,
+      reason: 'number_not_assigned',
+    });
+    expect(prisma.call.upsert).not.toHaveBeenCalled();
+    expect(admission.admitCall).not.toHaveBeenCalled();
+  });
+
+  it('rejects a request whose tenant does not own the number', async () => {
+    const { service, admission } = makeSipInboundService({
+      number: {
+        id: 'number-1',
+        workspaceId: 'workspace-2',
+        organizationId: 'org-2',
+        assignedAgentId: 'agent-1',
+        provider: 'sip',
+        phoneNumberE164: '+917969007408',
+      },
+    });
+
+    await expect(service.admitSipInboundCall(SIP_ADMIT_REQUEST)).rejects.toMatchObject({
+      errorCode: 'TELEPHONY_NOT_FOUND',
+    });
+    expect(admission.admitCall).not.toHaveBeenCalled();
+  });
+});

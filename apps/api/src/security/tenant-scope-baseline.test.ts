@@ -297,7 +297,11 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'telephony/telephony.service.ts:call.update': 1,
   'telephony/telephony.service.ts:call.upsert': 1,
   'telephony/telephony.service.ts:callUsage.findUnique': 1,
-  'telephony/telephony.service.ts:telephonyPhoneNumber.findUnique': 6,
+  // 7th site: admitSipInboundCall reads the number by id from runtime-supplied
+  // dispatch metadata (no session), then refuses unless the row's workspace and
+  // organization match the request — the same derive-then-verify shape as the
+  // webhook lookups above.
+  'telephony/telephony.service.ts:telephonyPhoneNumber.findUnique': 7,
   'telephony/telephony.service.ts:telephonyPhoneNumber.update': 1,
   'templates/templates.service.ts:agentTemplate.findMany': 1,
   'templates/templates.service.ts:agentTemplate.findUnique': 1,

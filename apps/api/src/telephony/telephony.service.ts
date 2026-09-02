@@ -5,6 +5,8 @@ import type {
   AssignPhoneNumberAgentDto,
   CreateTelephonyConnectionDto,
   ImportPhoneNumbersDto,
+  InboundCallAdmitRequest,
+  InboundCallAdmitResponse,
   ManualPhoneNumberDto,
   PhoneNumberProvider,
   ProviderCredentials,
@@ -988,7 +990,7 @@ export class TelephonyService {
         provider: 'livekit',
         providerCallId: callSid,
       });
-      if (!admitted) {
+      if (!admitted.admitted) {
         await this.prisma.call.update({
           where: { id: call.id },
           data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
@@ -997,6 +999,77 @@ export class TelephonyService {
       }
     }
     return this.twilioFallback.buildLiveKitDialTwiml(`sip:${number.livekitConfig.livekitSipHost}`);
+  }
+
+  /**
+   * Admits an inbound call that arrived over SIP, on behalf of the runtime.
+   *
+   * The Twilio TwiML webhook used to be the only place an inbound call could be
+   * admitted, so a call delivered straight to LiveKit over SIP (a BYO trunk, a
+   * Vobiz trunk, or a Twilio number moved onto an Elastic SIP trunk) reached
+   * the agent with no call row and no paid minute, and the caller heard
+   * silence. The agent asks here before it speaks, and the answer is the same
+   * admission the webhook paths take, so the two cannot diverge.
+   *
+   * Refusal is enforced, not advisory: the SIP participant is removed, which
+   * makes LiveKit send BYE to the carrier.
+   */
+  async admitSipInboundCall(input: InboundCallAdmitRequest): Promise<InboundCallAdmitResponse> {
+    const number = await this.prisma.telephonyPhoneNumber.findUnique({
+      where: { id: input.phoneNumberId },
+      select: {
+        id: true,
+        workspaceId: true,
+        organizationId: true,
+        assignedAgentId: true,
+        provider: true,
+        phoneNumberE164: true,
+      },
+    });
+    // The dispatch metadata is written by us, so a number that does not match it
+    // means the number was deleted or re-tenanted mid-call. Nothing can be
+    // billed against it, and nothing may be admitted for another tenant.
+    if (
+      !number ||
+      number.workspaceId !== input.workspaceId ||
+      number.organizationId !== input.organizationId
+    ) {
+      throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
+    }
+    if (number.assignedAgentId !== input.agentId) {
+      return { admitted: false, callId: null, reason: 'number_not_assigned' };
+    }
+
+    const call = await this.ensureInboundCall({
+      workspaceId: input.workspaceId,
+      organizationId: input.organizationId,
+      agentId: input.agentId,
+      phoneNumberId: number.id,
+      provider: input.provider,
+      providerCallId: input.providerCallId,
+      fromNumber: input.fromNumber ?? null,
+      toNumber: input.toNumber ?? number.phoneNumberE164,
+    });
+    // `livekit` is the usage provider on every inbound path: the media is
+    // carried by LiveKit whichever carrier delivered the leg.
+    const admitted = await this.admitInboundCall({
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      callId: call.id,
+      provider: 'livekit',
+      providerCallId: input.providerCallId,
+    });
+    if (!admitted.admitted) {
+      await this.prisma.call.update({
+        where: { id: call.id },
+        data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
+      });
+      if (input.roomName && input.participantIdentity) {
+        await this.livekit.hangUpParticipant(input.roomName, input.participantIdentity);
+      }
+      return { admitted: false, callId: call.id, reason: admitted.reason ?? 'billing_denied' };
+    }
+    return { admitted: true, callId: call.id, reason: null };
   }
 
   /**
@@ -1013,7 +1086,7 @@ export class TelephonyService {
     callId: string;
     provider: string;
     providerCallId: string;
-  }): Promise<boolean> {
+  }): Promise<{ admitted: boolean; reason: string | null }> {
     const existingUsage = await this.prisma.callUsage.findUnique({
       where: { callId: input.callId },
       select: { finalizationState: true },
@@ -1023,7 +1096,11 @@ export class TelephonyService {
       // original admission may have expired between webhook deliveries. The
       // slot is re-asserted so a retried delivery can never bridge a call
       // that holds no lease and push the organization past its cap.
-      return this.admission.reassertLease(input.organizationId, input.callId);
+      const reasserted = await this.admission.reassertLease(input.organizationId, input.callId);
+      return {
+        admitted: reasserted,
+        reason: reasserted ? null : 'organization_concurrency_reached',
+      };
     }
 
     const admission = await this.admission.admitCall({
@@ -1034,7 +1111,10 @@ export class TelephonyService {
       direction: 'inbound',
       providerCallId: input.providerCallId,
     });
-    return admission.admitted;
+    return {
+      admitted: admission.admitted,
+      reason: isCallDenied(admission) ? admission.reason : null,
+    };
   }
 
   async handleStatusWebhook(
@@ -1139,7 +1219,7 @@ export class TelephonyService {
       provider: 'livekit',
       providerCallId,
     });
-    if (!admitted) {
+    if (!admitted.admitted) {
       // The denial itself is already audited by the admission service. This
       // records the part that is specific to Vobiz: the call was let through
       // anyway, because this webhook cannot stop it.
@@ -1154,7 +1234,7 @@ export class TelephonyService {
         }),
       ).catch(() => undefined);
     }
-    return { processed: true, call_id: call.id, admitted };
+    return { processed: true, call_id: call.id, admitted: admitted.admitted };
   }
 
   /**
