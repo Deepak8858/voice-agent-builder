@@ -18,6 +18,7 @@ function makePrisma(overrides?: {
   creditBalance?: unknown;
   creditBuckets?: unknown[];
   usageRecords?: unknown[];
+  callUsages?: unknown[];
   workspace?: { organizationId: string };
   auditLog?: { create?: ReturnType<typeof vi.fn> };
 }) {
@@ -29,6 +30,7 @@ function makePrisma(overrides?: {
     creditBalance: overrides?.creditBalance ?? null,
     creditBuckets: overrides?.creditBuckets ?? [],
     usageRecords: overrides?.usageRecords ?? [],
+    callUsages: overrides?.callUsages ?? [],
     workspace: overrides?.workspace ?? { organizationId: 'org-1' },
   };
   return {
@@ -66,6 +68,9 @@ function makePrisma(overrides?: {
     usageRecord: {
       findMany: vi.fn(async () => state.usageRecords),
       create: vi.fn(async () => ({ id: 'ur-1' })),
+    },
+    callUsage: {
+      findMany: vi.fn(async () => state.callUsages),
     },
     auditLog: overrides?.auditLog ?? {
       create: vi.fn(async () => ({ id: 'audit-1' })),
@@ -1102,59 +1107,67 @@ describe('BillingService', () => {
   });
 
   describe('getWorkspaceUsage', () => {
-    it('returns zero metrics when no records exist', async () => {
+    it('returns zero metrics when no call has been metered', async () => {
       const prisma = makePrisma({ subscription: { plan: 'free', status: 'active' } });
       const svc = makeService(prisma);
       const result = await svc.getWorkspaceUsage('ws-1');
       expect(result.workspaceId).toBe('ws-1');
       expect(result.usage.calls).toBe(0);
+      expect(result.usage.minutes).toBe(0);
       expect(result.limits.calls).toBeUndefined();
     });
 
-    it('sums up records by metric', async () => {
-      const records = [
-        { billableMetric: 'calls', quantity: 3, periodStart: new Date(), periodEnd: new Date() },
-        { billableMetric: 'calls', quantity: 2, periodStart: new Date(), periodEnd: new Date() },
-        { billableMetric: 'minutes', quantity: 60, periodStart: new Date(), periodEnd: new Date() },
-      ];
+    /**
+     * Prod 2026-09-02: five completed calls and 600 s of debited credit, and a
+     * usage panel that read 0 / 0 because it looked at `usage_records`, which
+     * nothing on the LiveKit path writes. The panel has to report from the same
+     * ledger the customer is charged from.
+     */
+    it('reports connected calls and billed minutes from the call usage ledger', async () => {
+      const connectedAt = new Date();
       const prisma = makePrisma({
         subscription: { plan: 'starter', status: 'active' },
-        usageRecords: records,
+        usageRecords: [],
+        callUsages: [
+          { connectedAt, billableSeconds: 540 },
+          { connectedAt, billableSeconds: 60 },
+          // Never connected: a minute boundary can increment a row before the
+          // connected event stamps it, so its seconds must not count either.
+          { connectedAt: null, billableSeconds: 60 },
+        ],
+        agentCount: 2,
+        integrationToolCount: 3,
       });
       const svc = makeService(prisma);
       const result = await svc.getWorkspaceUsage('ws-1');
-      expect(result.usage.calls).toBe(5);
-      expect(result.usage.minutes).toBe(60);
+      expect(result.usage).toEqual({ calls: 2, minutes: 10, agents: 2, tools: 3 });
+      expect(result.metrics).toEqual(result.usage);
+      expect(result.limits.minutes).toBe(200);
+      expect(prisma.usageRecord.findMany).not.toHaveBeenCalled();
     });
 
-    /**
-     * The row shape recordUsage really writes ends at the end of the month, so it
-     * always ends after "now". Requiring the row's period to sit inside the
-     * requested window matched nothing and the panel read zero for everyone.
-     */
-    it('counts the in-progress period row that recordUsage writes', async () => {
-      const now = new Date();
-      const liveRow = {
-        billableMetric: 'minutes',
-        quantity: 42,
-        periodStart: new Date(now.getFullYear(), now.getMonth(), 1),
-        periodEnd: new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59),
-      };
+    it('only counts usage rows created inside the requested period', async () => {
       const prisma = makePrisma({ subscription: { plan: 'starter', status: 'active' } });
-      // findMany honours the period predicate here so this test defends that
+      const rows = [
+        { createdAt: new Date('2026-09-02T13:19:02Z'), connectedAt: new Date(), billableSeconds: 540 },
+        { createdAt: new Date('2026-08-25T14:27:56Z'), connectedAt: new Date(), billableSeconds: 60 },
+      ];
+      // findMany honours the createdAt predicate so the test defends the
       // predicate rather than a stub's return value.
-      const inRange = (cond: { gte?: Date; lte?: Date } | undefined, value: Date) =>
-        (!cond?.gte || value >= cond.gte) && (!cond?.lte || value <= cond.lte);
-      prisma.usageRecord.findMany = vi.fn(async (args: unknown) => {
-        const where = (args as { where: Record<string, { gte?: Date; lte?: Date }> }).where;
-        return [liveRow].filter(
-          (r) => inRange(where.periodStart, r.periodStart) && inRange(where.periodEnd, r.periodEnd),
-        );
+      prisma.callUsage.findMany = vi.fn(async (args: unknown) => {
+        const { gte, lte } = (args as { where: { createdAt: { gte: Date; lte: Date } } }).where
+          .createdAt;
+        return rows.filter((r) => r.createdAt >= gte && r.createdAt <= lte);
       }) as never;
       const svc = makeService(prisma);
 
-      const result = await svc.getWorkspaceUsage('ws-1');
-      expect(result.usage.minutes).toBe(42);
+      const result = await svc.getWorkspaceUsage(
+        'ws-1',
+        new Date('2026-09-01T00:00:00Z'),
+        new Date('2026-09-30T23:59:59Z'),
+      );
+      expect(result.usage.calls).toBe(1);
+      expect(result.usage.minutes).toBe(9);
     });
   });
 

@@ -567,33 +567,39 @@ export class BillingService {
     const start = periodStart ?? new Date(now.getFullYear(), now.getMonth(), 1);
     const end = periodEnd ?? now;
 
-    const records = await this.prisma.usageRecord.findMany({
-      where: {
-        workspaceId,
-        // recordUsage stamps periodEnd at the end of the month, so every row for
-        // the period in progress ends after `end` and containment matched none of
-        // them: the panel read zero for every customer. A row counts when its
-        // period overlaps the requested window.
-        periodStart: { lte: end },
-        periodEnd: { gte: start },
-      },
-    });
+    // This used to read `usage_records`, a reporting table that only the legacy
+    // call-end paths in CallsService write. LiveKit calls end through the
+    // telephony webhook and the runtime finalizer, which write `call_usages` —
+    // the ledger the customer is actually charged from — so the panel showed
+    // 0 calls and 0 minutes while credit was being debited (prod, 2026-09-02:
+    // five completed calls, 600 s debited, no usage_records row at all). Read
+    // the ledger the charge comes from.
+    const [rows, agents, tools, sub] = await Promise.all([
+      this.prisma.callUsage.findMany({
+        where: { workspaceId, createdAt: { gte: start, lte: end } },
+        select: { connectedAt: true, billableSeconds: true },
+      }),
+      this.prisma.agent.count({ where: { workspaceId } }),
+      this.prisma.integrationTool.count({ where: { workspaceId } }),
+      this.getSubscription(ws.organizationId),
+    ]);
+    // A call counts once it connected, and only its seconds count: a minute
+    // boundary can land on a row before the connected event stamps it, so the
+    // two figures come from the same rows. Billable seconds are already rounded
+    // up to the minute per call by the ledger, so the sum divides exactly.
+    const connected = rows.filter((row) => row.connectedAt !== null);
+    const calls = connected.length;
+    const minutes = Math.ceil(connected.reduce((sum, row) => sum + row.billableSeconds, 0) / 60);
 
-    const metrics: Record<string, number> = { calls: 0, minutes: 0, tools: 0, agents: 0 };
-    for (const r of records) {
-      metrics[r.billableMetric] = (metrics[r.billableMetric] ?? 0) + r.quantity;
-    }
-
-    const sub = await this.getSubscription(ws.organizationId);
     const plan = (sub?.plan ?? 'free') as keyof typeof SHARED_PLAN_LIMITS;
     const limits = SHARED_PLAN_LIMITS[plan];
-    const usage = { calls: metrics.calls ?? 0, minutes: metrics.minutes ?? 0, tools: metrics.tools ?? 0, agents: metrics.agents ?? 0 };
+    const usage = { calls, minutes, tools, agents };
 
     return {
       workspaceId,
       periodStart: start.toISOString(),
       periodEnd: end.toISOString(),
-      metrics,
+      metrics: usage,
       limits: {
         minutes: limits.minutes,
         tools: limits.tools,
