@@ -187,3 +187,38 @@ describe('LiveKit agent runtime helpers', () => {
     ).toBe('coral');
   });
 });
+
+describe('LiveKit handoff instructions', () => {
+  const handoffSpec: AgentSpec = {
+    ...spec,
+    handoff: { enabled: true, target_phone: '8858901717', conditions: ['caller_requests_human'] },
+  };
+
+  it('tells the model to hold the caller and call transfer_to_human on a phone call', () => {
+    const instructions = buildVoiceForgeInstructions(handoffSpec, {
+      agentId: 'agent-1',
+      direction: 'inbound',
+      pipeline: 'realtime',
+    });
+
+    expect(instructions).toContain('call transfer_to_human');
+    expect(instructions).toContain('caller_requests_human');
+  });
+
+  it('offers a message instead when there is nobody to dial or no line to dial on', () => {
+    const noTarget = buildVoiceForgeInstructions(
+      { ...handoffSpec, handoff: { enabled: true, conditions: [] } },
+      { agentId: 'agent-1', direction: 'inbound', pipeline: 'realtime' },
+    );
+    const browserTest = buildVoiceForgeInstructions(handoffSpec, {
+      agentId: 'agent-1',
+      direction: 'browser_test',
+      pipeline: 'realtime',
+    });
+
+    for (const instructions of [noTarget, browserTest]) {
+      expect(instructions).not.toContain('transfer_to_human');
+      expect(instructions).toContain('offer to take a message');
+    }
+  });
+});

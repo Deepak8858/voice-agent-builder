@@ -60,6 +60,19 @@ export function parseAgentSpec(raw: unknown): AgentSpec {
   return result.data;
 }
 
+/**
+ * Whether this call can hand off to a human: the spec must name someone, and
+ * a browser test has no phone line to dial them on. The API still owns the
+ * final say (trunk, room), so this only decides what the model is offered.
+ */
+export function canTransferToHuman(spec: AgentSpec, metadata: DispatchMetadata): boolean {
+  return (
+    spec.handoff.enabled &&
+    Boolean(spec.handoff.target_phone?.trim()) &&
+    metadata.direction !== 'browser_test'
+  );
+}
+
 export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchMetadata): string {
   const rules: string[] = [];
   if (spec.conversation_rules.ask_one_question_at_a_time) rules.push('ask one question at a time');
@@ -95,9 +108,11 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
     sheetTools.length > 0
       ? `To record an order or request, call ${sheetTools.join(' or ')} once when the details are complete, with one value per column in the sheet's column order. Use an empty string for a column the caller did not provide. Where the row is stored is already configured; do not choose or invent a spreadsheet.`
       : null,
-    spec.handoff.enabled
-      ? `Handoff is enabled. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}.`
-      : 'Handoff is disabled unless explicitly requested by platform policy.',
+    canTransferToHuman(spec, metadata)
+      ? `Handoff to a human is available. Conditions: ${spec.handoff.conditions.join('; ') || 'the caller asks for a person'}. When one applies or the caller asks for a person, tell the caller you will connect them and ask them to hold, then call transfer_to_human with a one- or two-sentence summary of who is calling and what they need. Never say a transfer happened without calling the tool.`
+      : spec.handoff.enabled
+        ? `Handoff is enabled but cannot be performed on this call. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}. If one applies, offer to take a message instead.`
+        : 'Handoff is disabled unless explicitly requested by platform policy.',
     'Keep responses brief, natural, and suitable for a phone call.',
   ]
     .filter(Boolean)

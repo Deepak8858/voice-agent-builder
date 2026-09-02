@@ -1,9 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import type {
   AssignPhoneNumberAgentDto,
   CreateTelephonyConnectionDto,
+  HandoffDialRequest,
+  HandoffDialResponse,
   ImportPhoneNumbersDto,
   InboundCallAdmitRequest,
   InboundCallAdmitResponse,
@@ -15,7 +18,14 @@ import type {
   SyncedProviderPhoneNumber,
   VoicePipeline,
 } from '@voiceforge/shared';
-import { AppError, ComplianceBlockedError, UnauthorizedError } from '../common/errors';
+import { normalizePhone } from '@voiceforge/shared';
+import { parsePhoneNumber } from 'libphonenumber-js';
+import {
+  AppError,
+  ComplianceBlockedError,
+  ForbiddenError,
+  UnauthorizedError,
+} from '../common/errors';
 import { env } from '../config/env';
 import { AuditService } from '../audit/audit.service';
 import { BillingService, ForbiddenPlanError } from '../billing/billing.service';
@@ -41,6 +51,18 @@ type WebhookRequestContext = {
 };
 
 const BILLING_UPGRADE_PATH = '/dashboard/billing';
+
+/**
+ * How long the human's phone rings before the caller is told nobody answered.
+ * The caller is holding the whole time, so this is a patience budget, not a
+ * carrier limit.
+ */
+const HANDOFF_RING_SECONDS = 25;
+
+/** Only the handoff target is needed here; the runtime already holds the rest. */
+const HandoffTargetSchema = z.object({
+  handoff: z.object({ target_phone: z.string().optional() }).partial().optional(),
+});
 
 /** Prisma reports a unique-index rejection as `P2002`. */
 function isUniqueConstraintViolation(err: unknown): boolean {
@@ -1145,6 +1167,134 @@ export class TelephonyService {
    * `_still_connected` so a stuck carrier leg shows up in the runtime log
    * instead of looking like a clean refusal.
    */
+  /**
+   * Warm transfer: dials the agent's configured human into the caller's room
+   * and reports once they have answered, so the runtime can introduce the
+   * caller and step out. Nothing here ends the call: the agent job keeps
+   * metering until one of the two people hangs up.
+   *
+   * Only the call -> agent binding is trusted from the request; the target
+   * number and the trunk come from the agent's spec and the number the call
+   * arrived on. Every failure but authorisation is a `connected: false` with a
+   * reason, because the caller is holding and the runtime handles all of them
+   * the same way: apologise and offer a message.
+   */
+  async dialHandoff(input: HandoffDialRequest): Promise<HandoffDialResponse> {
+    const call = await this.prisma.call.findUnique({
+      where: { id: input.callId },
+      select: {
+        id: true,
+        workspaceId: true,
+        organizationId: true,
+        agentId: true,
+        livekitRoomName: true,
+        phoneNumber: {
+          select: {
+            phoneNumberE164: true,
+            livekitConfig: { select: { outboundTrunkId: true } },
+          },
+        },
+        agent: { select: { specJson: true, activeVersionId: true } },
+      },
+    });
+    if (!call || call.agentId !== input.agentId) {
+      throw new ForbiddenError('Call is not bound to this agent.');
+    }
+
+    const fail = async (reason: string): Promise<HandoffDialResponse> => {
+      this.logger.warn(`Handoff for call ${call.id} failed: ${reason}`);
+      await this.prisma.callEvent.create({
+        data: {
+          callId: call.id,
+          workspaceId: call.workspaceId,
+          organizationId: call.organizationId,
+          eventType: 'handoff.failed',
+          payload: { reason } as Prisma.InputJsonValue,
+        },
+      });
+      return { connected: false, participantIdentity: null, reason };
+    };
+
+    const trunkId = call.phoneNumber?.livekitConfig?.outboundTrunkId;
+    if (!call.livekitRoomName || !call.phoneNumber || !trunkId) {
+      // Browser tests and numbers without an outbound trunk have no leg to add.
+      return fail('no_outbound_trunk');
+    }
+    const target = await this.handoffTarget(call.agent, call.phoneNumber.phoneNumberE164);
+    if (!target) return fail('invalid_target');
+
+    const participantIdentity = `sip-human-${call.id}`;
+    await this.prisma.callEvent.create({
+      data: {
+        callId: call.id,
+        workspaceId: call.workspaceId,
+        organizationId: call.organizationId,
+        eventType: 'handoff.requested',
+        payload: { target, summary: input.summary ?? null } as Prisma.InputJsonValue,
+      },
+    });
+    try {
+      await this.livekit.addSipParticipant({
+        outboundTrunkId: trunkId,
+        toNumber: target,
+        fromNumber: call.phoneNumber.phoneNumberE164,
+        roomName: call.livekitRoomName,
+        participantIdentity,
+        ringingTimeoutSeconds: HANDOFF_RING_SECONDS,
+        metadata: { callId: call.id, role: 'human_handoff' },
+      });
+    } catch (err) {
+      return fail(`dial_failed: ${(err as Error).message}`.slice(0, 200));
+    }
+
+    await this.prisma.callEvent.create({
+      data: {
+        callId: call.id,
+        workspaceId: call.workspaceId,
+        organizationId: call.organizationId,
+        eventType: 'handoff.connected',
+        payload: { target, participantIdentity } as Prisma.InputJsonValue,
+      },
+    });
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: { outcome: 'human_transfer_completed' },
+    });
+    return { connected: true, participantIdentity, reason: null };
+  }
+
+  /**
+   * The agent's handoff number in E.164, or null when none is usable.
+   *
+   * Operators type the number the way they dial it locally, so a number with
+   * no country code is read in the country of the line the call is on.
+   * ponytail: that guess is wrong for a line in one country and a human in
+   * another; store E.164 in the spec (the UI can normalise on save) if it bites.
+   */
+  private async handoffTarget(
+    agent: { specJson: Prisma.JsonValue | null; activeVersionId: string | null },
+    lineNumberE164: string,
+  ): Promise<string | null> {
+    let specJson: Prisma.JsonValue | null = agent.specJson;
+    if (!specJson && agent.activeVersionId) {
+      const version = await this.prisma.agentVersion.findUnique({
+        where: { id: agent.activeVersionId },
+        select: { specJson: true },
+      });
+      specJson = version?.specJson ?? null;
+    }
+    const parsed = HandoffTargetSchema.safeParse(specJson);
+    const raw = parsed.success ? parsed.data.handoff?.target_phone?.trim() : undefined;
+    if (!raw) return null;
+    let country: string | undefined;
+    try {
+      country = parsePhoneNumber(lineNumberE164).country;
+    } catch {
+      country = undefined;
+    }
+    return normalizePhone(raw, country);
+  }
+
   private async hangUpSipLeg(input: InboundCallAdmitRequest): Promise<boolean> {
     if (!input.roomName || !input.participantIdentity) {
       this.logger.warn(

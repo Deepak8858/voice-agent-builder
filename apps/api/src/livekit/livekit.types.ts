@@ -57,3 +57,14 @@ export interface CreateOutboundCallParams {
   roomName: string;
   metadata?: Record<string, unknown>;
 }
+
+export interface AddSipParticipantParams {
+  outboundTrunkId: string;
+  toNumber: string;
+  fromNumber: string;
+  roomName: string;
+  participantIdentity: string;
+  /** How long the far end may ring before the dial is given up, in seconds. */
+  ringingTimeoutSeconds: number;
+  metadata?: Record<string, unknown>;
+}

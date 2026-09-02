@@ -171,3 +171,27 @@ export const InboundCallAdmitResponseSchema = z
   })
   .strict();
 export type InboundCallAdmitResponse = z.infer<typeof InboundCallAdmitResponseSchema>;
+
+/**
+ * Runtime -> API request to dial the agent's configured human into the live
+ * call. The target number is deliberately absent: the internal key is one
+ * credential for every tenant, so the API reads the target from the agent's
+ * own spec instead of dialling whatever the request names.
+ */
+export const HandoffDialRequestSchema = z
+  .object({
+    callId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    summary: z.string().max(1000).nullish(),
+  })
+  .strict();
+export type HandoffDialRequest = z.infer<typeof HandoffDialRequestSchema>;
+
+export const HandoffDialResponseSchema = z
+  .object({
+    connected: z.boolean(),
+    participantIdentity: z.string().nullable(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+export type HandoffDialResponse = z.infer<typeof HandoffDialResponseSchema>;
