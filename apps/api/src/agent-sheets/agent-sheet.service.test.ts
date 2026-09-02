@@ -49,6 +49,7 @@ function makeService(
         ...data,
       })),
     },
+    $executeRaw: vi.fn(async () => 1),
   };
   const google = {
     getStatus: vi.fn(async () => ({
@@ -97,11 +98,23 @@ describe('AgentSheetService.ensureForPublish', () => {
     expect(header.body).toEqual({
       values: [['Call time', 'Caller number', 'Call ID', 'Outcome', 'full_name', 'medicine_name']],
     });
+    // The row exists before the first Google write after creation, so a
+    // failed header write can never strand the spreadsheet.
     expect(prisma.agentGoogleResource.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         agentId: 'agent-1',
         workspaceId: 'ws-1',
         spreadsheetId: 'SS1',
+        status: 'pending',
+        columns: [],
+      }),
+    });
+    expect(prisma.agentGoogleResource.create.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(safeFetch).mock.invocationCallOrder[1],
+    );
+    expect(prisma.agentGoogleResource.update).toHaveBeenCalledWith({
+      where: { id: 'res-1' },
+      data: expect.objectContaining({
         status: 'ready',
         columns: [
           { key: 'call_time', header: 'Call time' },
@@ -112,6 +125,21 @@ describe('AgentSheetService.ensureForPublish', () => {
           { key: 'medicine_name', header: 'medicine_name' },
         ],
       }),
+    });
+  });
+
+  it('records a failed first header write on the row instead of orphaning the spreadsheet', async () => {
+    vi.mocked(safeFetch)
+      .mockResolvedValueOnce(json({ spreadsheetId: 'SS1', spreadsheetUrl: 'u' }))
+      .mockResolvedValueOnce(json({ error: { message: 'quota' } }, 429));
+    const { service, prisma } = makeService();
+
+    await expect(service.ensureForPublish(agent, spec)).resolves.toBeNull();
+
+    expect(prisma.agentGoogleResource.create).toHaveBeenCalledTimes(1);
+    expect(prisma.agentGoogleResource.update).toHaveBeenLastCalledWith({
+      where: { id: 'res-1' },
+      data: { status: 'error', lastError: expect.stringContaining('429') },
     });
   });
 
@@ -209,10 +237,12 @@ describe('AgentSheetService.recordCallerDetails', () => {
     });
 
     expect(result).toEqual({ saved: true, reason: null });
-    expect(prisma.call.update).toHaveBeenCalledWith({
-      where: { id: 'call-1' },
-      data: { metadata: { caller_details: { full_name: 'Deepak', medicine_name: 'Corex' } } },
-    });
+    // An in-database JSON merge of only the accepted fields; never a whole-object write.
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("'{caller_details}'");
+    expect(values).toEqual([JSON.stringify({ medicine_name: 'Corex' }), 'call-1']);
     expect(queue.enqueue).toHaveBeenCalledWith(
       'agent_sheet_sync',
       'sync',
@@ -295,10 +325,11 @@ describe('AgentSheetService.syncCallRow', () => {
         ['2026-09-02T15:00:00.000Z', '+917607185834', 'call-1', 'in_progress', 'Deepak', ''],
       ],
     });
-    expect(prisma.call.update).toHaveBeenCalledWith({
-      where: { id: 'call-1' },
-      data: { metadata: { caller_details: { full_name: 'Deepak' }, sheet_row: 7 } },
-    });
+    // Only sheet_row is merged in, atomically; details saved meanwhile survive.
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("'{sheet_row}'");
+    expect(values).toEqual([7, 'call-1', 'ws-1']);
   });
 
   it('updates the same row on later saves and at call end', async () => {
@@ -325,6 +356,7 @@ describe('AgentSheetService.syncCallRow', () => {
       ],
     });
     expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 });
 

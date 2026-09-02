@@ -10,7 +10,8 @@ import { BillingModule } from '../billing/billing.module';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [KnowledgeModule, LlmModule, BillingModule, PrismaModule],
+  // AgentSheetsModule: publish creates/extends the agent's Google Sheet.
+  imports: [KnowledgeModule, LlmModule, BillingModule, PrismaModule, AgentSheetsModule],
   controllers: [AgentsController, PublicAgentsController],
   providers: [AgentsService, WorkspaceGuard, GenerationRateLimitGuard],
   exports: [AgentsService],

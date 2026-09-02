@@ -73,18 +73,19 @@ export class AgentSheetService {
       ...FIXED_COLUMNS,
       ...spec.required_fields.map((field) => ({ key: field.key, header: field.key })),
     ];
-    const existing = await this.prisma.agentGoogleResource.findFirst({
+    let existing = await this.prisma.agentGoogleResource.findFirst({
       where: { agentId: agent.id, workspaceId: agent.workspaceId },
     });
 
     try {
       const accessToken = await this.google.getUsableAccessToken(agent.workspaceId);
       if (!existing) {
+        // The row is written the moment the spreadsheet exists, with no
+        // columns yet: if the header write fails, the next publish finds this
+        // row and appends every header instead of creating a second, orphaned
+        // spreadsheet in the user's Drive.
         const created = await this.createSpreadsheet(accessToken, agent.name);
-        await this.writeRange(accessToken, created.spreadsheetId, `${SHEET_TITLE}!A1`, [
-          wanted.map((column) => column.header),
-        ]);
-        const row = await this.prisma.agentGoogleResource.create({
+        existing = await this.prisma.agentGoogleResource.create({
           data: {
             agentId: agent.id,
             workspaceId: agent.workspaceId,
@@ -92,13 +93,12 @@ export class AgentSheetService {
             spreadsheetId: created.spreadsheetId,
             spreadsheetUrl: created.spreadsheetUrl,
             sheetTitle: SHEET_TITLE,
-            columns: wanted as unknown as Prisma.InputJsonValue,
+            columns: [] as unknown as Prisma.InputJsonValue,
             headerSyncedAt: new Date(),
-            status: 'ready',
+            status: 'pending',
             lastError: null,
           },
         });
-        return { spreadsheetUrl: row.spreadsheetUrl };
       }
 
       const columns = readColumns(existing.columns);
@@ -156,17 +156,24 @@ export class AgentSheetService {
     if (!resource) return { saved: false, reason: 'no_sheet' };
 
     const allowed = new Set(readColumns(resource.columns).map((column) => column.key));
-    const current = objectValue(call.metadata);
-    const details: Record<string, string> = { ...objectStrings(current.caller_details) };
+    const details: Record<string, string> = {};
     for (const [key, value] of Object.entries(input.fields)) {
       if (!allowed.has(key) || value === null || value === undefined) continue;
       const text = String(value).trim();
       if (text) details[key] = text;
     }
-    await this.prisma.call.update({
-      where: { id: call.id },
-      data: { metadata: { ...current, caller_details: details } as Prisma.InputJsonValue },
-    });
+    if (Object.keys(details).length > 0) {
+      // A JSON merge in the database, not a read-modify-write: the sheet
+      // worker stamps sheet_row on the same column while saves keep arriving,
+      // and a stale snapshot from either side would erase the other's write.
+      await this.prisma.$executeRaw`UPDATE calls
+        SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{caller_details}',
+          COALESCE(metadata->'caller_details', '{}'::jsonb) || ${JSON.stringify(details)}::jsonb
+        )
+        WHERE id = ${call.id}::uuid`;
+    }
     await this.enqueueSync(call.id, call.workspaceId);
     return { saved: true, reason: null };
   }
@@ -232,20 +239,11 @@ export class AgentSheetService {
       resource.sheetTitle,
       values,
     );
-    // Re-read: another save may have merged more details while Google worked.
-    const latest = await this.prisma.call.findFirst({
-      where: { id: call.id, workspaceId: call.workspaceId },
-      select: { metadata: true },
-    });
-    await this.prisma.call.update({
-      where: { id: call.id },
-      data: {
-        metadata: {
-          ...objectValue(latest?.metadata ?? call.metadata),
-          sheet_row: appendedRow,
-        } as Prisma.InputJsonValue,
-      },
-    });
+    // Only the row number, merged in the database; details saved while Google
+    // worked are left untouched.
+    await this.prisma.$executeRaw`UPDATE calls
+      SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{sheet_row}', to_jsonb(${appendedRow}::int))
+      WHERE id = ${call.id}::uuid AND workspace_id = ${call.workspaceId}::uuid`;
   }
 
   private async enqueueSync(callId: string, workspaceId: string): Promise<void> {
