@@ -155,11 +155,33 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
   }): Promise<void> {
     if (!params.trunkSid || !params.phoneNumber.providerNumberId) return;
     const credentials = this.assertCredentials(params.credentials);
-    await this.trunkingRequest(
-      credentials,
-      'DELETE',
-      `/Trunks/${params.trunkSid}/PhoneNumbers/${params.phoneNumber.providerNumberId}`,
-    ).catch(() => undefined);
+    try {
+      await this.trunkingRequest(
+        credentials,
+        'DELETE',
+        `/Trunks/${params.trunkSid}/PhoneNumbers/${params.phoneNumber.providerNumberId}`,
+      );
+    } catch (err) {
+      // 404 is the state this wants: the number is not on the trunk. Every other
+      // failure (bad token, Twilio outage) left it attached to a trunk whose
+      // routing is being deleted, so the caller has to hear about it.
+      if ((err as AppError).details?.twilio_status === 404) return;
+      throw err;
+    }
+  }
+
+  /**
+   * A trunk by SID, or null when Twilio no longer has it — the customer can
+   * delete a trunk we provisioned, and that has to fall back to a fresh one
+   * rather than fail every re-run.
+   */
+  private async findTrunk(
+    credentials: { accountSid: string; authToken: string },
+    trunkSid: string,
+  ): Promise<TwilioTrunk | null> {
+    return this.trunkingRequest<TwilioTrunk>(credentials, 'GET', `/Trunks/${trunkSid}`).catch(
+      () => null,
+    );
   }
 
   /**
@@ -234,15 +256,25 @@ export class TwilioProviderAdapter implements PhoneNumberProviderAdapter {
     credentials: ProviderCredentials;
     originationSipUri: string;
     existingUsername?: string | null;
+    existingTrunkSid?: string | null;
   }): Promise<ProviderSipTrunk> {
     const credentials = this.assertCredentials(params.credentials);
 
-    const trunks = await this.trunkingRequest<{ trunks?: TwilioTrunk[] }>(
-      credentials,
-      'GET',
-      '/Trunks?PageSize=50',
-    );
-    let trunk = (trunks.trunks ?? []).find((item) => item.friendly_name === TRUNK_FRIENDLY_NAME);
+    // The recorded SID wins over the name: the customer owns this Twilio account
+    // and may well have their own trunk called VoiceForge, and adopting it would
+    // point their unrelated trunk at our media plane while leaving our
+    // termination credential attached to the trunk we actually provisioned.
+    let trunk: TwilioTrunk | null = params.existingTrunkSid
+      ? await this.findTrunk(credentials, params.existingTrunkSid)
+      : null;
+    if (!trunk) {
+      const trunks = await this.trunkingRequest<{ trunks?: TwilioTrunk[] }>(
+        credentials,
+        'GET',
+        '/Trunks?PageSize=50',
+      );
+      trunk = (trunks.trunks ?? []).find((item) => item.friendly_name === TRUNK_FRIENDLY_NAME) ?? null;
+    }
     if (!trunk) {
       trunk = await this.trunkingRequest<TwilioTrunk>(credentials, 'POST', '/Trunks', {
         FriendlyName: TRUNK_FRIENDLY_NAME,

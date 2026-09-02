@@ -2526,4 +2526,64 @@ describe('TelephonyService.admitSipInboundCall', () => {
       reason: 'credit_insufficient_still_connected',
     });
   });
+
+});
+
+describe('TelephonyService.disconnectNumber', () => {
+  /**
+   * A number left attached to the trunk after the config is gone keeps sending
+   * calls to a trunk nothing dispatches into, and the customer cannot take the
+   * number back into their own Programmable Voice app.
+   */
+  it('releases the number at the provider before deleting it', async () => {
+    const prisma = makePrisma();
+    prisma.telephonyPhoneNumber.findFirst.mockResolvedValue({
+      id: 'number-1',
+      workspaceId: 'workspace-1',
+      organizationId: 'org-1',
+      provider: 'twilio',
+      phoneNumberE164: '+14155551234',
+      providerNumberId: 'PN123',
+      sipTrunkId: null,
+      createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      status: 'livekit_configured',
+      inboundEnabled: true,
+      outboundEnabled: true,
+      livekitConfig: {
+        dispatchRuleId: 'rule-1',
+        inboundTrunkId: 'trunk-in-1',
+        outboundTrunkId: 'trunk-out-1',
+      },
+      providerConnection: {
+        encryptedCredentials: { cipher: 'x' },
+        metadata: { twilioTrunk: { trunkSid: 'TK1', username: 'vf_dead' } },
+      },
+    } as never);
+    const removeRouting = vi.fn(async () => undefined);
+    const livekit = {
+      deleteDispatchRule: vi.fn(async () => undefined),
+      deleteSipTrunk: vi.fn(async () => undefined),
+    };
+    const service = new TelephonyService(
+      prisma as never,
+      livekit as never,
+      { adapterFor: vi.fn(() => ({ removeRouting })) } as never,
+      { encryptJson: vi.fn(), decryptJson: vi.fn(() => ({ accountSid: 'AC', authToken: 't' })) } as never,
+      { log: vi.fn() } as never,
+      allowByoTelephony() as never,
+      {} as never,
+      {} as never,
+      makeAdmission() as never,
+    );
+
+    await service.disconnectNumber('workspace-1', 'number-1', 'user-1');
+
+    expect(removeRouting).toHaveBeenCalledWith(
+      expect.objectContaining({ trunkSid: 'TK1' }),
+    );
+    expect(prisma.telephonyPhoneNumber.delete).toHaveBeenCalledWith({ where: { id: 'number-1' } });
+    expect(removeRouting.mock.invocationCallOrder[0]).toBeLessThan(
+      prisma.telephonyPhoneNumber.delete.mock.invocationCallOrder[0] as number,
+    );
+  });
 });

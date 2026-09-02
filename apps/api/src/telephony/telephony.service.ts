@@ -541,14 +541,19 @@ export class TelephonyService {
     // A separate "configure" button after assignment was a dead end nobody
     // pressed, and the page keeps a Reconfigure action for retries.
     if (dto.agent_id) {
-      await this.configureLiveKit(workspaceId, number.id, actorUserId);
+      const result = await this.configureLiveKit(workspaceId, number.id, actorUserId);
       // Re-read: configure just flipped the status and created the LiveKit
       // config, and the assign response must reflect what a refresh shows.
       const configured = await this.prisma.telephonyPhoneNumber.findFirst({
         where: { id: number.id, workspaceId },
         include: { livekitConfig: true },
       });
-      if (configured) return this.phoneNumberDto(configured);
+      // `provider_routing` rides along because a provider that could not be
+      // configured by API returns the steps the customer has to take at their
+      // carrier, and assignment is now the only place most users see them.
+      if (configured) {
+        return { ...this.phoneNumberDto(configured), provider_routing: result.provider_routing };
+      }
     }
     return this.phoneNumberDto(updated);
   }
@@ -591,7 +596,6 @@ export class TelephonyService {
     // are deleted first — otherwise every reconfigure leaks a trunk and the
     // new inbound trunk conflicts with the old one over the number.
     await this.deleteRecordedLiveKitResources(number.livekitConfig);
-    await this.removeProviderRouting(number);
 
     const roomPrefix = `${env.LIVEKIT_ROOM_PREFIX ?? 'call'}-${number.id}-`;
     let inboundTrunkId: string | null = null;
@@ -695,6 +699,12 @@ export class TelephonyService {
 
     let providerRouting: unknown = null;
     if (number.providerConnection) {
+      // Released only now that the replacement LiveKit resources exist: a
+      // failure above must leave the carrier still pointing at us, because the
+      // number can sit on only one trunk and re-attaching it is this method's
+      // job. Release then re-attach also covers the case where the trunk itself
+      // changed since the last run.
+      await this.removeProviderRouting(number);
       const credentials = this.encryption.decryptJson<ProviderCredentials>(
         number.providerConnection.encryptedCredentials,
       );
@@ -762,6 +772,10 @@ export class TelephonyService {
     });
     if (!number) throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     await this.deleteRecordedLiveKitResources(number.livekitConfig);
+    // The number goes back to the customer's account, off our trunk: left
+    // attached, it keeps sending calls to a trunk that no longer exists and the
+    // caller hears silence.
+    await this.removeProviderRouting(number);
     // Hard delete, not a status flip: `phone_number_e164` is globally unique,
     // so a lingering "disconnected" row permanently blocked re-adding the same
     // number. Call history survives (`calls.phone_number_id` is ON DELETE SET
@@ -1901,6 +1915,7 @@ export class TelephonyService {
       // part itself, which is what lets LiveKit match the inbound trunk.
       originationSipUri: `sip:${this.livekit.livekitSipHost};transport=tcp`,
       ...(storedUsername ? { existingUsername: storedUsername } : {}),
+      ...(typeof stored.trunkSid === 'string' ? { existingTrunkSid: stored.trunkSid } : {}),
     });
     // A password is only returned the first time it is minted — Twilio never
     // reads one back — so a re-run keeps the stored envelope.

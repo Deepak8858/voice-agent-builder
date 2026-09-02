@@ -84,6 +84,11 @@ export interface PhoneNumberProviderAdapter {
     originationSipUri: string;
     /** Existing digest username, so a re-run does not mint a second credential. */
     existingUsername?: string | null;
+    /**
+     * Trunk a previous run provisioned. Reused by SID so a re-run cannot pick up
+     * a different trunk that happens to share our name.
+     */
+    existingTrunkSid?: string | null;
   }): Promise<ProviderSipTrunk>;
   configureInboundRouting(params: {
     credentials: ProviderCredentials;

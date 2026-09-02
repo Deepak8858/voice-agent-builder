@@ -114,6 +114,9 @@ const emptySipForm: SipForm = {
 // Two newlines: the provider's message, then the steps it wants done by hand.
 const SECTION_BREAK = '\n\n';
 
+/** What a provider adapter reports back after a routing attempt. */
+type ProviderRouting = { status?: string; message?: string; manualInstructions?: string };
+
 const E164_PHONE_PATTERN = /^\+[1-9]\d{6,14}$/;
 
 export default function PhoneNumbersPage() {
@@ -348,6 +351,24 @@ export default function PhoneNumbersPage() {
     }
   }
 
+  /**
+   * Records (or clears) the carrier steps a provider returned. Both assignment
+   * and Reconfigure can produce them, and whichever ran last is the truth.
+   */
+  function applyManualSteps(numberId: string, routing: ProviderRouting | undefined) {
+    setManualSteps((prev) => {
+      const next = { ...prev };
+      if (routing?.status === 'manual_required') {
+        next[numberId] = [routing.message, routing.manualInstructions]
+          .filter(Boolean)
+          .join(SECTION_BREAK);
+      } else {
+        delete next[numberId];
+      }
+      return next;
+    });
+  }
+
   async function updateNumberSettings(
     number: PhoneNumber,
     patch: { agentId?: string | null; inboundEnabled?: boolean; outboundEnabled?: boolean },
@@ -356,14 +377,18 @@ export default function PhoneNumbersPage() {
     setBusy(`assign-${number.id}`);
     setError(null);
     try {
-      await call(`/workspaces/${workspaceId}/telephony/phone-numbers/${number.id}/assign-agent`, {
-        method: 'POST',
-        body: JSON.stringify({
-          agent_id: patch.agentId !== undefined ? patch.agentId : number.assigned_agent_id ?? null,
-          inbound_enabled: patch.inboundEnabled ?? number.inbound_enabled,
-          outbound_enabled: patch.outboundEnabled ?? number.outbound_enabled,
-        }),
-      });
+      const result = await call<{ data?: { provider_routing?: ProviderRouting } }>(
+        `/workspaces/${workspaceId}/telephony/phone-numbers/${number.id}/assign-agent`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            agent_id: patch.agentId !== undefined ? patch.agentId : number.assigned_agent_id ?? null,
+            inbound_enabled: patch.inboundEnabled ?? number.inbound_enabled,
+            outbound_enabled: patch.outboundEnabled ?? number.outbound_enabled,
+          }),
+        },
+      );
+      applyManualSteps(number.id, result?.data?.provider_routing);
       await refresh();
     } catch (err) {
       handleApiError(err, 'Phone number update failed');
@@ -377,24 +402,11 @@ export default function PhoneNumbersPage() {
     setBusy(`livekit-${numberId}`);
     setError(null);
     try {
-      const result = await call<{
-        data?: { provider_routing?: { status?: string; message?: string; manualInstructions?: string } };
-      }>(`/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/configure-livekit`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      const routing = result?.data?.provider_routing;
-      setManualSteps((prev) => {
-        const next = { ...prev };
-        if (routing?.status === 'manual_required') {
-          next[numberId] = [routing.message, routing.manualInstructions]
-            .filter(Boolean)
-            .join(SECTION_BREAK);
-        } else {
-          delete next[numberId];
-        }
-        return next;
-      });
+      const result = await call<{ data?: { provider_routing?: ProviderRouting } }>(
+        `/workspaces/${workspaceId}/telephony/phone-numbers/${numberId}/configure-livekit`,
+        { method: 'POST', body: JSON.stringify({}) },
+      );
+      applyManualSteps(numberId, result?.data?.provider_routing);
       await refresh();
     } catch (err) {
       handleApiError(err, 'LiveKit configuration failed');

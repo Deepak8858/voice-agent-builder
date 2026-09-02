@@ -134,6 +134,69 @@ describe('TwilioProviderAdapter', () => {
     expect(calls.every((call) => call.startsWith('GET'))).toBe(true);
   });
 
+  it('reuses the recorded trunk by sid, never the first one that shares our name', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        const target = `${init?.method ?? 'GET'} ${String(url)}`;
+        calls.push(target);
+        if (target.includes('/OriginationUrls')) {
+          return json({
+            origination_urls: [
+              { sid: 'OU9', sip_url: 'sip:tenant.sip.livekit.cloud;transport=tcp' },
+            ],
+          });
+        }
+        return json({ sid: 'TK9', friendly_name: 'VoiceForge', domain_name: 'vf-nine.pstn.twilio.com' });
+      },
+    });
+
+    const trunk = await adapter.ensureSipTrunk({
+      credentials: CREDENTIALS,
+      originationSipUri: 'sip:tenant.sip.livekit.cloud;transport=tcp',
+      existingUsername: 'vf_deadbeef',
+      existingTrunkSid: 'TK9',
+    });
+
+    expect(trunk).toMatchObject({ trunkSid: 'TK9', domainName: 'vf-nine.pstn.twilio.com' });
+    // The customer's own trunk list is never consulted, so a same-named trunk of
+    // theirs cannot be adopted.
+    expect(calls.some((call) => call.includes('/Trunks?'))).toBe(false);
+    expect(calls[0]).toBe('GET https://trunking.twilio.com/v1/Trunks/TK9');
+  });
+
+  it('falls back to a fresh trunk when the recorded one was deleted at Twilio', async () => {
+    const calls: string[] = [];
+    const adapter = new TwilioProviderAdapter({
+      fetch: async (url, init) => {
+        const target = `${init?.method ?? 'GET'} ${String(url)}`;
+        calls.push(target);
+        if (target === 'GET https://trunking.twilio.com/v1/Trunks/TKGONE') {
+          return new Response(JSON.stringify({ message: 'not found' }), { status: 404 });
+        }
+        if (target.includes('/Trunks?')) return json({ trunks: [] });
+        if (target.includes('/OriginationUrls') && target.startsWith('GET')) {
+          return json({ origination_urls: [] });
+        }
+        if (target.includes('/OriginationUrls')) return json({ sid: 'OU2' });
+        if (target.endsWith('/Trunks')) {
+          return json({ sid: 'TK2', friendly_name: 'VoiceForge', domain_name: 'vf-two.pstn.twilio.com' });
+        }
+        return json({});
+      },
+    });
+
+    const trunk = await adapter.ensureSipTrunk({
+      credentials: CREDENTIALS,
+      originationSipUri: 'sip:tenant.sip.livekit.cloud;transport=tcp',
+      existingUsername: 'vf_deadbeef',
+      existingTrunkSid: 'TKGONE',
+    });
+
+    expect(trunk.trunkSid).toBe('TK2');
+    expect(calls.some((call) => call.includes('/Trunks?'))).toBe(true);
+  });
+
   it('attaches the number to the trunk instead of rewriting webhooks, and tolerates a re-attach', async () => {
     const calls: string[] = [];
     const adapter = new TwilioProviderAdapter({
@@ -167,7 +230,9 @@ describe('TwilioProviderAdapter', () => {
     const adapter = new TwilioProviderAdapter({
       fetch: async (url, init) => {
         calls.push(`${init?.method ?? 'GET'} ${String(url)}`);
-        return new Response('', { status: 204 });
+        // `null`, not '': a 204 with a body is not constructible, and the old
+        // blanket catch in removeRouting hid that this mock never worked.
+        return new Response(null, { status: 204 });
       },
     });
 
@@ -176,6 +241,25 @@ describe('TwilioProviderAdapter', () => {
     expect(calls).toEqual([
       'DELETE https://trunking.twilio.com/v1/Trunks/TK1/PhoneNumbers/PN123',
     ]);
+  });
+
+  it('treats a 404 release as done but reports every other release failure', async () => {
+    const gone = new TwilioProviderAdapter({
+      fetch: async () => new Response(JSON.stringify({ message: 'not found' }), { status: 404 }),
+    });
+    await expect(
+      gone.removeRouting({ credentials: CREDENTIALS, phoneNumber: NUMBER, trunkSid: 'TK1' }),
+    ).resolves.toBeUndefined();
+
+    const broken = new TwilioProviderAdapter({
+      fetch: async () =>
+        new Response(JSON.stringify({ message: 'Authenticate' }), { status: 401 }),
+    });
+    // Swallowing this would leave the number attached to a trunk whose routing
+    // is being deleted, and nothing would say so.
+    await expect(
+      broken.removeRouting({ credentials: CREDENTIALS, phoneNumber: NUMBER, trunkSid: 'TK1' }),
+    ).rejects.toThrow(/Authenticate/);
   });
 });
 
