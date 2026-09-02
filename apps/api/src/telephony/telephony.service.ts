@@ -2277,7 +2277,6 @@ export class TelephonyService {
       outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
-      metadata: Prisma.JsonValue | null;
     } | null;
     phoneNumberId: string | null;
     participantId: string | null;
@@ -2309,7 +2308,6 @@ export class TelephonyService {
               outcome: true,
               startedAt: true,
               endedAt: true,
-              metadata: true,
             },
           })
         : null;
@@ -2326,7 +2324,6 @@ export class TelephonyService {
       outcome: string | null;
       startedAt: Date | null;
       endedAt: Date | null;
-      metadata: Prisma.JsonValue | null;
     },
     eventType: string,
     payload: Record<string, unknown>,
@@ -2357,12 +2354,11 @@ export class TelephonyService {
     // The SIP leg's disconnect reason is the only carrier signal LiveKit gives
     // us; keep it on the call so "no answer" can be told apart from "refused".
     const sipLeg = this.sipLegDisconnect(payload);
-    const metadata = sipLeg
-      ? ({
-          ...this.objectMetadata(call.metadata),
+    const metadataPatch = sipLeg
+      ? {
           sip_disconnect_reason: sipLeg.reason,
           ...(sipLeg.status ? { sip_last_status: sipLeg.status } : {}),
-        } as Prisma.InputJsonValue)
+        }
       : null;
     // Terminal events arrive more than once (participant_left, then
     // room_finished, plus LiveKit's own redelivery). A call already settled as
@@ -2381,7 +2377,6 @@ export class TelephonyService {
           data: {
             status: unanswered ? 'failed' : normalizedStatus.status,
             ...(unanswered ? { outcome: unanswered } : {}),
-            ...(metadata ? { metadata } : {}),
             ...(participantId ? { livekitParticipantId: participantId } : {}),
             ...(endedAt ? { endedAt } : {}),
             ...(endedAt && call.startedAt
@@ -2399,9 +2394,14 @@ export class TelephonyService {
           throw err;
         }
       }
-    } else if (metadata) {
-      // The call is already settled; the carrier reason is still worth keeping.
-      await this.prisma.call.update({ where: { id: call.id }, data: { metadata } });
+    }
+    if (metadataPatch) {
+      // Merged in the database, whatever the call's status: the runtime's
+      // save_caller_details writes into the same JSON column during the call,
+      // and a read-modify-write here could erase what it saved.
+      await this.prisma.$executeRaw`UPDATE calls
+        SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(metadataPatch)}::jsonb
+        WHERE id = ${call.id}::uuid`;
     }
     await this.recordLiveKitCallEvent(call, eventType, payload);
   }

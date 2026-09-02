@@ -50,6 +50,7 @@ function makeLiveKitTerminalPrisma(
     callUsage: {
       findUnique: vi.fn(async () => (connectedAt === 'none' ? null : { connectedAt })),
     },
+    $executeRaw: vi.fn(async () => 1),
     call: {
       findFirst: vi.fn(async () => ({
         id: 'call-1',
@@ -59,7 +60,6 @@ function makeLiveKitTerminalPrisma(
         outcome,
         startedAt: new Date('2026-09-02T10:00:00.000Z'),
         endedAt: null,
-        metadata: { purpose: 'order_confirmation' },
       })),
       update: vi.fn(
         async ({ data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => ({
@@ -1449,17 +1449,9 @@ describe('TelephonyService', () => {
 
     await service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token');
 
-    // The only write is the carrier reason; status and outcome are untouched.
-    expect(prisma.call.update).toHaveBeenCalledTimes(1);
-    expect(prisma.call.update.mock.calls[0][0]).toEqual({
-      where: { id: 'call-1' },
-      data: {
-        metadata: {
-          purpose: 'order_confirmation',
-          sip_disconnect_reason: 'USER_UNAVAILABLE',
-        },
-      },
-    });
+    // Status and outcome are untouched; only the carrier reason is merged in.
+    expect(prisma.call.update).not.toHaveBeenCalled();
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
     expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
   });
 
@@ -1547,17 +1539,17 @@ describe('TelephonyService', () => {
 
     expect(prisma.call.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: 'failed',
-          outcome: 'declined',
-          metadata: {
-            purpose: 'order_confirmation',
-            sip_disconnect_reason: 'USER_REJECTED',
-            sip_last_status: 'dialing',
-          },
-        }),
+        data: expect.objectContaining({ status: 'failed', outcome: 'declined' }),
       }),
     );
+    // The reason is merged into metadata in the database, never by rewriting
+    // the whole object (the runtime writes caller details into the same column).
+    const [sql, ...values] = prisma.$executeRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(sql.join('?')).toContain("COALESCE(metadata, '{}'::jsonb) || ?::jsonb");
+    expect(values).toEqual([
+      JSON.stringify({ sip_disconnect_reason: 'USER_REJECTED', sip_last_status: 'dialing' }),
+      'call-1',
+    ]);
   });
 
   it.each([
