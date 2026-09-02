@@ -80,23 +80,18 @@ export const GOOGLE_TOOL_PRESETS: GoogleToolPreset[] = [
   {
     name: 'append_sheet_row',
     toolType: 'google_sheets',
-    description: 'Append a row of values to the connected Google Sheet.',
+    description:
+      'Append a row of values to the connected Google Sheet. Use an empty string for a column the caller did not provide.',
     config: { operation: 'append_row', sheet_name: 'Sheet1' },
+    // No spreadsheet_id / sheet_name parameters: the target is tool config the
+    // business sets. Offered the choice, the model invents a spreadsheet name.
     inputSchema: {
       type: 'object',
       properties: {
         values: {
           type: 'array',
-          items: { type: ['string', 'number', 'boolean'] },
+          items: { type: ['string', 'number', 'boolean', 'null'] },
           description: 'Cell values for the new row, in column order.',
-        },
-        spreadsheet_id: {
-          type: 'string',
-          description: 'Target spreadsheet id. Falls back to the tool config.',
-        },
-        sheet_name: {
-          type: 'string',
-          description: 'Target sheet (tab) name. Falls back to the tool config.',
         },
       },
       required: ['values'],

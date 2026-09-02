@@ -343,6 +343,7 @@ export class AgentsService {
       workspaceId,
       agentId,
       parsedBase.data,
+      { publishing: true },
     );
     const parsed = AgentSpecSchema.safeParse(specWithTools);
     if (!parsed.success) throw new AgentSpecInvalidError({ issues: parsed.error.flatten() });
@@ -538,6 +539,7 @@ export class AgentsService {
     workspaceId: string,
     agentId: string,
     spec: AgentSpec | Record<string, unknown>,
+    options: { publishing?: boolean } = {},
   ): Promise<AgentSpec | Record<string, unknown>> {
     const flow = (spec as AgentSpec).flow;
     const referencedNames = new Set(
@@ -575,6 +577,21 @@ export class AgentsService {
       if (!googleToolNames.has(tool.name)) merged.set(tool.name, tool);
     }
     for (const row of eligibleRows) {
+      // A Sheets tool without a spreadsheet fails every append with "No
+      // spreadsheet configured" — which the caller never hears and the
+      // business only finds when an order is missing. Refuse to publish it.
+      if (options.publishing && row.toolType === 'google_sheets') {
+        const config = (row.config ?? {}) as Record<string, unknown>;
+        if (!String(config.spreadsheet_id ?? '').trim()) {
+          throw new AppError(
+            'AGENT_SPEC_INVALID',
+            `The "${row.name}" tool has no spreadsheet configured, so the agent could not save anything with it. ` +
+              `Open Integrations, choose ${row.name} and paste the spreadsheet ID, or disable the tool, then publish again.`,
+            HttpStatus.BAD_REQUEST,
+            { tool: row.name },
+          );
+        }
+      }
       merged.set(row.name, {
         name: row.name,
         description: row.description,

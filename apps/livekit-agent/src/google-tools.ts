@@ -168,12 +168,16 @@ const PARAMETER_SHAPES: GoogleToolParameterShapes = {
     subject: z.string().describe('Email subject line.'),
     body: z.string().describe('Plain-text email body.'),
   }),
+  // No spreadsheet_id / sheet_name: the target is tool config the business
+  // sets. A live call offered the choice produced "Vinod_Medical_Store_Orders".
+  // `null` is a column the caller did not fill, which the framework must not
+  // reject before execute runs — that rejection is how a whole order was lost.
   google_sheets: z.object({
     values: z
-      .array(z.union([z.string(), z.number(), z.boolean()]))
-      .describe('Cell values for the new row, in column order.'),
-    spreadsheet_id: z.string().optional().describe('Target spreadsheet id, if not preconfigured.'),
-    sheet_name: z.string().optional().describe('Target sheet (tab) name.'),
+      .array(z.union([z.string(), z.number(), z.boolean(), z.null()]))
+      .describe(
+        'Cell values for the new row, in column order. Use an empty string for a column the caller did not provide.',
+      ),
   }),
 };
 

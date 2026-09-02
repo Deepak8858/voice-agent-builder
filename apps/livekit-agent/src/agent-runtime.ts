@@ -70,6 +70,10 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
   if (spec.compliance.ai_disclosure_required) rules.push('clearly disclose that you are an AI assistant');
   if (spec.compliance.recording_notice_required) rules.push('give the configured recording notice');
 
+  const sheetTools = spec.tools
+    .filter((tool) => tool.permissions?.includes('google_sheets'))
+    .map((tool) => tool.name);
+
   const requiredFields = spec.required_fields
     .map((field) => `${field.key}${field.required ? ' (required)' : ''}: ${field.description ?? field.type}`)
     .join('\n');
@@ -88,6 +92,9 @@ export function buildVoiceForgeInstructions(spec: AgentSpec, metadata: DispatchM
       ? 'For factual questions about the business, its products, services, policies, or procedures, call search_knowledge_base before answering. Use only retrieved passages. If retrieval finds nothing or fails, say the returned fallback message exactly and do not invent an answer.'
       : 'Knowledge retrieval is disabled. Do not claim to have looked up business knowledge.',
     spec.knowledge.fallback_message ? `Knowledge fallback: ${spec.knowledge.fallback_message}` : null,
+    sheetTools.length > 0
+      ? `To record an order or request, call ${sheetTools.join(' or ')} once when the details are complete, with one value per column in the sheet's column order. Use an empty string for a column the caller did not provide. Where the row is stored is already configured; do not choose or invent a spreadsheet.`
+      : null,
     spec.handoff.enabled
       ? `Handoff is enabled. Conditions: ${spec.handoff.conditions.join('; ') || 'not configured'}.`
       : 'Handoff is disabled unless explicitly requested by platform policy.',
