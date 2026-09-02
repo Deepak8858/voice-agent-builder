@@ -91,8 +91,10 @@ faster on voicemail, do not stream silence during long holds) saves more than TT
 1 credit per character TTS is larger (500 against 330) and the priority inverts. Talk share moves
 it too: the numbers above assume the agent speaks for 50% of each call minute while STT stays open
 for the full minute, so a call where the caller talks most of the time shifts the relative cost
-toward STT. Spike (a) meters one real call and settles both the rate and the share; until then
-treat neither side as the fixed target.
+toward STT. The two unknowns are settled separately: spike (a) meters a one-minute STT session and
+fixes the account's STT rate, and the talk share comes from per-turn durations logged by the
+runtime over a sample of real calls, not from that session. Until both are known, treat neither
+side as the fixed target and keep 50% as the planning assumption.
 Plan against these numbers only; a realtime-STT credit premium above the 330 rate would push them
 down.
 
