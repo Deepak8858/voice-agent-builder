@@ -25,6 +25,8 @@ const publicRoutes = [
   { path: '/compare/retell-alternative', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/resources', changeFrequency: 'weekly', priority: 0.8 },
   { path: '/resources/test-ai-voice-agent', changeFrequency: 'monthly', priority: 0.8 },
+  { path: '/resources/why-voice-agents-fail', changeFrequency: 'monthly', priority: 0.8 },
+  { path: '/resources/ai-call-consent', changeFrequency: 'monthly', priority: 0.8 },
   {
     path: '/resources/white-label-ai-voice-agents',
     changeFrequency: 'monthly',
