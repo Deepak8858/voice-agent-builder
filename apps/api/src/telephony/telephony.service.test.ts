@@ -1449,7 +1449,17 @@ describe('TelephonyService', () => {
 
     await service.handleLiveKitWebhook('{"id":"lk-event-3"}', 'Bearer token');
 
-    expect(prisma.call.update).not.toHaveBeenCalled();
+    // The only write is the carrier reason; status and outcome are untouched.
+    expect(prisma.call.update).toHaveBeenCalledTimes(1);
+    expect(prisma.call.update.mock.calls[0][0]).toEqual({
+      where: { id: 'call-1' },
+      data: {
+        metadata: {
+          purpose: 'order_confirmation',
+          sip_disconnect_reason: 'USER_UNAVAILABLE',
+        },
+      },
+    });
     expect(prisma.callEvent.create).toHaveBeenCalledTimes(1);
   });
 
