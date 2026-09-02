@@ -2423,15 +2423,17 @@ export class TelephonyService {
   }
 
   /**
-   * Whether a participant is the caller's own carrier leg. The agent worker and
-   * the warm-transfer human (`sip-human-<callId>`) share the room; either of
-   * them leaving must not be filed as the caller hanging up.
+   * Whether a participant is the caller's own carrier leg: a SIP participant
+   * (LiveKit stamps `sip.callID` on every SIP leg and keeps it after the leg is
+   * gone) that is not the warm-transfer human (`sip-human-<callId>`). The agent
+   * worker, a browser tester or any other room member leaving must not be filed
+   * as the caller hanging up while the carrier leg is still connected.
    */
   private isCarrierLeg(
     participant: Record<string, unknown>,
     attributes: Record<string, unknown>,
   ): boolean {
-    if ('lk.agent.name' in attributes || 'lk.agent_name' in attributes) return false;
+    if (!('sip.callID' in attributes)) return false;
     return !(stringValue(participant.identity) ?? '').startsWith('sip-human-');
   }
 

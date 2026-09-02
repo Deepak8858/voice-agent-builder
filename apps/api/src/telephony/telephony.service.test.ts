@@ -91,6 +91,8 @@ function makeLiveKitTerminalService(
         sid: 'PA_123',
         metadata: '{"phoneNumberId":"number-1","direction":"outbound"}',
         disconnectReason,
+        // Every SIP leg carries sip.callID, and keeps it after it has left.
+        attributes: { 'sip.callID': 'SCL_1' },
       },
       ...event,
     })),
@@ -1551,6 +1553,7 @@ describe('TelephonyService', () => {
   it.each([
     ['the agent worker', { identity: 'agent-AJ_1', attributes: { 'lk.agent.name': 'voiceforge-agent' } }],
     ['the warm-transfer human', { identity: 'sip-human-call-1', attributes: { 'sip.callID': 'SCL_2' } }],
+    ['a browser participant', { identity: 'user-42', attributes: {} }],
   ])('does not end the call when %s leaves the room', async (_who, participant) => {
     const prisma = makeLiveKitTerminalPrisma('in_progress', null, new Date());
     const service = makeLiveKitTerminalService(prisma, 'CLIENT_INITIATED', {
