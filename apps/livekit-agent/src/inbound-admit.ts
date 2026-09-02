@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { InboundCallAdmitResponseSchema, type InboundCallAdmitResponse } from '@voiceforge/shared';
+import {
+  InboundCallAdmitResponseSchema,
+  type InboundCallAdmitRequest,
+  type InboundCallAdmitResponse,
+} from '@voiceforge/shared';
 
 /**
  * Client for `POST /internal/runtime/inbound/admit`.
@@ -15,17 +19,11 @@ const InboundAdmitResponseEnvelopeSchema = z.object({
   data: InboundCallAdmitResponseSchema,
 });
 
-export interface InboundAdmitInput {
-  organizationId: string;
-  workspaceId: string;
-  phoneNumberId: string;
-  agentId: string;
-  provider: string;
-  providerCallId: string;
-  fromNumber: string | null;
-  toNumber: string | null;
-  participantIdentity: string | null;
-}
+/**
+ * Everything the request needs except the room, which this client owns (it is
+ * created per job). Derived from the zod contract so the two cannot drift.
+ */
+export type InboundAdmitInput = Omit<InboundCallAdmitRequest, 'roomName'>;
 
 export type InboundAdmitter = (input: InboundAdmitInput) => Promise<InboundCallAdmitResponse>;
 

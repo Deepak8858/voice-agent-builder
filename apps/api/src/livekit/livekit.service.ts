@@ -26,7 +26,7 @@ interface LiveKitClients {
     SipClient,
     'createSipInboundTrunk' | 'createSipOutboundTrunk' | 'createSipDispatchRule' | 'createSipParticipant' | 'deleteSipTrunk' | 'deleteSipDispatchRule'
   >;
-  roomClient?: Pick<RoomServiceClient, 'createRoom' | 'removeParticipant'>;
+  roomClient?: Pick<RoomServiceClient, 'createRoom' | 'removeParticipant' | 'deleteRoom'>;
   agentDispatchClient?: Pick<AgentDispatchClient, 'createDispatch'>;
 }
 
@@ -68,22 +68,35 @@ export class LiveKitService {
   }
 
   /**
-   * Hangs up one participant's leg.
+   * Hangs up one participant's leg, and reports whether the leg is gone.
    *
    * Removing a SIP participant makes LiveKit send BYE to the carrier, which is
    * the only way to refuse an inbound call that has already been answered into
    * a room (the Twilio TwiML path can just return refusal TwiML; a call that
-   * arrived straight over SIP cannot). Best-effort: the caller has already
-   * decided the call is over, so a failure here is logged, not thrown.
+   * arrived straight over SIP cannot). If the removal fails the room is deleted
+   * instead, which disconnects every participant in it including the carrier
+   * leg -- an inbound room only ever holds the caller and our own agent, so
+   * there is nothing else to lose. `false` means the carrier may still be on
+   * the line and the caller must say so; it is never a silent success.
    */
-  async hangUpParticipant(roomName: string, identity: string): Promise<void> {
-    if (!this.roomClient) return;
+  async hangUpParticipant(roomName: string, identity: string): Promise<boolean> {
+    if (!this.roomClient) return false;
     try {
       await this.roomClient.removeParticipant(roomName, identity);
+      return true;
     } catch (err) {
       this.logger.warn(
         `Could not remove participant ${identity} from room ${roomName}: ${(err as Error).message}`,
       );
+    }
+    try {
+      await this.roomClient.deleteRoom(roomName);
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Could not delete room ${roomName} after failing to remove ${identity}; the carrier leg may still be connected: ${(err as Error).message}`,
+      );
+      return false;
     }
   }
 

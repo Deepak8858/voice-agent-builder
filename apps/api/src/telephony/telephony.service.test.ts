@@ -2350,6 +2350,7 @@ describe('TelephonyService', () => {
 function makeSipInboundService(overrides?: {
   admitted?: boolean;
   number?: Record<string, unknown> | null;
+  hungUp?: boolean;
 }) {
   const prisma = {
     telephonyPhoneNumber: {
@@ -2394,7 +2395,7 @@ function makeSipInboundService(overrides?: {
         : { admitted: false as const, reason: 'credit_insufficient' as const, message: 'No credit.' },
     ),
   };
-  const livekit = { hangUpParticipant: vi.fn(async () => undefined) };
+  const livekit = { hangUpParticipant: vi.fn(async () => overrides?.hungUp ?? true) };
   const service = new TelephonyService(
     prisma as never,
     livekit as never,
@@ -2471,7 +2472,7 @@ describe('TelephonyService.admitSipInboundCall', () => {
   });
 
   it('refuses without billing anything when the number is no longer assigned to that agent', async () => {
-    const { service, prisma, admission } = makeSipInboundService({
+    const { service, prisma, admission, livekit } = makeSipInboundService({
       number: {
         id: 'number-1',
         workspaceId: 'workspace-1',
@@ -2489,10 +2490,12 @@ describe('TelephonyService.admitSipInboundCall', () => {
     });
     expect(prisma.call.upsert).not.toHaveBeenCalled();
     expect(admission.admitCall).not.toHaveBeenCalled();
+    // Nothing will ever answer this leg, so it must not be left ringing.
+    expect(livekit.hangUpParticipant).toHaveBeenCalledWith('call-room-1', 'sip_participant_1');
   });
 
   it('rejects a request whose tenant does not own the number', async () => {
-    const { service, admission } = makeSipInboundService({
+    const { service, admission, livekit } = makeSipInboundService({
       number: {
         id: 'number-1',
         workspaceId: 'workspace-2',
@@ -2507,5 +2510,16 @@ describe('TelephonyService.admitSipInboundCall', () => {
       errorCode: 'TELEPHONY_NOT_FOUND',
     });
     expect(admission.admitCall).not.toHaveBeenCalled();
+    expect(livekit.hangUpParticipant).toHaveBeenCalledWith('call-room-1', 'sip_participant_1');
+  });
+
+  it('flags a refusal it could not enforce so the leg is not assumed dead', async () => {
+    const { service } = makeSipInboundService({ admitted: false, hungUp: false });
+
+    await expect(service.admitSipInboundCall(SIP_ADMIT_REQUEST)).resolves.toEqual({
+      admitted: false,
+      callId: 'call-1',
+      reason: 'credit_insufficient_still_connected',
+    });
   });
 });

@@ -49,16 +49,26 @@ allow-listing on inbound trunks (documented, not enforced), replacing LiveKit (V
 
 **API** — new `POST /api/v1/internal/runtime/inbound/admit` (`@InternalOnly()`, `x-internal-key`,
 same module as `runtime-usage.controller.ts`). Body: `{ organizationId, workspaceId, phoneNumberId,
-agentId, provider, providerCallId, fromNumber?, toNumber? }` (validated with zod; tenant fields must
-match the phone-number row or 404). Behaviour: `ensureInboundCall` (idempotent on
-`(provider, providerCallId)`) → `admitInboundCall` (existing, idempotent) → on refusal mark the call
-`failed / billing_denied` and return `{ admitted: false, reason }`; else `{ admitted: true, callId }`.
+agentId, provider, providerCallId, fromNumber?, toNumber?, roomName?, participantIdentity? }`
+(validated with zod; tenant fields must match the phone-number row or 404). Behaviour:
+`ensureInboundCall` (idempotent on `(provider, providerCallId)`) → `admitInboundCall` (existing,
+idempotent) → on refusal mark the call `failed / billing_denied` and return
+`{ admitted: false, reason }`; else `{ admitted: true, callId }`.
+
+**Teardown has exactly one owner: the API.** Every refusing path (tenant mismatch, number not
+assigned to this agent, admission denied) removes the SIP participant first, falling back to
+deleting the room if the removal fails; only then does it answer. A refusal the API could not
+enforce (no `roomName`/`participantIdentity` in the request, or LiveKit rejected both calls) comes
+back with `_still_connected` appended to the reason and an error log, so a stuck carrier leg is
+never mistaken for a clean refusal. The runtime therefore never speaks to a refused caller — by the
+time it reads the answer the leg is already gone — it only stops the job.
 
 **Agent** — `resolveCallAttribution`: providerCallId = `sip.twilio.callSid` ?? `sip.callID`
 (LiveKit always sets `sip.callID`). If no matching admitted call row exists (the SIP-delivered
-case), call the admit endpoint with the dispatch metadata and the participant's `sip.phoneNumber` /
-`sip.trunkPhoneNumber`. Refused → play the existing refusal line via TTS-less `say`-equivalent
-(speak the fixed refusal sentence with the session, then disconnect) and end without metering.
+case), call the admit endpoint with the dispatch metadata, the participant's identity, and its
+`sip.phoneNumber` / `sip.trunkPhoneNumber`. Refused → log the reason and `ctx.shutdown()` without
+metering; the carrier leg is already down (see the teardown owner above), so there is nobody left
+to speak a refusal line to.
 The Twilio TwiML path keeps working for numbers not yet migrated to a trunk, because
 `ensureInboundCall` keys the same `(provider, providerCallId)` the webhook wrote.
 
@@ -93,7 +103,7 @@ with Twilio's message verbatim; the connection row is still created (status `con
 ### 4.3 SIP-trunk numbers: the carrier card
 
 `POST phone-numbers/sip` response and the number card gain `carrier_setup`:
-```
+```text
 Inbound  → point your carrier at:  sip:+<E164>@<LIVEKIT_SIP_HOST>;transport=tcp
            auth: digest (username shown) | none — ask the carrier to allow LiveKit's SIP IPs
            (link: LiveKit Cloud → Settings → Static IPs)

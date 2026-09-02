@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import type {
@@ -55,6 +55,8 @@ const BYO_TELEPHONY_PLAN_LIMIT_DETAILS = {
 
 @Injectable()
 export class TelephonyService {
+  private readonly logger = new Logger(TelephonyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly livekit: LiveKitService,
@@ -1011,8 +1013,11 @@ export class TelephonyService {
    * silence. The agent asks here before it speaks, and the answer is the same
    * admission the webhook paths take, so the two cannot diverge.
    *
-   * Refusal is enforced, not advisory: the SIP participant is removed, which
-   * makes LiveKit send BYE to the carrier.
+   * Refusal is enforced, not advisory, and this method owns the teardown: every
+   * path that answers `admitted: false` (or throws) first removes the SIP
+   * participant, which makes LiveKit send BYE to the carrier. The runtime only
+   * has to stop the job -- it never speaks to a refused caller, because by the
+   * time it reads the answer the leg is already gone.
    */
   async admitSipInboundCall(input: InboundCallAdmitRequest): Promise<InboundCallAdmitResponse> {
     const number = await this.prisma.telephonyPhoneNumber.findUnique({
@@ -1034,10 +1039,16 @@ export class TelephonyService {
       number.workspaceId !== input.workspaceId ||
       number.organizationId !== input.organizationId
     ) {
+      await this.hangUpSipLeg(input);
       throw new AppError('TELEPHONY_NOT_FOUND', 'Phone number not found.', 404);
     }
     if (number.assignedAgentId !== input.agentId) {
-      return { admitted: false, callId: null, reason: 'number_not_assigned' };
+      const hungUp = await this.hangUpSipLeg(input);
+      return {
+        admitted: false,
+        callId: null,
+        reason: hungUp ? 'number_not_assigned' : 'number_not_assigned_still_connected',
+      };
     }
 
     const call = await this.ensureInboundCall({
@@ -1064,12 +1075,35 @@ export class TelephonyService {
         where: { id: call.id },
         data: { status: 'failed', endedAt: new Date(), outcome: 'billing_denied' },
       });
-      if (input.roomName && input.participantIdentity) {
-        await this.livekit.hangUpParticipant(input.roomName, input.participantIdentity);
-      }
-      return { admitted: false, callId: call.id, reason: admitted.reason ?? 'billing_denied' };
+      const hungUp = await this.hangUpSipLeg(input);
+      const reason = admitted.reason ?? 'billing_denied';
+      return {
+        admitted: false,
+        callId: call.id,
+        reason: hungUp ? reason : `${reason}_still_connected`,
+      };
     }
     return { admitted: true, callId: call.id, reason: null };
+  }
+
+  /**
+   * Disconnects the carrier leg of a call the API is about to refuse.
+   *
+   * Returns false when the leg may still be up: either the runtime did not tell
+   * us which participant to remove, or LiveKit refused both the removal and the
+   * room delete. The refusal itself still stands -- the call row is already
+   * marked and the runtime still stops -- but the reason carries
+   * `_still_connected` so a stuck carrier leg shows up in the runtime log
+   * instead of looking like a clean refusal.
+   */
+  private async hangUpSipLeg(input: InboundCallAdmitRequest): Promise<boolean> {
+    if (!input.roomName || !input.participantIdentity) {
+      this.logger.warn(
+        `Refused inbound call ${input.providerCallId} without a room/participant to hang up.`,
+      );
+      return false;
+    }
+    return this.livekit.hangUpParticipant(input.roomName, input.participantIdentity);
   }
 
   /**

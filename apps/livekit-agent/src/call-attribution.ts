@@ -1,5 +1,9 @@
 import type { DispatchMetadata } from './agent-runtime.js';
-import { InboundCallRefusedError, type InboundAdmitter } from './inbound-admit.js';
+import {
+  InboundCallRefusedError,
+  type InboundAdmitInput,
+  type InboundAdmitter,
+} from './inbound-admit.js';
 
 interface SipParticipant {
   identity?: string;
@@ -95,7 +99,9 @@ export async function resolveCallAttribution(
     workspaceId: metadata.workspaceId,
     phoneNumberId: metadata.phoneNumberId,
     agentId: metadata.agentId,
-    provider: metadata.provider,
+    // The dispatch rule's metadata is JSON, so its provider is a plain string
+    // here; the API re-validates it against the same enum this cast names.
+    provider: metadata.provider as InboundAdmitInput['provider'],
     providerCallId,
     fromNumber: attributes['sip.phoneNumber']?.trim() || null,
     toNumber: attributes['sip.trunkPhoneNumber']?.trim() || null,
