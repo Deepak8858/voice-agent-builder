@@ -181,6 +181,7 @@ const REVIEWED_BASELINE: readonly string[] = [
   // tenant-scoped work happens. The lookup is the mechanism that establishes
   // tenancy, like webhook ingress above.
   'tools/livekit-tools.controller.ts:call.findUnique',
+  'tools/livekit-reminders.controller.ts:call.findUnique',
   'voice/livekit-knowledge.controller.ts:call.findUnique',
 
   // -- User-scoped or workspace-root queries ------------------------------
@@ -310,6 +311,7 @@ const EXPECTED_SITE_COUNTS: Readonly<Record<string, number>> = {
   'templates/templates.service.ts:agentTemplate.findMany': 1,
   'templates/templates.service.ts:agentTemplate.findUnique': 1,
   'tools/livekit-tools.controller.ts:call.findUnique': 1,
+  'tools/livekit-reminders.controller.ts:call.findUnique': 1,
   'tools/tools.service.ts:toolInvocation.update': 3,
   'twilio-adapter/twilio-webhook.controller.ts:call.findUnique': 2,
   'twilio-adapter/twilio-webhook.controller.ts:call.update': 2,

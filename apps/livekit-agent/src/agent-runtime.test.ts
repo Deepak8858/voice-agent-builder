@@ -188,6 +188,25 @@ describe('LiveKit agent runtime helpers', () => {
   });
 });
 
+describe('LiveKit reminder instructions', () => {
+  it('gives the model the current time and the reminder tool only when the workspace has a calendar', () => {
+    const now = new Date('2026-09-02T18:30:00.000Z');
+    const withTool = buildVoiceForgeInstructions(
+      spec,
+      { agentId: 'agent-1', direction: 'inbound', pipeline: 'realtime' },
+      { reminderTool: true, now },
+    );
+    const without = buildVoiceForgeInstructions(spec, {
+      agentId: 'agent-1',
+      direction: 'inbound',
+      pipeline: 'realtime',
+    });
+    expect(withTool).toContain('2026-09-02T18:30:00.000Z');
+    expect(withTool).toContain('call schedule_reminder');
+    expect(without).not.toContain('schedule_reminder');
+  });
+});
+
 describe('LiveKit handoff instructions', () => {
   const handoffSpec: AgentSpec = {
     ...spec,

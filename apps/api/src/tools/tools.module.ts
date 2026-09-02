@@ -5,6 +5,7 @@ import { ComplianceModule } from '../compliance/compliance.module';
 import { GoogleConnectionModule } from '../google-connection/google-connection.module';
 import { ToolsController } from './tools.controller';
 import { LiveKitToolsController } from './livekit-tools.controller';
+import { LiveKitRemindersController } from './livekit-reminders.controller';
 import { ToolsService } from './tools.service';
 import { WebhookExecutor } from './webhook-executor';
 import { CrmExecutor } from './crm-executor';
@@ -14,7 +15,7 @@ import { SheetsExecutor } from './executors/sheets.executor';
 
 @Module({
   imports: [BillingModule, ComplianceModule, GoogleConnectionModule],
-  controllers: [ToolsController, LiveKitToolsController],
+  controllers: [ToolsController, LiveKitToolsController, LiveKitRemindersController],
   providers: [
     ToolsService,
     WebhookExecutor,
