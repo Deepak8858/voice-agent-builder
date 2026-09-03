@@ -21,6 +21,8 @@ interface OutboundCallJob {
    * deploy; those dial under the safest allowed purpose.
    */
   purpose?: string;
+  /** The campaign's own calling window, passed to every per-call compliance check. */
+  callWindow?: { timezone: string; start_hour: number; end_hour: number };
   actorUserId: string;
   to: string;
   contactName?: string;
@@ -242,6 +244,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
         to_number: to,
         contact_name: contactName,
         metadata,
+        ...(data.callWindow ? { compliance: { call_window: data.callWindow } } : {}),
       });
 
       this.logger.log(`Outbound campaign call queued via ${assignedByoNumber.provider}: ${call.call_id} to ${to}`);
@@ -252,6 +255,7 @@ export class OutboundCallWorker extends BaseWorker<OutboundCallJob> {
       to_number: to,
       contact_name: contactName,
       metadata,
+      ...(data.callWindow ? { compliance: { call_window: data.callWindow } } : {}),
     });
 
     this.logger.log(`Outbound campaign call queued: ${call.id} to ${to}`);

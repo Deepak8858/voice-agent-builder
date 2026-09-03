@@ -854,12 +854,25 @@ export class TelephonyService {
     }
 
     const purpose = typeof dto.metadata?.purpose === 'string' ? dto.metadata.purpose : null;
+    // A single dial can carry the same attestation a campaign does, so calling
+    // one number does not first require creating a contact and a consent
+    // record by hand.
+    if (dto.compliance?.consent) {
+      await this.compliance.attestConsent(
+        workspaceId,
+        actorUserId,
+        [{ phone: dto.to_number, full_name: dto.contact_name ?? null }],
+        dto.compliance.consent,
+        { call_to: dto.to_number },
+      );
+    }
     const checkResult = await this.compliance.check({
       workspaceId,
       agentId: number.assignedAgentId,
       direction: 'outbound',
       toNumber: dto.to_number,
       purpose,
+      callWindow: dto.compliance?.call_window ?? null,
     });
     if (checkResult.status === 'blocked') {
       await this.audit.log({

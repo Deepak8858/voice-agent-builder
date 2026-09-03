@@ -13,6 +13,34 @@ describe('CreateOutboundCampaignDtoSchema', () => {
     expect(dto.schedule).toEqual({ max_calls_per_hour: 10, max_concurrent: 3 });
   });
 
+  it('carries the campaign-level consent attestation and call window', () => {
+    const dto = CreateOutboundCampaignDtoSchema.parse({
+      agent_id: '11111111-1111-1111-1111-111111111111',
+      name: 'Order confirmations',
+      purpose: 'order_confirmation',
+      contacts: [{ phone: '+917607185834' }],
+      compliance: {
+        consent: { consent_type: 'outbound_transactional', source_description: 'Signed order forms' },
+        call_window: { timezone: 'Asia/Kolkata', start_hour: 9, end_hour: 20 },
+      },
+    });
+
+    expect(dto.compliance?.consent?.consent_type).toBe('outbound_transactional');
+    expect(dto.compliance?.call_window?.timezone).toBe('Asia/Kolkata');
+  });
+
+  it('only accepts the two outbound consent types for an attestation', () => {
+    expect(() =>
+      CreateOutboundCampaignDtoSchema.parse({
+        agent_id: '11111111-1111-1111-1111-111111111111',
+        name: 'x',
+        purpose: 'order_confirmation',
+        contacts: [{ phone: '+917607185834' }],
+        compliance: { consent: { consent_type: 'recording', source_description: 'n/a' } },
+      }),
+    ).toThrow();
+  });
+
   it('rejects non-E.164 campaign contact numbers', () => {
     expect(() =>
       CreateOutboundCampaignDtoSchema.parse({

@@ -440,6 +440,7 @@ describe('cross-tenant isolation: already-correct services (regression guards)',
       prisma as never,
       queue as never,
       noopAudit() as never,
+      { attestConsent: vi.fn(async () => ({ contacts: 0, consents_created: 0 })) } as never,
     );
 
     await expect(service.start(WS_A, 'camp-b', 'user-a')).rejects.toMatchObject({ errorCode: 'NOT_FOUND' });

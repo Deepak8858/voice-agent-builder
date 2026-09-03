@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { VoicePipelineSchema } from './billing';
+import { OutboundComplianceSchema } from './compliance';
 
 export const CallDirectionSchema = z.enum(['inbound', 'outbound', 'browser_test']);
 export type CallDirection = z.infer<typeof CallDirectionSchema>;
@@ -26,6 +27,8 @@ export const StartOutboundCallDtoSchema = z.object({
   contact_name: z.string().max(120).optional(),
   agent_version_id: z.string().uuid().optional(),
   metadata: z.record(z.string(), z.any()).optional(),
+  /** Consent attestation / call window for this dial; see OutboundComplianceSchema. */
+  compliance: OutboundComplianceSchema.optional(),
 });
 export type StartOutboundCallDto = z.infer<typeof StartOutboundCallDtoSchema>;
 

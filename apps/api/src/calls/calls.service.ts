@@ -436,12 +436,24 @@ export class CallsService {
     // Phase 6: pre-flight compliance check. Block before we hit the voice provider.
     const purpose =
       typeof dto.metadata?.purpose === 'string' ? (dto.metadata.purpose as string) : null;
+    // Same attestation the BYO path accepts, so a campaign on a managed number
+    // is not held to a stricter rule than one on a BYO number.
+    if (dto.compliance?.consent) {
+      await this.compliance.attestConsent(
+        workspaceId,
+        actorUserId,
+        [{ phone: dto.to_number, full_name: dto.contact_name ?? null }],
+        dto.compliance.consent,
+        { call_to: dto.to_number },
+      );
+    }
     const checkResult = await this.compliance.check({
       workspaceId,
       agentId: agent.id,
       direction: 'outbound',
       toNumber: dto.to_number,
       purpose,
+      callWindow: dto.compliance?.call_window ?? null,
     });
     if (checkResult.status === 'blocked') {
       await this.audit.log({
