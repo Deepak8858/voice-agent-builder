@@ -60,6 +60,8 @@ Key facts:
 - [How to test an AI voice agent before it goes live](https://incfrog.ai/resources/test-ai-voice-agent)
 - [Do you need consent to make AI phone calls?](https://incfrog.ai/resources/ai-call-consent)
 - [How to sell AI receptionists to local businesses](https://incfrog.ai/resources/sell-ai-receptionists)
+- [The 12-hour-a-week setter problem](https://incfrog.ai/resources/appointment-setter-coverage)
+- [Missed-call callback: the highest-ROI voice agent](https://incfrog.ai/resources/missed-call-callback)
 - [Vapi vs Retell vs OpenAI Realtime](https://incfrog.ai/resources/vapi-vs-retell-vs-openai-realtime)
 - [White-label AI voice agents for agencies](https://incfrog.ai/resources/white-label-ai-voice-agents)
 

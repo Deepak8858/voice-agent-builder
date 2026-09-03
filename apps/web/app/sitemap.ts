@@ -29,6 +29,12 @@ const publicRoutes = [
   { path: '/resources/ai-call-consent', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/resources/sell-ai-receptionists', changeFrequency: 'monthly', priority: 0.8 },
   {
+    path: '/resources/appointment-setter-coverage',
+    changeFrequency: 'monthly',
+    priority: 0.8,
+  },
+  { path: '/resources/missed-call-callback', changeFrequency: 'monthly', priority: 0.8 },
+  {
     path: '/resources/vapi-vs-retell-vs-openai-realtime',
     changeFrequency: 'monthly',
     priority: 0.8,

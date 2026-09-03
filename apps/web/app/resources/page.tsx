@@ -38,6 +38,20 @@ const guides = [
       'Qualify on missed-call arithmetic, open with the prospect’s own phone line, price on outcomes, and know where build becomes buy.',
   },
   {
+    href: '/resources/appointment-setter-coverage',
+    label: 'Agency operations',
+    title: 'Your setter works 12 hours a week. Your leads do not.',
+    description:
+      'A 12-hour setter covers 7% of a 168-hour week. Move first-touch coverage to a compliant callback agent and reserve humans for the close.',
+  },
+  {
+    href: '/resources/missed-call-callback',
+    label: 'The wedge deployment',
+    title: 'Missed-call callback: the highest-ROI voice agent',
+    description:
+      'Maximal intent, clean consent, zero baseline. Why calling back a missed call within a minute is the first deployment that provably pays.',
+  },
+  {
     href: '/resources/vapi-vs-retell-vs-openai-realtime',
     label: 'Choosing a runtime',
     title: 'Vapi vs Retell vs OpenAI Realtime',
