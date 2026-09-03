@@ -83,8 +83,7 @@ function DemoAudioPlayerInner({
     <div className="relative mx-auto mt-8 w-full max-w-2xl min-w-0">
       <audio
         ref={audioRef}
-        src={src}
-        preload="metadata"
+        preload="none"
         onLoadedMetadata={() => {
           setTotalDuration(audioRef.current?.duration ?? duration);
         }}
@@ -100,7 +99,41 @@ function DemoAudioPlayerInner({
           setCurrentTime(0);
           setAudioUnavailable(true);
         }}
-      />
+      >
+        {/*
+          Compressed sources first: the original 44s mono WAV is 1.96 MB and,
+          even at preload="metadata", browsers pulled enough of it to compete
+          with the hero LCP image for mobile bandwidth. Opus is ~117 KB and
+          MP3 ~267 KB; the WAV stays last as a universal fallback.
+
+          Variants are derived from the parsed pathname, so a src carrying a
+          query string or fragment (or any non-.wav extension) is served as-is
+          instead of being rewritten to a URL with the wrong MIME type.
+        */}
+        {src ? (
+          <>
+            {(() => {
+              // Relative URLs need a base for URL parsing; it is never emitted.
+              let pathname: string;
+              try {
+                pathname = new URL(src, 'http://x.invalid').pathname;
+              } catch {
+                return <source src={src} />;
+              }
+              if (!/\.wav$/i.test(pathname)) return <source src={src} />;
+              const swap = (ext: string) =>
+                src.replace(pathname, pathname.replace(/\.wav$/i, ext));
+              return (
+                <>
+                  <source src={swap('.opus')} type="audio/ogg; codecs=opus" />
+                  <source src={swap('.mp3')} type="audio/mpeg" />
+                  <source src={src} type="audio/wav" />
+                </>
+              );
+            })()}
+          </>
+        ) : null}
+      </audio>
       <div className="relative flex min-w-0 items-center gap-4 rounded-md border border-[#d7d0c3] bg-[#fbf6ea] p-4">
         <button
           onClick={togglePlay}

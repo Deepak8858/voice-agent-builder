@@ -31,8 +31,13 @@ export function SiteHeader() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const pathname = usePathname();
-  if (!mounted) return null;
+  // Reserve the header's height before mount instead of rendering nothing.
+  // Returning null and then injecting the sticky bar pushed every element down
+  // — a single 0.15 layout shift that was effectively all of mobile CLS.
+  // Dashboard routes render no header at all, so they must not get a spacer,
+  // and below `lg` the header carries a second nav row (h-[57px] + ~44px).
   if (pathname?.startsWith('/dashboard')) return null;
+  if (!mounted) return <div aria-hidden className="h-[101px] lg:h-[57px]" />;
 
   return (
     <header className="sticky top-0 z-50 overflow-x-hidden border-b border-white/10 bg-[#06130f]/95 text-[#fbf5e7] shadow-lg shadow-black/20 backdrop-blur-xl">
