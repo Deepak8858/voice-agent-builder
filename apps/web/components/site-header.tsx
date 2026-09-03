@@ -31,7 +31,10 @@ export function SiteHeader() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const pathname = usePathname();
-  if (!mounted) return null;
+  // Reserve the header's height before mount instead of rendering nothing.
+  // Returning null and then injecting a ~57px sticky bar pushed every element
+  // down on hydration, which was the single 0.15 layout shift on mobile CLS.
+  if (!mounted) return <div aria-hidden className="h-[57px]" />;
   if (pathname?.startsWith('/dashboard')) return null;
 
   return (

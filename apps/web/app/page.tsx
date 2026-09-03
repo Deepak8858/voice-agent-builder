@@ -201,12 +201,25 @@ export default function Home() {
     <div className="flex flex-1 flex-col overflow-x-hidden bg-[#f3efe5] text-[#07130f]">
       <JsonLd data={softwareApplication} />
       <section className="relative isolate overflow-hidden bg-[#06130f] text-[#fbf5e7]">
+        {/*
+          Purely decorative backdrop: 35% opacity, luminosity blend, three
+          gradient layers on top. It was the mobile LCP element at 6.0s. Fixes,
+          measured with Lighthouse against a local production build:
+          a pre-optimised 17KB WebP instead of the 29KB PNG through the
+          on-demand optimiser, empty alt + aria-hidden so it is not announced,
+          and priority/fetchPriority so discovery is not delayed. A pure CSS
+          background layer was also tried and measured 0.5s WORSE on LCP
+          (3.9s vs 3.4s), so next/image with priority stays.
+        */}
         <Image
-          src="/images/voiceforge-builder-preview.png"
-          alt="VoiceForge builder showing the prompt-to-Agent-Spec workflow"
+          src="/images/hero-backdrop.webp"
+          alt=""
+          aria-hidden
           fill
           priority
+          fetchPriority="high"
           sizes="100vw"
+          quality={62}
           className="object-cover object-[64%_16%] opacity-35 mix-blend-luminosity"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,#06130f_0%,rgba(6,19,15,0.96)_35%,rgba(6,19,15,0.72)_64%,rgba(6,19,15,0.48)_100%)]" />

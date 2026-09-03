@@ -11,22 +11,31 @@ import { JsonLd } from '@/lib/seo';
 import { organizationJsonLd, webSiteJsonLd } from './site-structured-data';
 import './globals.css';
 
+// `display: 'swap'` plus `adjustFontFallback` keeps text visible immediately and
+// sizes the fallback to the real font's metrics, so the oversized serif h1 does
+// not reflow when the webfont lands. That reflow was the bulk of a 0.152 mobile CLS.
 const dmSans = DM_Sans({
   variable: '--font-sans',
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  adjustFontFallback: true,
 });
 
 const dmSerif = DM_Serif_Display({
   variable: '--font-serif',
   subsets: ['latin'],
   weight: ['400'],
+  display: 'swap',
+  adjustFontFallback: true,
 });
 
 const ibmPlexMono = IBM_Plex_Mono({
   variable: '--font-mono',
   subsets: ['latin'],
   weight: ['400', '500'],
+  display: 'swap',
+  adjustFontFallback: true,
 });
 
 const siteName = 'VoiceForge AI';
