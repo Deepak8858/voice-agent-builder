@@ -21,7 +21,7 @@ const faqs = [
   {
     question: 'Is AI setter calling legal?',
     answer:
-      'The compliant version is callback-based: the lead filled a form, called and missed, or asked to be contacted — so there is a consent trail for the contact. Cold outbound prospecting by AI is a different activity with a much harsher rulebook, and VoiceForge blocks cold solicitation by default. Every outbound callback still passes checks for consent, DNC status, opt-out state, calling windows, AI disclosure, and recording notice before it dials.',
+      'The compliant version is callback-based and inquiry-scoped: a form fill, missed call, or callback request can support a return call limited to that specific inquiry — it is not blanket consent, and regulators treat AI voices as artificial or prerecorded voices requiring prior express consent for outbound calls. The callback must stay on the caller’s own topic; using it to deliver broader marketing needs separate written consent. Cold outbound prospecting by AI is a different activity with a much harsher rulebook, and VoiceForge blocks cold solicitation by default. Every outbound callback still passes checks for consent, DNC status, opt-out state, calling windows, AI disclosure, and recording notice before it dials.',
   },
   {
     question: 'What does this cost compared to a human setter?',
@@ -70,7 +70,7 @@ export default function SetterCoveragePage() {
           },
           {
             title: 'What the AI setter actually does',
-            body: 'The compliant version is callback-based, and that matters. A lead fills a form or calls and misses — both create a consent trail. The agent calls back within a minute, discloses what it is, asks the three qualifying questions the client actually cares about, books a slot directly in the calendar, and writes the transcript and outcome to the client’s workspace. Anything ambiguous, urgent, or high-value transfers to a human with the context attached rather than a cold start.',
+            body: 'The compliant version is callback-based and stays inside the scope of the inquiry, and that matters. A form fill or a missed call can support a return call about that specific request — not a license for broader outreach, and the consent record for the number, purpose, and jurisdiction still has to exist and be checked. The agent calls back within a minute, discloses what it is, asks the three qualifying questions the client actually cares about, books a slot directly in the calendar, and writes the transcript and outcome to the client’s workspace. Anything ambiguous, urgent, or high-value transfers to a human with the context attached rather than a cold start.',
           },
           {
             title: 'What stays human',

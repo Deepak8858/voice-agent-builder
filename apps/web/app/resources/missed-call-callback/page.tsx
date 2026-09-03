@@ -16,7 +16,7 @@ const faqs = [
   {
     question: 'Why is it the highest-ROI first deployment?',
     answer:
-      'Three reasons. The intent is maximal — this person dialled the number themselves minutes ago. The consent posture is clean — returning a customer’s own call is the least ambiguous outbound purpose there is. And the baseline is zero — without it, a large fraction of missed calls simply never reconnect, because callers who reach voicemail rarely leave a message and frequently call the next result on the list.',
+      'Three reasons. The intent is maximal — this person dialled the number themselves minutes ago. The consent posture is the cleanest available — returning a customer’s own call, promptly and limited to the reason they called, is the least ambiguous outbound purpose there is, though it is inquiry-scoped rather than blanket permission and the compliance gate still verifies the consent record before dialing. And the baseline is zero — without it, a large fraction of missed calls simply never reconnect, because callers who reach voicemail rarely leave a message and frequently call the next result on the list.',
   },
   {
     question: 'How many calls do local businesses actually miss?',
@@ -74,7 +74,7 @@ export default function MissedCallCallbackPage() {
           },
           {
             title: 'Why this is the cleanest outbound call in the product',
-            body: 'Returning a call the customer just made is the least ambiguous outbound purpose that exists — the consent trail is the caller’s own dial. VoiceForge still runs the full gate before the callback goes out: calling window, AI disclosure, recording notice, opt-out state, DNC posture. And because cold solicitation is blocked by default at the engine level, the callback agent cannot later be repointed at a purchased lead list by an enthusiastic marketer. The constraint is the client’s protection, and it is worth saying so in the sales conversation.',
+            body: 'Returning a call the customer just made, promptly and about the reason they called, is the least ambiguous outbound purpose that exists — but it is inquiry-scoped, not blanket consent. Regulators classify AI-generated voices as artificial or prerecorded, so the callback must stay within the scope of the customer’s own contact, and anything broader — promotions, cross-selling, unrelated follow-up — needs its own prior express written consent. VoiceForge still runs the full gate before the callback goes out: calling window, AI disclosure, recording notice, opt-out state, DNC posture. And because cold solicitation is blocked by default at the engine level, the callback agent cannot later be repointed at a purchased lead list by an enthusiastic marketer. The constraint is the client’s protection, and it is worth saying so in the sales conversation.',
           },
           {
             title: 'Measure it like a funnel, not a gadget',
