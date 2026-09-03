@@ -219,7 +219,7 @@ export default function Home() {
           priority
           fetchPriority="high"
           sizes="100vw"
-          quality={62}
+          quality={75}
           className="object-cover object-[64%_16%] opacity-35 mix-blend-luminosity"
         />
         <div className="absolute inset-0 bg-[linear-gradient(90deg,#06130f_0%,rgba(6,19,15,0.96)_35%,rgba(6,19,15,0.72)_64%,rgba(6,19,15,0.48)_100%)]" />
